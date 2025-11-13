@@ -228,8 +228,152 @@ Status: Nicht unterstützt (NEU)
 - Flow:
    1) Player Page: Chart (x=Stunde 1..H, y=Leistung/MWh) mit editierbarer Linie.
    2) Interaktion: Ziehen von Punkten/Segmenten (d3.drag), Doppelklick auf Punkt fügt/entfernt Marker; Tastatur‑Feineinstellung (↑/↓ um Step).
-   3) Constraints: Freeze‑Stunden gesperrt (Cursor/Tooltip „locked“); Min/Max/Step validiert (Server/Client).
-   4) Speichern: „Save Full Forecast“ sendet Linienwerte (Array) an `/api/player/forecast/full`; Submit sendet Slice an `/api/player/forecast`.
+   3) Constraints: Freeze‑Stunden gesperrt (Cursor/Tooltip „locked"); Min/Max/Step validiert (Server/Client).
+   4) Speichern: „Save Full Forecast" sendet Linienwerte (Array) an `/api/player/forecast/full`; Submit sendet Slice an `/api/player/forecast`.
 
 - UI Mapping (neu): `frontend/src/pages/Player.jsx` → Komponente `ForecastChartEditor` (SVG/Canvas) mit Tooltips und Rückfall auf Textfelder.
 - Acceptance: Linie editierbar, Freeze sichtbar, Werte setzen Textfelder; Speichern/Submit funktioniert mit Validation.
+
+---
+
+## UC-11 Trainer – Cohort bearbeiten und löschen
+
+Status: Teilweise unterstützt (ERWEITERUNG ERFORDERLICH)
+
+- Ist‑Stand:
+  - POST `/api/cohorts` – Cohort erstellen (Name, trainer_id)
+  - GET `/api/cohorts` – Liste aller Cohorts
+  - POST `/api/cohorts/:id/players` – Spieler CSV-Import (Mitglieder hinzufügen)
+  - Keine Endpoints zum Umbenennen, Löschen von Cohorts, oder Entfernen einzelner Mitglieder
+
+- Ziel: Trainer kann eine bestehende Cohort umbenennen, Mitglieder einzeln entfernen, oder die gesamte Cohort löschen.
+
+- Flow:
+   1) Trainer öffnet „Cohorts" (`/cohorts`) und wählt eine Cohort aus der Liste.
+   2) **Bearbeiten**: Button „Edit" öffnet Inline-Editor oder Modal, erlaubt Umbenennung des Cohort-Namens; PATCH `/api/cohorts/:id` { name }.
+   3) **Mitglieder entfernen**: In der Mitgliederliste pro Spieler ein „Remove"-Button; DELETE `/api/cohorts/:id/players/:user_id`.
+   4) **Cohort löschen**: Button „Delete Cohort" mit Bestätigungsdialog („This will permanently delete the cohort and all memberships. Sessions remain."); DELETE `/api/cohorts/:id`.
+
+- API Mapping (neu):
+  - PATCH `/api/cohorts/:id` { name? } → Update Cohort-Name
+  - DELETE `/api/cohorts/:id/players/:user_id` → Mitgliedschaft entfernen
+  - DELETE `/api/cohorts/:id` → Cohort löschen (cascading delete auf CohortMember, CohortCampaign)
+
+- UI Mapping (neu): `frontend/src/pages/Cohorts.jsx` – Edit/Delete Buttons, Confirm-Dialog
+- Acceptance:
+  - Trainer kann Cohort-Namen ändern; Änderung wird sofort sichtbar.
+  - Einzelne Spieler können aus Cohort entfernt werden (erscheinen nicht mehr in Liste).
+  - Cohort kann gelöscht werden; Sessions bleiben erhalten (cohort_id wird nullable oder bleibt referenziert für History).
+
+---
+
+## UC-12 Trainer – Zeitliche Übersicht zu Schüleraktivitäten
+
+Status: Nicht unterstützt (NEU)
+
+- Ziel: Trainer sieht eine Timeline oder Aktivitätsliste für eine Cohort oder Session: Wann haben sich Spieler eingeloggt, wann Forecasts abgegeben, wann haben sie Runden abgeschlossen.
+
+- Flow:
+   1) Trainer öffnet „Cohorts" → Detail-Ansicht einer Cohort oder „Trainer" → Session-Detail.
+   2) Tab „Activity Log" zeigt chronologische Liste: Timestamp, Spieler, Aktion (login, forecast_submit, round_complete, logout optional).
+   3) Filter: Nach Spieler, Zeitraum, Aktionstyp.
+   4) Export als CSV optional.
+
+- Datenmodell (neu): Tabelle `activity_log(id, user_id, session_id?, cohort_id?, action_type, timestamp, details jsonb)` oder Activity Events in Redis/Log aggregiert.
+- API Mapping (neu):
+  - GET `/api/cohorts/:id/activity` → Timeline für Cohort (alle Sessions)
+  - GET `/api/sessions/:id/activity` → Timeline für eine Session
+  - Optional: GET `/api/activity?user_id=...&session_id=...&from=...&to=...`
+
+- UI Mapping (neu): `frontend/src/pages/Cohorts.jsx` (Activity Tab), `frontend/src/pages/Trainer.jsx` (Session Activity Panel)
+- Acceptance:
+  - Trainer sieht zeitlich geordnete Liste der Aktivitäten.
+  - Filter funktioniert; CSV-Export erzeugt lesbare Datei.
+  - Keine Performance-Probleme bei >1000 Events (Pagination/Infinite Scroll).
+
+---
+
+## UC-13 Admin – Gesamtübersicht zur Benutzeraktivität
+
+Status: Nicht unterstützt (NEU)
+
+- Ziel: Admin sieht systemweite Benutzeraktivität: Anzahl aktiver Nutzer (letzte 7/30 Tage), Login-Häufigkeit, Session-Starts, Forecasts, Registrierungen über Zeit.
+
+- Flow:
+   1) Admin öffnet „Admin" → Tab „Activity Dashboard".
+   2) Metriken: Registrierte Nutzer (Gesamt, pro Rolle), Aktive Nutzer (letzte 7/30 Tage), Sessions gestartet (letzte 7/30 Tage), durchschnittliche Forecasts pro Spieler.
+   3) Diagramme: Zeitreihe (Registrierungen, Logins, Sessions pro Tag), Verteilung nach Rolle.
+   4) Optional: Liste „Recent Activity" (letzte 50 Aktionen systemweit).
+
+- Datenmodell (bestehend + neu):
+  - `users.created_at` → Registrierungen über Zeit
+  - `sessions.started_at` → Session-Starts
+  - Neue Tabelle `user_activity(id, user_id, action_type, timestamp)` mit Logins/Logout optional (oder aus Activity Log UC-12)
+
+- API Mapping (neu):
+  - GET `/api/admin/activity/summary?period=7d|30d` → Aggregat-Metriken
+  - GET `/api/admin/activity/timeseries?metric=logins|sessions|registrations&period=30d` → Daten für Chart
+  - GET `/api/admin/activity/recent?limit=50` → Letzte Aktionen
+
+- UI Mapping (neu): `frontend/src/pages/AdminUsers.jsx` → neuer Tab „Activity" mit KPI-Cards und Charts (recharts/d3)
+- Acceptance:
+  - Admin sieht KPIs und Charts auf einen Blick.
+  - Zeitreihen laden performant (max 2s bei 10k Events).
+  - Keine personenbezogenen Details ohne Datenschutz-Compliance (anonymisierte Ansicht optional).
+
+---
+
+## UC-14 Trainer – Session-Teilnehmer und Spielertypen live sehen
+
+Status: Teilweise unterstützt (ERWEITERUNG ERFORDERLICH)
+
+- Ist‑Stand:
+  - Trainer sieht in `Trainer.jsx` Status-Matrix (Spieler × Runde × Status/Score).
+  - Briefing API (`/api/sessions/:id/briefing`) liefert `allowed_player_types`, `selected_type` je Spieler (über Redis/DB).
+  - Keine dedizierte Ansicht „Wer hat sich mit welchem Typ angemeldet, wer fehlt noch?".
+
+- Ziel: Trainer sieht vor/während Session-Start eine Teilnehmerliste: Welche Spieler der Cohort haben sich angemeldet, welchen Typ gewählt, welche fehlen noch.
+
+- Flow:
+   1) Trainer öffnet „Trainer" → Session-Detail oder startet neue Session.
+   2) Panel „Participants" zeigt:
+      - Liste: Spieler (Name/Email), Status (joined/pending), gewählter Typ (falls joined), Timestamp des letzten Updates.
+      - Zusammenfassung: X von Y Spielern angemeldet; Verteilung nach Typ (z. B. „3× Solar, 2× Wind, 1× Gas").
+   3) Auto-Refresh (via Websocket oder Polling alle 5s) aktualisiert die Liste.
+   4) Button „Refresh" für manuelles Update.
+
+- API Mapping (neu):
+  - GET `/api/sessions/:id/participants` → Liste { user_id, email, name?, status: "joined"|"pending", selected_type?, joined_at? }
+  - Status „joined" = hat Typ gewählt und Briefing abgerufen; „pending" = Mitglied der Cohort, aber noch nicht in Session aktiv.
+  - Nutzt bestehende Daten: `CohortMember`, `SessionPlayerType` (oder Redis `session:X:selected:Y`).
+
+- UI Mapping (neu): `frontend/src/pages/Trainer.jsx` → neues Panel „Participants" (Sticky oder Collapsible Sidebar)
+- Acceptance:
+  - Trainer sieht Echtzeit-Updates bei Teilnehmer-Join.
+  - Fehlende Spieler erkennbar; Verteilung nach Typ visualisiert (optional: Pie Chart).
+  - Keine manuelle Session-ID-Eingabe nötig; Daten kommen direkt aus Session-Kontext.
+
+---
+
+## UC-15 Player – Angefangene oder beendete Sessions/Scenarios löschen
+
+Status: Nicht unterstützt (NEU)
+
+- Ziel: Spieler kann eigene Solo-Sessions (Status: running, paused, ended) aus der Liste „My Sessions" entfernen, um Übersichtlichkeit zu wahren. Cohort-Sessions bleiben unberührt (Trainer-Kontrolle).
+
+- Flow:
+   1) Player öffnet „Home" → Tab „My Sessions" zeigt Liste (Scenario-Name, Status, Modus, Started At).
+   2) Für Solo-Sessions (mode=isolated_per_player): Button „Delete" neben jedem Eintrag.
+   3) Bestätigungsdialog: „Delete this session? Your forecasts and results will be permanently removed." (oder Soft-Delete mit `deleted_at`).
+   4) Nach Bestätigung: DELETE `/api/player/sessions/:id` → Session wird gelöscht (oder `deleted_at` gesetzt).
+   5) Session verschwindet aus Liste; verwandte Forecasts/Results bleiben optional für Archiv oder werden cascading gelöscht.
+
+- API Mapping (neu):
+  - DELETE `/api/player/sessions/:id` → Löscht Session (oder Soft-Delete), nur wenn `mode=isolated_per_player` UND `user_id == current_user`.
+  - Validation: Verhindere Löschen von Cohort-Sessions (`mode=shared_market` oder cohort_id nicht null).
+
+- UI Mapping (neu): `frontend/src/pages/Home.jsx` → „My Sessions" Tab mit Delete-Button (Confirm-Dialog)
+- Acceptance:
+  - Spieler kann nur eigene Solo-Sessions löschen; Cohort-Sessions zeigen keinen Delete-Button.
+  - Bestätigungsdialog verhindert versehentliches Löschen.
+  - Nach Löschung: Session nicht mehr in `/api/me/sessions`; Forecasts optional archiviert oder gelöscht (Designer-Entscheidung).

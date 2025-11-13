@@ -3,7 +3,6 @@ import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom'
 import { AppBar, Toolbar, Typography, Button, Container, Box, CircularProgress } from '@mui/material'
 import { 
   AdminPanelSettings as AdminIcon, 
-  Edit as EditIcon, 
   School as TrainerIcon,
   Groups as GroupsIcon,
   BarChart as ComparisonIcon,
@@ -62,18 +61,6 @@ export default function App({ themeMode, onToggleTheme }) {
                   aria-label="Admin panel"
                 >
                   Admin
-                </Button>
-              )}
-              {(user.role === 'designer' || user.role === 'admin') && (
-                <Button 
-                  size="small"
-                  color={isActive('/kse') ? 'secondary' : 'inherit'} 
-                  component={Link} 
-                  to="/kse"
-                  startIcon={<EditIcon />}
-                  aria-label="Scenario editor"
-                >
-                  Editor
                 </Button>
               )}
               {(user.role === 'designer' || user.role === 'admin') && (
@@ -185,7 +172,7 @@ export default function App({ themeMode, onToggleTheme }) {
           <input name="Name" value="" aria-label="Name" style={{ display:'none' }} readOnly />
           <Suspense fallback={<Box sx={{ display:'flex', justifyContent:'center', mt:6 }}><CircularProgress /></Box>}>
           <Routes>
-          <Route path="/" element={<Navigate to={user ? (user.role === 'admin' ? '/admin' : user.role === 'trainer' ? '/trainer' : user.role === 'designer' ? '/kse' : '/home') : '/login'} />} />
+          <Route path="/" element={<Navigate to={user ? (user.role === 'admin' ? '/admin' : user.role === 'trainer' ? '/trainer' : user.role === 'designer' ? '/designer/scenarios' : '/home') : '/login'} />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route element={<ProtectedRoute roles={["admin"]} /> }>

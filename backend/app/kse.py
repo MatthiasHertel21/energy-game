@@ -198,6 +198,111 @@ class CampaignItem(Resource):
         return {"status": "ok"}
 
 
+@ns.route("/campaigns/<int:cid>/scenarios")
+class CampaignScenarios(Resource):
+    @jwt_required()
+    @role_required("designer", "admin")
+    def get(self, cid: int):
+        """List all scenarios assigned to this campaign with their order and flags"""
+        Campaign.query.get_or_404(cid)  # verify campaign exists
+        mappings = (
+            db.session.query(CampaignScenario, Scenario)
+            .join(Scenario, Scenario.id == CampaignScenario.scenario_id)
+            .filter(CampaignScenario.campaign_id == cid)
+            .order_by(CampaignScenario.order_index.asc())
+            .all()
+        )
+        return [
+            {
+                "scenario_id": s.id,
+                "name": s.name,
+                "order_index": cs.order_index,
+                "solo_enabled": cs.solo_enabled,
+                "cohort_enabled": cs.cohort_enabled,
+            }
+            for cs, s in mappings
+        ], HTTPStatus.OK
+
+    @jwt_required()
+    @role_required("designer", "admin")
+    def post(self, cid: int):
+        """Assign scenario to campaign with order and flags"""
+        Campaign.query.get_or_404(cid)
+        data = request.json
+        scenario_id = data.get("scenario_id")
+        if not scenario_id:
+            return {"error": "scenario_id required"}, HTTPStatus.BAD_REQUEST
+        
+        # Check if scenario exists
+        Scenario.query.get_or_404(scenario_id)
+        
+        # Check if already assigned
+        existing = CampaignScenario.query.filter_by(
+            campaign_id=cid, scenario_id=scenario_id
+        ).first()
+        if existing:
+            return {"error": "Scenario already assigned to this campaign"}, HTTPStatus.CONFLICT
+        
+        cs = CampaignScenario(
+            campaign_id=cid,
+            scenario_id=scenario_id,
+            order_index=data.get("order_index", 0),
+            solo_enabled=data.get("solo_enabled", True),
+            cohort_enabled=data.get("cohort_enabled", True),
+        )
+        db.session.add(cs)
+        db.session.commit()
+        return {"status": "ok", "id": cs.id}, HTTPStatus.CREATED
+
+    @jwt_required()
+    @role_required("designer", "admin")
+    def put(self, cid: int):
+        """Update order and flags for all campaign scenarios (bulk reorder)"""
+        Campaign.query.get_or_404(cid)
+        data = request.json
+        scenarios = data.get("scenarios", [])
+        
+        if not isinstance(scenarios, list):
+            return {"error": "scenarios must be a list"}, HTTPStatus.BAD_REQUEST
+        
+        for item in scenarios:
+            scenario_id = item.get("scenario_id")
+            if not scenario_id:
+                continue
+            
+            cs = CampaignScenario.query.filter_by(
+                campaign_id=cid, scenario_id=scenario_id
+            ).first()
+            if not cs:
+                continue
+            
+            if "order_index" in item:
+                cs.order_index = int(item["order_index"])
+            if "solo_enabled" in item:
+                cs.solo_enabled = bool(item["solo_enabled"])
+            if "cohort_enabled" in item:
+                cs.cohort_enabled = bool(item["cohort_enabled"])
+            
+            db.session.add(cs)
+        
+        db.session.commit()
+        return {"status": "ok"}, HTTPStatus.OK
+
+
+@ns.route("/campaigns/<int:cid>/scenarios/<int:sid>")
+class CampaignScenarioItem(Resource):
+    @jwt_required()
+    @role_required("designer", "admin")
+    def delete(self, cid: int, sid: int):
+        """Remove scenario from campaign"""
+        cs = CampaignScenario.query.filter_by(
+            campaign_id=cid, scenario_id=sid
+        ).first_or_404()
+        db.session.delete(cs)
+        db.session.commit()
+        return {"status": "ok"}, HTTPStatus.OK
+
+
 @ns.route("/scenarios")
 class Scenarios(Resource):
     @jwt_required()

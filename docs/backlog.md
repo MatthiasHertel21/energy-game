@@ -70,7 +70,16 @@ Status (2025-11-11): 5, 6, 7, 8 completed. PT1–PT3 (Player Types) completed in
 - Target files: `frontend/src/pages/AdminUsers.jsx`
 - Acceptance: Admin can quickly find/update roles; table scales toward 1k users.
 
-9) Campaigns & Catalog – Player selection and Solo Sessions (NEW)
+### P1 – Catalog & Campaigns (UC-1, UC-9, UC-10) — ✅ Completed (Sprint 9-10, 2025-11-13)
+
+9) Campaigns & Catalog – Player selection and Solo Sessions — ✅ Done
+- Problem: Spieler können keine Kampagnen/Scenarios bibliotheksartig entdecken/starten; Solo‑Sessions fehlen.
+- Status: ✅ Fully implemented
+  - Backend: Catalog API, Solo Sessions API, Player Progress tracking
+  - Frontend: Catalog.jsx, CampaignDetail.jsx with "Play Solo" button
+  - Features: Published campaigns, progress tracking, solo/cohort mode selection
+
+10) Campaign Management – n:m Zuordnung, Reihenfolge, Bild, Publish — ✅ Done
 - Problem: Spieler können keine Kampagnen/Scenarios bibliotheksartig entdecken/starten; Solo‑Sessions fehlen.
 - Scope:
 	- Backend
@@ -86,78 +95,80 @@ Status (2025-11-11): 5, 6, 7, 8 completed. PT1–PT3 (Player Types) completed in
 		- Wenn mehrere Trainer‑Sessions desselben Szenarios laufen, Auswahl nach Cohort (Dialog/Select).
 		- Fortschritt pro Spieler wird aktualisiert (in_progress nach Start, completed nach Abschluss einer Session des Szenarios).
 
-10) Campaign Management – n:m Zuordnung, Reihenfolge, Bild, Publish (NEW)
+10) Campaign Management – n:m Zuordnung, Reihenfolge, Bild, Publish — ✅ Done
 - Problem: Designer können keine Kampagnen verwalten (Bild/Publish), Szenarien mehrfach zuordnen, Reihenfolge/Spielbarkeit steuern.
-- Scope:
-	- Backend (Model/Migration)
-		- Extend `campaigns`: add `cover_image_url` (string, nullable), `published` (bool, default false), optional `tags` (json/text, optional).
-		- New join table `campaign_scenarios` (id, campaign_id, scenario_id, order_index int, solo_enabled bool default true, cohort_enabled bool default true, UNIQUE(campaign_id, scenario_id)).
-	- Backend (API)
-		- POST `/api/kse/campaigns/:id/image` (multipart) → upload square ≤640×640, store under `/uploads/campaigns/{id}.png`, update `cover_image_url`.
-		- GET/POST/PUT `/api/kse/campaigns/:id/scenarios` → list/assign/reorder scenarios with flags `solo_enabled`, `cohort_enabled`, `order_index`.
-		- PATCH `/api/kse/campaigns/:id` → update `name`, `description`, `published` (toggle publish/unpublish).
-	- Frontend (Designer)
-		- New page: `DesignerCampaigns.jsx` – list campaigns, create/edit (name, description, publish toggle), upload cover image, manage scenario assignments (multi‑select + drag&drop reorder + per‑scenario flags toggles).
-	- Acceptance
-		- Designer kann Kampagne anlegen, Bild hochladen (validiert, ggf. auto‑resize/crop), Szenarien zuordnen und Reihenfolge/Flags setzen.
-		- Szenario kann in mehreren Kampagnen vorkommen (n:m). Reihenfolge je Kampagne wird in der Player‑Ansicht eingehalten.
-		- Publish/Unpublish steuert Sichtbarkeit in Catalog (Player sieht alle published Kampagnen).
+- Status: ✅ Fully implemented
+  - Backend: Campaign-Scenario n:m table, image upload API, publish toggle
+  - Frontend: DesignerCampaigns.jsx with drag-drop reorder, cover upload, flags
+  - Features: Multi-campaign scenarios, custom ordering, solo/cohort flags per scenario
 
-11) Uploads & Static Serving (Support) (NEW)
-- Scope:
-	- Backend: `/uploads` static; validate image (PNG/JPG, max 640×640, max 512KB), store as PNG; ENV `UPLOAD_DIR` (default /app/uploads).
-	- Docker: Mount volume for uploads; Traefik route `/uploads` → backend.
-	- Acceptance: Cover‑Images werden performant und sicher ausgeliefert; invalid files/oversized werden abgelehnt.
+11) Uploads & Static Serving (Support) — ✅ Done
+- Scope: Backend `/uploads` static route, image validation, Docker volume mount, Traefik routing
+- Status: ✅ Implemented and deployed
+- Acceptance: Cover images served via `/uploads/campaigns/`, validation enforced (PNG/JPG, max 640×640, 512KB)
 
-	12) Events‑Editor – Tabelle + Drawer (NEW)
+18) Trainer – Cohort×Campaign Visibility/Activation (Model+API+UI) — ✅ Done
 	- Problem: Event‑Parameter überladen im Inline‑Form; schlechte Übersicht.
 	- Action: Liste (Name, Typ, Trigger, Dauer, Ziel, Wirkung) mit Aktionen Edit/Delete/Duplicate; Edit in rechtem Drawer/Modal mit Tabs (Basics | Trigger | Target | Effect); Presets (7 Default‑Events) + Suche/Filter.
 	- Target files: `frontend/src/pages/KSE.jsx` (Refactor), evtl. `frontend/src/components/events/*` (neu).
 	- Acceptance: Erstellen/Bearbeiten ohne Überlänge; Duplikat in ≤2 Klicks; Presets wählbar; klare Spaltenübersicht.
 
-	13) Devices‑Editor – Karten + Expand (NEW)
+	13) Devices‑Editor – Karten + Expand — ✅ Done (Sprint 11 Extension)
 	- Problem: Parametrisierung aller Devices als lange Liste; geringe Erfassbarkeit.
-	- Action: Kartenliste je Device‑Typ (Icon, Kurzinfo, Kapazität/Kosten); Expand zeigt Parameter‑Gruppen; Schnell‑Add Presets (Coal/Gas/Hydro/Nuclear/Solar/Wind/Battery/Loads) mit Default‑Werten.
-	- Target files: `frontend/src/pages/KSE.jsx` → `frontend/src/components/devices/*` (neu).
-	- Acceptance: Max 1 Expanded Card, Add in ≤2 Klicks, Validierungsstatus pro Karte sichtbar (Error‑Badge).
+	- Status: ✅ Implemented
+		- Component: `frontend/src/components/devices/DeviceCard.jsx` (NEW)
+		- Presets: `frontend/src/components/devices/devicePresets.js` (NEW)
+		- Features: Expandable cards with type-specific icons, Duplicate/Delete, preset menu
+		- Integration: KSE Player Types tab uses DeviceCard, max 1 expanded
+	- Acceptance: ✅ Max 1 Expanded Card, Add in ≤2 Klicks, Validierungsstatus pro Karte sichtbar (Error‑Badge).
 
-	14) ATC‑Matrix – Vollbild‑Modal + CSV (NEW)
+	14) ATC‑Matrix – Vollbild‑Modal + CSV — ✅ Done (Sprint 11)
 	- Problem: Matrix Editing ist eng; Symmetrie kopieren fehleranfällig.
-	- Action: Vollbild‑Modal mit fixierter Kopf-/Seitenspalte; Symmetry‑Lock; CSV Import/Export; Validierung inline.
-	- Target files: `frontend/src/pages/KSE.jsx` → `frontend/src/components/grid/AtcEditor.jsx` (neu).
-	- Acceptance: Editieren ohne horizontalen Scroll; Symmetrie garantiert; CSV Import/Export in ≤3 Klicks.
+	- Status: ✅ Implemented
+		- Component: `frontend/src/components/grid/AtcEditor.jsx` (NEW)
+		- Features: Fullscreen dialog, sticky headers, symmetry lock, CSV import/export
+		- Integration: KSE.jsx Grid tab has "Edit Matrix" button
+	- Acceptance: ✅ Editieren ohne horizontalen Scroll; Symmetrie garantiert; CSV Import/Export in ≤3 Klicks.
 
-	15) Feldarten vereinheitlichen + Mikrocopy straffen + Empty States (NEW)
+	15) Feldarten vereinheitlichen + Mikrocopy straffen + Empty States — ✅ Extended (Sprint 11)
 	- Problem: Uneinheitliche Eingaben (freie Zahl vs. Range); zu lange Tooltips; leere Bereiche ohne Guidance.
-	- Action: Number mit Stepper (sinnvolle Steps); Ranges mit Slider + Input; Einheiten als Adornments (%/MW/ZAR); Tooltips ≤140 Zeichen, 1‑Zeiler bleibt über Feld; EmptyState & Skeletons überall konsistent.
-	- Target files: `frontend/src/components/*` (Wrapper), `frontend/src/pages/*` (Verwendung), `InfoLabel.jsx` (Copy).
-	- Acceptance: Keine Freitexte für Range‑Felder; alle Einheiten sichtbar; leere Zustände mit Aktion; Loading via Skeleton.
+	- Status: ✅ NumberInput and RangeInput extended to Market tab
+		- Components: `frontend/src/components/inputs/NumberInput.jsx`, `RangeInput.jsx`
+		- Integration: General tab (horizon, forecast, rounds), Market tab (base_price, base_volume, floor, cap), Player Types tab (all device parameters)
+		- Remaining: Environment tab numeric fields, tooltip review, EmptyStates audit
+	- Acceptance: Partial - Number fields have steppers and units across 3 tabs; Range sliders for percentages; tooltips and EmptyStates need full review.
 
-	16) Designer – Scenarios Index (Liste, Suche, Edit‑DeepLink) (NEW)
+	16) Designer – Scenarios Index (Liste, Suche, Edit‑DeepLink) — ✅ Done (Sprint 11)
 	- Problem: Designer hat keine zentrale Liste zur Auswahl/Bearbeitung bestehender Szenarien.
-	- Action: Neue Seite `DesignerScenarios.jsx` mit Tabelle/Kacheln (Name, Kampagne, erstellt am), Suche/Sort/Pagination, Aktionen: Edit (öffnet KSE mit ?id=…), Duplicate, Export.
-	- API: GET `/api/kse/scenarios` (bestehend), optional Query/Filter (später).
-	- Acceptance: Edit öffnet bestehendes Szenario; UI performant bei 100+ Szenarien.
+	- Status: ✅ Enhanced from existing page
+		- File: `frontend/src/pages/DesignerScenarios.jsx` (enhanced)
+		- Features: Table view, search, pagination, Edit/Duplicate/Export/Delete actions
+		- Navigation: Already at `/designer/scenarios`
+	- Acceptance: ✅ Edit öffnet bestehendes Szenario; UI performant bei 100+ Szenarien.
 
-	17) Designer – Scenario Delete (UI) (NEW)
+	17) Designer – Scenario Delete (UI) — ✅ Done (Sprint 11)
 	- Problem: Globales Löschen existiert nur via API, nicht in der UI.
-	- Action: Delete‑Aktion mit Confirm‑Dialog; Fehler‑Handling; Snackbar.
-	- API: DELETE `/api/kse/scenarios/:id` (bestehend).
-	- Acceptance: Szenario verschwindet aus Liste; nicht mehr abrufbar.
+	- Status: ✅ Implemented in DesignerScenarios.jsx
+		- Features: Delete IconButton with Material-UI confirmation dialog
+		- Error handling: Shows backend errors (e.g., "in use by campaigns")
+		- Toast feedback: Success/error snackbar after deletion
+	- Acceptance: ✅ Szenario verschwindet aus Liste; nicht mehr abrufbar.
 
-	18) Trainer – Cohort×Campaign Visibility/Activation (Model+API+UI) (NEW)
+	18) Trainer – Cohort×Campaign Visibility/Activation — ✅ Done (Sprint 10)
 	- Problem: Trainer kann nicht steuern, welche Kampagnen pro Cohort sichtbar/aktiv sind.
-	- Action:
-		- DB: Tabelle `cohort_campaigns` (cohort_id, campaign_id, visible bool, active bool, UNIQUE).
-		- API: GET `/api/cohorts/:id/campaigns`, PATCH `/api/cohorts/:id/campaigns/:cid` { visible?, active? }.
-		- UI: In `Cohorts.jsx` Detail ein Tab „Campaigns“ mit Toggle Visible/Active je Kampagne.
-	- Acceptance: Player aus Cohort sehen nur visible Kampagnen; Start ist nur aus active Kampagnen möglich.
+	- Status: ✅ Implemented
+		- DB: Tabelle `cohort_campaigns` (cohort_id, campaign_id, visible, active)
+		- API: GET/PATCH `/api/cohorts/:id/campaigns/:cid`
+		- UI: Cohorts.jsx with Campaigns table and Visible/Active toggles
+	- Acceptance: ✅ Player see only visible campaigns; Start only from active campaigns
 
-	19) Trainer – Start from Campaign (Cohort Context) (NEW)
+	19) Trainer – Start from Campaign (Cohort Context) — ✅ Done (Sprint 10)
 	- Problem: Start einer Session ist nicht an Kampagnenkontext gekoppelt.
-	- Action: Aus dem Cohort‑Campaigns Tab Drill‑down in Kampagne → Szenarienliste; Button „Open“ startet Session (Form: mode, Timer optional) und navigiert zum Trainer‑Dashboard.
-	- API: POST `/api/sessions` (bestehend); Validierung: nur active Kampagnen.
-	- Acceptance: Start in ≤2 Klicks aus Kampagnenkontext; Direktlink zum laufenden Dashboard.
+	- Status: ✅ Implemented in Cohorts.jsx
+		- Drill-down from Campaigns tab to scenario list
+		- "Open" button starts session with mode selection
+		- Direct navigation to Trainer dashboard
+	- Acceptance: ✅ Start in ≤2 clicks from campaign context
 
 	20) KSE – Fiktives Datum & Startuhrzeit je Szenario (NEW)
 	- Problem: Szenarien haben keine kontextuelle Tages-/Zeitangabe; Briefings/Charts sind weniger anschaulich.
@@ -295,3 +306,86 @@ PT3) Player: Pre-Session Type Selection
 13) Performance / Load (Locust)
 - Action: 80 Spieler (Websocket + Forecast‑POST), p95 < 2s; kleine Backend‑Optimierungen falls nötig.
 - Acceptance: Report dokumentiert, Schwellen eingehalten.
+
+---
+
+## P2 — Medium Priority (Sprint 11+ focus)
+
+### P2 – Cohort Management & Activity Tracking (UC-11, UC-12, UC-13, UC-14, UC-15)
+
+22) Trainer – Cohort bearbeiten und löschen (UC-11)
+- Problem: Keine Möglichkeit, Cohort-Namen zu ändern, einzelne Mitglieder zu entfernen oder Cohort zu löschen.
+- Action:
+  - Backend:
+    - PATCH `/api/cohorts/:id` { name? } → Update Cohort-Name
+    - DELETE `/api/cohorts/:id/players/:user_id` → Mitgliedschaft entfernen
+    - DELETE `/api/cohorts/:id` → Cohort löschen (cascading delete auf CohortMember, CohortCampaign; Sessions bleiben)
+  - Frontend: `Cohorts.jsx` → Edit/Delete Buttons, Confirm-Dialog, Member-Remove-Button in Liste
+- Acceptance:
+  - Trainer kann Cohort umbenennen; Änderung sofort sichtbar.
+  - Einzelne Spieler können entfernt werden.
+  - Cohort kann gelöscht werden; Sessions bleiben für History erhalten.
+
+23) Trainer – Zeitliche Übersicht zu Schüleraktivitäten (UC-12)
+- Problem: Keine Einsicht, wann Spieler sich eingeloggt haben, Forecasts abgegeben, Runden abgeschlossen haben.
+- Action:
+  - Backend:
+    - Neue Tabelle `activity_log(id, user_id, session_id, cohort_id, action_type, timestamp, details jsonb)`
+    - Actions: login, forecast_submit, round_complete, session_join, type_select
+    - GET `/api/cohorts/:id/activity?from=...&to=...&user_id=...&action_type=...` → Timeline
+    - GET `/api/sessions/:id/activity` → Timeline für Session
+    - CSV Export: GET `/api/cohorts/:id/activity?format=csv`
+  - Frontend: `Cohorts.jsx` → neuer Tab „Activity", `Trainer.jsx` → Activity Panel
+    - Chronologische Liste mit Filter (Spieler, Zeitraum, Aktionstyp)
+    - Export-Button
+- Acceptance:
+  - Trainer sieht zeitlich geordnete Aktivitäten.
+  - Filter funktioniert; CSV-Export erzeugt lesbare Datei.
+  - Performance: Pagination/Infinite Scroll bei >1000 Events.
+
+24) Admin – Gesamtübersicht zur Benutzeraktivität (UC-13)
+- Problem: Keine systemweite Sicht auf Benutzeraktivität (Registrierungen, Logins, Sessions, Forecasts).
+- Action:
+  - Backend:
+    - GET `/api/admin/activity/summary?period=7d|30d` → KPIs (registered users, active users, sessions started, avg forecasts)
+    - GET `/api/admin/activity/timeseries?metric=logins|sessions|registrations&period=30d` → Chart-Daten
+    - GET `/api/admin/activity/recent?limit=50` → Letzte Aktionen systemweit
+    - Nutzt `activity_log` (UC-12) + `users.created_at`, `sessions.started_at`
+  - Frontend: `AdminUsers.jsx` → neuer Tab „Activity Dashboard"
+    - KPI-Cards (Total Users, Active 7d/30d, Sessions Started, Avg Forecasts)
+    - Charts: Registrierungen/Logins/Sessions über Zeit (recharts/d3)
+    - Recent Activity Liste
+- Acceptance:
+  - Admin sieht KPIs und Charts auf einen Blick.
+  - Zeitreihen laden performant (max 2s bei 10k Events).
+  - Datenschutz: Optional anonymisierte Ansicht.
+
+25) Trainer – Session-Teilnehmer und Spielertypen live sehen (UC-14)
+- Problem: Keine dedizierte Ansicht „Wer hat sich angemeldet, wer fehlt noch, welche Typen wurden gewählt?".
+- Action:
+  - Backend:
+    - GET `/api/sessions/:id/participants` → Liste { user_id, email, name, status: "joined"|"pending", selected_type?, joined_at? }
+    - „joined" = hat Typ gewählt und Briefing abgerufen; „pending" = Mitglied, aber noch nicht aktiv
+    - Nutzt `CohortMember`, `SessionPlayerType` (oder Redis)
+  - Frontend: `Trainer.jsx` → neues Panel „Participants" (Sticky oder Collapsible Sidebar)
+    - Liste: Spieler, Status, Typ, Timestamp
+    - Zusammenfassung: X von Y angemeldet; Verteilung nach Typ (optional: Pie Chart)
+    - Auto-Refresh via Websocket oder Polling (5s)
+- Acceptance:
+  - Trainer sieht Echtzeit-Updates bei Teilnehmer-Join.
+  - Fehlende Spieler erkennbar; Verteilung nach Typ visualisiert.
+
+26) Player – Angefangene oder beendete Sessions löschen (UC-15)
+- Problem: Spieler können Solo-Sessions nicht aus der Liste entfernen; Unübersichtlichkeit.
+- Action:
+  - Backend:
+    - DELETE `/api/player/sessions/:id` → Löscht Session (oder Soft-Delete mit `deleted_at`)
+    - Validation: Nur `mode=isolated_per_player` UND `user_id == current_user`; verhindert Löschen von Cohort-Sessions
+    - Optional: Cascading delete auf Forecasts/Results oder Archivierung
+  - Frontend: `Home.jsx` → „My Sessions" Tab mit Delete-Button (nur für Solo-Sessions)
+    - Confirm-Dialog: „Delete this session? Your forecasts and results will be permanently removed."
+- Acceptance:
+  - Spieler kann nur eigene Solo-Sessions löschen; Cohort-Sessions zeigen keinen Delete-Button.
+  - Bestätigungsdialog verhindert versehentliches Löschen.
+  - Nach Löschung: Session nicht mehr in `/api/me/sessions`.
+

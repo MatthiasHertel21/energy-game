@@ -1,7 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem } from '@mui/material'
+import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu } from '@mui/material'
+import { Edit as EditIcon, Add as AddIcon } from '@mui/icons-material'
 import InfoLabel from '../components/InfoLabel'
+import NumberInput from '../components/inputs/NumberInput'
+import RangeInput from '../components/inputs/RangeInput'
+import AtcEditor from '../components/grid/AtcEditor'
+import DeviceCard from '../components/devices/DeviceCard'
+import { createDeviceFromPreset, duplicateDevice, DEVICE_PRESETS } from '../components/devices/devicePresets'
 import api from '../services/api'
 import * as d3 from 'd3'
 
@@ -58,6 +64,9 @@ export default function KSE(){
   const [zoneSplit, setZoneSplit] = useState(50)
   const [envGen, setEnvGen] = useState(null)
   const [deviceTypes, setDeviceTypes] = useState([])
+  const [atcEditorOpen, setAtcEditorOpen] = useState(false)
+  const [expandedDevice, setExpandedDevice] = useState(null)
+  const [presetMenu, setPresetMenu] = useState(null)
 
   useEffect(()=>{
     // Load device types on mount
@@ -241,7 +250,6 @@ export default function KSE(){
           <Tab label="Grid"/>
           <Tab label="Environment"/>
           <Tab label="Events"/>
-          <Tab label="Devices"/>
           <Tab label="Player Types"/>
           <Tab label="Scoring"/>
           <Tab label="Preview"/>
@@ -254,7 +262,14 @@ export default function KSE(){
                   title="Total simulated hours"
                   tooltip="Typical 24h. Must be consistent with Round span and Rounds (horizon = rounds × round span)."
                 />
-                <TextField type="number" label="Scenario Horizon (h)" value={cfg.general.horizon_hours} onChange={e=>update(['general','horizon_hours'], Number(e.target.value))}
+                <NumberInput 
+                  label="Scenario Horizon (h)" 
+                  value={cfg.general.horizon_hours} 
+                  onChange={(val)=>update(['general','horizon_hours'], val)}
+                  min={1}
+                  max={168}
+                  step={1}
+                  unit="h"
                   error={cfg.general.horizon_hours<=0}
                   helperText={cfg.general.horizon_hours<=0 ? 'Must be > 0' : ''}
                 />
@@ -264,7 +279,14 @@ export default function KSE(){
                   title="Hours players can forecast"
                   tooltip="Must be ≥ Scenario Horizon. Controls number of forecast inputs in Player UI and validation in sessions."
                 />
-                <TextField type="number" label="Forecast Horizon (h)" value={cfg.general.forecast_horizon_hours} onChange={e=>update(['general','forecast_horizon_hours'], Number(e.target.value))}
+                <NumberInput
+                  label="Forecast Horizon (h)" 
+                  value={cfg.general.forecast_horizon_hours} 
+                  onChange={(val)=>update(['general','forecast_horizon_hours'], val)}
+                  min={1}
+                  max={168}
+                  step={1}
+                  unit="h"
                   error={!(cfg.general.forecast_horizon_hours>0) || (cfg.general.forecast_horizon_hours < cfg.general.horizon_hours)}
                   helperText={!(cfg.general.forecast_horizon_hours>0) ? 'Must be > 0' : (cfg.general.forecast_horizon_hours < cfg.general.horizon_hours ? 'Must be ≥ Scenario Horizon' : '')}
                 />
@@ -274,7 +296,14 @@ export default function KSE(){
                   title="Hours per round"
                   tooltip="Simulated hours per round. Constraint: horizon ÷ round span must equal rounds (integer)."
                 />
-                <TextField type="number" label="Round span (h)" value={cfg.general.round_span_hours} onChange={e=>update(['general','round_span_hours'], Number(e.target.value))}
+                <NumberInput
+                  label="Round span (h)" 
+                  value={cfg.general.round_span_hours} 
+                  onChange={(val)=>update(['general','round_span_hours'], val)}
+                  min={1}
+                  max={24}
+                  step={1}
+                  unit="h"
                   error={!(cfg.general.round_span_hours>0) || (Math.floor(cfg.general.horizon_hours / (cfg.general.round_span_hours||1)) !== cfg.general.rounds)}
                   helperText={!(cfg.general.round_span_hours>0) ? 'Must be > 0' : (Math.floor(cfg.general.horizon_hours / (cfg.general.round_span_hours||1)) !== cfg.general.rounds ? 'horizon ÷ span must equal rounds' : '')}
                 />
@@ -284,7 +313,13 @@ export default function KSE(){
                   title="Number of rounds"
                   tooltip="Total rounds in the scenario. Must satisfy: rounds = horizon ÷ round span."
                 />
-                <TextField type="number" label="Rounds" value={cfg.general.rounds} onChange={e=>update(['general','rounds'], Number(e.target.value))}
+                <NumberInput
+                  label="Rounds" 
+                  value={cfg.general.rounds} 
+                  onChange={(val)=>update(['general','rounds'], val)}
+                  min={1}
+                  max={48}
+                  step={1}
                   error={Math.floor(cfg.general.horizon_hours / (cfg.general.round_span_hours||1)) !== cfg.general.rounds}
                   helperText={Math.floor(cfg.general.horizon_hours / (cfg.general.round_span_hours||1)) !== cfg.general.rounds ? 'Must satisfy: horizon ÷ span' : ''}
                 />
@@ -299,28 +334,60 @@ export default function KSE(){
                   title="Baseline price level (ZAR/MWh)"
                   tooltip="Center price used for sample supply/demand curves and previews. Influences MCP preview only."
                 />
-                <TextField type="number" label="Base Price" value={cfg.market.base_price} onChange={e=>update(['market','base_price'], Number(e.target.value))}/>
+                <NumberInput
+                  label="Base Price"
+                  value={cfg.market.base_price}
+                  onChange={(val)=>update(['market','base_price'], val)}
+                  min={0}
+                  max={10000}
+                  step={100}
+                  unit="ZAR/MWh"
+                />
               </Stack>
               <Stack spacing={0.5} sx={{ minWidth: 220 }}>
                 <InfoLabel
                   title="Baseline traded volume (MWh)"
                   tooltip="Scales the preview supply/demand curves and initial market environment."
                 />
-                <TextField type="number" label="Base Volume (MWh)" value={cfg.market.base_volume_mwh} onChange={e=>update(['market','base_volume_mwh'], Number(e.target.value))}/>
+                <NumberInput
+                  label="Base Volume"
+                  value={cfg.market.base_volume_mwh}
+                  onChange={(val)=>update(['market','base_volume_mwh'], val)}
+                  min={1000}
+                  max={100000}
+                  step={1000}
+                  unit="MWh"
+                />
               </Stack>
               <Stack spacing={0.5} sx={{ minWidth: 220 }}>
                 <InfoLabel
                   title="Minimum allowed market price"
                   tooltip="Price floor in ZAR/MWh (e.g., -500). MCP is clamped to [floor, cap]. Negative prices allowed."
                 />
-                <TextField type="number" label="Floor" value={cfg.market.price_floor} onChange={e=>update(['market','price_floor'], Number(e.target.value))}/>
+                <NumberInput
+                  label="Floor"
+                  value={cfg.market.price_floor}
+                  onChange={(val)=>update(['market','price_floor'], val)}
+                  min={-1000}
+                  max={5000}
+                  step={100}
+                  unit="ZAR/MWh"
+                />
               </Stack>
               <Stack spacing={0.5} sx={{ minWidth: 220 }}>
                 <InfoLabel
                   title="Maximum allowed market price"
                   tooltip="Price cap in ZAR/MWh (e.g., +5000). MCP is clamped to [floor, cap]."
                 />
-                <TextField type="number" label="Cap" value={cfg.market.price_cap} onChange={e=>update(['market','price_cap'], Number(e.target.value))}/>
+                <NumberInput
+                  label="Cap"
+                  value={cfg.market.price_cap}
+                  onChange={(val)=>update(['market','price_cap'], val)}
+                  min={1000}
+                  max={20000}
+                  step={500}
+                  unit="ZAR/MWh"
+                />
               </Stack>
             </Stack>
           )}
@@ -341,30 +408,28 @@ export default function KSE(){
               />
               </Stack>
               <Box>
-                <Stack spacing={0.5} sx={{ mb:1 }}>
-                  <InfoLabel
-                    title="Available Transfer Capacity between zones (MW)"
-                    tooltip={"Symmetric off-diagonals; diagonal is 0 MW. Limits power flow per direction between zones. Engine applies 2% transmission losses and enforces ATC when clearing with congestion."}
-                  />
-                  <Typography variant="subtitle2">ATC Matrix (MW)</Typography>
+                <Stack direction="row" spacing={2} alignItems="center" sx={{ mb:1 }}>
+                  <Box sx={{ flex: 1 }}>
+                    <InfoLabel
+                      title="Available Transfer Capacity between zones (MW)"
+                      tooltip={"Symmetric off-diagonals; diagonal is 0 MW. Limits power flow per direction between zones. Engine applies 2% transmission losses and enforces ATC when clearing with congestion."}
+                    />
+                    <Typography variant="subtitle2">ATC Matrix (MW)</Typography>
+                  </Box>
+                  <Button
+                    variant="outlined"
+                    startIcon={<EditIcon />}
+                    onClick={() => setAtcEditorOpen(true)}
+                    disabled={cfg.grid.zones < 1}
+                  >
+                    Edit Matrix
+                  </Button>
                 </Stack>
-                <Box sx={{ display:'grid', gridTemplateColumns: `repeat(${cfg.grid.zones}, 100px)`, gap: 1 }}>
-                  {Array.from({length: cfg.grid.zones}, (_,i)=> (
-                    Array.from({length: cfg.grid.zones}, (_,j)=> (
-                      <TextField key={`${i}-${j}`} size="small" type="number" value={cfg.grid.atc?.[i]?.[j] ?? 0}
-                        onChange={e=>{
-                          const v = Number(e.target.value)
-                          setCfg(prev=>{
-                            const next = structuredClone(prev)
-                            next.grid.atc[i][j] = i===j ? 0 : v
-                            next.grid.atc[j][i] = i===j ? 0 : v
-                            return next
-                          })
-                        }}
-                        inputProps={{ readOnly: i===j }}/>
-                    ))
-                  ))}
-                </Box>
+                <Paper variant="outlined" sx={{ p: 2, bgcolor: 'action.hover' }}>
+                  <Typography variant="body2" color="text.secondary">
+                    {cfg.grid.zones} zone(s) configured. Click "Edit Matrix" to modify ATC values in fullscreen editor with CSV import/export.
+                  </Typography>
+                </Paper>
               </Box>
             </Stack>
           )}
@@ -471,98 +536,6 @@ export default function KSE(){
             <Stack spacing={2}>
               <Stack spacing={0.5}>
                 <InfoLabel
-                  title="Devices for this scenario"
-                  tooltip="Define devices (generators, storage, loads) with technical parameters. Devices influence costs, curtailment priority, and constraints (min load, ramp rate)."
-                />
-                <Typography variant="subtitle2">Devices</Typography>
-              </Stack>
-              {(cfg.devices||[]).map((dev,idx)=> {
-                const devType = deviceTypes.find(dt=> dt.type===dev.type)
-                const required = devType?.required_params || []
-                const optional = devType?.optional_params || []
-                const allParams = [...required, ...optional]
-                return (
-                  <Paper key={idx} sx={{ p:1.5, border:'1px solid #ddd' }}>
-                    <Stack spacing={1.5}>
-                      <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
-                        <TextField
-                          select
-                          size="small"
-                          label="Type"
-                          value={dev.type||''}
-                          onChange={e=>{
-                            const newType = e.target.value
-                            const newDef = deviceTypes.find(dt=> dt.type===newType)?.defaults || {}
-                            setCfg(prev=>{
-                              const n = structuredClone(prev)
-                              n.devices[idx] = { ...newDef, type: newType, id: dev.id || `device_${idx}` }
-                              return n
-                            })
-                          }}
-                          sx={{ minWidth: 180 }}
-                          SelectProps={{ native: true }}
-                        >
-                          <option value="">-- Select Type --</option>
-                          {deviceTypes.map(dt=> <option key={dt.type} value={dt.type}>{dt.name}</option>)}
-                        </TextField>
-                        <TextField
-                          size="small"
-                          label="ID"
-                          value={dev.id||''}
-                          onChange={e=>{
-                            const v = e.target.value
-                            setCfg(prev=>{ const n = structuredClone(prev); n.devices[idx].id = v; return n })
-                          }}
-                          sx={{ minWidth: 140 }}
-                        />
-                        {devType && <Typography variant="caption" color="text.secondary" sx={{ fontStyle:'italic' }}>{devType.description}</Typography>}
-                        <Button size="small" color="error" onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.devices.splice(idx,1); return n })}>Remove</Button>
-                      </Stack>
-                      {dev.type && allParams.length>0 && (
-                        <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
-                          {allParams.map(param=> {
-                            const isRequired = required.includes(param)
-                            const defVal = devType?.defaults?.[param]
-                            return (
-                              <Stack key={param} spacing={0.5} sx={{ minWidth: 160 }}>
-                                <InfoLabel
-                                  title={`${param}${isRequired?' *':''}`}
-                                  tooltip={`${isRequired?'Required':'Optional'} parameter. Default: ${defVal !== undefined ? defVal : 'none'}`}
-                                />
-                                <TextField
-                                  size="small"
-                                  type="number"
-                                  label={param}
-                                  value={dev[param] !== undefined ? dev[param] : ''}
-                                  onChange={e=>{
-                                    const v = e.target.value === '' ? undefined : Number(e.target.value)
-                                    setCfg(prev=>{ const n = structuredClone(prev); n.devices[idx][param] = v; return n })
-                                  }}
-                                />
-                              </Stack>
-                            )
-                          })}
-                        </Stack>
-                      )}
-                    </Stack>
-                  </Paper>
-                )
-              })}
-              <Button
-                variant="outlined"
-                onClick={()=> setCfg(prev=> ({
-                  ...prev,
-                  devices: [...(prev.devices||[]), { type: '', id: `device_${(prev.devices||[]).length}` }]
-                }))}
-              >
-                Add Device
-              </Button>
-            </Stack>
-          )}
-          {tab===6 && (
-            <Stack spacing={2}>
-              <Stack spacing={0.5}>
-                <InfoLabel
                   title="Player Types for this scenario"
                   tooltip="Define scenario-specific player archetypes. Each type references devices defined in this scenario and constrains player inputs."
                 />
@@ -588,36 +561,92 @@ export default function KSE(){
                         const v = e.target.value === '' ? undefined : Number(e.target.value)
                         setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].zone = v; return n })
                       }} sx={{ minWidth: 160 }}/>
-                      <Button size="small" color="error" onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.player_types.splice(idx,1); return n })}>Remove</Button>
+                      <Button size="small" color="error" onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.player_types.splice(idx,1); return n })}>Remove Type</Button>
                     </Stack>
-                    <Stack spacing={0.5}>
-                      <InfoLabel title="Devices" tooltip="Select one or more device IDs from this scenario. Players of this type can edit inputs only for these devices." />
-                      <TextField
-                        select
-                        SelectProps={{ native: true, multiple: true }}
-                        size="small"
-                        label="Devices"
-                        value={pt.devices||[]}
-                        onChange={e=>{
-                          const opts = Array.from(e.target.selectedOptions).map(o=> o.value)
-                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].devices = opts; return n })
-                        }}
-                        sx={{ minWidth: 320 }}
-                      >
-                        {(cfg.devices||[]).map(d=> (
-                          <option key={d.id} value={d.id}>{d.id || '(unnamed device)'}</option>
-                        ))}
-                      </TextField>
+                    
+                    {/* Devices with Card UI */}
+                    <Stack spacing={1}>
+                      <InfoLabel title="Devices of this type" tooltip="Each device belongs exactly to one player type. Click expand to edit, or use presets to add quickly." />
                       {(() => {
-                        const devIds = new Set((cfg.devices||[]).map(d=> d.id))
-                        const unknown = (pt.devices||[]).filter(x=> !devIds.has(x))
-                        if(unknown.length>0){
-                          return <Typography variant="caption" color="error">Unknown devices: {unknown.join(', ')}</Typography>
-                        }
-                        if(!pt.id || !pt.name){
-                          return <Typography variant="caption" color="warning.main">Type must have ID and Name</Typography>
-                        }
-                        return null
+                        const devMap = new Map((cfg.devices||[]).map(d=> [d.id, d]))
+                        const ids = pt.devices || []
+                        const myDevs = ids.map(id=> devMap.get(id)).filter(Boolean)
+                        
+                        return (
+                          <Stack spacing={1.5}>
+                            {myDevs.map((dev)=>{
+                              const idxDev = (cfg.devices||[]).findIndex(d=> d.id===dev.id)
+                              return (
+                                <DeviceCard
+                                  key={dev.id}
+                                  device={dev}
+                                  onChange={(updated) => {
+                                    setCfg(prev=>{ 
+                                      const n = structuredClone(prev)
+                                      n.devices[idxDev] = updated
+                                      return n 
+                                    })
+                                  }}
+                                  onDelete={() => {
+                                    setCfg(prev=>{ 
+                                      const n = structuredClone(prev)
+                                      n.devices.splice(idxDev,1)
+                                      n.player_types[idx].devices = (n.player_types[idx].devices||[]).filter(x=> x!==dev.id)
+                                      return n 
+                                    })
+                                  }}
+                                  onDuplicate={() => {
+                                    const newDev = duplicateDevice(dev)
+                                    setCfg(prev=>{
+                                      const n = structuredClone(prev)
+                                      n.devices = [...(n.devices||[]), newDev]
+                                      n.player_types[idx].devices = [...(n.player_types[idx].devices||[]), newDev.id]
+                                      return n
+                                    })
+                                  }}
+                                  expanded={expandedDevice === dev.id}
+                                  onExpandToggle={() => setExpandedDevice(expandedDevice === dev.id ? null : dev.id)}
+                                />
+                              )
+                            })}
+                            
+                            {/* Add Device with Preset Menu */}
+                            <Box>
+                              <Button 
+                                size="small" 
+                                variant="outlined" 
+                                startIcon={<AddIcon />}
+                                onClick={(e) => setPresetMenu({ anchor: e.currentTarget, playerTypeIdx: idx })}
+                              >
+                                Add Device
+                              </Button>
+                              <Menu
+                                open={Boolean(presetMenu) && presetMenu.playerTypeIdx === idx}
+                                anchorEl={presetMenu?.anchor}
+                                onClose={() => setPresetMenu(null)}
+                              >
+                                {Object.keys(DEVICE_PRESETS).map(presetName => (
+                                  <MenuItem 
+                                    key={presetName}
+                                    onClick={() => {
+                                      const newDev = createDeviceFromPreset(presetName)
+                                      setCfg(prev=>{
+                                        const n = structuredClone(prev)
+                                        n.devices = [...(n.devices||[]), newDev]
+                                        n.player_types[idx].devices = [...(n.player_types[idx].devices||[]), newDev.id]
+                                        return n
+                                      })
+                                      setPresetMenu(null)
+                                      setExpandedDevice(newDev.id)
+                                    }}
+                                  >
+                                    {presetName.toUpperCase()}
+                                  </MenuItem>
+                                ))}
+                              </Menu>
+                            </Box>
+                          </Stack>
+                        )
                       })()}
                     </Stack>
                   </Stack>
@@ -626,7 +655,7 @@ export default function KSE(){
               <Button variant="outlined" onClick={()=> setCfg(prev=> ({ ...prev, player_types: [...(prev.player_types||[]), { id:'', name:'', devices:[] }] }))}>Add Player Type</Button>
             </Stack>
           )}
-          {tab===7 && (
+          {tab===6 && (
             <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
               <Stack spacing={0.5} sx={{ minWidth: 220 }}>
                 <InfoLabel
@@ -658,7 +687,7 @@ export default function KSE(){
               </Stack>
             </Stack>
           )}
-          {tab===7 && (
+          {tab===6 && (
             <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
               <Stack spacing={0.5} sx={{ minWidth: 220 }}>
                 <InfoLabel
@@ -683,7 +712,7 @@ export default function KSE(){
               </Stack>
             </Stack>
           )}
-          {tab===8 && (
+          {tab===7 && (
             <Stack direction="row" spacing={2} alignItems="center">
               <Curves cfg={cfg} />
               <Box>
@@ -739,6 +768,26 @@ export default function KSE(){
   <TextField inputProps={{ 'data-testid': 'kse-import-json' }} fullWidth multiline minRows={4} value={importText} onChange={e=>setImportText(e.target.value)} placeholder="{ name, config: {...} }"/>
   <Button data-testid="kse-import-btn" sx={{ mt:1 }} onClick={importScenario}>Import</Button>
       </Paper>
+
+      {/* ATC Matrix Editor Modal */}
+      <AtcEditor
+        open={atcEditorOpen}
+        onClose={() => setAtcEditorOpen(false)}
+        zones={(cfg.grid?.zones && Array.from({ length: cfg.grid.zones }, (_, i) => ({ 
+          id: i + 1, 
+          name: `Zone ${i + 1}` 
+        }))) || []}
+        atcMatrix={cfg.grid?.atc || []}
+        onSave={(newMatrix) => {
+          setCfg(prev => ({
+            ...prev,
+            grid: {
+              ...prev.grid,
+              atc: newMatrix
+            }
+          }))
+        }}
+      />
     </Stack>
   )
 }
