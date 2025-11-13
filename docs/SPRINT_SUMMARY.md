@@ -1,5 +1,30 @@
 # Sprint Implementation Summary - Energy Market Simulation Game
 
+## Sprint 13 (Activity Tracking & Timeline) ✅ Deployed
+**Status:** Deployed on https://iq.2b6.de  
+**Branch:** `feature/catalog-campaigns`  
+**Details:** [SPRINT_13_SUMMARY.md](SPRINT_13_SUMMARY.md)
+
+### Delivered Features
+- ✅ **UC-23**: Activity Tracking (backend + frontend with CSV export)
+- ✅ **UC-27**: Campaign Timeline Visualization (SVG with accessibility)
+- ✅ **UC-24**: Admin Activity APIs (backend only, dashboard UI → Sprint 14)
+
+**Bundle Impact:** 408.16 kB (gzip: 132.42 kB), +0.36 kB (+0.09%)
+
+---
+
+## Sprint 12 (Campaign Catalog) ✅ Deployed
+**Status:** Deployed on https://iq.2b6.de  
+**Branch:** `feature/catalog-campaigns`  
+**Details:** [SPRINT_12_SUMMARY.md](SPRINT_12_SUMMARY.md)
+
+### Hotfixes (post-Sprint 12)
+1. **Login 405 Error** (Commit 4223ef8): Fixed duplicate brace syntax error
+2. **Cohort Delete FK Violation** (Commit 08a164a): Orphan sessions instead of CASCADE
+
+---
+
 ## Completed: All Sprint 5-8 Tasks
 
 ### Sprint 5 (P0 - Critical UX) ✅ 100% Complete
