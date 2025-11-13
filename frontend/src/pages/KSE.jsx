@@ -8,6 +8,8 @@ import RangeInput from '../components/inputs/RangeInput'
 import AtcEditor from '../components/grid/AtcEditor'
 import DeviceCard from '../components/devices/DeviceCard'
 import { createDeviceFromPreset, duplicateDevice, DEVICE_PRESETS } from '../components/devices/devicePresets'
+import EventsList from '../components/events/EventsList'
+import EventEditor from '../components/events/EventEditor'
 import api from '../services/api'
 import * as d3 from 'd3'
 
@@ -67,6 +69,9 @@ export default function KSE(){
   const [atcEditorOpen, setAtcEditorOpen] = useState(false)
   const [expandedDevice, setExpandedDevice] = useState(null)
   const [presetMenu, setPresetMenu] = useState(null)
+  const [eventEditorOpen, setEventEditorOpen] = useState(false)
+  const [editingEvent, setEditingEvent] = useState(null)
+  const [editingEventIndex, setEditingEventIndex] = useState(null)
 
   useEffect(()=>{
     // Load device types on mount
@@ -462,74 +467,52 @@ export default function KSE(){
             </Stack>
           )}
           {tab===4 && (
-            <Stack spacing={1}>
-              <Stack spacing={0.5} sx={{ mb:0.5 }}>
-                <InfoLabel
-                  title="Scenario events and their impact"
-                  tooltip="Define systemic or player-specific impacts. Processing order: systemic multipliers first, then player additives. Configure type, multiplier (×), and additive (+)."
-                />
-                <Typography variant="subtitle2">Events</Typography>
-              </Stack>
-              {(cfg.events||[]).map((e,idx)=> (
-                <Stack key={idx} direction="row" spacing={1} alignItems="center">
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel
-                      title="Event type"
-                      tooltip="systemic affects all players/markets; other types may target a specific player/zone/device (future)."
-                    />
-                    <TextField size="small" label="type" value={e.type||'systemic'} onChange={ev=>{
-                    const v = ev.target.value
-                    setCfg(prev=>{ const n = structuredClone(prev); n.events[idx].type = v; return n })
-                  }}/>
-                  </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel
-                      title="Multiplicative impact (×)"
-                      tooltip="E.g., 1.2 = +20% on affected quantities. Applied before additive. Typical range 0.5–1.5."
-                    />
-                    <TextField size="small" type="number" label="multiplier" value={e.multiplier ?? 1.0} onChange={ev=>{
-                    const v = Number(ev.target.value)
-                    setCfg(prev=>{ const n = structuredClone(prev); n.events[idx].multiplier = v; return n })
-                  }}/>
-                  </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel
-                      title="Additive impact (+)"
-                      tooltip="Unit depends on target (e.g., +500 MW capacity or +100 ZAR/MWh cost). Applied after multipliers."
-                    />
-                    <TextField size="small" type="number" label="additive" value={e.additive ?? 0} onChange={ev=>{
-                    const v = Number(ev.target.value)
-                    setCfg(prev=>{ const n = structuredClone(prev); n.events[idx].additive = v; return n })
-                  }}/>
-                  </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Trigger" tooltip="Round number or probability (0-1) depending on type." />
-                    <TextField size="small" type="text" label="trigger_type (round|prob)" value={e.trigger_type||'round'} onChange={ev=>{
-                      const v = ev.target.value; setCfg(prev=>{ const n = structuredClone(prev); n.events[idx].trigger_type = v; return n })
-                    }}/>
-                    <TextField size="small" type="number" label="trigger_value" value={e.trigger_value ?? 1} onChange={ev=>{
-                      const v = Number(ev.target.value); setCfg(prev=>{ const n = structuredClone(prev); n.events[idx].trigger_value = v; return n })
-                    }}/>
-                  </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Duration (rounds)" tooltip="How many rounds the event lasts once triggered." />
-                    <TextField size="small" type="number" label="duration_rounds" value={e.duration_rounds ?? 1} onChange={ev=>{
-                      const v = Number(ev.target.value); setCfg(prev=>{ const n = structuredClone(prev); n.events[idx].duration_rounds = v; return n })
-                    }}/>
-                  </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Target" tooltip="all | zone | player" />
-                    <TextField size="small" type="text" label="target (all|zone|player)" value={e.target||'all'} onChange={ev=>{
-                      const v = ev.target.value; setCfg(prev=>{ const n = structuredClone(prev); n.events[idx].target = v; return n })
-                    }}/>
-                    <TextField size="small" type="text" label="target_id (optional)" value={e.target_id||''} onChange={ev=>{
-                      const v = ev.target.value; setCfg(prev=>{ const n = structuredClone(prev); n.events[idx].target_id = v; return n })
-                    }}/>
-                  </Stack>
-                  <Button onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.events.splice(idx,1); return n })}>Remove</Button>
+            <Stack spacing={2}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center">
+                <Stack spacing={0.5}>
+                  <InfoLabel
+                    title="Scenario events and their impact"
+                    tooltip="Define systemic or player-specific impacts. Events trigger at specific rounds or probabilistically and can modify prices, capacities, or other parameters."
+                  />
+                  <Typography variant="subtitle2">Events</Typography>
                 </Stack>
-              ))}
-              <Button onClick={()=> setCfg(prev=> ({...prev, events: [...(prev.events||[]), { type:'systemic', multiplier:1.0, additive:0 }]}))}>Add Event</Button>
+                <Button
+                  variant="contained"
+                  startIcon={<AddIcon />}
+                  onClick={() => {
+                    setEditingEvent(null)
+                    setEditingEventIndex(null)
+                    setEventEditorOpen(true)
+                  }}
+                >
+                  Add Event
+                </Button>
+              </Stack>
+
+              <EventsList
+                events={cfg.events || []}
+                onEdit={(event, index) => {
+                  setEditingEvent(event)
+                  setEditingEventIndex(index)
+                  setEventEditorOpen(true)
+                }}
+                onDelete={(index) => {
+                  setCfg((prev) => {
+                    const n = structuredClone(prev)
+                    n.events.splice(index, 1)
+                    return n
+                  })
+                }}
+                onDuplicate={(index) => {
+                  setCfg((prev) => {
+                    const n = structuredClone(prev)
+                    const duplicated = structuredClone(n.events[index])
+                    duplicated.name = (duplicated.name || `Event ${index + 1}`) + ' (Copy)'
+                    n.events.splice(index + 1, 0, duplicated)
+                    return n
+                  })
+                }}
+              />
             </Stack>
           )}
           {tab===5 && (
@@ -786,6 +769,33 @@ export default function KSE(){
               atc: newMatrix
             }
           }))
+        }}
+      />
+
+      {/* Event Editor Drawer */}
+      <EventEditor
+        open={eventEditorOpen}
+        onClose={() => {
+          setEventEditorOpen(false)
+          setEditingEvent(null)
+          setEditingEventIndex(null)
+        }}
+        event={editingEvent}
+        onSave={(eventData) => {
+          setCfg((prev) => {
+            const n = structuredClone(prev)
+            if (!n.events) n.events = []
+            
+            if (editingEventIndex !== null) {
+              // Editing existing event
+              n.events[editingEventIndex] = eventData
+            } else {
+              // Creating new event
+              n.events.push(eventData)
+            }
+            
+            return n
+          })
         }}
       />
     </Stack>

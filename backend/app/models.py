@@ -139,6 +139,8 @@ class Session(db.Model):
     started_at = db.Column(db.DateTime)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     mode = db.Column(db.String(32), default="isolated_per_player", nullable=False)
+    
+    scenario = db.relationship("Scenario", backref="sessions", lazy="joined")
 
 
 class SessionAllowedType(db.Model):

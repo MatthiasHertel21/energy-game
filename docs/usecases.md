@@ -377,3 +377,39 @@ Status: Nicht unterstützt (NEU)
   - Spieler kann nur eigene Solo-Sessions löschen; Cohort-Sessions zeigen keinen Delete-Button.
   - Bestätigungsdialog verhindert versehentliches Löschen.
   - Nach Löschung: Session nicht mehr in `/api/me/sessions`; Forecasts optional archiviert oder gelöscht (Designer-Entscheidung).
+
+---
+
+## UC-16 Player – Grafische Timeline der Kampagnen-Szenarien mit Fortschritt
+
+Status: Nicht unterstützt (NEU)
+
+- Ist‑Stand:
+  - `CampaignDetail.jsx` zeigt Szenarien als Kartenliste mit Status-Chips (completed/in_progress/not_started).
+  - Keine visuelle Timeline oder Bubble-Darstellung zur schnellen Übersicht.
+
+- Ziel: Spieler sieht auf einen Blick den Fortschritt einer Kampagne als horizontale Timeline mit Bubbles (Kreise) für jedes Szenario, farblich kodiert nach Status.
+
+- Flow:
+   1) Player öffnet „Campaign Detail" (`/catalog/:id`).
+   2) Über der Szenario-Kartenliste erscheint eine horizontale Timeline:
+      - Linie mit Bubbles (Kreise) für jedes Szenario in `order_index`-Reihenfolge.
+      - Farben: Grün = completed, Orange = in_progress, Grau = not_started.
+      - Bubble-Größe: Alle gleich (oder optional größer für aktives Szenario).
+      - Label: Szenario-Nummer (#1, #2, ...) im Bubble; Szenario-Name als Tooltip.
+   3) Interaktion: Klick auf Bubble scrollt zur entsprechenden Karte in der Liste oder öffnet die Karte direkt.
+   4) Optional: Animation beim Laden (Bubbles faden ein, Linie zeichnet sich von links nach rechts).
+
+- UI Mapping (neu): `frontend/src/pages/CampaignDetail.jsx` → neue Komponente `CampaignTimeline` (SVG mit d3.js oder Canvas)
+  - Responsive: Horizontaler Scroll bei vielen Szenarien (>10).
+  - Accessibility: ARIA-Labels, Keyboard-Navigation (Tab zwischen Bubbles, Enter zum Aktivieren).
+
+- Datenmodell (bestehend): Nutzt vorhandene API-Daten aus `GET /api/catalog/campaigns/:id`:
+  - `scenarios[]` mit `order_index`, `status` (not_started|in_progress|completed), `name`
+
+- Acceptance:
+  - Timeline zeigt alle Szenarien in korrekter Reihenfolge.
+  - Farbkodierung klar erkennbar (Grün/Orange/Grau).
+  - Klick auf Bubble führt zur entsprechenden Karte.
+  - Timeline funktioniert auf Desktop (1280px+) und Tablet (768px+); Mobile zeigt vereinfachte Liste.
+  - Keine Backend-Änderungen erforderlich (nutzt bestehende Catalog API).

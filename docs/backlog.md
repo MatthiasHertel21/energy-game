@@ -107,11 +107,19 @@ Status (2025-11-11): 5, 6, 7, 8 completed. PT1–PT3 (Player Types) completed in
 - Status: ✅ Implemented and deployed
 - Acceptance: Cover images served via `/uploads/campaigns/`, validation enforced (PNG/JPG, max 640×640, 512KB)
 
-18) Trainer – Cohort×Campaign Visibility/Activation (Model+API+UI) — ✅ Done
+18) Trainer – Cohort×Campaign Visibility/Activation (Model+API+UI) — ✅ Done (Sprint 10)
+
+18b) Designer – Events Editor Refactor — ✅ Done (Sprint 11 Optional)
 	- Problem: Event‑Parameter überladen im Inline‑Form; schlechte Übersicht.
+	- Status: ✅ Implemented
+		- Components: `frontend/src/components/events/EventsList.jsx` (NEW), `EventEditor.jsx` (NEW)
+		- Features: Table view with Name/Type/Trigger/Duration/Target/Impact columns, Edit/Duplicate/Delete actions
+		- EventEditor: Drawer with 4 tabs (Basics | Trigger | Target | Effect), uses NumberInput/RangeInput
+		- Integration: KSE.jsx Events tab refactored from inline forms to EventsList + EventEditor
 	- Action: Liste (Name, Typ, Trigger, Dauer, Ziel, Wirkung) mit Aktionen Edit/Delete/Duplicate; Edit in rechtem Drawer/Modal mit Tabs (Basics | Trigger | Target | Effect); Presets (7 Default‑Events) + Suche/Filter.
 	- Target files: `frontend/src/pages/KSE.jsx` (Refactor), evtl. `frontend/src/components/events/*` (neu).
-	- Acceptance: Erstellen/Bearbeiten ohne Überlänge; Duplikat in ≤2 Klicks; Presets wählbar; klare Spaltenübersicht.
+	- Acceptance: ✅ Erstellen/Bearbeiten ohne Überlänge; Duplikat in ≤2 Klicks; klare Spaltenübersicht.
+	- Note: Event presets deferred as optional future enhancement
 
 	13) Devices‑Editor – Karten + Expand — ✅ Done (Sprint 11 Extension)
 	- Problem: Parametrisierung aller Devices als lange Liste; geringe Erfassbarkeit.
@@ -388,4 +396,23 @@ PT3) Player: Pre-Session Type Selection
   - Spieler kann nur eigene Solo-Sessions löschen; Cohort-Sessions zeigen keinen Delete-Button.
   - Bestätigungsdialog verhindert versehentliches Löschen.
   - Nach Löschung: Session nicht mehr in `/api/me/sessions`.
+
+27) Player – Grafische Timeline der Kampagnen-Szenarien mit Fortschritt (UC-16)
+- Problem: Spieler sehen Szenarien nur als Kartenliste; keine schnelle visuelle Übersicht über Kampagnen-Fortschritt.
+- Action:
+  - Frontend: `CampaignDetail.jsx` → neue Komponente `CampaignTimeline` (SVG mit d3.js oder Canvas)
+    - Horizontale Timeline mit Bubbles (Kreise) für jedes Szenario in `order_index`-Reihenfolge
+    - Farben: Grün = completed, Orange = in_progress, Grau = not_started
+    - Bubble-Größe: Alle gleich (oder optional größer für aktives Szenario)
+    - Label: Szenario-Nummer (#1, #2, ...) im Bubble; Szenario-Name als Tooltip
+    - Klick auf Bubble scrollt zur entsprechenden Karte oder expandiert sie
+    - Optional: Lade-Animation (Bubbles faden ein, Linie zeichnet sich von links)
+  - Responsive: Horizontaler Scroll bei >10 Szenarien; Mobile zeigt vereinfachte Liste
+  - Accessibility: ARIA-Labels, Keyboard-Navigation (Tab, Enter)
+  - Keine Backend-Änderungen (nutzt bestehende `GET /api/catalog/campaigns/:id`)
+- Acceptance:
+  - Timeline zeigt alle Szenarien in korrekter Reihenfolge mit Farbkodierung.
+  - Klick auf Bubble führt zur entsprechenden Karte.
+  - Funktioniert auf Desktop/Tablet (768px+); Mobile zeigt alternative Ansicht.
+  - Performance: <200ms Rendering bei 20 Szenarien.
 

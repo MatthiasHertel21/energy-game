@@ -745,10 +745,11 @@ All backend APIs already existed - no backend work needed:
 - ✅ Sprint 9: Player Types, Status Fix, Catalog Deployment
 - ✅ Sprint 10: Campaign Management, Solo Sessions, Cohort-Campaign Visibility
 - ✅ Sprint 11: Designer Scenarios Index, ATC Matrix Editor, Field Standardization, Device Cards
+- ✅ Sprint 11 Optional: Events Editor Refactor (UC-12)
 
 ### Sprint 11 Summary:
-**Status:** ✅ Production Ready - All P1 features deployed
-**Completion:** 5/5 major features (100%), 2 optional improvements pending
+**Status:** ✅ Production Ready - All P1 features + optional improvements deployed
+**Completion:** 5/5 major features (100%), 2/2 optional improvements (100%)
 
 **Deployed Features:**
 1. Designer Scenarios Index - Search, pagination, export, delete with confirmation
@@ -757,17 +758,23 @@ All backend APIs already existed - no backend work needed:
 4. Field Standardization (NumberInput/RangeInput) - General, Market, Player Types tabs
 5. Device Card UI - Expandable cards with presets, type-specific fields
 
-**Optional Improvements (Deferred to Sprint 12):**
-- UC-15: Environment Tab NumberInput integration
-- UC-12: Events Editor refactor (list + drawer UI)
+**Optional Improvements Completed:**
+- ✅ UC-15: Environment Tab Analysis - Determined NumberInput inappropriate for seed (string) and groups (local state)
+- ✅ UC-12: Events Editor Refactor - EventsList table view + EventEditor drawer with tabbed interface
 
 **Metrics:**
-- Frontend bundle: 407.98 kB (gzip: 132.37 kB)
-- Components added: 5 new (DeviceCard, AtcEditor, NumberInput, RangeInput, devicePresets)
+- Frontend bundle: 407.99 kB (gzip: 132.37 kB)
+- Components added: 7 new (DeviceCard, AtcEditor, NumberInput, RangeInput, devicePresets, EventsList, EventEditor)
 - Files enhanced: DesignerScenarios.jsx, KSE.jsx
-- Deployment: https://iq.2b6.de (2025-11-13)
+- Deployment: https://iq.2b6.de (2025-11-13 final)
+
+**UC-12 Implementation Details:**
+- **EventsList.jsx:** Table view with Name/Type/Trigger/Duration/Target/Impact columns, Edit/Duplicate/Delete actions
+- **EventEditor.jsx:** Drawer with 4 tabs (Basics, Trigger, Target, Effect), uses NumberInput/RangeInput for consistency
+- **KSE Events Tab:** Refactored from inline forms to EventsList + EventEditor, maintains state for editing
+- **UX Improvements:** Visual clarity, guided input (trigger_type select, probability slider), duplicate/edit support
 
 **Next Steps:**
-- Verify manual testing of all Sprint 11 features
-- Consider Sprint 12: Events Editor, Environment Tab improvements, or new features from backlog
+- Verify manual testing of all Sprint 11 features including Events Editor
+- Consider Sprint 12: Additional polish, backlog UC-20/UC-21, or new feature requests
 
