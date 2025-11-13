@@ -413,3 +413,112 @@ Status: Nicht unterstützt (NEU)
   - Klick auf Bubble führt zur entsprechenden Karte.
   - Timeline funktioniert auf Desktop (1280px+) und Tablet (768px+); Mobile zeigt vereinfachte Liste.
   - Keine Backend-Änderungen erforderlich (nutzt bestehende Catalog API).
+
+---
+
+## UC-17 Admin – Verwaiste Sessions aufräumen
+
+Status: Nicht unterstützt (NEU)
+
+- Ziel: Admin kann Sessions identifizieren und löschen, deren referenzierte Cohort oder Scenario gelöscht wurde (verwaiste Sessions).
+
+- Ist‑Stand:
+  - DELETE `/api/kse/scenarios/:id` löscht Scenario, aber Sessions bleiben bestehen (Foreign Key-Constraint verhindert Löschung).
+  - Keine UI oder API zum Identifizieren/Bereinigen verwaister Sessions.
+
+- Flow:
+   1) Admin öffnet „Admin" → neuer Tab „Session Cleanup".
+   2) Liste zeigt:
+      - Sessions mit gelöschten Scenarios (scenario_id nicht in scenarios.id).
+      - Sessions mit gelöschten Cohorts (cohort_id nicht in cohorts.id).
+      - Spalten: Session ID, Scenario ID (missing), Cohort ID (missing), Status, Created At, Player Count.
+   3) Checkbox „Select all orphaned sessions".
+   4) Button „Delete selected" mit Bestätigung („This will permanently delete X sessions and all related forecasts/results.").
+   5) Backend: DELETE `/api/admin/sessions/orphaned` mit optional `{ session_ids: [...] }` oder `all: true`.
+
+- API Mapping (neu):
+  - GET `/api/admin/sessions/orphaned` → Liste verwaister Sessions (LEFT JOIN auf scenarios/cohorts, WHERE NULL).
+  - DELETE `/api/admin/sessions/orphaned` { session_ids?: [...], all?: bool } → Löscht Sessions inkl. cascading delete auf Forecasts, Results, SessionAllowedType, SessionPlayerType.
+
+- UI Mapping (neu): `frontend/src/pages/AdminUsers.jsx` → neuer Tab „Session Cleanup" mit Tabelle und Bulk-Delete.
+
+- Datenmodell (Änderung):
+  - Foreign Keys auf `sessions.scenario_id` und `sessions.cohort_id` ändern zu `ON DELETE SET NULL` oder `ON DELETE CASCADE` (Designer-Entscheidung).
+  - Migration: Bestehende verwaiste Sessions identifizieren und bereinigen.
+
+- Acceptance:
+  - Admin sieht alle verwaisten Sessions.
+  - Bulk-Delete funktioniert; Sessions und Abhängigkeiten werden gelöscht.
+  - Keine falschen Positives (nur tatsächlich verwaiste Sessions).
+
+---
+
+## UC-18 Designer – Sessions zu einem Scenario ansehen
+
+Status: Nicht unterstützt (NEU)
+
+- Ziel: Designer kann für ein Scenario alle bestehenden Sessions einsehen (inkl. Spieler, Cohort, Erstelldatum, Status) zur Kontrolle und Analyse.
+
+- Flow:
+   1) Designer öffnet „Scenarios" (`/designer/scenarios`) und wählt ein Scenario aus der Liste.
+   2) Button „View Sessions" öffnet Detail-Ansicht oder Drawer.
+   3) Tabelle zeigt:
+      - Session ID, Cohort-Name, Status (running/paused/ended), Modus (solo/shared), Created At, Player Count.
+      - Spieler-Liste (expandierbar): Email, gewählter Typ (falls shared_market), Forecasts eingereicht (Anzahl).
+   4) Filter: Nach Status, Cohort, Zeitraum.
+   5) Optional: Export als CSV.
+
+- API Mapping (neu):
+  - GET `/api/kse/scenarios/:id/sessions?status=...&cohort_id=...&from=...&to=...` → Liste der Sessions für dieses Scenario.
+  - Response: `{ sessions: [{ id, cohort_id, cohort_name, status, mode, started_at, player_count, players: [{ user_id, email, type_id?, forecast_count }] }] }`
+
+- UI Mapping (neu): `frontend/src/pages/DesignerScenarios.jsx` → neuer Button „View Sessions" (öffnet Modal oder neue Seite `ScenarioSessions.jsx`).
+
+- Acceptance:
+  - Designer sieht alle Sessions zu einem Scenario.
+  - Spieler-Details expandierbar; Filter funktioniert.
+  - Performance: <2s bei 100+ Sessions pro Scenario (Pagination).
+
+---
+
+## UC-19 Designer – Kampagnen und Szenarien löschen mit Cascade
+
+Status: Teilweise unterstützt (ERWEITERUNG ERFORDERLICH)
+
+- Ist‑Stand:
+  - DELETE `/api/kse/scenarios/:id` – Scenario löschen (existiert, aber Sessions bleiben bestehen → Foreign Key-Fehler oder orphaned sessions).
+  - Keine DELETE-API für Campaigns.
+  - Keine UI-Option zum Löschen von Campaigns.
+  - Keine cascading delete auf Sessions beim Löschen eines Scenarios.
+
+- Ziel: Designer kann Kampagnen und Szenarien löschen; Sessions zu gelöschten Szenarien werden automatisch mitgelöscht (cascading delete).
+
+- Flow:
+   1) **Campaign löschen**:
+      - Designer öffnet „Campaigns" (`/designer/campaigns`).
+      - Button „Delete" neben Kampagne mit Bestätigung („Delete campaign? This will remove all scenario assignments but NOT delete the scenarios themselves.").
+      - DELETE `/api/kse/campaigns/:id` → Löscht Campaign und CampaignScenario-Zuordnungen; Scenarios bleiben.
+   
+   2) **Scenario löschen mit Sessions**:
+      - Designer öffnet „Scenarios" (`/designer/scenarios`).
+      - Button „Delete" neben Scenario.
+      - Warnung: „This scenario has X active sessions. Deleting will also delete all sessions, forecasts, and results. Continue?"
+      - Bei Bestätigung: DELETE `/api/kse/scenarios/:id?cascade=true` → Löscht Scenario inkl. cascading delete auf Sessions, Forecasts, Results, PlayerProgress.
+
+- API Mapping (neu/erweitert):
+  - DELETE `/api/kse/campaigns/:id` → Löscht Campaign + CampaignScenario; Scenarios bleiben.
+  - DELETE `/api/kse/scenarios/:id?cascade=true` → Löscht Scenario + Sessions (mit Forecasts, Results, SessionAllowedType, SessionPlayerType, PlayerProgress).
+  - GET `/api/kse/scenarios/:id/session-count` → Anzahl aktiver/beendeter Sessions zu diesem Scenario (für Warnung).
+
+- UI Mapping (neu):
+  - `DesignerCampaigns.jsx` → Delete-Button mit Confirm-Dialog.
+  - `DesignerScenarios.jsx` → Erweiterte Delete-Logik: API-Call zum Prüfen der Session-Anzahl, Warnung anzeigen, cascade=true senden.
+
+- Datenmodell (Änderung):
+  - Foreign Key `sessions.scenario_id` ändern zu `ON DELETE CASCADE` (oder Soft-Delete mit `deleted_at` für Archivierung).
+  - Migration: Bestehende Daten bereinigen oder migrieren.
+
+- Acceptance:
+  - Campaign löschen entfernt Zuordnungen; Scenarios bleiben.
+  - Scenario löschen mit Sessions zeigt Warnung und löscht alles bei Bestätigung.
+  - Keine verwaisten Sessions nach Scenario-Löschung (außer explizit gewünscht).

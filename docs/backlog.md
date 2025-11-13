@@ -335,8 +335,9 @@ PT3) Player: Pre-Session Type Selection
   - ✅ Einzelne Spieler können entfernt werden.
   - ✅ Cohort kann gelöscht werden; Sessions bleiben für History erhalten.
 
-23) Trainer – Zeitliche Übersicht zu Schüleraktivitäten (UC-12)
+23) Trainer – Zeitliche Übersicht zu Schüleraktivitäten (UC-12) — 🚧 Planned (Sprint 13)
 - Problem: Keine Einsicht, wann Spieler sich eingeloggt haben, Forecasts abgegeben, Runden abgeschlossen haben.
+- Status: 🚧 Planned for Sprint 13
 - Action:
   - Backend:
     - Neue Tabelle `activity_log(id, user_id, session_id, cohort_id, action_type, timestamp, details jsonb)`
@@ -352,8 +353,9 @@ PT3) Player: Pre-Session Type Selection
   - Filter funktioniert; CSV-Export erzeugt lesbare Datei.
   - Performance: Pagination/Infinite Scroll bei >1000 Events.
 
-24) Admin – Gesamtübersicht zur Benutzeraktivität (UC-13)
+24) Admin – Gesamtübersicht zur Benutzeraktivität (UC-13) — 🚧 Planned (Sprint 13)
 - Problem: Keine systemweite Sicht auf Benutzeraktivität (Registrierungen, Logins, Sessions, Forecasts).
+- Status: 🚧 Planned for Sprint 13 (depends on UC-23)
 - Action:
   - Backend:
     - GET `/api/admin/activity/summary?period=7d|30d` → KPIs (registered users, active users, sessions started, avg forecasts)
@@ -400,8 +402,9 @@ PT3) Player: Pre-Session Type Selection
   - ✅ Bestätigungsdialog verhindert versehentliches Löschen.
   - ✅ Nach Löschung: Session nicht mehr in `/api/me/sessions`.
 
-27) Player – Grafische Timeline der Kampagnen-Szenarien mit Fortschritt (UC-16)
+27) Player – Grafische Timeline der Kampagnen-Szenarien mit Fortschritt (UC-16) — 🚧 Planned (Sprint 13)
 - Problem: Spieler sehen Szenarien nur als Kartenliste; keine schnelle visuelle Übersicht über Kampagnen-Fortschritt.
+- Status: 🚧 Planned for Sprint 13
 - Action:
   - Frontend: `CampaignDetail.jsx` → neue Komponente `CampaignTimeline` (SVG mit d3.js oder Canvas)
     - Horizontale Timeline mit Bubbles (Kreise) für jedes Szenario in `order_index`-Reihenfolge
@@ -418,4 +421,52 @@ PT3) Player: Pre-Session Type Selection
   - Klick auf Bubble führt zur entsprechenden Karte.
   - Funktioniert auf Desktop/Tablet (768px+); Mobile zeigt alternative Ansicht.
   - Performance: <200ms Rendering bei 20 Szenarien.
+
+28) Admin – Verwaiste Sessions aufräumen (UC-17)
+- Problem: Gelöschte Scenarios/Cohorts hinterlassen verwaiste Sessions; keine UI zum Bereinigen.
+- Action:
+  - Backend:
+    - GET `/api/admin/sessions/orphaned` → Liste verwaister Sessions (LEFT JOIN scenarios/cohorts, WHERE NULL)
+    - DELETE `/api/admin/sessions/orphaned` { session_ids?: [...], all?: bool } → Cascading delete auf Forecasts, Results, SessionAllowedType, SessionPlayerType
+    - Migration: Foreign Keys auf `sessions.scenario_id`/`cohort_id` ändern zu `ON DELETE SET NULL` oder `ON DELETE CASCADE`
+  - Frontend: `AdminUsers.jsx` → neuer Tab „Session Cleanup"
+    - Tabelle: Session ID, Scenario ID (missing), Cohort ID (missing), Status, Created At, Player Count
+    - Checkbox „Select all orphaned sessions"
+    - Button „Delete selected" mit Bestätigung
+- Acceptance:
+  - Admin sieht alle verwaisten Sessions.
+  - Bulk-Delete funktioniert; keine falschen Positives.
+  - Sessions und Abhängigkeiten werden komplett gelöscht.
+
+29) Designer – Sessions zu einem Scenario ansehen (UC-18)
+- Problem: Designer kann nicht sehen, welche Sessions zu einem Scenario laufen; keine Kontrolle/Analyse.
+- Action:
+  - Backend:
+    - GET `/api/kse/scenarios/:id/sessions?status=...&cohort_id=...&from=...&to=...` → Sessions für Scenario
+    - Response: `{ sessions: [{ id, cohort_id, cohort_name, status, mode, started_at, player_count, players: [{ user_id, email, type_id?, forecast_count }] }] }`
+  - Frontend: `DesignerScenarios.jsx` → Button „View Sessions" (Modal oder neue Seite `ScenarioSessions.jsx`)
+    - Tabelle: Session ID, Cohort, Status, Modus, Created At, Player Count
+    - Expandierbare Spieler-Liste: Email, Typ, Forecasts
+    - Filter: Status, Cohort, Zeitraum
+    - Optional: CSV Export
+- Acceptance:
+  - Designer sieht alle Sessions zu einem Scenario.
+  - Spieler-Details expandierbar; Filter funktioniert.
+  - Performance: <2s bei 100+ Sessions (Pagination).
+
+30) Designer – Kampagnen und Szenarien löschen mit Cascade (UC-19)
+- Problem: Keine DELETE-API für Campaigns; Scenario-Delete lässt Sessions verwaist; keine cascading delete.
+- Action:
+  - Backend:
+    - DELETE `/api/kse/campaigns/:id` → Löscht Campaign + CampaignScenario; Scenarios bleiben
+    - GET `/api/kse/scenarios/:id/session-count` → Anzahl Sessions (für Warnung)
+    - DELETE `/api/kse/scenarios/:id?cascade=true` → Löscht Scenario + Sessions (Forecasts, Results, SessionAllowedType, SessionPlayerType, PlayerProgress)
+    - Migration: Foreign Key `sessions.scenario_id` ändern zu `ON DELETE CASCADE`
+  - Frontend:
+    - `DesignerCampaigns.jsx` → Delete-Button mit Confirm-Dialog
+    - `DesignerScenarios.jsx` → Erweiterte Delete-Logik: Session-Count abrufen, Warnung anzeigen, cascade=true senden
+- Acceptance:
+  - Campaign löschen entfernt Zuordnungen; Scenarios bleiben.
+  - Scenario löschen mit Sessions zeigt Warnung („X sessions will be deleted") und löscht alles bei Bestätigung.
+  - Keine verwaisten Sessions nach Scenario-Löschung.
 

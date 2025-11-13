@@ -750,12 +750,16 @@ All backend APIs already existed - no backend work needed:
 
 ### Sprint 12 Summary (2025-11-13):
 **Status:** ✅ Production Ready - All features deployed
-**Completion:** 3/3 UCs (100%) + Accessibility Pass
+**Completion:** 3/3 UCs (100%) + Accessibility Pass + 2 Hotfixes
 
 **Deployed Features:**
 1. UC-22: Cohort Edit/Delete - Rename cohorts, remove members, delete with confirmation
 2. UC-26: Solo Sessions Delete - Players can delete own solo sessions
 3. UC-20: Fictional Date/Time - KSE General tab with fake_date/start_time fields for context
+
+**Hotfixes (2025-11-13):**
+- Fixed: Syntax error in player.py (duplicate closing brace) - Commit 4223ef8
+- Fixed: Foreign key violation on cohort delete (sessions orphaned) - Commit 08a164a
 
 **Accessibility Improvements:**
 - ARIA labels on all IconButtons
@@ -769,8 +773,7 @@ All backend APIs already existed - no backend work needed:
 - Deployment: https://iq.2b6.de
 
 **Next Steps:**
-- Manual testing of cohort management workflow
-- Consider Sprint 13: Activity Tracking (UC-23, UC-24, UC-25) or Visual Enhancements (UC-27, UC-21)
+- ✅ Sprint 13 planned: Activity Tracking (UC-23, UC-24) + Campaign Timeline Visualization (UC-27)
 
 ---
 
