@@ -340,6 +340,7 @@ export default function Cohorts(){
                   onChange={(e) => setActivityFilters({ ...activityFilters, action_type: e.target.value })}
                   displayEmpty
                   sx={{ minWidth: 200 }}
+                  aria-label="Filter by action type"
                 >
                   <MenuItem value="">All Actions</MenuItem>
                   <MenuItem value="login">Login</MenuItem>
@@ -348,7 +349,7 @@ export default function Cohorts(){
                   <MenuItem value="type_select">Type Select</MenuItem>
                   <MenuItem value="round_complete">Round Complete</MenuItem>
                 </Select>
-                <Button variant="outlined" startIcon={<DownloadIcon />} onClick={exportActivityCSV}>
+                <Button variant="outlined" startIcon={<DownloadIcon />} onClick={exportActivityCSV} aria-label="Export activity as CSV">
                   Export CSV
                 </Button>
               </Stack>

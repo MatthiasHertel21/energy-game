@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func
 
 from .extensions import db, bcrypt
-from .models import User, Invite, Role, ActivityLog, Session, Forecast
+from .models import User, Invite, Role, ActivityLog, Session, Forecast, SessionStatus
 from . import mailer
 from .utils import role_required
 
@@ -215,8 +215,8 @@ class ActivitySummary(Resource):
         # Sessions started
         sessions_started = Session.query.filter(Session.started_at >= from_date).count()
         
-        # Sessions completed
-        sessions_completed = Session.query.filter(Session.ended_at >= from_date).count()
+    # Sessions completed (status ended within period)
+    sessions_completed = Session.query.filter(Session.status == SessionStatus.ended, Session.updated_at >= from_date).count()
         
         # Total forecasts
         total_forecasts = Forecast.query.count()

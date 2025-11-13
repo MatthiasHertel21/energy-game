@@ -6,7 +6,7 @@ from flask_jwt_extended import jwt_required, get_jwt
 from .extensions import db, socketio
 from .scheduler import run_rounds
 from .models import Session, SessionStatus, Scenario, SessionAllowedType, SessionPlayerType, ActivityLog, User
-from .utils import role_required
+from .utils import role_required, log_activity
 import os, json
 from datetime import datetime
 try:
@@ -143,7 +143,17 @@ class SessionBriefing(Resource):
                     if selected:
                         val = selected.decode() if isinstance(selected, (bytes, bytearray)) else str(selected)
                         briefing["selected_type"] = val
-        return briefing
+        # Log first-time session join for current user (idempotent)
+        try:
+            uid = get_jwt().get("sub")
+            if uid:
+                exists = (
+                    ActivityLog.query.filter_by(user_id=int(uid), session_id=sid, action_type="session_join").first()
+                )
+                if not exists:
+                    log_activity(int(uid), "session_join", session_id=sid, cohort_id=s.cohort_id)
+        except Exception:
+            pass
         return briefing
 
 
@@ -363,6 +373,12 @@ class SelectType(Resource):
         try:
             db.session.add(SessionPlayerType(session_id=sid, user_id=uid, type_id=tid))
             db.session.commit()
+            # Log type selection activity
+            try:
+                s = Session.query.get(sid)
+                log_activity(int(uid), "type_select", session_id=sid, cohort_id=(s.cohort_id if s else None), details={"type_id": tid})
+            except Exception:
+                pass
         except Exception:
             db.session.rollback()
             return {"error": "failed to store selection"}, HTTPStatus.INTERNAL_SERVER_ERROR

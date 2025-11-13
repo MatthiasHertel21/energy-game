@@ -1,14 +1,50 @@
-import React, { useEffect, useState } from 'react'
-import { Paper, Typography, Table, TableHead, TableBody, TableRow, TableCell, Select, MenuItem, TextField, Button, Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, Box, Skeleton } from '@mui/material'
+import React, { useEffect, useMemo, useState } from 'react'
+import { Paper, Typography, Table, TableHead, TableBody, TableRow, TableCell, Select, MenuItem, TextField, Button, Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, Box, Skeleton, Tabs, Tab, Grid, Card, CardContent, Chip } from '@mui/material'
 import { PersonAdd as PersonAddIcon } from '@mui/icons-material'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
 
 const roles = ['player','trainer','designer','admin']
 
+function LineChart({ data = [], color = '#1976d2', height = 120 }){
+  const width = 360
+  const pad = 8
+  const xs = data.map((d, i) => i)
+  const ys = data.map(d => d.count || 0)
+  const maxY = Math.max(1, ...ys)
+  const path = useMemo(() => {
+    if (data.length === 0) return ''
+    const stepX = (width - pad*2) / Math.max(1, data.length - 1)
+    return data.map((d,i) => {
+      const x = pad + i * stepX
+      const y = height - pad - (ys[i] / maxY) * (height - pad*2)
+      return `${i===0?'M':'L'}${x},${y}`
+    }).join(' ')
+  }, [data, height, width, pad, ys, maxY])
+  const area = useMemo(() => {
+    if (data.length === 0) return ''
+    const stepX = (width - pad*2) / Math.max(1, data.length - 1)
+    const top = data.map((d,i)=>{
+      const x = pad + i * stepX
+      const y = height - pad - (ys[i] / maxY) * (height - pad*2)
+      return `${i===0?'M':'L'}${x},${y}`
+    }).join(' ')
+    const bottom = `L ${pad + (data.length-1)*stepX},${height-pad} L ${pad},${height-pad} Z`
+    return top + ' ' + bottom
+  }, [data, height, width, pad, ys, maxY])
+  return (
+    <svg width={width} height={height} role="img" aria-label="Activity chart">
+      <rect x={0} y={0} width={width} height={height} fill="#f8f9fa" rx={6} />
+      <path d={area} fill={color+"22"} />
+      <path d={path} stroke={color} strokeWidth={2} fill="none" />
+    </svg>
+  )
+}
+
 export default function AdminUsers(){
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
+  const [tab, setTab] = useState(0)
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(10)
@@ -21,6 +57,12 @@ export default function AdminUsers(){
   const [snack, setSnack] = useState('')
   const [inviteModalOpen, setInviteModalOpen] = useState(false)
   const [createModalOpen, setCreateModalOpen] = useState(false)
+  // Activity Dashboard state
+  const [period, setPeriod] = useState('30d')
+  const [summary, setSummary] = useState(null)
+  const [series, setSeries] = useState({ logins: [], registrations: [], sessions: [] })
+  const [recent, setRecent] = useState([])
+  const [loadingActivity, setLoadingActivity] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -33,6 +75,31 @@ export default function AdminUsers(){
   }
 
   useEffect(()=>{ load() },[])
+
+  const loadActivity = async (p = period) => {
+    setLoadingActivity(true)
+    try {
+      const [s, l, r, ss] = await Promise.all([
+        api.get(`/api/admin/activity/summary`, { params: { period: p } }),
+        api.get(`/api/admin/activity/timeseries`, { params: { metric: 'logins', period: p } }),
+        api.get(`/api/admin/activity/timeseries`, { params: { metric: 'registrations', period: p } }),
+        api.get(`/api/admin/activity/timeseries`, { params: { metric: 'sessions', period: p } }),
+      ])
+      setSummary(s.data)
+      setSeries({ logins: l.data.data || [], registrations: r.data.data || [], sessions: ss.data.data || [] })
+      const rc = await api.get('/api/admin/activity/recent', { params: { limit: 50 } })
+      setRecent(rc.data.activities || [])
+    } catch (e) {
+      // noop
+    } finally {
+      setLoadingActivity(false)
+    }
+  }
+
+  useEffect(()=>{
+    if (tab === 1) loadActivity(period)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, period])
 
   const changeRole = async (id, role) => {
     // optimistic update
@@ -84,8 +151,15 @@ export default function AdminUsers(){
 
   return (
     <Paper sx={{ p:2, maxWidth: 1400, mx: 'auto' }}>
+      <Tabs value={tab} onChange={(_,v)=>setTab(v)} aria-label="Admin tabs">
+        <Tab label="Users" />
+        <Tab label="Activity Dashboard" />
+      </Tabs>
+
+      {tab === 0 && (
+        <>
       {/* Header with Actions */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, mt: 1 }}>
         <Typography variant="h5">User Management</Typography>
         <Box>
           <Button 
@@ -244,6 +318,106 @@ export default function AdminUsers(){
           <Button onClick={createUser} disabled={!createEmail} variant="contained">Create User</Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar open={!!snack} autoHideDuration={3000} onClose={()=>setSnack('')} message={snack} />
+        </>
+      )}
+
+      {tab === 1 && (
+        <Box sx={{ mt: 2 }}>
+          <Box sx={{ display:'flex', alignItems:'center', gap:1, mb:2 }}>
+            <Typography variant="h6">Activity Dashboard</Typography>
+            <Select size="small" value={period} onChange={e=>setPeriod(e.target.value)} aria-label="Select period">
+              {['7d','30d','90d'].map(p=> <MenuItem key={p} value={p}>{p}</MenuItem>)}
+            </Select>
+          </Box>
+
+          {/* KPI Cards */}
+          <Grid container spacing={2} sx={{ mb: 2 }}>
+            {loadingActivity || !summary ? (
+              [...Array(4)].map((_,i)=> (
+                <Grid key={i} item xs={12} sm={6} md={3}><Skeleton variant="rectangular" height={96} /></Grid>
+              ))
+            ) : (
+              <>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card><CardContent>
+                    <Typography variant="overline">Total Users</Typography>
+                    <Typography variant="h5">{summary.total_users}</Typography>
+                  </CardContent></Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card><CardContent>
+                    <Typography variant="overline">Active Users 7d</Typography>
+                    <Typography variant="h5">{summary.active_users_7d}</Typography>
+                  </CardContent></Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card><CardContent>
+                    <Typography variant="overline">Sessions Started</Typography>
+                    <Typography variant="h5">{summary.sessions_started}</Typography>
+                  </CardContent></Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Card><CardContent>
+                    <Typography variant="overline">Total Forecasts</Typography>
+                    <Typography variant="h5">{summary.total_forecasts}</Typography>
+                  </CardContent></Card>
+                </Grid>
+              </>
+            )}
+          </Grid>
+
+          {/* Charts */}
+          <Grid container spacing={2} sx={{ mb: 2 }}>
+            <Grid item xs={12} md={4}>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Logins</Typography>
+              {loadingActivity ? <Skeleton variant="rectangular" height={120} /> : <LineChart data={series.logins} color="#1976d2" />}
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Registrations</Typography>
+              {loadingActivity ? <Skeleton variant="rectangular" height={120} /> : <LineChart data={series.registrations} color="#2e7d32" />}
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Sessions</Typography>
+              {loadingActivity ? <Skeleton variant="rectangular" height={120} /> : <LineChart data={series.sessions} color="#ed6c02" />}
+            </Grid>
+          </Grid>
+
+          {/* Recent activity */}
+          <Typography variant="subtitle1" sx={{ mb: 1 }}>Recent Activity</Typography>
+          {loadingActivity ? (
+            [...Array(5)].map((_,i)=> <Skeleton key={i} variant="rectangular" height={40} sx={{ mb: 1 }} />)
+          ) : recent.length === 0 ? (
+            <EmptyState title="No recent activity" message="Activity will appear as users interact with the system." />
+          ) : (
+            <Table size="small" aria-label="recent activity table">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Time</TableCell>
+                  <TableCell>User</TableCell>
+                  <TableCell>Action</TableCell>
+                  <TableCell>Session</TableCell>
+                  <TableCell>Details</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {recent.map(a => (
+                  <TableRow key={a.id}>
+                    <TableCell>{new Date(a.timestamp).toLocaleString()}</TableCell>
+                    <TableCell>{a.user_email}</TableCell>
+                    <TableCell><Chip size="small" label={a.action_type} /></TableCell>
+                    <TableCell>{a.session_id || ''}</TableCell>
+                    <TableCell>
+                      <code style={{ fontSize: 11 }}>{a.details ? JSON.stringify(a.details) : ''}</code>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </Box>
+      )}
 
       <Snackbar open={!!snack} autoHideDuration={3000} onClose={()=>setSnack('')} message={snack} />
     </Paper>

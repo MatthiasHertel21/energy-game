@@ -4,6 +4,7 @@ from flask import current_app
 from .extensions import socketio
 from .models import Session, SessionStatus, Scenario, CohortMember, Forecast, Result, PlayerProgress, PlayerProgressStatus
 from .extensions import db
+from .utils import log_activity
 from .engine import run_round, compute_zone_flows
 
 
@@ -127,6 +128,16 @@ def run_rounds(session_id: int):
             socketio.emit("market_cleared", payload, namespace=f"/game/{s.id}")
             socketio.emit("round_end", {"session_id": s.id, "round": current}, namespace="/trainer")
             socketio.emit("round_end", {"session_id": s.id, "round": current}, namespace=f"/game/{s.id}")
+            # Log round completion for each player in the session
+            try:
+                players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
+                for pid in players:
+                    try:
+                        log_activity(int(pid), "round_complete", session_id=s.id, cohort_id=s.cohort_id, details={"round": current})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             current += 1
             s.current_round = current
             db.session.add(s)
