@@ -6,7 +6,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from .extensions import db
-from .models import Cohort, CohortMember, User, Role, Invite, Campaign, CohortCampaign
+from .models import Cohort, CohortMember, User, Role, Invite, Campaign, CohortCampaign, Session
 from .utils import role_required
 
 
@@ -52,8 +52,10 @@ class CohortItem(Resource):
     @jwt_required()
     @role_required("trainer", "admin")
     def delete(self, cid: int):
-        """Delete cohort (cascading delete on members and campaign mappings, sessions remain)."""
+        """Delete cohort (cascading delete on members and campaign mappings, sessions orphaned)."""
         c = Cohort.query.get_or_404(cid)
+        # Orphan sessions (set cohort_id to NULL to preserve historical data)
+        Session.query.filter_by(cohort_id=cid).update({"cohort_id": None})
         # Delete members
         CohortMember.query.filter_by(cohort_id=cid).delete()
         # Delete campaign mappings
