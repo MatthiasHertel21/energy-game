@@ -7,7 +7,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 
 from .extensions import db
-from .models import Cohort, CohortMember, User, Role, Invite, Campaign, CohortCampaign, Session, ActivityLog
+from .models import Cohort, CohortMember, User, Role, Invite, Campaign, CohortCampaign, Session, ActivityLog, Forecast, Result, SessionAllowedType, SessionPlayerType
 from .utils import role_required
 
 
@@ -55,8 +55,14 @@ class CohortItem(Resource):
     def delete(self, cid: int):
         """Delete cohort (cascading delete on members and campaign mappings, sessions orphaned)."""
         c = Cohort.query.get_or_404(cid)
-        # Orphan sessions (set cohort_id to NULL to preserve historical data)
-        Session.query.filter_by(cohort_id=cid).update({"cohort_id": None})
+        # Delete dependent data for sessions in this cohort, then sessions
+        session_ids = [sid for (sid,) in db.session.query(Session.id).filter_by(cohort_id=cid).all()]
+        if session_ids:
+            Forecast.query.filter(Forecast.session_id.in_(session_ids)).delete(synchronize_session=False)
+            Result.query.filter(Result.session_id.in_(session_ids)).delete(synchronize_session=False)
+            SessionPlayerType.query.filter(SessionPlayerType.session_id.in_(session_ids)).delete(synchronize_session=False)
+            SessionAllowedType.query.filter(SessionAllowedType.session_id.in_(session_ids)).delete(synchronize_session=False)
+            Session.query.filter(Session.id.in_(session_ids)).delete(synchronize_session=False)
         # Delete members
         CohortMember.query.filter_by(cohort_id=cid).delete()
         # Delete campaign mappings

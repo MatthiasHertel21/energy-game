@@ -42,6 +42,7 @@ class MySessions(Resource):
                 "status": s.status.value,
                 "current_round": s.current_round,
                 "max_rounds": max_rounds,
+                "mode": s.mode,
                 "next_round_at": next_round_at,
                 "started_at": s.started_at.isoformat() if s.started_at else None,
                 "general": general,
