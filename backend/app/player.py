@@ -318,7 +318,7 @@ class ActiveSession(Resource):
             "freeze_hours": general.get("freeze_hours", 6),
             "scenario_name": scenario.name,
             "status": session.status.value
-        }        }
+        }
 
 
 @ns.route("/sessions/<int:sid>")
