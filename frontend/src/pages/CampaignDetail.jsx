@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Box, Stack, Typography, Chip, Button, Card, CardMedia, CardContent, Divider, LinearProgress, Select, MenuItem } from '@mui/material'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
 import InfoLabel from '../components/InfoLabel'
+import CampaignTimeline from '../components/CampaignTimeline'
 
 export default function CampaignDetail(){
   const { id } = useParams()
@@ -12,6 +13,7 @@ export default function CampaignDetail(){
   const [loading, setLoading] = useState(true)
   const [sessions, setSessions] = useState([])
   const [cohortSessionId, setCohortSessionId] = useState('')
+  const cardRefs = useRef({})
 
   useEffect(()=>{
     let mounted = true
@@ -45,6 +47,14 @@ export default function CampaignDetail(){
       navigate('/player')
     }catch(e){/* handled by interceptor */}
   }
+  
+  const handleTimelineClick = (scenario_id) => {
+    // Scroll to corresponding card
+    const card = cardRefs.current[scenario_id]
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }
 
   const joinCohort = ()=>{
     if(cohortSessionId){
@@ -68,11 +78,20 @@ export default function CampaignDetail(){
         <Box sx={{ flexGrow:1 }}>
           <Typography variant="h5" sx={{ mb:1 }}>Scenarios</Typography>
           <Divider sx={{ mb:2 }} />
+          
+          {/* Campaign Timeline */}
+          {data.scenarios && data.scenarios.length > 0 && (
+            <CampaignTimeline 
+              scenarios={data.scenarios}
+              onScenarioClick={handleTimelineClick}
+            />
+          )}
+          
           <Stack spacing={1.5}>
             {data.scenarios?.map(sc=>{
               const actives = activeByScenario.get(sc.scenario_id) || []
               return (
-                <Card key={sc.scenario_id} variant="outlined">
+                <Card key={sc.scenario_id} variant="outlined" ref={el => cardRefs.current[sc.scenario_id] = el}>
                   <CardContent>
                     <Stack direction="row" spacing={2} alignItems="center">
                       <Chip size="small" label={`#${sc.order_index+1}`} />

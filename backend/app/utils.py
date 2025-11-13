@@ -17,3 +17,27 @@ def role_required(*allowed_roles):
         return wrapper
 
     return decorator
+
+def log_activity(user_id, action_type, session_id=None, cohort_id=None, details=None):
+    """
+    Log user activity to activity_log table.
+    
+    Args:
+        user_id: User performing the action
+        action_type: One of: login, forecast_submit, round_complete, session_join, type_select
+        session_id: Optional session context
+        cohort_id: Optional cohort context
+        details: Optional dict with additional context (round, forecast_count, etc.)
+    """
+    from .extensions import db
+    from .models import ActivityLog
+    
+    activity = ActivityLog(
+        user_id=user_id,
+        session_id=session_id,
+        cohort_id=cohort_id,
+        action_type=action_type,
+        details=details
+    )
+    db.session.add(activity)
+    db.session.commit()

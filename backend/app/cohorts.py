@@ -1,12 +1,13 @@
 from http import HTTPStatus
 import csv
 import io
-from flask import request
+from flask import request, make_response
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from datetime import datetime
 
 from .extensions import db
-from .models import Cohort, CohortMember, User, Role, Invite, Campaign, CohortCampaign, Session
+from .models import Cohort, CohortMember, User, Role, Invite, Campaign, CohortCampaign, Session, ActivityLog
 from .utils import role_required
 
 
@@ -174,3 +175,103 @@ class CohortCampaignItem(Resource):
         db.session.add(row)
         db.session.commit()
         return {"campaign_id": camp_id, "visible": row.visible, "active": row.active, "created": created}
+
+@ns.route("/<int:cid>/activity")
+class CohortActivity(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def get(self, cid: int):
+        """Get activity timeline for cohort with optional filters and CSV export."""
+        # Validate cohort exists
+        Cohort.query.get_or_404(cid)
+        
+        # Get query parameters
+        from_date = request.args.get("from")
+        to_date = request.args.get("to")
+        user_id = request.args.get("user_id", type=int)
+        action_type = request.args.get("action_type")
+        limit = request.args.get("limit", 50, type=int)
+        offset = request.args.get("offset", 0, type=int)
+        format_type = request.args.get("format", "json")
+        
+        # Build query
+        query = ActivityLog.query.filter_by(cohort_id=cid)
+        
+        if from_date:
+            try:
+                from_dt = datetime.fromisoformat(from_date.replace("Z", "+00:00"))
+                query = query.filter(ActivityLog.timestamp >= from_dt)
+            except ValueError:
+                pass
+        
+        if to_date:
+            try:
+                to_dt = datetime.fromisoformat(to_date.replace("Z", "+00:00"))
+                query = query.filter(ActivityLog.timestamp <= to_dt)
+            except ValueError:
+                pass
+        
+        if user_id:
+            query = query.filter_by(user_id=user_id)
+        
+        if action_type:
+            query = query.filter_by(action_type=action_type)
+        
+        # Get total count
+        total = query.count()
+        
+        # Order and paginate
+        query = query.order_by(ActivityLog.timestamp.desc())
+        
+        if format_type == "csv":
+            # CSV export - get all matching results
+            activities = query.all()
+            
+            # Create CSV
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["Timestamp", "User Email", "User Name", "Action Type", "Session ID", "Details"])
+            
+            for activity in activities:
+                user = User.query.get(activity.user_id)
+                user_email = user.email if user else "Unknown"
+                user_name = user_email.split("@")[0] if user else "Unknown"
+                details_str = str(activity.details) if activity.details else ""
+                
+                writer.writerow([
+                    activity.timestamp.isoformat() + "Z" if activity.timestamp else "",
+                    user_email,
+                    user_name,
+                    activity.action_type,
+                    activity.session_id or "",
+                    details_str
+                ])
+            
+            response = make_response(output.getvalue())
+            response.headers["Content-Type"] = "text/csv"
+            response.headers["Content-Disposition"] = f"attachment; filename=cohort_{cid}_activity.csv"
+            return response
+        
+        # JSON response with pagination
+        activities = query.limit(limit).offset(offset).all()
+        
+        result = []
+        for activity in activities:
+            user = User.query.get(activity.user_id)
+            result.append({
+                "id": activity.id,
+                "timestamp": activity.timestamp.isoformat() + "Z" if activity.timestamp else None,
+                "user_id": activity.user_id,
+                "user_email": user.email if user else "Unknown",
+                "user_name": user.email.split("@")[0] if user else "Unknown",
+                "action_type": activity.action_type,
+                "session_id": activity.session_id,
+                "details": activity.details or {}
+            })
+        
+        return {
+            "activities": result,
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }

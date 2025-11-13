@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Skeleton, Box, Switch, FormControlLabel, Select, MenuItem, IconButton, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material'
+import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Skeleton, Box, Switch, FormControlLabel, Select, MenuItem, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, Tabs, Tab, TablePagination, Chip } from '@mui/material'
 import { useNavigate } from 'react-router-dom'
-import { Groups as GroupsIcon, Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material'
+import { Groups as GroupsIcon, Edit as EditIcon, Delete as DeleteIcon, FileDownload as DownloadIcon } from '@mui/icons-material'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
 
@@ -20,6 +20,12 @@ export default function Cohorts(){
   const [editName, setEditName] = useState('')
   const [deleteDialog, setDeleteDialog] = useState(null)
   const [members, setMembers] = useState([])
+  const [tab, setTab] = useState(0)
+  const [activities, setActivities] = useState([])
+  const [activityTotal, setActivityTotal] = useState(0)
+  const [activityPage, setActivityPage] = useState(0)
+  const [activityLimit, setActivityLimit] = useState(50)
+  const [activityFilters, setActivityFilters] = useState({ action_type: '', user_id: '' })
   const navigate = useNavigate()
   
   const load = async ()=>{ 
@@ -96,12 +102,51 @@ export default function Cohorts(){
       setCampaigns(data||[])
     }catch(e){ setCampaigns([]) }
   }
+  
+  const loadActivity = async (cid) => {
+    if (!cid) return
+    try {
+      const params = {
+        limit: activityLimit,
+        offset: activityPage * activityLimit,
+        ...activityFilters
+      }
+      const { data } = await api.get(`/api/cohorts/${cid}/activity`, { params })
+      setActivities(data.activities || [])
+      setActivityTotal(data.total || 0)
+    } catch (e) {
+      setActivities([])
+      setActivityTotal(0)
+    }
+  }
+  
+  const exportActivityCSV = async () => {
+    if (!selected) return
+    try {
+      const response = await api.get(`/api/cohorts/${selected}/activity`, {
+        params: { format: 'csv', ...activityFilters },
+        responseType: 'blob'
+      })
+      const url = window.URL.createObjectURL(new Blob([response.data]))
+      const link = document.createElement('a')
+      link.href = url
+      link.setAttribute('download', `cohort_${selected}_activity.csv`)
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      if (window.__showSnack) window.__showSnack('Activity exported', 'success')
+    } catch (e) {
+      if (window.__showSnack) window.__showSnack('Failed to export', 'error')
+    }
+  }
+  
   useEffect(()=>{ 
     if(selected){ 
       loadCampaigns(selected)
       loadMembers(selected)
+      if (tab === 2) loadActivity(selected)
     } 
-  },[selected])
+  },[selected, tab, activityPage, activityLimit, activityFilters])
   const toggleCampaign = async (campId, key, val)=>{
     try{
       await api.patch(`/api/cohorts/${selected}/campaigns/${campId}`, { [key]: val })
@@ -181,43 +226,56 @@ export default function Cohorts(){
         </>
       )}
       {selected && (
-        <Stack spacing={1} sx={{ mt:2 }} data-testid="cohorts-import-section">
-          <Typography variant="subtitle1">Import Players (CSV, one email per line)</Typography>
-          <TextField inputProps={{ 'data-testid': 'cohorts-csv' }} label="CSV" multiline minRows={4} value={csv} onChange={e=>setCsv(e.target.value)} />
-          <Button variant="outlined" data-testid="cohorts-import-btn" onClick={importCsv}>Import</Button>
+        <Box sx={{ mt: 3 }}>
+          <Typography variant="h6" sx={{ mb: 2 }}>Cohort #{selected}</Typography>
+          <Tabs value={tab} onChange={(e, v) => setTab(v)} aria-label="Cohort management tabs">
+            <Tab label="Members" />
+            <Tab label="Campaigns" />
+            <Tab label="Activity" />
+          </Tabs>
           
-          {members.length > 0 && (
+          {/* Tab 0: Members */}
+          {tab === 0 && (
             <Box sx={{ mt: 2 }}>
-              <Typography variant="subtitle2">Members ({members.length})</Typography>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Email</TableCell>
-                    <TableCell>Name</TableCell>
-                    <TableCell>Actions</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {members.map(m => (
-                    <TableRow key={m.user_id}>
-                      <TableCell>{m.email}</TableCell>
-                      <TableCell>{m.name || '-'}</TableCell>
-                      <TableCell>
-                        <IconButton size="small" onClick={() => removeMember(m.user_id)} color="error" title="Remove from cohort" aria-label="Remove member from cohort">
-                          <DeleteIcon fontSize="small" />
-                        </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <Stack spacing={1} data-testid="cohorts-import-section">
+                <Typography variant="subtitle1">Import Players (CSV, one email per line)</Typography>
+                <TextField inputProps={{ 'data-testid': 'cohorts-csv' }} label="CSV" multiline minRows={4} value={csv} onChange={e=>setCsv(e.target.value)} />
+                <Button variant="outlined" data-testid="cohorts-import-btn" onClick={importCsv}>Import</Button>
+                
+                {members.length > 0 && (
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="subtitle2">Members ({members.length})</Typography>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Email</TableCell>
+                          <TableCell>Name</TableCell>
+                          <TableCell>Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {members.map(m => (
+                          <TableRow key={m.user_id}>
+                            <TableCell>{m.email}</TableCell>
+                            <TableCell>{m.name || '-'}</TableCell>
+                            <TableCell>
+                              <IconButton size="small" onClick={() => removeMember(m.user_id)} color="error" title="Remove from cohort" aria-label="Remove member from cohort">
+                                <DeleteIcon fontSize="small" />
+                              </IconButton>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </Box>
+                )}
+              </Stack>
             </Box>
           )}
-        </Stack>
-      )}
-      {selected && (
-        <Box sx={{ mt:3 }}>
-          <Typography variant="h6">Campaigns for Cohort #{selected}</Typography>
+          
+          {/* Tab 1: Campaigns */}
+          {tab === 1 && (
+        <Box sx={{ mt:2 }}>
           {campaigns.length===0 ? (
             <Typography variant="body2" color="text.secondary">No campaigns</Typography>
           ) : (
@@ -267,6 +325,73 @@ export default function Cohorts(){
                 <Button variant="contained" disabled={!startScenarioId} onClick={startSession}>Start</Button>
                 <Button onClick={()=> { setStartCamp(null); setStartScenarios([]); setStartScenarioId('') }}>Cancel</Button>
               </Stack>
+            </Box>
+          )}
+        </Box>
+          )}
+          
+          {/* Tab 2: Activity */}
+          {tab === 2 && (
+            <Box sx={{ mt: 2 }}>
+              <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+                <Select
+                  size="small"
+                  value={activityFilters.action_type}
+                  onChange={(e) => setActivityFilters({ ...activityFilters, action_type: e.target.value })}
+                  displayEmpty
+                  sx={{ minWidth: 200 }}
+                >
+                  <MenuItem value="">All Actions</MenuItem>
+                  <MenuItem value="login">Login</MenuItem>
+                  <MenuItem value="forecast_submit">Forecast Submit</MenuItem>
+                  <MenuItem value="session_join">Session Join</MenuItem>
+                  <MenuItem value="type_select">Type Select</MenuItem>
+                  <MenuItem value="round_complete">Round Complete</MenuItem>
+                </Select>
+                <Button variant="outlined" startIcon={<DownloadIcon />} onClick={exportActivityCSV}>
+                  Export CSV
+                </Button>
+              </Stack>
+              
+              {activities.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">No activity recorded</Typography>
+              ) : (
+                <>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Timestamp</TableCell>
+                        <TableCell>User</TableCell>
+                        <TableCell>Action</TableCell>
+                        <TableCell>Session</TableCell>
+                        <TableCell>Details</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {activities.map(a => (
+                        <TableRow key={a.id}>
+                          <TableCell>{new Date(a.timestamp).toLocaleString()}</TableCell>
+                          <TableCell>{a.user_email}</TableCell>
+                          <TableCell>
+                            <Chip label={a.action_type} size="small" />
+                          </TableCell>
+                          <TableCell>{a.session_id || '-'}</TableCell>
+                          <TableCell>{JSON.stringify(a.details)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  <TablePagination
+                    component="div"
+                    count={activityTotal}
+                    page={activityPage}
+                    onPageChange={(e, p) => setActivityPage(p)}
+                    rowsPerPage={activityLimit}
+                    onRowsPerPageChange={(e) => { setActivityLimit(parseInt(e.target.value, 10)); setActivityPage(0); }}
+                    rowsPerPageOptions={[10, 25, 50, 100]}
+                  />
+                </>
+              )}
             </Box>
           )}
         </Box>

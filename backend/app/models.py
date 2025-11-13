@@ -222,3 +222,25 @@ class ReferenceRun(db.Model):
     name = db.Column(db.String(200), nullable=False)
     data = db.Column(db.JSON, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+class ActivityLog(db.Model):
+    __tablename__ = "activity_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id = db.Column(db.Integer, db.ForeignKey("sessions.id", ondelete="CASCADE"), nullable=True, index=True)
+    cohort_id = db.Column(db.Integer, db.ForeignKey("cohorts.id", ondelete="SET NULL"), nullable=True, index=True)
+    action_type = db.Column(db.String(50), nullable=False, index=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    details = db.Column(db.JSON, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "cohort_id": self.cohort_id,
+            "action_type": self.action_type,
+            "timestamp": self.timestamp.isoformat() + "Z" if self.timestamp else None,
+            "details": self.details or {}
+        }

@@ -8,6 +8,7 @@ import os, json
 from .extensions import db, socketio
 from .models import Forecast, Session, Scenario, CohortMember, SessionPlayerType, SessionStatus
 from .models import CampaignScenario, Campaign, PlayerProgress, PlayerProgressStatus, Cohort
+from .utils import log_activity
 
 try:
     from .device_types import validate_forecast_constraints
@@ -90,6 +91,20 @@ class ForecastAPI(Resource):
         f = Forecast(session_id=data["session_id"], player_id=player_id, round_num=data["round_num"], data={"hours": data["hours"]})
         db.session.add(f)
         db.session.commit()
+        
+        # Log forecast submission activity
+        try:
+            session = Session.query.get(data["session_id"])
+            log_activity(
+                player_id, 
+                "forecast_submit", 
+                session_id=data["session_id"],
+                cohort_id=session.cohort_id if session else None,
+                details={"round": data["round_num"], "forecast_count": len(data["hours"])}
+            )
+        except Exception:
+            pass  # Don't fail forecast if logging fails
+        
         socketio.emit("player_submit", {"session_id": f.session_id, "player_id": player_id}, namespace="/trainer")
         return {"status": "ok", "id": f.id}, HTTPStatus.CREATED
 

@@ -12,6 +12,7 @@ from flask_jwt_extended import (
 
 from .extensions import db, bcrypt, jwt
 from .models import User, Invite, Role
+from .utils import log_activity
 
 
 ns = Namespace("auth", description="Authentication & Invite")
@@ -64,6 +65,13 @@ class Login(Resource):
 
         access = create_access_token(identity=str(user.id), additional_claims={"role": user.role.value})
         refresh = create_refresh_token(identity=str(user.id))
+        
+        # Log login activity
+        try:
+            log_activity(user.id, "login")
+        except Exception:
+            pass  # Don't fail login if logging fails
+        
         return {"access_token": access, "refresh_token": refresh, "user": user.to_dict()}
 
 

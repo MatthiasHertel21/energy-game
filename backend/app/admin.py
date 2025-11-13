@@ -2,9 +2,11 @@ from http import HTTPStatus
 from flask import request
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required
+from datetime import datetime, timedelta
+from sqlalchemy import func
 
 from .extensions import db, bcrypt
-from .models import User, Invite, Role
+from .models import User, Invite, Role, ActivityLog, Session, Forecast
 from . import mailer
 from .utils import role_required
 
@@ -176,3 +178,154 @@ class Invites(Resource):
                 "email_error": (None if email_sent else error),
             },
         }, HTTPStatus.CREATED
+
+@ns.route("/activity/summary")
+class ActivitySummary(Resource):
+    @jwt_required()
+    @role_required("admin")
+    def get(self):
+        """Get activity summary KPIs for dashboard."""
+        period = request.args.get("period", "30d")
+        
+        # Calculate date range
+        days = 30
+        if period == "7d":
+            days = 7
+        elif period == "90d":
+            days = 90
+        
+        from_date = datetime.utcnow() - timedelta(days=days)
+        
+        # Total users
+        total_users = User.query.count()
+        
+        # Active users (logged in during period)
+        active_users = db.session.query(func.count(func.distinct(ActivityLog.user_id)))\
+            .filter(ActivityLog.action_type == 'login')\
+            .filter(ActivityLog.timestamp >= from_date)\
+            .scalar() or 0
+        
+        # Active users 7d (for comparison)
+        from_7d = datetime.utcnow() - timedelta(days=7)
+        active_7d = db.session.query(func.count(func.distinct(ActivityLog.user_id)))\
+            .filter(ActivityLog.action_type == 'login')\
+            .filter(ActivityLog.timestamp >= from_7d)\
+            .scalar() or 0
+        
+        # Sessions started
+        sessions_started = Session.query.filter(Session.started_at >= from_date).count()
+        
+        # Sessions completed
+        sessions_completed = Session.query.filter(Session.ended_at >= from_date).count()
+        
+        # Total forecasts
+        total_forecasts = Forecast.query.count()
+        
+        # Average forecasts per session
+        avg_forecasts = 0
+        if sessions_started > 0:
+            forecast_count = db.session.query(func.count(Forecast.id))\
+                .join(Session)\
+                .filter(Session.started_at >= from_date)\
+                .scalar() or 0
+            avg_forecasts = round(forecast_count / sessions_started, 2)
+        
+        return {
+            "total_users": total_users,
+            "active_users_7d": active_7d,
+            "active_users_30d": active_users if days >= 30 else 0,
+            "sessions_started": sessions_started,
+            "sessions_completed": sessions_completed,
+            "avg_forecasts_per_session": avg_forecasts,
+            "total_forecasts": total_forecasts,
+            "period": period
+        }
+
+
+@ns.route("/activity/timeseries")
+class ActivityTimeseries(Resource):
+    @jwt_required()
+    @role_required("admin")
+    def get(self):
+        """Get activity timeseries data for charts."""
+        metric = request.args.get("metric", "logins")
+        period = request.args.get("period", "30d")
+        interval = request.args.get("interval", "daily")
+        
+        # Calculate date range
+        days = 30
+        if period == "7d":
+            days = 7
+        elif period == "90d":
+            days = 90
+        
+        from_date = datetime.utcnow() - timedelta(days=days)
+        
+        data = []
+        
+        if metric == "logins":
+            # Count logins per day
+            results = db.session.query(
+                func.date_trunc('day', ActivityLog.timestamp).label('date'),
+                func.count(ActivityLog.id).label('count')
+            ).filter(
+                ActivityLog.action_type == 'login',
+                ActivityLog.timestamp >= from_date
+            ).group_by('date').order_by('date').all()
+            
+            data = [{"date": r.date.strftime("%Y-%m-%d"), "count": r.count} for r in results]
+        
+        elif metric == "registrations":
+            # Count registrations per day
+            results = db.session.query(
+                func.date_trunc('day', User.created_at).label('date'),
+                func.count(User.id).label('count')
+            ).filter(
+                User.created_at >= from_date
+            ).group_by('date').order_by('date').all()
+            
+            data = [{"date": r.date.strftime("%Y-%m-%d"), "count": r.count} for r in results]
+        
+        elif metric == "sessions":
+            # Count sessions per day
+            results = db.session.query(
+                func.date_trunc('day', Session.started_at).label('date'),
+                func.count(Session.id).label('count')
+            ).filter(
+                Session.started_at >= from_date
+            ).group_by('date').order_by('date').all()
+            
+            data = [{"date": r.date.strftime("%Y-%m-%d"), "count": r.count} for r in results]
+        
+        return {
+            "metric": metric,
+            "interval": interval,
+            "data": data
+        }
+
+
+@ns.route("/activity/recent")
+class ActivityRecent(Resource):
+    @jwt_required()
+    @role_required("admin")
+    def get(self):
+        """Get recent activity across all users."""
+        limit = request.args.get("limit", 50, type=int)
+        
+        activities = ActivityLog.query.order_by(ActivityLog.timestamp.desc()).limit(limit).all()
+        
+        result = []
+        for activity in activities:
+            user = User.query.get(activity.user_id)
+            result.append({
+                "id": activity.id,
+                "timestamp": activity.timestamp.isoformat() + "Z" if activity.timestamp else None,
+                "user_id": activity.user_id,
+                "user_email": user.email if user else "Unknown",
+                "action_type": activity.action_type,
+                "session_id": activity.session_id,
+                "cohort_id": activity.cohort_id,
+                "details": activity.details or {}
+            })
+        
+        return {"activities": result, "total": len(result)}

@@ -5,7 +5,7 @@ from flask_jwt_extended import jwt_required, get_jwt
 
 from .extensions import db, socketio
 from .scheduler import run_rounds
-from .models import Session, SessionStatus, Scenario, SessionAllowedType, SessionPlayerType
+from .models import Session, SessionStatus, Scenario, SessionAllowedType, SessionPlayerType, ActivityLog, User
 from .utils import role_required
 import os, json
 from datetime import datetime
@@ -367,3 +367,50 @@ class SelectType(Resource):
             db.session.rollback()
             return {"error": "failed to store selection"}, HTTPStatus.INTERNAL_SERVER_ERROR
         return {"status": "ok", "type_id": tid}
+
+@ns.route("/<int:sid>/activity")
+class SessionActivity(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def get(self, sid: int):
+        """Get activity timeline for a specific session."""
+        # Validate session exists
+        Session.query.get_or_404(sid)
+        
+        # Get query parameters
+        action_type = request.args.get("action_type")
+        limit = request.args.get("limit", 50, type=int)
+        offset = request.args.get("offset", 0, type=int)
+        
+        # Build query
+        query = ActivityLog.query.filter_by(session_id=sid)
+        
+        if action_type:
+            query = query.filter_by(action_type=action_type)
+        
+        # Get total count
+        total = query.count()
+        
+        # Order and paginate
+        query = query.order_by(ActivityLog.timestamp.desc())
+        activities = query.limit(limit).offset(offset).all()
+        
+        result = []
+        for activity in activities:
+            user = User.query.get(activity.user_id)
+            result.append({
+                "id": activity.id,
+                "timestamp": activity.timestamp.isoformat() + "Z" if activity.timestamp else None,
+                "user_id": activity.user_id,
+                "user_email": user.email if user else "Unknown",
+                "user_name": user.email.split("@")[0] if user else "Unknown",
+                "action_type": activity.action_type,
+                "details": activity.details or {}
+            })
+        
+        return {
+            "activities": result,
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
