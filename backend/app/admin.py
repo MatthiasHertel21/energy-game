@@ -186,50 +186,62 @@ class ActivitySummary(Resource):
     def get(self):
         """Get activity summary KPIs for dashboard."""
         period = request.args.get("period", "30d")
-        
+
         # Calculate date range
         days = 30
         if period == "7d":
             days = 7
         elif period == "90d":
             days = 90
-        
+
         from_date = datetime.utcnow() - timedelta(days=days)
-        
+
         # Total users
         total_users = User.query.count()
-        
+
         # Active users (logged in during period)
-        active_users = db.session.query(func.count(func.distinct(ActivityLog.user_id)))\
-            .filter(ActivityLog.action_type == 'login')\
-            .filter(ActivityLog.timestamp >= from_date)\
-            .scalar() or 0
-        
+        active_users = (
+            db.session.query(func.count(func.distinct(ActivityLog.user_id)))
+            .filter(ActivityLog.action_type == "login")
+            .filter(ActivityLog.timestamp >= from_date)
+            .scalar()
+            or 0
+        )
+
         # Active users 7d (for comparison)
         from_7d = datetime.utcnow() - timedelta(days=7)
-        active_7d = db.session.query(func.count(func.distinct(ActivityLog.user_id)))\
-            .filter(ActivityLog.action_type == 'login')\
-            .filter(ActivityLog.timestamp >= from_7d)\
-            .scalar() or 0
-        
+        active_7d = (
+            db.session.query(func.count(func.distinct(ActivityLog.user_id)))
+            .filter(ActivityLog.action_type == "login")
+            .filter(ActivityLog.timestamp >= from_7d)
+            .scalar()
+            or 0
+        )
+
         # Sessions started
         sessions_started = Session.query.filter(Session.started_at >= from_date).count()
-        
-    # Sessions completed (status ended within period)
-    sessions_completed = Session.query.filter(Session.status == SessionStatus.ended, Session.updated_at >= from_date).count()
-        
+
+        # Sessions completed (status ended within period)
+        sessions_completed = Session.query.filter(
+            Session.status == SessionStatus.ended,
+            Session.updated_at >= from_date,
+        ).count()
+
         # Total forecasts
         total_forecasts = Forecast.query.count()
-        
+
         # Average forecasts per session
         avg_forecasts = 0
         if sessions_started > 0:
-            forecast_count = db.session.query(func.count(Forecast.id))\
-                .join(Session)\
-                .filter(Session.started_at >= from_date)\
-                .scalar() or 0
+            forecast_count = (
+                db.session.query(func.count(Forecast.id))
+                .join(Session)
+                .filter(Session.started_at >= from_date)
+                .scalar()
+                or 0
+            )
             avg_forecasts = round(forecast_count / sessions_started, 2)
-        
+
         return {
             "total_users": total_users,
             "active_users_7d": active_7d,
@@ -238,7 +250,7 @@ class ActivitySummary(Resource):
             "sessions_completed": sessions_completed,
             "avg_forecasts_per_session": avg_forecasts,
             "total_forecasts": total_forecasts,
-            "period": period
+            "period": period,
         }
 
 

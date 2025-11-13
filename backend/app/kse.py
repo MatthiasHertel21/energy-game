@@ -210,6 +210,21 @@ class CampaignItem(Resource):
         db.session.commit()
         return {"status": "ok"}
 
+    @jwt_required()
+    @role_required("designer", "admin")
+    def delete(self, cid: int):
+        """Delete a campaign if it is not published. Removes mappings and cohort visibility entries."""
+        c = Campaign.query.get_or_404(cid)
+        if c.published:
+            return {"error": "Cannot delete a published campaign. Unpublish first."}, HTTPStatus.CONFLICT
+        # Remove mappings and cohort visibility
+        from .models import CampaignScenario, CohortCampaign
+        CampaignScenario.query.filter_by(campaign_id=cid).delete(synchronize_session=False)
+        CohortCampaign.query.filter_by(campaign_id=cid).delete(synchronize_session=False)
+        db.session.delete(c)
+        db.session.commit()
+        return {"status": "deleted"}, HTTPStatus.NO_CONTENT
+
 
 @ns.route("/campaigns/<int:cid>/scenarios")
 class CampaignScenarios(Resource):

@@ -281,6 +281,35 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
 
 ---
 
+## New Items (post Sprint 13)
+
+27) Designer/Admin – Campaign löschen (UC-16)
+- Problem: Kampagnen lassen sich nicht vollständig entfernen.
+- Action:
+  - Backend: DELETE `/api/kse/campaigns/:id` (nur wenn `published=false`), entfernt Mappings (`campaign_scenarios`) und Cohort-Visibility (`cohort_campaigns`), löscht Campaign.
+  - Frontend: Button „Delete Campaign“ in `DesignerCampaigns.jsx` (disabled wenn published), Confirm-Dialog, Toasts.
+- Status: ✅ Implemented (Sprint 14)
+- Acceptance: Unveröffentlichte Kampagne kann gelöscht werden; Liste aktualisiert; Zuordnungen entfernt.
+
+28) DevOps – Deployment Stabilität (compose)
+- Problem: `docker-compose up -d backend` schlägt sporadisch mit `KeyError: 'ContainerConfig'` fehl.
+- Action: Deployment-Skript nutzt `docker-compose down && up -d` (ohne Volumes), optional Upgrade docker-compose/buildx.
+- Status: ⏳ Open
+- Acceptance: Redeploy reproduzierbar ohne Fehler; DB bleibt erhalten.
+
+29) Accessibility & E2E Coverage (Sprint 13 features)
+- Problem: A11y-Audits (Lighthouse/Axe) nicht dokumentiert; E2E für Activity Dashboard/Timeline/CSV fehlend.
+- Action: Lighthouse/Axe Report >90; Cypress-Suites für Admin-Activity, Cohort-Activity, Timeline.
+- Status: ⏳ Open (teilweise umgesetzt: Tests hinzugefügt)
+- Acceptance: Audits >90, grüne Cypress-Runs (Headless) in CI optional.
+
+30) Trainer – Participants Live View (UC-14)
+- Problem: Kein Live-Überblick zu Teilnehmern/Typverteilung.
+- Action: Endpoint `/api/sessions/:id/participants`, UI-Panel in Trainer.jsx.
+- Status: ⏳ Open
+- Acceptance: Live-Status, Typverteilung, Auto-Refresh.
+
+
 ## Rollout notes
 - Non-breaking; can be shipped incrementally via routes/components.
 - Suggested order: P0 → P1 → P2; weave W1/W6 into P0/P1; schedule WB in later sprints.
@@ -335,7 +364,7 @@ PT3) Player: Pre-Session Type Selection
   - ✅ Einzelne Spieler können entfernt werden.
   - ✅ Cohort kann gelöscht werden; Sessions bleiben für History erhalten.
 
-23) Trainer – Zeitliche Übersicht zu Schüleraktivitäten (UC-12) — 🚧 Planned (Sprint 13)
+23) Trainer – Zeitliche Übersicht zu Schüleraktivitäten (UC-12) — ✅ Done (Sprint 13)
 - Problem: Keine Einsicht, wann Spieler sich eingeloggt haben, Forecasts abgegeben, Runden abgeschlossen haben.
 - Status: 🚧 Planned for Sprint 13
 - Action:
@@ -353,7 +382,7 @@ PT3) Player: Pre-Session Type Selection
   - Filter funktioniert; CSV-Export erzeugt lesbare Datei.
   - Performance: Pagination/Infinite Scroll bei >1000 Events.
 
-24) Admin – Gesamtübersicht zur Benutzeraktivität (UC-13) — 🚧 Planned (Sprint 13)
+24) Admin – Gesamtübersicht zur Benutzeraktivität (UC-13) — ✅ Done (Sprint 13)
 - Problem: Keine systemweite Sicht auf Benutzeraktivität (Registrierungen, Logins, Sessions, Forecasts).
 - Status: 🚧 Planned for Sprint 13 (depends on UC-23)
 - Action:

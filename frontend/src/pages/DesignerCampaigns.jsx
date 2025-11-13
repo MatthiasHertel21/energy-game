@@ -34,6 +34,7 @@ export default function DesignerCampaigns(){
   const curr = useMemo(()=> (campaigns||[]).find(c=> c.id===selected), [campaigns, selected])
   const [detail, setDetail] = useState({ name:'', description:'', published:false, cover_image_url:'' })
   const [mapping, setMapping] = useState([])
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(()=>{
     if(!selected) return
@@ -53,6 +54,23 @@ export default function DesignerCampaigns(){
     await api.patch(`/api/kse/campaigns/${selected}`, { name: detail.name, description: detail.description, published: detail.published })
     if(window.__showSnack) window.__showSnack('Saved campaign', 'success')
     await load()
+  }
+
+  const deleteCampaign = async ()=>{
+    if(!selected) return
+    if(!window.confirm('Delete this campaign? This will remove all its scenario mappings.')) return
+    setDeleting(true)
+    try{
+      await api.delete(`/api/kse/campaigns/${selected}`)
+      if(window.__showSnack) window.__showSnack('Campaign deleted', 'success')
+      await load()
+      setSelected(null)
+    }catch(e){
+      const msg = e?.response?.data?.error || 'Failed to delete campaign'
+      if(window.__showSnack) window.__showSnack(msg, 'error')
+    }finally{
+      setDeleting(false)
+    }
   }
 
   const upload = async (e)=>{
@@ -145,7 +163,12 @@ export default function DesignerCampaigns(){
                 <input name="Name" value={detail.name} onChange={e=> setDetail({...detail, name:e.target.value})} style={{ display:'none' }} />
                 <TextField label="Description" value={detail.description} onChange={e=> setDetail({...detail, description:e.target.value})} multiline minRows={3} />
                 <FormControlLabel control={<Switch checked={!!detail.published} onChange={(e)=> setDetail({...detail, published: e.target.checked})} />} label="Published" />
-                <Button variant="contained" onClick={saveMeta}>Save</Button>
+                <Stack direction="row" spacing={1}>
+                  <Button variant="contained" onClick={saveMeta}>Save</Button>
+                  <Button variant="outlined" color="error" disabled={!!detail.published || deleting} onClick={deleteCampaign}>
+                    Delete Campaign
+                  </Button>
+                </Stack>
               </Stack>
             </Stack>
             <Divider sx={{ my:2 }} />
