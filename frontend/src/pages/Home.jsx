@@ -9,13 +9,19 @@ import {
   Button,
   Chip,
   Box,
-  Skeleton
+  Skeleton,
+  IconButton,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material'
 import {
   PlayArrow as PlayIcon,
   MenuBook as BriefingIcon,
   Assessment as ReportsIcon,
-  School as SchoolIcon
+  School as SchoolIcon,
+  Delete as DeleteIcon
 } from '@mui/icons-material'
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
@@ -24,6 +30,7 @@ import EmptyState from '../components/EmptyState'
 export default function Home() {
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(true)
+  const [deleteDialog, setDeleteDialog] = useState(null)
   const navigate = useNavigate()
 
   const load = async () => {
@@ -40,6 +47,19 @@ export default function Home() {
   useEffect(() => {
     load()
   }, [])
+
+  const confirmDelete = async () => {
+    if (!deleteDialog) return
+    try {
+      await api.delete(`/api/player/sessions/${deleteDialog.id}`)
+      if (window.__showSnack) window.__showSnack('Session deleted', 'success')
+      load()
+      setDeleteDialog(null)
+    } catch (e) {
+      const msg = e.response?.data?.error || 'Failed to delete session'
+      if (window.__showSnack) window.__showSnack(msg, 'error')
+    }
+  }
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -113,6 +133,9 @@ export default function Home() {
 
                   <Typography variant="body2" color="text.secondary" gutterBottom>
                     Cohort: {session.cohort_name || `Session ${session.id}`}
+                    {session.mode === 'isolated_per_player' && (
+                      <Chip label="Solo" size="small" sx={{ ml: 1 }} />
+                    )}
                   </Typography>
 
                   {session.started_at && (
@@ -149,12 +172,39 @@ export default function Home() {
                       Reports
                     </Button>
                   )}
+                  {session.mode === 'isolated_per_player' && (session.status === 'ended' || session.status === 'created') && (
+                    <IconButton
+                      size="small"
+                      onClick={() => setDeleteDialog(session)}
+                      color="error"
+                      title="Delete solo session"
+                      aria-label="Delete solo session"
+                      sx={{ ml: 'auto' }}
+                    >
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  )}
                 </CardActions>
               </Card>
             </Grid>
           ))}
         </Grid>
       )}
+      
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!deleteDialog} onClose={() => setDeleteDialog(null)}>
+        <DialogTitle>Delete Solo Session?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete this session? 
+            Your forecasts and results will be permanently removed.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialog(null)}>Cancel</Button>
+          <Button onClick={confirmDelete} variant="contained" color="error">Delete</Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   )
 }

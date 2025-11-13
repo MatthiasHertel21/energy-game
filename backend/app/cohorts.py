@@ -36,8 +36,48 @@ class Cohorts(Resource):
         return {"id": c.id, "name": c.name}, HTTPStatus.CREATED
 
 
+@ns.route("/<int:cid>")
+class CohortItem(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    @ns.expect(cohort_in, validate=True)
+    def patch(self, cid: int):
+        """Update cohort name."""
+        c = Cohort.query.get_or_404(cid)
+        if "name" in request.json:
+            c.name = request.json["name"]
+        db.session.commit()
+        return {"id": c.id, "name": c.name}
+
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def delete(self, cid: int):
+        """Delete cohort (cascading delete on members and campaign mappings, sessions remain)."""
+        c = Cohort.query.get_or_404(cid)
+        # Delete members
+        CohortMember.query.filter_by(cohort_id=cid).delete()
+        # Delete campaign mappings
+        CohortCampaign.query.filter_by(cohort_id=cid).delete()
+        # Delete cohort
+        db.session.delete(c)
+        db.session.commit()
+        return "", HTTPStatus.NO_CONTENT
+
+
 @ns.route("/<int:cid>/players")
 class CohortPlayers(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def get(self, cid: int):
+        """List all members of a cohort."""
+        members = (
+            db.session.query(CohortMember, User)
+            .join(User, User.id == CohortMember.user_id)
+            .filter(CohortMember.cohort_id == cid)
+            .all()
+        )
+        return [{"user_id": m.user_id, "email": u.email, "name": getattr(u, 'name', None)} for m, u in members]
+    
     @jwt_required()
     @role_required("trainer", "admin")
     @ns.expect(csv_in, validate=True)
@@ -68,6 +108,18 @@ class CohortPlayers(Resource):
                 invited += 1
         db.session.commit()
         return {"added": added, "invited": invited}
+
+
+@ns.route("/<int:cid>/players/<int:user_id>")
+class CohortPlayerItem(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def delete(self, cid: int, user_id: int):
+        """Remove player from cohort."""
+        member = CohortMember.query.filter_by(cohort_id=cid, user_id=user_id).first_or_404()
+        db.session.delete(member)
+        db.session.commit()
+        return "", HTTPStatus.NO_CONTENT
 
 
 @ns.route("/<int:cid>/campaigns")

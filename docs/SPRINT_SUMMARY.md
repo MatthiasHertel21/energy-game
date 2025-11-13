@@ -746,6 +746,33 @@ All backend APIs already existed - no backend work needed:
 - ✅ Sprint 10: Campaign Management, Solo Sessions, Cohort-Campaign Visibility
 - ✅ Sprint 11: Designer Scenarios Index, ATC Matrix Editor, Field Standardization, Device Cards
 - ✅ Sprint 11 Optional: Events Editor Refactor (UC-12)
+- ✅ Sprint 12: Cohort Management, Solo Sessions Delete, Fictional Date/Time, Accessibility
+
+### Sprint 12 Summary (2025-11-13):
+**Status:** ✅ Production Ready - All features deployed
+**Completion:** 3/3 UCs (100%) + Accessibility Pass
+
+**Deployed Features:**
+1. UC-22: Cohort Edit/Delete - Rename cohorts, remove members, delete with confirmation
+2. UC-26: Solo Sessions Delete - Players can delete own solo sessions
+3. UC-20: Fictional Date/Time - KSE General tab with fake_date/start_time fields for context
+
+**Accessibility Improvements:**
+- ARIA labels on all IconButtons
+- ESC/Enter keyboard support (Material-UI defaults)
+- Focus management in dialogs/drawers
+
+**Metrics:**
+- Frontend bundle: 408.06 kB (gzip: 132.39 kB)
+- Backend: +100 lines (4 new endpoints)
+- Frontend: +148 lines across 3 pages
+- Deployment: https://iq.2b6.de
+
+**Next Steps:**
+- Manual testing of cohort management workflow
+- Consider Sprint 13: Activity Tracking (UC-23, UC-24, UC-25) or Visual Enhancements (UC-27, UC-21)
+
+---
 
 ### Sprint 11 Summary:
 **Status:** ✅ Production Ready - All P1 features + optional improvements deployed

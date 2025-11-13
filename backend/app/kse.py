@@ -78,6 +78,19 @@ def validate_config(cfg: dict) -> list[str]:
     rounds = cfg.get("general", {}).get("rounds", 4)
     if span <= 0 or horizon // span != rounds:
         errors.append("horizon ÷ round_span must equal rounds")
+    
+    # Validate fake_date and start_time formats
+    fake_date = cfg.get("general", {}).get("fake_date")
+    if fake_date:
+        import re
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', fake_date):
+            errors.append("fake_date must be YYYY-MM-DD format")
+    
+    start_time = cfg.get("general", {}).get("start_time")
+    if start_time:
+        import re
+        if not re.match(r'^\d{2}:\d{2}$', start_time):
+            errors.append("start_time must be HH:MM format")
     fh = cfg.get("general", {}).get("forecast_horizon_hours", 48)
     if fh is None or int(fh) <= 0:
         errors.append("forecast_horizon_hours must be > 0")

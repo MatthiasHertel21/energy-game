@@ -330,6 +330,34 @@ export default function KSE(){
                 />
                 <TextField type="number" label="Player Zone (1..zones)" value={cfg.general.player_zone||1} onChange={e=>update(['general','player_zone'], Number(e.target.value))}/>
               </Stack>
+              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                <InfoLabel
+                  title="Fictional date (YYYY-MM-DD)"
+                  tooltip="Contextual date for briefings and charts. Not used in simulation, only for presentation."
+                />
+                <TextField 
+                  type="date" 
+                  label="Fictional Date" 
+                  value={cfg.general.fake_date || ''} 
+                  onChange={e=>update(['general','fake_date'], e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  helperText="Optional, e.g. 2025-06-15"
+                />
+              </Stack>
+              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                <InfoLabel
+                  title="Simulation start time (HH:MM)"
+                  tooltip="Fictional time when the first hour starts. Useful for X-axis labels in charts."
+                />
+                <TextField 
+                  type="time" 
+                  label="Start Time" 
+                  value={cfg.general.start_time || ''} 
+                  onChange={e=>update(['general','start_time'], e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  helperText="Optional, e.g. 08:00"
+                />
+              </Stack>
             </Stack>
           )}
           {tab===1 && (

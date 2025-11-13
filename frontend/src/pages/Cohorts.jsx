@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Skeleton, Box, Switch, FormControlLabel, Select, MenuItem } from '@mui/material'
+import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Skeleton, Box, Switch, FormControlLabel, Select, MenuItem, IconButton, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material'
 import { useNavigate } from 'react-router-dom'
-import { Groups as GroupsIcon } from '@mui/icons-material'
+import { Groups as GroupsIcon, Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
 
@@ -16,6 +16,10 @@ export default function Cohorts(){
   const [startScenarios, setStartScenarios] = useState([])
   const [startScenarioId, setStartScenarioId] = useState('')
   const [startMode, setStartMode] = useState('isolated_per_player')
+  const [editDialog, setEditDialog] = useState(null)
+  const [editName, setEditName] = useState('')
+  const [deleteDialog, setDeleteDialog] = useState(null)
+  const [members, setMembers] = useState([])
   const navigate = useNavigate()
   
   const load = async ()=>{ 
@@ -30,14 +34,74 @@ export default function Cohorts(){
   
   useEffect(()=>{ load() },[])
   const create = async ()=>{ await api.post('/api/cohorts', { name }); setName(''); load() }
-  const importCsv = async ()=>{ if(!selected) return; await api.post(`/api/cohorts/${selected}/players`, { csv }); setCsv('') }
+  const importCsv = async ()=>{ if(!selected) return; await api.post(`/api/cohorts/${selected}/players`, { csv }); setCsv(''); loadMembers(selected) }
+  
+  const openEdit = (cohort) => {
+    setEditDialog(cohort)
+    setEditName(cohort.name)
+  }
+  
+  const saveEdit = async () => {
+    if (!editDialog) return
+    try {
+      await api.patch(`/api/cohorts/${editDialog.id}`, { name: editName })
+      if (window.__showSnack) window.__showSnack('Cohort renamed', 'success')
+      load()
+      setEditDialog(null)
+    } catch (e) {
+      if (window.__showSnack) window.__showSnack('Failed to rename cohort', 'error')
+    }
+  }
+  
+  const openDelete = (cohort) => {
+    setDeleteDialog(cohort)
+  }
+  
+  const confirmDelete = async () => {
+    if (!deleteDialog) return
+    try {
+      await api.delete(`/api/cohorts/${deleteDialog.id}`)
+      if (window.__showSnack) window.__showSnack('Cohort deleted', 'success')
+      if (selected === deleteDialog.id) setSelected(null)
+      load()
+      setDeleteDialog(null)
+    } catch (e) {
+      if (window.__showSnack) window.__showSnack('Failed to delete cohort', 'error')
+    }
+  }
+  
+  const loadMembers = async (cid) => {
+    try {
+      const { data } = await api.get(`/api/cohorts/${cid}/members`)
+      setMembers(data || [])
+    } catch (e) {
+      setMembers([])
+    }
+  }
+  
+  const removeMember = async (userId) => {
+    if (!selected) return
+    try {
+      await api.delete(`/api/cohorts/${selected}/players/${userId}`)
+      if (window.__showSnack) window.__showSnack('Member removed', 'success')
+      loadMembers(selected)
+    } catch (e) {
+      if (window.__showSnack) window.__showSnack('Failed to remove member', 'error')
+    }
+  }
+  
   const loadCampaigns = async (cid)=>{
     try{
       const { data } = await api.get(`/api/cohorts/${cid}/campaigns`)
       setCampaigns(data||[])
     }catch(e){ setCampaigns([]) }
   }
-  useEffect(()=>{ if(selected){ loadCampaigns(selected) } },[selected])
+  useEffect(()=>{ 
+    if(selected){ 
+      loadCampaigns(selected)
+      loadMembers(selected)
+    } 
+  },[selected])
   const toggleCampaign = async (campId, key, val)=>{
     try{
       await api.patch(`/api/cohorts/${selected}/campaigns/${campId}`, { [key]: val })
@@ -103,6 +167,12 @@ export default function Cohorts(){
               <TableCell>{c.trainer_id}</TableCell>
               <TableCell>
                 <Button size="small" onClick={()=> setSelected(c.id)}>Select</Button>
+                <IconButton size="small" onClick={()=> openEdit(c)} title="Edit name" aria-label="Edit cohort name">
+                  <EditIcon fontSize="small" />
+                </IconButton>
+                <IconButton size="small" onClick={()=> openDelete(c)} title="Delete cohort" color="error" aria-label="Delete cohort">
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
               </TableCell>
             </TableRow>
           ))}
@@ -115,6 +185,34 @@ export default function Cohorts(){
           <Typography variant="subtitle1">Import Players (CSV, one email per line)</Typography>
           <TextField inputProps={{ 'data-testid': 'cohorts-csv' }} label="CSV" multiline minRows={4} value={csv} onChange={e=>setCsv(e.target.value)} />
           <Button variant="outlined" data-testid="cohorts-import-btn" onClick={importCsv}>Import</Button>
+          
+          {members.length > 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2">Members ({members.length})</Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Email</TableCell>
+                    <TableCell>Name</TableCell>
+                    <TableCell>Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {members.map(m => (
+                    <TableRow key={m.user_id}>
+                      <TableCell>{m.email}</TableCell>
+                      <TableCell>{m.name || '-'}</TableCell>
+                      <TableCell>
+                        <IconButton size="small" onClick={() => removeMember(m.user_id)} color="error" title="Remove from cohort" aria-label="Remove member from cohort">
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Box>
+          )}
         </Stack>
       )}
       {selected && (
@@ -173,6 +271,40 @@ export default function Cohorts(){
           )}
         </Box>
       )}
+      
+      {/* Edit Dialog */}
+      <Dialog open={!!editDialog} onClose={() => setEditDialog(null)}>
+        <DialogTitle>Edit Cohort Name</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Name"
+            fullWidth
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditDialog(null)}>Cancel</Button>
+          <Button onClick={saveEdit} variant="contained">Save</Button>
+        </DialogActions>
+      </Dialog>
+      
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!deleteDialog} onClose={() => setDeleteDialog(null)}>
+        <DialogTitle>Delete Cohort?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete "{deleteDialog?.name}"? 
+            All members and campaign mappings will be removed. Sessions will be preserved.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialog(null)}>Cancel</Button>
+          <Button onClick={confirmDelete} variant="contained" color="error">Delete</Button>
+        </DialogActions>
+      </Dialog>
     </Paper>
   )
 }

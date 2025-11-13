@@ -318,4 +318,30 @@ class ActiveSession(Resource):
             "freeze_hours": general.get("freeze_hours", 6),
             "scenario_name": scenario.name,
             "status": session.status.value
-        }
+        }        }
+
+
+@ns.route("/sessions/<int:sid>")
+class PlayerSessionItem(Resource):
+    @jwt_required()
+    def delete(self, sid: int):
+        """Delete a solo session if it belongs to the current user."""
+        uid = int(get_jwt_identity())
+        session = Session.query.get_or_404(sid)
+        
+        # Validate: must be isolated_per_player AND user must be member
+        if session.mode != "isolated_per_player":
+            return {"error": "Can only delete solo sessions"}, HTTPStatus.FORBIDDEN
+        
+        member = CohortMember.query.filter_by(cohort_id=session.cohort_id, user_id=uid).first()
+        if not member:
+            return {"error": "Not your session"}, HTTPStatus.FORBIDDEN
+        
+        # Delete forecasts
+        Forecast.query.filter_by(session_id=sid).delete()
+        
+        # Delete session
+        db.session.delete(session)
+        db.session.commit()
+        
+        return "", HTTPStatus.NO_CONTENT

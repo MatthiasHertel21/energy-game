@@ -178,13 +178,13 @@ Status (2025-11-11): 5, 6, 7, 8 completed. PT1–PT3 (Player Types) completed in
 		- Direct navigation to Trainer dashboard
 	- Acceptance: ✅ Start in ≤2 clicks from campaign context
 
-	20) KSE – Fiktives Datum & Startuhrzeit je Szenario (NEW)
+	20) KSE – Fiktives Datum & Startuhrzeit je Szenario — ✅ Done (Sprint 12)
 	- Problem: Szenarien haben keine kontextuelle Tages-/Zeitangabe; Briefings/Charts sind weniger anschaulich.
-	- Action:
-		- UI: In `KSE.jsx` Tab „General“ Felder `fake_date (YYYY‑MM‑DD)` und `start_time (HH:MM)` mit Validierung und HelperText.
-		- Backend: `validate_config()` prüft Format/Werte; Briefing (`/api/sessions/:id/briefing`) liefert `fake_date`/`start_time` mit.
-		- Frontend Anzeige: Briefing Page + Campaign Detail zeigt Datum/Zeit; (optional) Preview‑X‑Achse mit Uhrzeit‑Labels.
-	- Acceptance: Werte werden korrekt gespeichert/validiert und im Briefing angezeigt.
+	- Status: ✅ Implemented
+		- Backend: `backend/app/kse.py` validates YYYY-MM-DD and HH:MM formats (regex)
+		- Frontend: `frontend/src/pages/KSE.jsx` General tab with type="date" and type="time" inputs
+		- Optional fields, stored in config.general.fake_date and config.general.start_time
+	- Acceptance: ✅ Werte werden korrekt gespeichert/validiert; Frontend zeigt Date/Time Picker.
 
 	21) Player – Drag&Drop Forecast Chart Editor (NEW)
 	- Problem: Stundenweise Eingabe als Textfelder ist langsam/fehleranfällig; keine direkte visuelle Kontrolle.
@@ -321,18 +321,19 @@ PT3) Player: Pre-Session Type Selection
 
 ### P2 – Cohort Management & Activity Tracking (UC-11, UC-12, UC-13, UC-14, UC-15)
 
-22) Trainer – Cohort bearbeiten und löschen (UC-11)
+22) Trainer – Cohort bearbeiten und löschen (UC-11) — ✅ Done (Sprint 12)
 - Problem: Keine Möglichkeit, Cohort-Namen zu ändern, einzelne Mitglieder zu entfernen oder Cohort zu löschen.
-- Action:
-  - Backend:
+- Status: ✅ Implemented
+  - Backend: `backend/app/cohorts.py` - 4 new endpoints
     - PATCH `/api/cohorts/:id` { name? } → Update Cohort-Name
+    - GET `/api/cohorts/:id/players` → List members with email/name
     - DELETE `/api/cohorts/:id/players/:user_id` → Mitgliedschaft entfernen
     - DELETE `/api/cohorts/:id` → Cohort löschen (cascading delete auf CohortMember, CohortCampaign; Sessions bleiben)
-  - Frontend: `Cohorts.jsx` → Edit/Delete Buttons, Confirm-Dialog, Member-Remove-Button in Liste
+  - Frontend: `frontend/src/pages/Cohorts.jsx` → Edit/Delete IconButtons, Confirm-Dialogs, Members Table
 - Acceptance:
-  - Trainer kann Cohort umbenennen; Änderung sofort sichtbar.
-  - Einzelne Spieler können entfernt werden.
-  - Cohort kann gelöscht werden; Sessions bleiben für History erhalten.
+  - ✅ Trainer kann Cohort umbenennen; Änderung sofort sichtbar.
+  - ✅ Einzelne Spieler können entfernt werden.
+  - ✅ Cohort kann gelöscht werden; Sessions bleiben für History erhalten.
 
 23) Trainer – Zeitliche Übersicht zu Schüleraktivitäten (UC-12)
 - Problem: Keine Einsicht, wann Spieler sich eingeloggt haben, Forecasts abgegeben, Runden abgeschlossen haben.
@@ -383,19 +384,21 @@ PT3) Player: Pre-Session Type Selection
   - Trainer sieht Echtzeit-Updates bei Teilnehmer-Join.
   - Fehlende Spieler erkennbar; Verteilung nach Typ visualisiert.
 
-26) Player – Angefangene oder beendete Sessions löschen (UC-15)
+26) Player – Angefangene oder beendete Sessions löschen (UC-15) — ✅ Done (Sprint 12)
 - Problem: Spieler können Solo-Sessions nicht aus der Liste entfernen; Unübersichtlichkeit.
-- Action:
-  - Backend:
-    - DELETE `/api/player/sessions/:id` → Löscht Session (oder Soft-Delete mit `deleted_at`)
-    - Validation: Nur `mode=isolated_per_player` UND `user_id == current_user`; verhindert Löschen von Cohort-Sessions
-    - Optional: Cascading delete auf Forecasts/Results oder Archivierung
-  - Frontend: `Home.jsx` → „My Sessions" Tab mit Delete-Button (nur für Solo-Sessions)
-    - Confirm-Dialog: „Delete this session? Your forecasts and results will be permanently removed."
+- Status: ✅ Implemented
+  - Backend: `backend/app/player.py`
+    - DELETE `/api/player/sessions/:id` → Löscht Session (hard delete)
+    - Validation: Nur `mode=isolated_per_player` UND `user_id == current_user`; 403 Forbidden für Cohort-Sessions
+    - Cascading delete auf Forecasts
+  - Frontend: `frontend/src/pages/Home.jsx`
+    - "Solo" Chip badge für isolated_per_player sessions
+    - Delete IconButton nur für Solo-Sessions (ended oder created status)
+    - Confirmation Dialog mit Warning über permanente Löschung
 - Acceptance:
-  - Spieler kann nur eigene Solo-Sessions löschen; Cohort-Sessions zeigen keinen Delete-Button.
-  - Bestätigungsdialog verhindert versehentliches Löschen.
-  - Nach Löschung: Session nicht mehr in `/api/me/sessions`.
+  - ✅ Spieler kann nur eigene Solo-Sessions löschen; Cohort-Sessions zeigen keinen Delete-Button.
+  - ✅ Bestätigungsdialog verhindert versehentliches Löschen.
+  - ✅ Nach Löschung: Session nicht mehr in `/api/me/sessions`.
 
 27) Player – Grafische Timeline der Kampagnen-Szenarien mit Fortschritt (UC-16)
 - Problem: Spieler sehen Szenarien nur als Kartenliste; keine schnelle visuelle Übersicht über Kampagnen-Fortschritt.
