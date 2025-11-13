@@ -1,0 +1,151 @@
+import time
+from typing import Set
+from flask import current_app
+from .extensions import socketio
+from .models import Session, SessionStatus, Scenario, CohortMember, Forecast, Result, PlayerProgress, PlayerProgressStatus
+from .extensions import db
+from .engine import run_round, compute_zone_flows
+
+
+_running: Set[int] = set()
+
+
+def _auto_submit_missing(session_id: int, round_num: int, hours_per_round: int):
+    players = db.session.query(CohortMember.user_id).filter_by(cohort_id=db.session.query(Session.cohort_id).filter_by(id=session_id).scalar()).all()
+    player_ids = [uid for (uid,) in players]
+    for pid in player_ids:
+        exists = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=round_num).first()
+        if not exists:
+            f = Forecast(session_id=session_id, player_id=pid, round_num=round_num,
+                         data={"hours": [0.0] * hours_per_round})
+            db.session.add(f)
+            socketio.emit("player_submit", {"session_id": session_id, "player_id": pid}, namespace="/trainer")
+    db.session.commit()
+
+
+def run_rounds(session_id: int):
+    if session_id in _running:
+        return
+    _running.add(session_id)
+    try:
+        s: Session = Session.query.get(session_id)
+        if not s:
+            return
+        sc: Scenario = Scenario.query.get(s.scenario_id)
+        cfg = sc.config or {}
+        rounds = int(cfg.get("general", {}).get("rounds", 4))
+        hours_span = int(cfg.get("general", {}).get("round_span_hours", 6))
+        timer_sec = int(cfg.get("general", {}).get("round_duration_seconds", 300))
+
+        current = s.current_round or 1
+        while current <= rounds:
+            socketio.emit("round_start", {"session_id": s.id, "round": current}, namespace="/trainer")
+            socketio.emit("round_start", {"session_id": s.id, "round": current}, namespace=f"/game/{s.id}")
+            db.session.commit()
+            # countdown
+            remaining = timer_sec
+            while remaining > 0:
+                time.sleep(1)
+                remaining -= 1
+                # pause handling
+                s = Session.query.get(s.id)
+                if s and s.status == SessionStatus.paused:
+                    time.sleep(1)
+                    continue
+                socketio.emit("tick", {"session_id": s.id, "remaining": remaining}, namespace="/trainer")
+                socketio.emit("tick", {"session_id": s.id, "remaining": remaining}, namespace=f"/game/{s.id}")
+            # auto-submit for missing
+            _auto_submit_missing(s.id, current, hours_span)
+            # collect forecasts per player (full horizon if exists + this round slice fallback)
+            players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
+            forecasts = {}
+            for pid in players:
+                full = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=0).first()
+                if full:
+                    forecasts[pid] = list(full.data.get("hours", []))
+                else:
+                    r = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=current).first()
+                    forecasts[pid] = r.data.get("hours", []) if r else [0.0]*hours_span
+            # DA snapshot (round_num = -1): set on first round if not present, else use for IDM delta
+            if current == 1:
+                for pid in players:
+                    snap = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=-1).first()
+                    if not snap:
+                        snap = Forecast(session_id=s.id, player_id=pid, round_num=-1, data={"hours": forecasts.get(pid, [])})
+                        db.session.add(snap)
+                db.session.commit()
+            else:
+                # apply IDM delta for current window vs DA snapshot
+                for pid in players:
+                    snap = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=-1).first()
+                    if snap and snap.data and snap.data.get("hours"):
+                        da_hours = snap.data.get("hours")
+                        start = (current-1)*hours_span
+                        end = start + hours_span
+                        # replace current window with delta = current - DA
+                        cur = forecasts.get(pid, [])
+                        window = [(cur[i] if i < len(cur) else 0.0) - (da_hours[i] if i < len(da_hours) else 0.0) for i in range(start, end)]
+                        # keep rest as is
+                        merged = list(cur)
+                        for off, i in enumerate(range(start, end)):
+                            if i < len(merged):
+                                merged[i] = window[off]
+                        forecasts[pid] = merged
+            # run engine for this round
+            sc = Scenario.query.get(s.scenario_id)
+            res = run_round(s.id, current, players, forecasts, sc.config or {}, mode=s.mode or "isolated_per_player")
+            # persist per-player results
+            for pid, kp in (res.get("round_kpis") or {}).items():
+                data = {
+                    "kpis": kp,
+                    "mcp": res["mcp"],
+                    "volume": res["volume"],
+                }
+                r = Result(session_id=s.id, player_id=pid, round_num=current, data=data)
+                db.session.add(r)
+            db.session.commit()
+            # zone flows: assign all players to one zone per config.general.player_zone (default 1)
+            try:
+                zones = int((sc.config or {}).get('grid',{}).get('zones', 1))
+            except Exception:
+                zones = 1
+            try:
+                pzone = int((sc.config or {}).get('general',{}).get('player_zone', 1))
+            except Exception:
+                pzone = 1
+            net = [0.0]*max(1, zones)
+            # aggregate dispatched per zone (players all in pzone)
+            total_dispatch = sum(float(k.get('dispatched_mwh',0.0)) for k in (res.get('round_kpis') or {}).values())
+            if 1 <= pzone <= len(net):
+                net[pzone-1] = total_dispatch
+            curtailed_by_zone, signal_by_zone = compute_zone_flows((sc.config or {}).get('grid',{}).get('atc',[]), net)
+            # attach zone congestion signal to payload
+            zone_payload = { 'curtailed': curtailed_by_zone, 'signal': signal_by_zone }
+            payload = {"session_id": s.id, "round": current, "mcp": res["mcp"], "volume": res["volume"], "kpis": res.get("round_kpis")}
+            payload['zone'] = zone_payload
+            socketio.emit("round_results", payload, namespace="/trainer")
+            socketio.emit("market_cleared", payload, namespace=f"/game/{s.id}")
+            socketio.emit("round_end", {"session_id": s.id, "round": current}, namespace="/trainer")
+            socketio.emit("round_end", {"session_id": s.id, "round": current}, namespace=f"/game/{s.id}")
+            current += 1
+            s.current_round = current
+            db.session.add(s)
+            db.session.commit()
+        s.status = SessionStatus.ended
+        db.session.add(s)
+        db.session.commit()
+        # Mark player progress completed for any existing in_progress entries of this scenario
+        try:
+            from datetime import datetime
+            players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
+            q = db.session.query(PlayerProgress).filter(PlayerProgress.scenario_id == s.scenario_id, PlayerProgress.user_id.in_(players))
+            for pp in q.all():
+                pp.status = PlayerProgressStatus.completed
+                pp.completed_at = datetime.utcnow()
+                db.session.add(pp)
+            db.session.commit()
+        except Exception:
+            pass
+        socketio.emit("session_ended", {"session_id": s.id}, namespace="/trainer")
+    finally:
+        _running.discard(session_id)

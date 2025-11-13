@@ -1,0 +1,99 @@
+version: '3.9'
+
+services:
+  traefik:
+    image: traefik:v2.11
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+    ports:
+      - "127.0.0.1:18080:80"
+    networks:
+      - web
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - web
+    ports:
+      - "127.0.0.1:15000:5000"
+    volumes:
+      - ./uploads:/app/uploads
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.backend.rule=Host(`${TRAEFIK_DOMAIN}`) && PathPrefix(`/api`)
+      - traefik.http.routers.backend.entrypoints=web
+      - traefik.http.services.backend.loadbalancer.server.port=5000
+      - traefik.http.routers.backend-sio.rule=Host(`${TRAEFIK_DOMAIN}`) && PathPrefix(`/socket.io`)
+      - traefik.http.routers.backend-sio.entrypoints=web
+      - traefik.http.routers.uploads.rule=Host(`${TRAEFIK_DOMAIN}`) && PathPrefix(`/uploads`)
+      - traefik.http.routers.uploads.entrypoints=web
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    networks:
+      - web
+    ports:
+      - "127.0.0.1:18081:80"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.frontend.rule=Host(`${TRAEFIK_DOMAIN}`)
+      - traefik.http.routers.frontend.entrypoints=web
+      - traefik.http.services.frontend.loadbalancer.server.port=80
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - web
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    networks:
+      - web
+    restart: unless-stopped
+
+  # netdata:
+  netdata:
+    image: netdata/netdata:stable
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor:unconfined
+    ports:
+      - "19999:19999"
+    networks:
+      - web
+    restart: unless-stopped
+
+  # sentry:
+  #   image: getsentry/sentry:nightly
+  #   networks:
+  #     - web
+  #   restart: unless-stopped
+
+volumes:
+  pgdata:
+
+networks:
+  web:
+    driver: bridge

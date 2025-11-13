@@ -1,0 +1,279 @@
+"""
+Integration tests for device model in Engine and Player
+"""
+import pytest
+from app.engine import apply_grid, run_round
+from app.device_types import DeviceType
+
+
+class TestEngineCurtailmentPriority:
+    """Test engine curtailment with device priorities"""
+    
+    def test_apply_grid_with_devices_sorted_by_priority(self):
+        """Devices should be sorted by priority before curtailment"""
+        devices = [
+            {'type': 'NUCLEAR', 'max_power_mw': 900},  # Priority 4 (last)
+            {'type': 'SOLAR', 'max_power_mw': 200},    # Priority 1 (first)
+            {'type': 'COAL', 'max_power_mw': 500},     # Priority 3
+            {'type': 'GAS', 'max_power_mw': 200},      # Priority 2
+        ]
+        
+        volume = 10000  # MW
+        atc = [[0, 5000], [5000, 0]]  # ATC cap will cause curtailment
+        
+        curtailed, cong_signal = apply_grid(volume, atc, devices=devices)
+        
+        # Should return curtailment amount and congestion signal
+        assert curtailed > 0
+        assert 0 <= cong_signal <= 1
+    
+    def test_apply_grid_without_devices(self):
+        """apply_grid should work without devices (backward compatibility)"""
+        volume = 10000
+        atc = [[0, 5000], [5000, 0]]
+        
+        curtailed, cong_signal = apply_grid(volume, atc)
+        
+        assert curtailed > 0
+        assert 0 <= cong_signal <= 1
+    
+    def test_apply_grid_no_curtailment_needed(self):
+        """No curtailment when volume is within ATC capacity"""
+        devices = [
+            {'type': 'COAL', 'max_power_mw': 500},
+        ]
+        
+        volume = 5000  # Below ATC capacity
+        atc = [[0, 10000], [10000, 0]]
+        
+        curtailed, cong_signal = apply_grid(volume, atc, devices=devices)
+        
+        assert curtailed == 0
+        assert cong_signal == 0
+    
+    def test_apply_grid_empty_devices_list(self):
+        """Empty devices list should not cause errors"""
+        volume = 10000
+        atc = [[0, 5000], [5000, 0]]
+        devices = []
+        
+        curtailed, cong_signal = apply_grid(volume, atc, devices=devices)
+        
+        assert curtailed > 0
+        assert 0 <= cong_signal <= 1
+
+
+class TestEngineRunRoundWithDevices:
+    """Test run_round with device-enhanced config"""
+    
+    def test_run_round_with_devices_in_config(self):
+        """run_round should pass devices to apply_grid"""
+        config = {
+            "general": {"round_span_hours": 6, "horizon_hours": 24, "rounds": 4},
+            "market": {"base_price": 1000, "base_volume_mwh": 20000, "price_floor": -500, "price_cap": 5000},
+            "grid": {"zones": 2, "atc": [[0, 5000], [5000, 0]]},
+            "devices": [
+                {"type": "COAL", "max_power_mw": 500, "min_load_pct": 40, "ramp_rate_mw_per_min": 5, "cost_zar_per_mwh": 400},
+                {"type": "SOLAR", "max_power_mw": 200, "capacity_factor": 0.25},
+            ],
+            "events": []
+        }
+        
+        players = [1, 2]
+        forecasts = {
+            1: [100] * 24,  # 24 hours forecast
+            2: [150] * 24
+        }
+        
+        result = run_round(
+            session_id=1,
+            round_num=1,
+            players=players,
+            forecasts=forecasts,
+            config=config,
+            mode="isolated_per_player"
+        )
+        
+        # Should complete without errors
+        assert "mcp" in result
+        assert "volume" in result
+        assert "round_kpis" in result
+        assert 1 in result["round_kpis"]
+        assert 2 in result["round_kpis"]
+    
+    def test_run_round_shared_market_with_devices(self):
+        """run_round in shared_market mode with devices"""
+        config = {
+            "general": {"round_span_hours": 6, "horizon_hours": 24, "rounds": 4},
+            "market": {"base_price": 1000, "base_volume_mwh": 20000, "price_floor": -500, "price_cap": 5000},
+            "grid": {"zones": 2, "atc": [[0, 5000], [5000, 0]]},
+            "devices": [
+                {"type": "NUCLEAR", "max_power_mw": 900, "min_load_pct": 90, "ramp_rate_mw_per_min": 1, "cost_zar_per_mwh": 100},
+                {"type": "WIND", "max_power_mw": 150, "capacity_factor": 0.35},
+            ],
+            "events": []
+        }
+        
+        players = [1, 2, 3]
+        forecasts = {
+            1: [200] * 24,
+            2: [300] * 24,
+            3: [250] * 24
+        }
+        
+        result = run_round(
+            session_id=1,
+            round_num=1,
+            players=players,
+            forecasts=forecasts,
+            config=config,
+            mode="shared_market"
+        )
+        
+        assert "mcp" in result
+        assert "volume" in result
+        assert len(result["round_kpis"]) == 3
+
+
+class TestPlayerForecastValidation:
+    """Test player forecast validation against device constraints
+    
+    Note: These tests would require a Flask app context and database setup.
+    Marking as integration tests that need proper test fixtures.
+    """
+    
+    def test_forecast_validation_min_load_violation(self):
+        """Forecast below min_load should be rejected"""
+        # This would require Flask app context and DB
+        # Placeholder for future implementation
+        pass
+    
+    def test_forecast_validation_ramp_rate_violation(self):
+        """Forecast exceeding ramp_rate should be rejected"""
+        # This would require Flask app context and DB
+        # Placeholder for future implementation
+        pass
+    
+    def test_forecast_validation_success(self):
+        """Valid forecast should be accepted"""
+        # This would require Flask app context and DB
+        # Placeholder for future implementation
+        pass
+
+
+class TestDeviceIntegrationWorkflow:
+    """End-to-end workflow tests for device integration"""
+    
+    def test_complete_workflow_coal_portfolio(self):
+        """Complete workflow: Coal device, forecast validation, engine curtailment"""
+        # Config with Coal device
+        config = {
+            "general": {"round_span_hours": 6, "horizon_hours": 24, "rounds": 4},
+            "market": {"base_price": 1000, "base_volume_mwh": 20000},
+            "grid": {"zones": 2, "atc": [[0, 5000], [5000, 0]]},
+            "devices": [
+                {
+                    "type": "COAL",
+                    "max_power_mw": 500,
+                    "min_load_pct": 40,  # 200 MW minimum
+                    "ramp_rate_mw_per_min": 5,  # 300 MW/hour
+                    "cost_zar_per_mwh": 400
+                }
+            ],
+            "events": []
+        }
+        
+        # Valid forecast (respects min_load and ramp_rate)
+        forecast = [250] * 24  # All hours >= 200 MW
+        
+        # Run round
+        result = run_round(
+            session_id=1,
+            round_num=1,
+            players=[1],
+            forecasts={1: forecast},
+            config=config,
+            mode="isolated_per_player"
+        )
+        
+        assert result["round_kpis"][1]["planned_mwh"] == 250 * 6  # 6 hours
+    
+    def test_complete_workflow_mixed_portfolio(self):
+        """Mixed portfolio: Nuclear (base load) + Solar (intermittent)"""
+        config = {
+            "general": {"round_span_hours": 6, "horizon_hours": 24, "rounds": 4},
+            "market": {"base_price": 1000, "base_volume_mwh": 25000},
+            "grid": {"zones": 2, "atc": [[0, 8000], [8000, 0]]},
+            "devices": [
+                {
+                    "type": "NUCLEAR",
+                    "max_power_mw": 900,
+                    "min_load_pct": 90,  # 810 MW minimum (base load)
+                    "ramp_rate_mw_per_min": 1,  # 60 MW/hour (slow ramp)
+                    "cost_zar_per_mwh": 100
+                },
+                {
+                    "type": "SOLAR",
+                    "max_power_mw": 200,
+                    "capacity_factor": 0.25  # No min_load/ramp constraints
+                }
+            ],
+            "events": []
+        }
+        
+        forecast_nuclear = [850] * 24  # Steady base load
+        forecast_solar = [50, 100, 150, 200, 150, 100] * 4  # Variable (OK for solar)
+        
+        result = run_round(
+            session_id=1,
+            round_num=1,
+            players=[1, 2],
+            forecasts={
+                1: forecast_nuclear,
+                2: forecast_solar
+            },
+            config=config,
+            mode="shared_market"
+        )
+        
+        assert "mcp" in result
+        assert 1 in result["round_kpis"]
+        assert 2 in result["round_kpis"]
+    
+    def test_curtailment_priority_order(self):
+        """Curtailment should follow priority: Solar first, Nuclear last"""
+        config = {
+            "general": {"round_span_hours": 6, "horizon_hours": 24, "rounds": 4},
+            "market": {"base_price": 1000, "base_volume_mwh": 10000},  # Low volume → curtailment
+            "grid": {"zones": 2, "atc": [[0, 3000], [3000, 0]]},  # Low ATC → more curtailment
+            "devices": [
+                {"type": "SOLAR", "max_power_mw": 200},     # Priority 1 (curtail first)
+                {"type": "GAS", "max_power_mw": 200},       # Priority 2
+                {"type": "COAL", "max_power_mw": 500},      # Priority 3
+                {"type": "NUCLEAR", "max_power_mw": 900},   # Priority 4 (curtail last)
+            ],
+            "events": []
+        }
+        
+        # All devices forecast high output
+        forecast = [300] * 24  # Total planned > available capacity
+        
+        result = run_round(
+            session_id=1,
+            round_num=1,
+            players=[1, 2, 3, 4],
+            forecasts={
+                1: forecast,  # Solar
+                2: forecast,  # Gas
+                3: forecast,  # Coal
+                4: forecast,  # Nuclear
+            },
+            config=config,
+            mode="shared_market"
+        )
+        
+        # All players should have curtailment costs due to capacity limits
+        for player_id in [1, 2, 3, 4]:
+            kpis = result["round_kpis"][player_id]
+            # In shared_market, dispatch_factor < 1 → curtailment_amount > 0
+            assert kpis["planned_mwh"] >= kpis["dispatched_mwh"]

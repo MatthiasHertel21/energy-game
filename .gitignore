@@ -1,0 +1,28 @@
+# OS / Editor
+.DS_Store
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+coverage/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Env / Secrets
+.env
+
+# Runtime data
+uploads/
+
+# Docker
+*.log
