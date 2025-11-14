@@ -26,6 +26,7 @@ export default function Trainer(){
   const mcpRef = useRef(null)
   const volRef = useRef(null)
   const topRef = useRef(null)
+  const [participants, setParticipants] = useState({ participants: [], summary: { total: 0, joined: 0, pending: 0, by_type: {} } })
 
   useEffect(()=>{
     const s = io('/trainer', { path: '/socket.io', transports: ['websocket','polling'], forceNew: true })
@@ -84,6 +85,11 @@ export default function Trainer(){
       const b = await api.get(`/api/sessions/${sessionId}/briefing`)
       setBrief(b.data)
     }catch(_){ setBrief(null) }
+    // load participants
+    try{
+      const res = await api.get(`/api/sessions/${sessionId}/participants`)
+      setParticipants(res.data)
+    }catch(_){ setParticipants({ participants: [], summary: { total:0, joined:0, pending:0, by_type:{} } }) }
   }
 
   // load scenario types when scenarioId changes
@@ -189,6 +195,35 @@ export default function Trainer(){
         </Stack>
         <Tooltip arrow title="Sends the broadcast to session players."><span><Button onClick={broadcast} disabled={!sessionId || !message}>Send</Button></span></Tooltip>
       </Stack>
+      {/* Participants panel */}
+      {sessionId && (
+        <Paper variant="outlined" sx={{ p:2, mt:2 }}>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography variant="subtitle1">Participants</Typography>
+            <Typography variant="body2" color="text.secondary">({participants.summary.joined}/{participants.summary.total} joined)</Typography>
+            <span style={{ flex:1 }} />
+            <Button size="small" onClick={loadStatus}>Refresh</Button>
+          </Stack>
+          <Table size="small" sx={{ mt:1 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>Email</TableCell>
+                <TableCell>Status</TableCell>
+                <TableCell>Selected Type</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {participants.participants.map(p => (
+                <TableRow key={p.user_id}>
+                  <TableCell>{p.email}</TableCell>
+                  <TableCell>{p.status}</TableCell>
+                  <TableCell>{p.selected_type || '—'}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Paper>
+      )}
       {mode==='shared_market' && typesCfg.length>0 && (
         <Paper variant="outlined" sx={{ p:2, mt:2 }}>
           <Typography variant="subtitle1" gutterBottom>Allowed Player Types (shared market)</Typography>

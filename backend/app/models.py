@@ -93,6 +93,8 @@ class Campaign(db.Model):
     designer_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     cover_image_url = db.Column(db.String(512))
     published = db.Column(db.Boolean, nullable=False, default=False)
+    # Optional deterministic seed for simulations run in the context of this campaign
+    seed = db.Column(db.String(128))
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 

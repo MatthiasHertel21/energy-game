@@ -23,6 +23,7 @@ campaign_in = ns.model(
     {
         "name": fields.String(required=True),
         "description": fields.String,
+        "seed": fields.String(description="Optional deterministic seed used by simulations for this campaign"),
     },
 )
 
@@ -173,7 +174,7 @@ class Campaigns(Resource):
     def get(self):
         rows = Campaign.query.order_by(Campaign.id.desc()).all()
         return [
-            {"id": c.id, "name": c.name, "description": c.description, "designer_id": c.designer_id}
+            {"id": c.id, "name": c.name, "description": c.description, "designer_id": c.designer_id, "seed": c.seed}
             for c in rows
         ]
 
@@ -187,6 +188,7 @@ class Campaigns(Resource):
             name=data["name"],
             description=data.get("description", ""),
             designer_id=designer_id,
+            seed=data.get("seed") or None,
         )
         db.session.add(c)
         db.session.commit()
@@ -206,6 +208,8 @@ class CampaignItem(Resource):
             c.description = body.get("description") or c.description
         if "published" in body:
             c.published = bool(body.get("published"))
+        if "seed" in body:
+            c.seed = (body.get("seed") or None)
         db.session.add(c)
         db.session.commit()
         return {"status": "ok"}

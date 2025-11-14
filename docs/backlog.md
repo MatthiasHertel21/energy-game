@@ -318,6 +318,85 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
 - Status: ✅ Implemented (Sprint 14)
 - Acceptance: Stufen sichtbar, Achsen korrekt beschriftet, Legende vorhanden; Teilnehmerzahl/Gruppen wirken auf Kurvenform.
 
+32) KSE – Save/Import in Modal (UC-KSE-20)
+- Problem: Der Bereich „Save Scenario … Import“ belegt dauerhaft Platz im Editor und ist nicht kontextuell verfügbar.
+- Action:
+  - Frontend (`frontend/src/pages/KSE.jsx`): Toolbar oben mit Buttons „Save“, „Validate“, „Import/Export“.
+  - Neuer Dialog `ScenarioIODialog` (Modal): Tabs „Save/Export“ und „Import“. Import unterstützt JSON Upload + Validierung; Export liefert aktuelle Config als JSON-Datei.
+  - Schema-Versionierung: `config.version` (semver). Import prüft Version und bietet Hinweistexte/Migration (falls nötig, non-destructive, mit Preview der Änderungen).
+  - Modal-UX (typisch): zentriert, maxWidth="md", volle Breite auf XS, ScrollPaper, responsive Margins; Tastatur: Enter=Primary Action, ESC schließt; Fokus-Trap.
+  - E2E: Neue Tests für Import/Export-Fluss.
+- Acceptance:
+  - Toolbar-Button „Import/Export“ öffnet Modal; Schließen ohne Seitenscrolling.
+  - Import validiert Schema; bei Fehlern präzise Fehlermeldungen, kein Zustandsverlust.
+  - Export lädt korrekte JSON der aktuellen Scenario-Konfiguration herunter.
+  - A11y: Fokus-Trap, ESC schließt, ARIA-Labels vorhanden.
+- Status: ⏳ Planned (Sprint 14)
+
+33) KSE – Szenario-Beschreibung per Modal editieren (UC-KSE-21)
+- Problem: Beschreibung ist nicht prominent/editierbar ohne Kontextwechsel.
+- Action:
+  - Frontend: Toolbar-Button „Edit Description“ öffnet `ScenarioDescriptionDialog` (Modal) mit Markdown-Unterstützung und Live-Preview (Split-View oder Tabs „Edit“/„Preview“).
+  - Speichern aktualisiert `config.general.description` (Backend validiert Länge ≤ 2.000 Zeichen).
+  - Modal-UX (typisch): zentriert, maxWidth="sm|md" abhängig von Inhalt, responsive; ESC/Enter; Fokus-Trap.
+- Acceptance:
+  - Öffnen/Speichern/Abbrechen funktionieren; ESC schließt; Enter speichert (wenn valide).
+  - Beschreibung erscheint an allen Stellen (Briefing, Catalog/Campaign Detail) aktualisiert.
+  - Validierung verhindert leere-only-Whitespace und Überlänge; Fehlermeldung inline.
+- Status: ⏳ Planned (Sprint 14)
+
+34) KSE – „Edit Matrix“ als Modal konsolidieren (UC-KSE-22)
+- Problem: Matrix-Editor existiert bereits als Vollbild-Dialog (`components/grid/AtcEditor.jsx`), Trigger/UX jedoch nicht überall konsistent; CSV-Flow soll im Modal gebündelt werden.
+- Action:
+  - Frontend: Einheitlicher Toolbar-Button „Edit Matrix“ in `KSE.jsx` → öffnet AtcEditor Fullscreen-Dialog.
+  - Dialog bietet: Symmetrie-Lock, CSV Import/Export, Undo/Redo (min. 10 Schritte), Validierung mit Fehlerzellen-Hervorhebung.
+  - Dokumentation: Kurze Hilfe-Section im Dialog (Tooltip oder Info-Box).
+- Acceptance:
+  - Button öffnet Fullscreen-Dialog; Speichern persistiert Matrix; Abbrechen verwirft Änderungen.
+  - CSV-Import zeigt präzise Fehler (Zeile/Spalte); Export entspricht aktuellem Zustand.
+  - Tastaturkürzel: Ctrl+S speichert, ESC schließt; Fokus bleibt im Dialog.
+- Status: ⏳ Planned (Sprint 14) — Hinweis: baut auf bestehendem `AtcEditor.jsx` (Sprint 11) auf.
+
+35) KSE – Tabs „Market“, „Environment“ und „Preview“ zusammenführen (UC-KSE-23)
+- Problem: Fragmentierte Eingaben; Visualisierung getrennt von Parametern; hoher Navigationsaufwand.
+- Action:
+  - Frontend: Neue kombinierte Ansicht „Market & Preview“ in `KSE.jsx`.
+    - Layout: Zweispaltig – links Parameter (Sektionen: Market Basics, Constraints, Environment), rechts sticky Preview‑Panel (Step‑Kurven, MCP, ggf. Zeitreihe). Grid: sm=12, md=6/6; max content width lg.
+    - Live‑Update der Preview bei Parameteränderung (debounced 250–500ms).
+    - Entfernt die separaten Tabs „Market“, „Environment“, „Preview“.
+  - Tests/Docs: E2E‑Anpassungen; Hilfe‑Texte je Sektion.
+- Acceptance:
+  - Keine Datenverluste beim Refactor; Validierung unverändert oder verbessert.
+  - Preview aktualisiert sich in <500ms nach Eingabe; keine Layout‑Sprünge; kein horizontaler Scroll ≥1280px.
+  - A11y: Reihenfolge im DOM sinnvoll; Screenreader liest Sektionstitel; Keyboard‑Navigation möglich.
+- Status: ⏳ Planned (Sprint 14)
+
+36) Engine – Marktteilnehmer mit Seed‑basierter Streuung (UC-KSE-24)
+- Problem: Teilnehmer jedes Typs sind bislang identisch parametrisiert; unrealistische Homogenität.
+- Action:
+  - Backend (`backend/app/engine.py`, `engine_api.py`): Einführung einer Seed‑basierten RNG (z. B. PCG/NumPy) zur Variation pro Teilnehmer innerhalb konfigurierbarer Bereiche.
+    - Getrennte Parameter pro Typ: `capacity_variability_pct` und `marginal_cost_variability_pct` (jeweils 0–100%).
+    - Quelle Seed: `campaign.seed` (Kampagnenkontext maßgeblich). Fallback für KSE‑Preview möglich (lokaler Preview‑Seed, beeinflusst nicht die Simulation).
+  - Frontend (`KSE.jsx`): Je Typ zwei Felder „Capacity variability (%)“ und „Marginal cost variability (%)“, Default 0%; Tooltip erklärt Reproduzierbarkeit über Kampagnen‑Seed.
+  - Preview reflektiert Streuung (breitere Stufen/rauschigere Merit‑Order, MCP stabil).
+- Acceptance:
+  - Gleicher Seed ⇒ identische generierte Teilnehmer; anderer Seed ⇒ andere, aber innerhalb des Bereichs liegende Werte.
+  - Variabilität 0% ⇒ identische Teilnehmer (Status quo).
+  - Performance: Generierung ≤50ms bei 1.000 Teilnehmern.
+- Status: ⏳ Planned (Sprint 14)
+
+37) Engine – Tages‑ und Jahresverlauf berücksichtigen (UC-KSE-25)
+- Problem: Nachfrage/Erzeugung ist zeitlich konstant modelliert; es fehlen typische Tages‑/Jahresmuster.
+- Action:
+  - Backend (`engine.py`): Einführen von Zeitprofilen: diurnale Profile (24‑Punkte‑Vektor) und saisonale Faktoren (12‑Monate‑Vektor). Kombination: Nachfrage(t) = Basis × Diurnal(hour) × Seasonal(month).
+  - Frontend (`KSE.jsx`): Presets „Winter/Sommer/Werktag/Wochenende“ und JSON‑Import der Profile (kein freies In‑UI‑Editing nötig). Standard aus „Fictional date / Simulation start time“ ableiten.
+  - Preview: Zeitreihen‑Mini‑Chart für 24h mit sichtbarer Profilmodulation.
+- Acceptance:
+  - Änderung von Startdatum/Uhrzeit beeinflusst die Muster (z. B. Winter höhere Basen, Abendspitze sichtbar).
+  - Presets umschaltbar; JSON‑Import validiert (Summe ~1.0 ±5%).
+  - Engine‑API liefert konsistente Ergebnisse für gleiche Seeds/Parameter.
+- Status: ⏳ Planned (Sprint 14) — baut optional auf Item 20 (fiktives Datum) auf.
+
 
 ## Rollout notes
 - Non-breaking; can be shipped incrementally via routes/components.

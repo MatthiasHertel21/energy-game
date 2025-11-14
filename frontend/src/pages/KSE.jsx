@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu } from '@mui/material'
+import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material'
 import { Edit as EditIcon, Add as AddIcon } from '@mui/icons-material'
 import InfoLabel from '../components/InfoLabel'
 import NumberInput from '../components/inputs/NumberInput'
@@ -12,9 +12,11 @@ import EventsList from '../components/events/EventsList'
 import EventEditor from '../components/events/EventEditor'
 import api from '../services/api'
 import * as d3 from 'd3'
+import ReactMarkdown from 'react-markdown'
 
 const defaultConfig = {
-  general: { horizon_hours: 24, forecast_horizon_hours: 48, round_span_hours: 6, rounds: 4 },
+  version: '1.0.0',
+  general: { horizon_hours: 24, forecast_horizon_hours: 48, round_span_hours: 6, rounds: 4, description: '' },
   market: { base_price: 1000, base_volume_mwh: 20000, price_floor: -500, price_cap: 5000 },
   grid: { zones: 2, atc: [[0,5000],[5000,0]] },
   environment: { seed: 'preview' },
@@ -163,6 +165,11 @@ export default function KSE(){
   const [eventEditorOpen, setEventEditorOpen] = useState(false)
   const [editingEvent, setEditingEvent] = useState(null)
   const [editingEventIndex, setEditingEventIndex] = useState(null)
+  // Modals (IO + Description)
+  const [ioOpen, setIoOpen] = useState(false)
+  const [ioTab, setIoTab] = useState(0)
+  const [descOpen, setDescOpen] = useState(false)
+  const [descDraft, setDescDraft] = useState('')
 
   useEffect(()=>{
     // Load device types on mount
@@ -217,6 +224,10 @@ export default function KSE(){
 
   const save = async ()=>{
     if(!validate()) return
+    // ensure schema version on save
+    if (!cfg.version) {
+      setCfg(prev => ({ ...prev, version: '1.0.0' }))
+    }
     if (scenarioId) {
       await api.put(`/api/kse/scenarios/${scenarioId}`, { name, config: cfg })
       alert('Saved changes')
@@ -311,27 +322,43 @@ export default function KSE(){
     drawHourly(data)
   }
 
-  const exportScenario = async ()=>{
-    const id = prompt('Scenario ID to export?')
-    if(!id) return
-    const { data } = await api.get(`/api/kse/scenarios/${id}/export`)
+  const exportCurrentConfig = ()=>{
+    const data = { name, config: cfg }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = `scenario_${id}.json`; a.click(); URL.revokeObjectURL(url)
+    const a = document.createElement('a'); a.href = url; a.download = `scenario_${scenarioId || 'draft'}.json`; a.click(); URL.revokeObjectURL(url)
   }
 
-  const importScenario = async ()=>{
+  const doImport = async ()=>{
     try{
       const json = JSON.parse(importText)
+      const incomingVersion = json?.config?.version || '0.0.0'
+      const currentVersion = cfg?.version || '1.0.0'
+      if (incomingVersion !== currentVersion) {
+        const proceed = confirm(`Config version (${incomingVersion}) differs from current (${currentVersion}). Proceed?`)
+        if (!proceed) return
+      }
       const { data } = await api.post('/api/kse/scenarios/import', json)
-      alert(`Imported as #${data.id}`)
+      alert(`Imported as #${data.id}` )
+      setScenarioId(data.id)
+      setName(data.name || name)
+      setCfg(data.config || cfg)
       setImportText('')
+      setIoOpen(false)
     }catch(e){ alert('Invalid JSON') }
   }
 
   return (
     <Stack spacing={2}>
       <Typography variant="h5">KSE – Scenario Editor</Typography>
+      {/* Toolbar */}
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+        <Button variant="contained" onClick={save} disabled={errors.length>0}>Save</Button>
+        <Button variant="outlined" onClick={doPreview} disabled={errors.length>0}>Validate + Preview</Button>
+        <Button variant="outlined" startIcon={<EditIcon />} onClick={()=> setAtcEditorOpen(true)}>Edit Matrix</Button>
+        <Button variant="outlined" onClick={()=> setIoOpen(true)}>Import/Export</Button>
+        <Button variant="outlined" onClick={()=> { setDescDraft(cfg?.general?.description || ''); setDescOpen(true) }}>Edit Description</Button>
+      </Stack>
       <Stack spacing={0.5}>
         <InfoLabel
           title="Scenario name for identification"
@@ -342,13 +369,11 @@ export default function KSE(){
   <Paper sx={{ p:2 }}>
         <Tabs value={tab} onChange={(_,v)=>setTab(v)} variant="scrollable">
           <Tab label="General"/>
-          <Tab label="Market"/>
+          <Tab label="Market & Preview"/>
           <Tab label="Grid"/>
-          <Tab label="Environment"/>
           <Tab label="Events"/>
           <Tab label="Player Types"/>
           <Tab label="Scoring"/>
-          <Tab label="Preview"/>
         </Tabs>
         <Box sx={{ mt:2 }}>
           {tab===0 && (
@@ -452,67 +477,108 @@ export default function KSE(){
             </Stack>
           )}
           {tab===1 && (
-            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Baseline price level (ZAR/MWh)"
-                  tooltip="Center price used for sample supply/demand curves and previews. Influences MCP preview only."
-                />
-                <NumberInput
-                  label="Base Price"
-                  value={cfg.market.base_price}
-                  onChange={(val)=>update(['market','base_price'], val)}
-                  min={0}
-                  max={10000}
-                  step={100}
-                  unit="ZAR/MWh"
-                />
+            <Stack direction="row" spacing={2}>
+              {/* Left: Parameters */}
+              <Stack spacing={2} sx={{ minWidth: 320, flex: 1 }}>
+                <Typography variant="subtitle2">Market Basics</Typography>
+                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                    <InfoLabel title="Baseline price level (ZAR/MWh)" tooltip="Center price used for sample supply/demand curves and previews." />
+                    <NumberInput label="Base Price" value={cfg.market.base_price} onChange={(val)=>update(['market','base_price'], val)} min={0} max={10000} step={100} unit="ZAR/MWh" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                    <InfoLabel title="Baseline traded volume (MWh)" tooltip="Scales the preview supply/demand curves and initial market environment." />
+                    <NumberInput label="Base Volume" value={cfg.market.base_volume_mwh} onChange={(val)=>update(['market','base_volume_mwh'], val)} min={1000} max={100000} step={1000} unit="MWh" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                    <InfoLabel title="Minimum allowed market price" tooltip="Price floor in ZAR/MWh (e.g., -500)." />
+                    <NumberInput label="Floor" value={cfg.market.price_floor} onChange={(val)=>update(['market','price_floor'], val)} min={-1000} max={5000} step={100} unit="ZAR/MWh" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                    <InfoLabel title="Maximum allowed market price" tooltip="Price cap in ZAR/MWh (e.g., +5000)." />
+                    <NumberInput label="Cap" value={cfg.market.price_cap} onChange={(val)=>update(['market','price_cap'], val)} min={1000} max={20000} step={500} unit="ZAR/MWh" />
+                  </Stack>
+                </Stack>
+
+                <Typography variant="subtitle2">Environment</Typography>
+                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                  <Stack spacing={0.5} sx={{ minWidth: 260 }}>
+                    <InfoLabel title="Preview seed" tooltip="Used only for KSE previews. Simulation uses campaign.seed." />
+                    <TextField label="Preview Seed" value={cfg.environment.seed} onChange={e=>update(['environment','seed'], e.target.value)}/>
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 260 }}>
+                    <InfoLabel title="Participants (preview)" tooltip="Approximate number of aggregated blocks for step preview." />
+                    <TextField type="number" label="Participants" value={cfg.environment.participants || 20} onChange={e=>update(['environment','participants'], Number(e.target.value))}/>
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 260 }}>
+                    <InfoLabel title="Profiles" tooltip="Select preset diurnal/seasonal profiles or import JSON with diurnal_profile[24], seasonal_factors[12]." />
+                    <Select size="small" value={cfg.environment.profile_preset || ''} onChange={(e)=>{
+                      const p = e.target.value
+                      const presets = {
+                        '': null,
+                        'Winter Weekday': { diurnal:[0.8,0.7,0.7,0.7,0.8,0.9,1.0,1.1,1.2,1.1,1.0,0.95,0.9,0.95,1.0,1.1,1.2,1.25,1.2,1.1,1.0,0.95,0.9,0.85], seasonal:[1.1,1.1,1.05,1.0,0.95,0.9,0.9,0.9,0.95,1.0,1.05,1.1] },
+                        'Summer Weekday': { diurnal:[0.7,0.7,0.7,0.7,0.8,0.95,1.05,1.1,1.15,1.1,1.05,1.0,0.95,1.0,1.05,1.15,1.25,1.2,1.1,1.0,0.9,0.85,0.8,0.75], seasonal:[0.9,0.9,0.95,1.0,1.05,1.1,1.1,1.1,1.05,1.0,0.95,0.9] },
+                        'Weekend': { diurnal:[0.6,0.6,0.6,0.6,0.7,0.85,0.95,1.0,1.05,1.0,0.95,0.9,0.9,0.95,1.0,1.05,1.1,1.1,1.0,0.9,0.8,0.75,0.7,0.65], seasonal:[1,1,1,1,1,1,1,1,1,1,1,1] }
+                      }
+                      const sel = presets[p]
+                      update(['environment','profile_preset'], p)
+                      if (sel){
+                        update(['environment','diurnal_profile'], sel.diurnal)
+                        update(['environment','seasonal_factors'], sel.seasonal)
+                      }
+                    }} sx={{ minWidth: 220 }}>
+                      <MenuItem value=''>None</MenuItem>
+                      <MenuItem value='Winter Weekday'>Winter Weekday</MenuItem>
+                      <MenuItem value='Summer Weekday'>Summer Weekday</MenuItem>
+                      <MenuItem value='Weekend'>Weekend</MenuItem>
+                    </Select>
+                    <TextField label="Import Profiles (JSON)" placeholder='{"diurnal_profile":[...],"seasonal_factors":[...]}' multiline minRows={2} value={cfg.environment._profiles_json || ''} onChange={(e)=> update(['environment','_profiles_json'], e.target.value)} />
+                    <Button size="small" onClick={()=>{
+                      try{
+                        const val = JSON.parse(cfg.environment._profiles_json || '{}')
+                        if (Array.isArray(val.diurnal_profile) && Array.isArray(val.seasonal_factors)){
+                          update(['environment','diurnal_profile'], val.diurnal_profile)
+                          update(['environment','seasonal_factors'], val.seasonal_factors)
+                          alert('Profiles imported')
+                        } else {
+                          alert('JSON must include diurnal_profile[24] and seasonal_factors[12]')
+                        }
+                      }catch(err){ alert('Invalid JSON') }
+                    }}>Apply Profiles</Button>
+                  </Stack>
+                </Stack>
               </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Baseline traded volume (MWh)"
-                  tooltip="Scales the preview supply/demand curves and initial market environment."
-                />
-                <NumberInput
-                  label="Base Volume"
-                  value={cfg.market.base_volume_mwh}
-                  onChange={(val)=>update(['market','base_volume_mwh'], val)}
-                  min={1000}
-                  max={100000}
-                  step={1000}
-                  unit="MWh"
-                />
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Minimum allowed market price"
-                  tooltip="Price floor in ZAR/MWh (e.g., -500). MCP is clamped to [floor, cap]. Negative prices allowed."
-                />
-                <NumberInput
-                  label="Floor"
-                  value={cfg.market.price_floor}
-                  onChange={(val)=>update(['market','price_floor'], val)}
-                  min={-1000}
-                  max={5000}
-                  step={100}
-                  unit="ZAR/MWh"
-                />
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Maximum allowed market price"
-                  tooltip="Price cap in ZAR/MWh (e.g., +5000). MCP is clamped to [floor, cap]."
-                />
-                <NumberInput
-                  label="Cap"
-                  value={cfg.market.price_cap}
-                  onChange={(val)=>update(['market','price_cap'], val)}
-                  min={1000}
-                  max={20000}
-                  step={500}
-                  unit="ZAR/MWh"
-                />
-              </Stack>
+              {/* Right: Sticky Preview */}
+              <Box sx={{ width: 380 }}>
+                <Curves cfg={cfg} preview={preview} groups={groups} />
+                <Stack spacing={1} sx={{ mt:1 }}>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Stack spacing={0.5} sx={{ minWidth: 180 }}>
+                      <InfoLabel title="Preview round" tooltip="Select a round to preview." />
+                      {(() => {
+                        const totalRounds = Number(cfg?.general?.rounds || 4)
+                        const items = Array.from({ length: totalRounds }, (_, i) => i + 1)
+                        const value = Math.min(Math.max(1, Number(roundPrev) || 1), totalRounds)
+                        return (
+                          <Select size="small" value={value} onChange={e=>setRoundPrev(e.target.value)} sx={{ width: 160 }}>
+                            {items.map(r => <MenuItem key={r} value={r}>{`Round ${r}`}</MenuItem>)}
+                          </Select>
+                        )
+                      })()}
+                    </Stack>
+                    <Button variant="outlined" onClick={doPreview}>Preview MCP</Button>
+                  </Stack>
+                  {preview && <Typography sx={{ mt:1 }}>MCP: {preview.mcp} | Volume: {preview.volume}</Typography>}
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mt:2 }}>
+                    <TextField type="number" size="small" label="Hours" value={hours} onChange={e=>setHours(e.target.value)} sx={{ width: 120 }} />
+                    <Button variant="outlined" onClick={doHourly}>Hourly Preview</Button>
+                  </Stack>
+                  <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly MCP</Typography>
+                  <svg ref={mcpRef} width={360} height={120} style={{ border:'1px solid #eee' }} />
+                  <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly Volume</Typography>
+                  <svg ref={volRef} width={360} height={120} style={{ border:'1px solid #eee' }} />
+                </Stack>
+              </Box>
             </Stack>
           )}
           {tab===2 && (
@@ -557,42 +623,8 @@ export default function KSE(){
               </Box>
             </Stack>
           )}
+          {/* Environment tab removed (merged) */}
           {tab===3 && (
-            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-              <Stack spacing={0.5} sx={{ minWidth: 260 }}>
-                <InfoLabel
-                  title="Random seed for reproducibility"
-                  tooltip="Used by preview/generator/event triggers to produce repeatable results. Same seed ⇒ same randomized outcomes."
-                />
-                <TextField label="Seed" value={cfg.environment.seed} onChange={e=>update(['environment','seed'], e.target.value)}/>
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 260 }}>
-                <InfoLabel
-                  title="Number of market participants"
-                  tooltip="Approximate number of aggregated offer/ask blocks used in step preview."
-                />
-                <TextField type="number" label="Participants" value={cfg.environment.participants || 20} onChange={e=>update(['environment','participants'], Number(e.target.value))}/>
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 260 }}>
-                <InfoLabel
-                  title="Environment groups (shares)"
-                  tooltip="Define percentage shares that sum to 100%. A simple generator allocates base volume per group and splits across zones."
-                />
-                <TextField size="small" label="Solar %" type="number" value={groups.solar} onChange={e=> setGroups(g=>({...g, solar: Number(e.target.value)}))}/>
-                <TextField size="small" label="Wind %" type="number" value={groups.wind} onChange={e=> setGroups(g=>({...g, wind: Number(e.target.value)}))}/>
-                <TextField size="small" label="Gas %" type="number" value={groups.gas} onChange={e=> setGroups(g=>({...g, gas: Number(e.target.value)}))}/>
-                <TextField size="small" label="Zone 1 Split %" type="number" value={zoneSplit} onChange={e=> setZoneSplit(Number(e.target.value))}/>
-                <Button size="small" variant="outlined" onClick={async ()=>{
-                  const total = Number(groups.solar||0)+Number(groups.wind||0)+Number(groups.gas||0)
-                  if(total!==100){ alert('Group shares must sum to 100'); return }
-                  const res = await api.post('/api/kse/environment/generate', { groups, zone_split: zoneSplit, base_volume_mwh: Number(cfg.market.base_volume_mwh||20000) })
-                  setEnvGen(res.data?.environment)
-                }}>Generate Environment</Button>
-                {envGen && <Typography variant="caption">Z1: {JSON.stringify(envGen.zones['1'])} | Z2: {JSON.stringify(envGen.zones['2'])}</Typography>}
-              </Stack>
-            </Stack>
-          )}
-          {tab===4 && (
             <Stack spacing={2}>
               <Stack direction="row" justifyContent="space-between" alignItems="center">
                 <Stack spacing={0.5}>
@@ -641,7 +673,7 @@ export default function KSE(){
               />
             </Stack>
           )}
-          {tab===5 && (
+          {tab===4 && (
             <Stack spacing={2}>
               <Stack spacing={0.5}>
                 <InfoLabel
@@ -670,6 +702,14 @@ export default function KSE(){
                         const v = e.target.value === '' ? undefined : Number(e.target.value)
                         setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].zone = v; return n })
                       }} sx={{ minWidth: 160 }}/>
+                      <TextField size="small" type="number" label="Capacity variability (%)" value={pt.capacity_variability_pct ?? 0} onChange={e=>{
+                        const v = e.target.value === '' ? undefined : Number(e.target.value)
+                        setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].capacity_variability_pct = v; return n })
+                      }} sx={{ minWidth: 200 }}/>
+                      <TextField size="small" type="number" label="Marginal cost variability (%)" value={pt.marginal_cost_variability_pct ?? 0} onChange={e=>{
+                        const v = e.target.value === '' ? undefined : Number(e.target.value)
+                        setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].marginal_cost_variability_pct = v; return n })
+                      }} sx={{ minWidth: 240 }}/>
                       <Button size="small" color="error" onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.player_types.splice(idx,1); return n })}>Remove Type</Button>
                     </Stack>
                     
@@ -764,39 +804,7 @@ export default function KSE(){
               <Button variant="outlined" onClick={()=> setCfg(prev=> ({ ...prev, player_types: [...(prev.player_types||[]), { id:'', name:'', devices:[] }] }))}>Add Player Type</Button>
             </Stack>
           )}
-          {tab===6 && (
-            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Round-trip efficiency (0–1)"
-                  tooltip="Fractional efficiency used for State of Charge updates. Typical 0.85."
-                />
-                <TextField type="number" label="Efficiency" value={cfg.storage.efficiency} onChange={e=>update(['storage','efficiency'], Number(e.target.value))}/>
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Energy capacity (MWh)"
-                  tooltip="Usable storage energy capacity in MWh. Sets SoC bounds and interacts with device power rating."
-                />
-                <TextField type="number" label="Capacity (MWh)" value={cfg.storage.capacity_mwh} onChange={e=>update(['storage','capacity_mwh'], Number(e.target.value))}/>
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Power rating (MW)"
-                  tooltip="Maximum charge/discharge power in MW. Limits how quickly storage can charge or discharge."
-                />
-                <TextField type="number" label="Power Rating (MW)" value={cfg.storage.power_rating_mw || 50} onChange={e=>update(['storage','power_rating_mw'], Number(e.target.value))}/>
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Initial State of Charge (%)"
-                  tooltip="Starting SoC as percentage of capacity. Default 50% means storage starts half-full."
-                />
-                <TextField type="number" label="Initial SoC (%)" value={cfg.storage.initial_soc_pct || 50} onChange={e=>update(['storage','initial_soc_pct'], Number(e.target.value))}/>
-              </Stack>
-            </Stack>
-          )}
-          {tab===6 && (
+          {tab===5 && (
             <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
               <Stack spacing={0.5} sx={{ minWidth: 220 }}>
                 <InfoLabel
@@ -821,62 +829,13 @@ export default function KSE(){
               </Stack>
             </Stack>
           )}
-          {tab===7 && (
-            <Stack direction="row" spacing={2} alignItems="center">
-              <Curves cfg={cfg} preview={preview} groups={groups} />
-              <Box>
-                <Stack spacing={0.5} sx={{ mb:1 }}>
-                  <InfoLabel
-                    title="Quick preview of clearing"
-                    tooltip="Step curves for supply and demand. MCP from engine preview shown as dashed line."
-                  />
-                </Stack>
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <Stack spacing={0.5} sx={{ minWidth: 180 }}>
-                    <InfoLabel
-                      title="Preview round"
-                      tooltip="Select a round to preview. Events with trigger_type=round or prob that are active for the selected round are applied."
-                    />
-                    {(() => {
-                      const totalRounds = Number(cfg?.general?.rounds || 4)
-                      const items = Array.from({ length: totalRounds }, (_, i) => i + 1)
-                      const value = Math.min(Math.max(1, Number(roundPrev) || 1), totalRounds)
-                      return (
-                        <Select size="small" value={value} onChange={e=>setRoundPrev(e.target.value)} sx={{ width: 160 }}>
-                          {items.map(r => <MenuItem key={r} value={r}>{`Round ${r}`}</MenuItem>)}
-                        </Select>
-                      )
-                    })()}
-                  </Stack>
-                  <Button variant="outlined" onClick={doPreview}>Preview MCP</Button>
-                </Stack>
-                {preview && <Typography sx={{ mt:1 }}>MCP: {preview.mcp} | Volume: {preview.volume}</Typography>}
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ mt:2 }}>
-                  <TextField type="number" size="small" label="Hours" value={hours} onChange={e=>setHours(e.target.value)} sx={{ width: 120 }} />
-                  <Button variant="outlined" onClick={doHourly}>Hourly Preview</Button>
-                </Stack>
-                <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly MCP</Typography>
-                <svg ref={mcpRef} width={360} height={120} style={{ border:'1px solid #eee' }} />
-                <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly Volume</Typography>
-                <svg ref={volRef} width={360} height={120} style={{ border:'1px solid #eee' }} />
-              </Box>
-            </Stack>
-          )}
+          {/* Preview tab removed (merged) */}
         </Box>
       </Paper>
       {errors.length>0 && <Paper sx={{p:2}}>
         <Typography color="error">{errors.join(' · ')}</Typography>
       </Paper>}
-      <Stack direction="row" spacing={2}>
-  <Button variant="contained" onClick={save} disabled={errors.length>0}>Save Scenario</Button>
-  <Button variant="outlined" onClick={doPreview} disabled={errors.length>0}>Validate + Preview</Button>
-        <Button variant="outlined" onClick={exportScenario}>Export JSON</Button>
-      </Stack>
-      <Paper sx={{ p:2 }} data-testid="kse-import-section">
-        <Typography variant="subtitle1">Import Scenario (JSON)</Typography>
-  <TextField inputProps={{ 'data-testid': 'kse-import-json' }} fullWidth multiline minRows={4} value={importText} onChange={e=>setImportText(e.target.value)} placeholder="{ name, config: {...} }"/>
-  <Button data-testid="kse-import-btn" sx={{ mt:1 }} onClick={importScenario}>Import</Button>
-      </Paper>
+  {/* Bottom actions removed: now in toolbar and modal */}
 
       {/* ATC Matrix Editor Modal */}
       <AtcEditor
@@ -924,6 +883,54 @@ export default function KSE(){
           })
         }}
       />
+      {/* Import/Export Modal */}
+      <Dialog open={ioOpen} onClose={()=> setIoOpen(false)} fullWidth maxWidth="md" aria-label="Scenario Import Export">
+        <DialogTitle>Scenario Import / Export</DialogTitle>
+        <DialogContent dividers>
+          <Tabs value={ioTab} onChange={(_,v)=> setIoTab(v)}>
+            <Tab label="Save/Export"/>
+            <Tab label="Import"/>
+          </Tabs>
+          <Box sx={{ mt:2 }}>
+            {ioTab===0 && (
+              <Stack spacing={1}>
+                <Typography variant="body2">Schema version: {cfg.version || '1.0.0'}</Typography>
+                <Button variant="outlined" onClick={exportCurrentConfig}>Download JSON</Button>
+              </Stack>
+            )}
+            {ioTab===1 && (
+              <Stack spacing={1}>
+                <Typography variant="body2">Paste scenario JSON below. Version will be checked and migration hints shown if needed.</Typography>
+                <TextField fullWidth multiline minRows={8} value={importText} onChange={e=>setImportText(e.target.value)} placeholder='{"name":"...","config":{...}}' />
+              </Stack>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setIoOpen(false)}>Close</Button>
+          {ioTab===1 && <Button variant="contained" onClick={doImport}>Import</Button>}
+        </DialogActions>
+      </Dialog>
+
+      {/* Description Modal (Markdown) */}
+      <Dialog open={descOpen} onClose={()=> setDescOpen(false)} fullWidth maxWidth="md" aria-label="Scenario Description">
+        <DialogTitle>Edit Scenario Description (Markdown)</DialogTitle>
+        <DialogContent dividers>
+          <Stack direction={{ xs:'column', md:'row' }} spacing={2}>
+            <TextField label="Markdown" multiline minRows={10} value={descDraft} onChange={e=> setDescDraft(e.target.value)} sx={{ flex: 1 }} />
+            <Paper variant="outlined" sx={{ p:1, flex: 1, overflow:'auto', bgcolor:'background.default' }}>
+              <Typography variant="subtitle2" sx={{ mb:1 }}>Preview</Typography>
+              <Box sx={{ '& h1,h2,h3':{ mt:1 }, '& p':{ mb:1 } }}>
+                <ReactMarkdown>{descDraft || '*No content*'}</ReactMarkdown>
+              </Box>
+            </Paper>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setDescOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={()=> { update(['general','description'], descDraft); setDescOpen(false) }}>Save</Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   )
 }

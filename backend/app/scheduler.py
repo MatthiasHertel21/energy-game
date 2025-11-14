@@ -6,6 +6,7 @@ from .models import Session, SessionStatus, Scenario, CohortMember, Forecast, Re
 from .extensions import db
 from .utils import log_activity
 from .engine import run_round, compute_zone_flows
+from .models import PlayerProgress, Campaign
 
 
 _running: Set[int] = set()
@@ -92,9 +93,24 @@ def run_rounds(session_id: int):
                             if i < len(merged):
                                 merged[i] = window[off]
                         forecasts[pid] = merged
+            # Determine campaign seed if available (derive from player progress entries for this scenario)
+            camp_seed = None
+            try:
+                # collect distinct campaign_ids across players for this scenario
+                camp_ids = set(
+                    cid for (cid,) in db.session.query(PlayerProgress.campaign_id)
+                    .filter(PlayerProgress.scenario_id == s.scenario_id, PlayerProgress.user_id.in_(players))
+                    .distinct().all()
+                )
+                if len(camp_ids) == 1:
+                    camp = Campaign.query.get(next(iter(camp_ids)))
+                    if camp and camp.seed:
+                        camp_seed = str(camp.seed)
+            except Exception:
+                camp_seed = None
             # run engine for this round
             sc = Scenario.query.get(s.scenario_id)
-            res = run_round(s.id, current, players, forecasts, sc.config or {}, mode=s.mode or "isolated_per_player")
+            res = run_round(s.id, current, players, forecasts, sc.config or {}, mode=s.mode or "isolated_per_player", seed=camp_seed)
             # persist per-player results
             for pid, kp in (res.get("round_kpis") or {}).items():
                 data = {

@@ -5,7 +5,7 @@ from flask_jwt_extended import jwt_required, get_jwt
 
 from .extensions import db, socketio
 from .scheduler import run_rounds
-from .models import Session, SessionStatus, Scenario, SessionAllowedType, SessionPlayerType, ActivityLog, User
+from .models import Session, SessionStatus, Scenario, SessionAllowedType, SessionPlayerType, ActivityLog, User, CohortMember
 from .utils import role_required, log_activity
 import os, json
 from datetime import datetime
@@ -64,6 +64,59 @@ class SessionItem(Resource):
         sc = Scenario.query.get(s.scenario_id)
         general = (sc.config or {}).get("general", {}) if sc else {}
         return {"id": s.id, "status": s.status.value, "scenario_id": s.scenario_id, "current_round": s.current_round, "general": general, "mode": s.mode, "scenario_name": (sc.name if sc else None)}
+
+
+participants_out = ns.model(
+    "Participants",
+    {
+        "participants": fields.List(fields.Raw(description="{ user_id, email, name, status, selected_type, joined_at }")),
+        "summary": fields.Raw(description="{ total, joined, pending, by_type }"),
+    },
+)
+
+
+@ns.route("/<int:sid>/participants")
+class SessionParticipants(Resource):
+    @jwt_required()
+    @ns.marshal_with(participants_out)
+    def get(self, sid: int):
+        """List participants for a session: joined (selected a type) and pending (cohort members without selection)."""
+        s = Session.query.get_or_404(sid)
+        # Get cohort members
+        members = db.session.query(CohortMember.user_id, User.email, User.name).join(User, User.id == CohortMember.user_id).filter(CohortMember.cohort_id == s.cohort_id).all()
+        member_ids = [uid for (uid, _, _) in members]
+        # Get selected types
+        sel = db.session.query(SessionPlayerType).filter_by(session_id=sid).all()
+        selected_by_user = {row.user_id: row for row in sel}
+        out = []
+        by_type = {}
+        joined = 0
+        for uid, email, name in members:
+            row = selected_by_user.get(uid)
+            if row:
+                status = "joined"
+                joined += 1
+                t = row.type_id
+                by_type[t] = by_type.get(t, 0) + 1
+                out.append({
+                    "user_id": uid,
+                    "email": email,
+                    "name": name,
+                    "status": status,
+                    "selected_type": row.type_id,
+                    "joined_at": getattr(row, 'created_at', None),
+                })
+            else:
+                out.append({
+                    "user_id": uid,
+                    "email": email,
+                    "name": name,
+                    "status": "pending",
+                })
+        return {
+            "participants": out,
+            "summary": {"total": len(member_ids), "joined": joined, "pending": max(0, len(member_ids) - joined), "by_type": by_type},
+        }
 
 
 @ns.route("/<int:sid>/briefing")

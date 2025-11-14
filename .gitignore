@@ -17,6 +17,9 @@ coverage/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/cypress/screenshots/
+frontend/cypress/videos/
+frontend/cypress/downloads/
 
 # Env / Secrets
 .env

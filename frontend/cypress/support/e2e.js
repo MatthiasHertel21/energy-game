@@ -1,4 +1,5 @@
 // Cypress support - can add commands here
+import 'cypress-axe'
 
 // Ignore app uncaught exceptions so tests can proceed when UI throws non-critical errors in mocked flows
 Cypress.on('uncaught:exception', (err) => {

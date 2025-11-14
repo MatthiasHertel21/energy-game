@@ -56,14 +56,59 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
     return round(price, 1), vol
 
 
-def generate_curves_from_config(cfg: dict) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
-    # Simple generator: linear supply/demand around base points influenced by config
+def _avg_variability(cfg: dict) -> Tuple[float, float]:
+    """Return average capacity and marginal cost variability (as fractions 0..1) from player_types config."""
+    pts = cfg.get("player_types") or []
+    if not pts:
+        return 0.0, 0.0
+    cap = 0.0
+    mc = 0.0
+    n = 0
+    for pt in pts:
+        cap += max(0.0, float(pt.get("capacity_variability_pct", 0.0)))
+        mc += max(0.0, float(pt.get("marginal_cost_variability_pct", 0.0)))
+        n += 1
+    if n == 0:
+        return 0.0, 0.0
+    return cap / n / 100.0, mc / n / 100.0
+
+
+def generate_curves_from_config(cfg: dict, seed: Optional[str] = None) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+    """
+    Step-wise supply and demand curves around base points influenced by config.
+    Adds seed-based jitter based on average variability across player types.
+    """
     market = cfg.get("market", {})
     base_price = float(market.get("base_price", 1000))
     base_vol = float(market.get("base_volume_mwh", 20000))
-    # build 20 steps
-    supply = [(base_price - 400 + i * 50, base_vol / 20) for i in range(20)]
-    demand = [(base_price + 400 - i * 50, base_vol / 20) for i in range(20)]
+    steps = 20
+
+    # Seed for reproducibility
+    # Priority: explicit seed argument > cfg.environment.seed > default "preview"
+    env_seed = seed if seed is not None else (cfg.get("environment", {}) or {}).get("seed") or "preview"
+    seeded(str(env_seed))
+
+    cap_var, mc_var = _avg_variability(cfg)  # 0..1
+
+    supply: List[Tuple[float, float]] = []
+    demand: List[Tuple[float, float]] = []
+    for i in range(steps):
+        # Base price ladder
+        p_s = base_price - 400 + i * (800 / max(1, steps - 1))
+        p_d = base_price + 400 - i * (800 / max(1, steps - 1))
+        # Apply marginal cost variability as price jitter proportionally to ladder span
+        if mc_var > 0:
+            jitter_s = (random.uniform(-mc_var, mc_var)) * 50.0
+            jitter_d = (random.uniform(-mc_var, mc_var)) * 50.0
+            p_s = p_s + jitter_s
+            p_d = p_d + jitter_d
+        # Base volume per step
+        v = base_vol / steps
+        # Apply capacity variability as volume jitter
+        if cap_var > 0:
+            v = max(0.0, v * (1.0 + random.uniform(-cap_var, cap_var)))
+        supply.append((p_s, v))
+        demand.append((p_d, v))
     return supply, demand
 
 
@@ -121,8 +166,9 @@ def select_events_for_round(events: list[dict], round_num: int) -> list[dict]:
 
 
 def preview_from_config(cfg: dict, seed: str = "preview", round_num: int | None = None) -> dict:
+    # use provided seed consistently across generation
     seeded(seed)
-    supply, demand = generate_curves_from_config(cfg)
+    supply, demand = generate_curves_from_config(cfg, seed=seed)
     price, vol = clear_market(supply, demand,
                               price_floor=cfg.get("market", {}).get("price_floor", -500),
                               price_cap=cfg.get("market", {}).get("price_cap", 5000))
@@ -214,7 +260,7 @@ def compute_zone_flows(atc: List[List[float]], net_pos: List[float], losses: flo
     return curtailed, signal
 
 
-def run_round(session_id: int, round_num: int, players: List[int], forecasts: Dict[int, List[float]], config: dict, mode: str = "isolated_per_player") -> dict:
+def run_round(session_id: int, round_num: int, players: List[int], forecasts: Dict[int, List[float]], config: dict, mode: str = "isolated_per_player", seed: Optional[str] = None) -> dict:
     """
     Compute basic market results for a round. Simplified rules:
     - Build synthetic S/D curves from config.
@@ -224,7 +270,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     """
     span = int(config.get("general", {}).get("round_span_hours", 6))
     base_idx = (round_num - 1) * span
-    supply, demand = generate_curves_from_config(config)
+    supply, demand = generate_curves_from_config(config, seed=seed)
     price, vol = clear_market(supply, demand,
                               price_floor=config.get("market", {}).get("price_floor", -500),
                               price_cap=config.get("market", {}).get("price_cap", 5000))
