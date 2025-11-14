@@ -23,28 +23,119 @@ const defaultConfig = {
   scoring: { weights: { profit: 0.6, imbalance: 0.3, curtailment: 0.1 } },
 }
 
-function Curves({ cfg }){
-  const { pointsS, pointsD, mcp } = useMemo(()=>{
-    const baseP = Number(cfg.market.base_price||1000)
-    const baseV = Number(cfg.market.base_volume_mwh||20000)
-    const steps = 20
-    const s = Array.from({length:steps}, (_,i)=>({ p: baseP-400+i*50, v: baseV/steps }))
-    const d = Array.from({length:steps}, (_,i)=>({ p: baseP+400-i*50, v: baseV/steps }))
-    const maxP = baseP+500, minP = baseP-500
-    const scaleX = (p)=> (p-minP)/(maxP-minP)*300
-    const scaleY = (idx)=> idx/steps*150
-    const pointsS = s.map((row,i)=> `${scaleX(row.p)},${150-scaleY(i)}`).join(' ')
-    const pointsD = d.map((row,i)=> `${scaleX(row.p)},${150-scaleY(i)}`).join(' ')
-    const mcpX = scaleX(baseP)
-    return { pointsS, pointsD, mcp: mcpX }
-  },[cfg])
-  return (
-    <svg width={360} height={180} style={{border:'1px solid #ddd'}}>
-      <polyline points={pointsS} fill="none" stroke="#2e7d32" strokeWidth={2}/>
-      <polyline points={pointsD} fill="none" stroke="#c62828" strokeWidth={2}/>
-      <line x1={mcp} x2={mcp} y1={0} y2={180} stroke="#1976d2" strokeDasharray="4 4"/>
-    </svg>
-  )
+function Curves({ cfg, preview, groups }){
+  // Step supply/demand preview with axes and legend
+  const ref = useRef(null)
+  useEffect(() => {
+    const svg = d3.select(ref.current)
+    svg.selectAll('*').remove()
+    const M = { top: 16, right: 16, bottom: 28, left: 48 }
+    const W = 360 - M.left - M.right
+    const H = 180 - M.top - M.bottom
+    const g = svg.attr('width', 360).attr('height', 180).append('g').attr('transform', `translate(${M.left},${M.top})`)
+
+    const baseP = Number(cfg.market.base_price || 1000)
+    const baseV = Number(cfg.market.base_volume_mwh || 20000)
+    const participants = Math.max(2, Number(cfg?.environment?.participants || 20))
+    const dist = groups || { solar: 40, wind: 30, gas: 30 }
+    const distArr = Object.entries(dist)
+    const totalShare = distArr.reduce((s, [, v]) => s + Number(v || 0), 0) || 100
+
+    // Build block volumes by groups, then split into ~participants blocks
+    const rng = d3.randomLcg((cfg.environment?.seed || 'step').split('').reduce((a, c) => a + c.charCodeAt(0), 0) % 2147483647 / 2147483647)
+    let blocks = []
+    distArr.forEach(([k, pct]) => {
+      const vol = baseV * (Number(pct || 0) / totalShare)
+      // number of blocks for this group proportional to share
+      const n = Math.max(1, Math.round(participants * (Number(pct || 0) / totalShare)))
+      const avg = vol / n
+      for (let i = 0; i < n; i++) {
+        // jitter volume per block ±15%
+        const jitter = 1 + (rng() - 0.5) * 0.3
+        blocks.push({ group: k, volume: Math.max(0, avg * jitter) })
+      }
+    })
+    // normalize to baseV
+    const sumV = blocks.reduce((s, b) => s + b.volume, 0) || 1
+    blocks.forEach(b => (b.volume = (b.volume / sumV) * baseV))
+
+    // Supply prices increasing, Demand prices decreasing
+    const minP = baseP - 500
+    const maxP = baseP + 500
+    // assign price levels
+    const supply = blocks
+      .slice()
+      .sort((a, b) => a.volume - b.volume)
+      .map((b, i) => ({ q: b.volume, p: minP + (i / Math.max(1, blocks.length - 1)) * (maxP - minP) }))
+    const demand = blocks
+      .slice()
+      .sort((a, b) => b.volume - a.volume)
+      .map((b, i) => ({ q: b.volume, p: maxP - (i / Math.max(1, blocks.length - 1)) * (maxP - minP) }))
+
+    // Build cumulative x (quantity) for step plot (price vs quantity)
+    const cum = (arr) => {
+      let acc = 0
+      return arr.map(({ q, p }) => ({ x0: acc, x1: (acc += q), p }))
+    }
+    const sCum = cum(supply)
+    const dCum = cum(demand)
+    const xMax = Math.max(d3.sum(supply, (d) => d.q), d3.sum(demand, (d) => d.q))
+
+    const x = d3.scaleLinear().domain([0, xMax]).range([0, W])
+    const y = d3.scaleLinear().domain([minP, maxP]).nice().range([H, 0])
+
+    // axes
+    g.append('g').attr('transform', `translate(0,${H})`).call(d3.axisBottom(x).ticks(5))
+    g.append('g').call(d3.axisLeft(y).ticks(5))
+    g.append('text').attr('x', W / 2).attr('y', H + 24).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 10).text('Quantity (MWh)')
+    g.append('text').attr('transform', 'rotate(-90)').attr('x', -H / 2).attr('y', -36).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 10).text('Price (ZAR/MWh)')
+
+    // step paths
+    const toStep = (arr) => {
+      const pts = []
+      arr.forEach(({ x0, x1, p }, i) => {
+        // horizontal segment from x0 to x1 at price p, then vertical to next price
+        pts.push([x(x0), y(p)])
+        pts.push([x(x1), y(p)])
+      })
+      return pts
+    }
+    const sPts = toStep(sCum)
+    const dPts = toStep(dCum)
+
+    g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2)
+    g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', '#c62828').attr('stroke-width', 2)
+
+    // MCP line (horizontal at preview.mcp if available)
+    const mcpVal = Number(preview?.mcp)
+    if (!Number.isNaN(mcpVal)) {
+      g.append('line')
+        .attr('x1', 0)
+        .attr('x2', W)
+        .attr('y1', y(mcpVal))
+        .attr('y2', y(mcpVal))
+        .attr('stroke', '#1976d2')
+        .attr('stroke-dasharray', '4 4')
+      g.append('text')
+        .attr('x', W - 4)
+        .attr('y', y(mcpVal) - 4)
+        .attr('text-anchor', 'end')
+        .attr('fill', '#1976d2')
+        .attr('font-size', 10)
+        .text(`MCP ${mcpVal}`)
+    }
+
+    // Legend
+    const legend = svg.append('g').attr('transform', `translate(${M.left + 4},${M.top + 4})`)
+    legend.append('rect').attr('x', 0).attr('y', 0).attr('width', 10).attr('height', 10).attr('fill', '#2e7d32')
+    legend.append('text').attr('x', 14).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('Supply')
+    legend.append('rect').attr('x', 70).attr('y', 0).attr('width', 10).attr('height', 10).attr('fill', '#c62828')
+    legend.append('text').attr('x', 84).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('Demand')
+    legend.append('line').attr('x1', 140).attr('x2', 150).attr('y1', 5).attr('y2', 5).attr('stroke', '#1976d2').attr('stroke-dasharray', '4 4')
+    legend.append('text').attr('x', 156).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('MCP')
+  }, [cfg, preview, groups])
+
+  return <svg ref={ref} width={360} height={180} style={{ border: '1px solid #ddd' }} />
 }
 
 export default function KSE(){
@@ -477,6 +568,13 @@ export default function KSE(){
               </Stack>
               <Stack spacing={0.5} sx={{ minWidth: 260 }}>
                 <InfoLabel
+                  title="Number of market participants"
+                  tooltip="Approximate number of aggregated offer/ask blocks used in step preview."
+                />
+                <TextField type="number" label="Participants" value={cfg.environment.participants || 20} onChange={e=>update(['environment','participants'], Number(e.target.value))}/>
+              </Stack>
+              <Stack spacing={0.5} sx={{ minWidth: 260 }}>
+                <InfoLabel
                   title="Environment groups (shares)"
                   tooltip="Define percentage shares that sum to 100%. A simple generator allocates base volume per group and splits across zones."
                 />
@@ -725,12 +823,12 @@ export default function KSE(){
           )}
           {tab===7 && (
             <Stack direction="row" spacing={2} alignItems="center">
-              <Curves cfg={cfg} />
+              <Curves cfg={cfg} preview={preview} groups={groups} />
               <Box>
                 <Stack spacing={0.5} sx={{ mb:1 }}>
                   <InfoLabel
                     title="Quick preview of clearing"
-                    tooltip="Runs a lightweight preview using base price/volume and current settings to estimate MCP and volume."
+                    tooltip="Step curves for supply and demand. MCP from engine preview shown as dashed line."
                   />
                 </Stack>
                 <Stack direction="row" spacing={1} alignItems="center">

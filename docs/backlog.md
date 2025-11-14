@@ -309,6 +309,15 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
 - Status: ⏳ Open
 - Acceptance: Live-Status, Typverteilung, Auto-Refresh.
 
+31) KSE – Marktvorschau als Stufenkurven (UC-17)
+- Problem: Vorschau zeigt geglättete Linien; Markt sollte als Angebots-/Nachfrage-Stufen (Merit-Order) visualisiert werden.
+- Action:
+  - Frontend: `KSE.jsx` – Step-Darstellung (Quantity×Price), Achsenbeschriftung, Legende (Supply/Demand/MCP).
+  - Parameter: Teilnehmerzahl, Gesamtvolumen, Gruppenverteilung (Producer/Consumer) – zufällige Verteilung innerhalb der Gruppen, Seed für Reproduzierbarkeit.
+  - MCP: horizontale Linie aus Engine-Preview.
+- Status: ✅ Implemented (Sprint 14)
+- Acceptance: Stufen sichtbar, Achsen korrekt beschriftet, Legende vorhanden; Teilnehmerzahl/Gruppen wirken auf Kurvenform.
+
 
 ## Rollout notes
 - Non-breaking; can be shipped incrementally via routes/components.
