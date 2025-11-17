@@ -5,6 +5,7 @@ import { io } from 'socket.io-client'
 import api from '../services/api'
 import * as d3 from 'd3'
 import { exportSVG, exportPNG } from '../utils/exportSvg'
+import DocsFab from '../components/DocsFab'
 
 export default function Trainer(){
   const [cohortId, setCohortId] = useState('1')
@@ -508,6 +509,7 @@ export default function Trainer(){
         <Typography variant="subtitle1" sx={{ mt:2 }}>Top Devices (by assigned players)</Typography>
         <svg ref={devFreqRef} width={360} height={150} style={{border:'1px solid #eee'}} />
       </>}
+      <DocsFab href="/docs/trainer" label="Open Trainer Handbook" />
     </Paper>
   )
 }

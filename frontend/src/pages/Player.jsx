@@ -13,8 +13,11 @@ import {
   CardContent,
   Grid,
   CircularProgress,
-  Chip
+  Chip,
+  LinearProgress
 } from '@mui/material'
+import { BarChart, ViewList, InfoOutlined } from '@mui/icons-material'
+import { IconButton } from '@mui/material'
 import InfoLabel from '../components/InfoLabel'
 import ForecastChartEditor from '../components/ForecastChartEditor'
 import EventNotification from '../components/EventNotification'
@@ -75,6 +78,7 @@ export default function Player() {
   })
   const [status, setStatus] = useState('pending')
   const [timeRemaining, setTimeRemaining] = useState(null)
+  const [initialDuration, setInitialDuration] = useState(null)
   const [mode, setMode] = useState('isolated_per_player')
   const [typeDialogOpen, setTypeDialogOpen] = useState(false)
   const [allowedTypes, setAllowedTypes] = useState([])
@@ -102,7 +106,7 @@ export default function Player() {
         const { data } = await api.get('/api/player/active-session')
         if (data.session_id) {
           setSessionId(data.session_id)
-          setTimeRemaining(data.time_remaining || 0)
+          setTimeRemaining(data.time_remaining ?? null)
         } else {
           showSnack('No active session found. Please start a session from Home.', 'info')
           navigate('/home')
@@ -139,6 +143,17 @@ export default function Player() {
         })
         setStatus(data.status || 'pending')
         setMode(data.mode || 'isolated_per_player')
+        // Initialize countdown immediately if running (before first tick arrives)
+        try{
+          if ((data.status || 'pending') === 'running'){
+            const initial = Number((gen.round_duration_seconds || 300))
+            const safe = isFinite(initial) ? initial : 300
+            setInitialDuration(safe)
+            setTimeRemaining(safe)
+          } else {
+            setInitialDuration(Number(gen.round_duration_seconds || 300))
+          }
+        }catch(_){ /* ignore */ }
 
         // Load briefing for types
         try{
@@ -166,9 +181,34 @@ export default function Player() {
           }
         }catch(_){ /* ignore */ }
 
-        // Load saved full forecast
+        // Load saved full forecast and seed defaults if empty
         const saved = await api.get(`/api/player/forecast/full`, { params: { session_id: Number(sessionId) } })
-        setHours(saved.data?.hours || Array.from({ length: fh }, () => 0))
+        const savedHours = Array.isArray(saved.data?.hours) ? saved.data.hours : null
+        const hasNonZero = Array.isArray(savedHours) ? savedHours.some(v => Number(v) !== 0) : false
+        const genDefaultProfile = (len)=>{
+          // simple diurnal shape repeated; scaled baseline 50 MWh
+          const diurnal = [0.6,0.6,0.6,0.6,0.7,0.85,1.0,1.15,1.25,1.2,1.1,1.0,0.95,1.0,1.05,1.15,1.2,1.25,1.15,1.0,0.9,0.8,0.7,0.65]
+          const base = 50
+          return Array.from({length: len}, (_,i)=> Number((base * diurnal[i%24]).toFixed(2)))
+        }
+        if (hasNonZero) {
+          setHours(savedHours)
+        } else {
+          if (data.mode === 'shared_market' && selectedType && (typeDevices||[]).length>0){
+            const n = (typeDevices||[]).length
+            const perDev = Math.max(1, Math.round(50/n))
+            const devDefaults = {}
+            ;(typeDevices||[]).forEach(did=>{
+              devDefaults[did] = genDefaultProfile(fh).map(v=> Number((v * (perDev/50)).toFixed(2)))
+            })
+            setDeviceHours(devDefaults)
+            // aggregate
+            const agg = Array.from({length: fh}, (_,h)=> (typeDevices||[]).reduce((sum, did)=> sum + (devDefaults[did]?.[h]||0), 0))
+            setHours(agg)
+          } else {
+            setHours(genDefaultProfile(fh))
+          }
+        }
       } catch (error) {
         console.error('Failed to load session config:', error)
         showSnack('Failed to load session configuration', 'error')
@@ -349,6 +389,8 @@ export default function Player() {
     const freeze = Number(cfg.general.freeze_hours || 6)
     return Math.min(Number(cfg.general.forecast_horizon_hours || 24), (r - 1) * span + freeze)
   }, [cfg])
+  // Freeze override for round 1: allow editing even if freeze covers first round
+  const effectiveLockedUntil = useMemo(()=> (Number(cfg.current_round||1) === 1 ? 0 : lockedUntil), [cfg, lockedUntil])
 
   const onChange = (i, val) => setHours((prev) => prev.map((v, idx) => (idx === i ? Number(val) : v)))
   const onDeviceChange = (did, i, val) => {
@@ -409,13 +451,13 @@ export default function Player() {
   const startIdx = (cur - 1) * span
   const endIdx = startIdx + span
   const editableIdx = new Set(
-    Array.from({ length: span }, (_, k) => startIdx + k).filter((i) => i >= lockedUntil && i < hours.length)
+    Array.from({ length: span }, (_, k) => startIdx + k).filter((i) => i >= effectiveLockedUntil && i < hours.length)
   )
 
   const isValid = useMemo(() => {
     return Array.from(editableIdx).every((i) => Number.isFinite(Number(hours[i])))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hours, lockedUntil, cfg])
+  }, [hours, effectiveLockedUntil, cfg])
 
   if (loading) {
     return (
@@ -508,33 +550,45 @@ export default function Player() {
                 </Typography>
                 <Typography variant="body2">h{lockedUntil}</Typography>
               </Box>
+              {timeRemaining !== null && initialDuration && initialDuration>0 && (
+                <Box sx={{ mt: 1 }}>
+                  <Typography variant="caption" color="text.secondary">Round progress</Typography>
+                  <LinearProgress variant="determinate" value={Math.min(100, Math.max(0, Math.round(((initialDuration - timeRemaining) * 100) / initialDuration)))} />
+                </Box>
+              )}
             </CardContent>
           </Card>
 
           {/* Live KPIs Placeholder */}
           <Card sx={{ mt: 2 }}>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Live KPIs
-              </Typography>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                <Typography variant="h6">Live KPIs</Typography>
+                <Tooltip
+                  title={
+                    'Updates after each round when the market clears.\nMCP = Market Clearing Price; Volume = total traded energy in the round.'
+                  }
+                  placement="left"
+                >
+                  <IconButton size="small" aria-label="Live KPIs info">
+                    <InfoOutlined fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
               {live ? (
-                <>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                    <Typography variant="body2" color="text.secondary">
-                      MCP (Round {live.round})
-                    </Typography>
-                    <Typography variant="body2">{live.mcp} ZAR/MWh</Typography>
-                  </Box>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="body2" color="text.secondary">
-                      Volume
-                    </Typography>
-                    <Typography variant="body2">{live.volume} MWh</Typography>
-                  </Box>
-                </>
+                <Stack spacing={1}>
+                  <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                    <Typography variant="body2" color="text.secondary">MCP (Round {live.round})</Typography>
+                    <Chip size="small" color="primary" label={`${live.mcp} ZAR/MWh`} />
+                  </Stack>
+                  <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                    <Typography variant="body2" color="text.secondary">Volume</Typography>
+                    <Chip size="small" color="secondary" label={`${live.volume} MWh`} />
+                  </Stack>
+                </Stack>
               ) : (
                 <Typography variant="body2" color="text.secondary">
-                  Waiting for market data...
+                  Waiting for market data... Results appear after each round.
                 </Typography>
               )}
             </CardContent>
@@ -609,44 +663,59 @@ export default function Player() {
               </Stack>
             ) : (
               <>
-              {useChartEditor && (
-                <Box sx={{ mb: 2 }}>
-                  <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-                    <Typography variant="subtitle2">Chart Editor (drag points to edit)</Typography>
-                    <Button size="small" onClick={()=> setUseChartEditor(false)}>Switch to fields</Button>
-                  </Stack>
-                  <ForecastChartEditor hours={hours} lockedUntil={lockedUntil} onChange={(i, val)=> onChange(i, val)} />
-                </Box>
-              )}
-              {!useChartEditor && (
-              <Stack direction="row" spacing={1} sx={{ mt: 2, flexWrap: 'wrap' }}>
-                {hours.map((v, i) => {
-                  const disabled = i < lockedUntil || timeRemaining === 0
-                  return (
-                    <Tooltip
-                      key={i}
-                      arrow
-                      title={`Hour h${i + 1}: Forecast quantity in MWh. ${disabled ? 'Locked (within freeze window)' : 'Editable'}`}
-                    >
-                      <TextField
-                        label={`h${i + 1}`}
-                        value={v}
-                        onChange={(e) => onChange(i, e.target.value)}
-                        size="small"
-                        type="number"
-                        disabled={disabled}
-                        sx={{ width: 90, m: 0.5 }}
-                      />
-                    </Tooltip>
-                  )
-                })}
-              </Stack>
-              )}
-              {!useChartEditor && (
-                <Box sx={{ mt: 1 }}>
-                  <Button size="small" onClick={()=> setUseChartEditor(true)}>Switch to chart editor</Button>
-                </Box>
-              )}
+                {/* Unified editor header with toggle */}
+                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                  <Typography variant="subtitle2">
+                    {useChartEditor ? 'Chart Editor (drag points to edit)' : 'Fields Editor'}
+                  </Typography>
+                  {useChartEditor ? (
+                    <Button size="small" startIcon={<ViewList fontSize="small" />} onClick={()=> setUseChartEditor(false)}>Switch to fields</Button>
+                  ) : (
+                    <Button size="small" startIcon={<BarChart fontSize="small" />} onClick={()=> setUseChartEditor(true)}>Switch to chart</Button>
+                  )}
+                </Stack>
+                {useChartEditor ? (
+                  <Box sx={{ mb: 2 }}>
+                    <ForecastChartEditor hours={hours} lockedUntil={effectiveLockedUntil} onChange={(i, val)=> onChange(i, val)} />
+                  </Box>
+                ) : (
+                  <Box sx={{ mt: 2 }}>
+                    {(() => {
+                      const chunkSize = 12
+                      const chunks = []
+                      for (let i = 0; i < hours.length; i += chunkSize) {
+                        chunks.push(i)
+                      }
+                      return (
+                        <Stack spacing={1.5}>
+                          {chunks.map((start) => (
+                            <Grid container spacing={1} key={start} alignItems="center">
+                              {Array.from({ length: Math.min(chunkSize, hours.length - start) }, (_, k) => start + k).map((i) => {
+                                const disabled = i < effectiveLockedUntil || timeRemaining === 0
+                                return (
+                                  <Grid item xs={2} sm={1} key={i}>
+                                    <Tooltip arrow title={`Hour h${i + 1}: ${disabled ? 'Locked (freeze)' : 'Editable'}`}>
+                                      <TextField
+                                        label={`h${i + 1}`}
+                                        value={hours[i]}
+                                        onChange={(e) => onChange(i, e.target.value)}
+                                        size="small"
+                                        type="number"
+                                        disabled={disabled}
+                                        fullWidth
+                                        sx={{ minWidth: 84 }}
+                                      />
+                                    </Tooltip>
+                                  </Grid>
+                                )
+                              })}
+                            </Grid>
+                          ))}
+                        </Stack>
+                      )
+                    })()}
+                  </Box>
+                )}
               </>
             )}
 

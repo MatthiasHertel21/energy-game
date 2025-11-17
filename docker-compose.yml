@@ -8,7 +8,7 @@ services:
       - --providers.docker.exposedbydefault=false
       - --entrypoints.web.address=:80
     ports:
-      - "127.0.0.1:18080:80"
+      - "18080:80"
     networks:
       - web
     volumes:
@@ -24,7 +24,7 @@ services:
     networks:
       - web
     ports:
-      - "127.0.0.1:15000:5000"
+      - "15000:5000"
     volumes:
       - ./uploads:/app/uploads
     labels:
@@ -36,19 +36,32 @@ services:
       - traefik.http.routers.backend-sio.entrypoints=web
       - traefik.http.routers.uploads.rule=Host(`${TRAEFIK_DOMAIN}`) && PathPrefix(`/uploads`)
       - traefik.http.routers.uploads.entrypoints=web
+      # Local fallback (no Host) for localhost:18080
+      - traefik.http.routers.backend-local.rule=PathPrefix(`/api`)
+      - traefik.http.routers.backend-local.entrypoints=web
+      - traefik.http.routers.backend-sio-local.rule=PathPrefix(`/socket.io`)
+      - traefik.http.routers.backend-sio-local.entrypoints=web
+      - traefik.http.routers.uploads-local.rule=PathPrefix(`/uploads`)
+      - traefik.http.routers.uploads-local.entrypoints=web
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_BASE=${VITE_API_BASE}
     networks:
       - web
     ports:
-      - "127.0.0.1:18081:80"
+      - "18081:80"
     labels:
       - traefik.enable=true
       - traefik.http.routers.frontend.rule=Host(`${TRAEFIK_DOMAIN}`)
       - traefik.http.routers.frontend.entrypoints=web
       - traefik.http.services.frontend.loadbalancer.server.port=80
+      # Local fallback (no Host) for localhost:18080
+      - traefik.http.routers.frontend-local.rule=PathPrefix(`/`)
+      - traefik.http.routers.frontend-local.entrypoints=web
     depends_on:
       - backend
     restart: unless-stopped

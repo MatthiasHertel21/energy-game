@@ -44,8 +44,23 @@ export default function CampaignDetail(){
       const body = { scenario_id, campaign_id: Number(id) }
       const { data:resp } = await api.post('/api/player/solo-sessions', body)
       if(window.__showSnack) window.__showSnack('Solo session started', 'success')
-      navigate('/player')
+      if (resp && resp.session_id) {
+        navigate(`/player?sessionId=${resp.session_id}`)
+      } else {
+        navigate('/player')
+      }
     }catch(e){/* handled by interceptor */}
+  }
+
+  const resetScenario = async (scenario_id)=>{
+    if(!window.confirm('Reset your progress for this scenario? This will remove your solo sessions and forecasts.')) return
+    try{
+      await api.post('/api/player/reset-scenario', { campaign_id: Number(id), scenario_id })
+      if(window.__showSnack) window.__showSnack('Scenario reset', 'success')
+      // reload details
+      const { data } = await api.get(`/api/catalog/campaigns/${id}`)
+      setData(data)
+    }catch(e){ /* handled by interceptor */ }
   }
   
   const handleTimelineClick = (scenario_id) => {
@@ -102,6 +117,10 @@ export default function CampaignDetail(){
                       <Stack spacing={0.5}>
                         <InfoLabel title="Solo play" tooltip="Start a solo session in isolated market mode if enabled by designer." />
                         <Button disabled={!sc.solo_enabled} variant="contained" onClick={()=> startSolo(sc.scenario_id)}>Play solo</Button>
+                      </Stack>
+                      <Stack spacing={0.5}>
+                        <InfoLabel title="Reset" tooltip="Reset your progress for this scenario, including solo sessions and forecasts." />
+                        <Button variant="outlined" color="error" onClick={()=> resetScenario(sc.scenario_id)}>Reset</Button>
                       </Stack>
                       <Stack spacing={0.5}>
                         <InfoLabel title="Trainer cohort" tooltip="Join an active trainer session if available in your cohorts." />

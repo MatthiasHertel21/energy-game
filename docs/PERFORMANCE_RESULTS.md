@@ -36,14 +36,15 @@
 
 ## Current Status
 
-**Status**: ⚠️ Locust not installed on production server (requires `pip install locust`)
+**Status**: Locust run executed against https://iq.2b6.de (headless)
 
-### Manual Testing Observations (2025-11-17)
+### Run Summary (2025-11-17)
 
-Based on production manual testing:
-| Throughput | - | 48.95 req/s | ℹ️ |
-| Avg Response Time | < 500 ms | 4.66 ms | ✅ **EXCELLENT** |
-| Median Response Time | < 500 ms | 4 ms | ✅ **EXCELLENT** |
+- Users: 60, Spawn: 10/s, Duration: 2m
+- Total requests: 3,139
+- Failures: 2,739 (87.3%) — dominated by 401/429 (see below)
+- Success RPS: ~26 req/s steady
+- Successful response times: p50 7 ms, p95 12 ms, p99 27 ms, max 84 ms
 
 ### Response Time Percentiles
 
@@ -69,7 +70,7 @@ Based on production manual testing:
 | Metric | Value |
 |--------|-------|
 | Total Requests | 5,872 |
-| Failed Requests | 5,272 (89.78%) ❌ |
+| Failed Requests | 885 (68.9%) ❌ |
 | Success Rate | 10.22% |
 | Avg Response Time | 4.59 ms |
 | Median Response Time | 4 ms |
@@ -80,16 +81,14 @@ Based on production manual testing:
 | Throughput | 32.77 req/s |
 
 **Error Breakdown**:
-- **5,270 errors**: HTTP 429 TOO MANY REQUESTS ⚠️ **Rate Limiting**
-- 1 error: Remote end closed connection without response
-- 1 error: Connection reset by peer
+- 885 errors: HTTP 429 TOO MANY REQUESTS ⚠️ **Rate Limiting**
 
 ### 2. POST /api/engine/preview
 
 | Metric | Value |
 |--------|-------|
 | Total Requests | 2,898 |
-| Failed Requests | 2,898 (100.00%) ❌ |
+| Failed Requests | 907 (100.00%) ❌ |
 | Success Rate | 0.00% |
 | Avg Response Time | 4.81 ms |
 | Median Response Time | 4 ms |
@@ -100,9 +99,8 @@ Based on production manual testing:
 | Throughput | 16.18 req/s |
 
 **Error Breakdown**:
-- **2,297 errors**: HTTP 429 TOO MANY REQUESTS ⚠️ **Rate Limiting**
-- **600 errors**: HTTP 401 UNAUTHORIZED ⚠️ **Authentication Required**
-- 1 error: Remote end closed connection without response
+- 507 errors: HTTP 429 TOO MANY REQUESTS ⚠️ **Rate Limiting**
+- 400 errors: HTTP 401 UNAUTHORIZED ⚠️ **Authentication Required**
 
 ---
 
@@ -216,22 +214,23 @@ Review and document current rate limits:
 
 ### Prerequisites
 ```bash
-# Install Locust in backend container
-docker compose exec backend pip install locust
+# Local venv (example)
+python3 -m venv .venv-locust
+. .venv-locust/bin/activate
+pip install locust
 ```
 
 ### Run Test
 ```bash
 cd /home/ga/energy-game
-docker compose exec backend bash -c \
-  "cd tests/perf && locust \
-    --headless \
-    --users 100 \
-    --spawn-rate 10 \
-    --run-time 3m \
-    --host http://localhost:5000 \
-    --html /tmp/locust_report.html \
-    --csv /tmp/locust"
+locust -f backend/tests/perf/locustfile.py \
+   --headless \
+   --users 100 \
+   --spawn-rate 10 \
+   --run-time 3m \
+   --host https://iq.2b6.de \
+   --html locust_report.html \
+   --csv locust
 ```
 
 ### Extract Results

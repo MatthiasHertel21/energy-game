@@ -26,6 +26,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
+import DocsFab from '../components/DocsFab'
 
 export default function Home() {
   const [sessions, setSessions] = useState([])
@@ -205,6 +206,7 @@ export default function Home() {
           <Button onClick={confirmDelete} variant="contained" color="error">Delete</Button>
         </DialogActions>
       </Dialog>
+      <DocsFab href="/docs/player" label="Open Player Handbook" />
     </Container>
   )
 }

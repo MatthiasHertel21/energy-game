@@ -122,7 +122,7 @@ jobs:
             --browser chrome \
             --headless \
             --config video=false \
-            --spec "cypress/e2e/smoke.cy.js,cypress/e2e/404.cy.js,cypress/e2e/a11y.cy.js,cypress/e2e/campaign-timeline.cy.js,cypress/e2e/admin-sessions.cy.js,cypress/e2e/player-chart-editor.cy.js"
+            --spec "cypress/e2e/smoke.cy.js,cypress/e2e/404.cy.js,cypress/e2e/a11y.cy.js,cypress/e2e/campaign-timeline.cy.js,cypress/e2e/admin-sessions.cy.js,cypress/e2e/player-chart-editor.cy.js,cypress/e2e/kse-tabs-hash.cy.js,cypress/e2e/kse-grid-atc-inline.cy.js"
       
       - name: Upload Cypress screenshots (on failure)
         uses: actions/upload-artifact@v4

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Paper, Typography, Table, TableHead, TableBody, TableRow, TableCell, Select, MenuItem, TextField, Button, Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, Box, Skeleton, Tabs, Tab, Grid, Card, CardContent, Chip } from '@mui/material'
 import { PersonAdd as PersonAddIcon } from '@mui/icons-material'
 import api from '../services/api'
+import DocsFab from '../components/DocsFab'
 import EmptyState from '../components/EmptyState'
 
 const roles = ['player','trainer','designer','admin']
@@ -534,6 +535,7 @@ export default function AdminUsers(){
       )}
 
       <Snackbar open={!!snack} autoHideDuration={3000} onClose={()=>setSnack('')} message={snack} />
+      <DocsFab href="/docs/admin" label="Open Admin Handbook" />
     </Paper>
   )
 }

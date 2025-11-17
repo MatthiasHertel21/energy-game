@@ -8,6 +8,7 @@ import os, json
 from .extensions import db, socketio
 from .models import Forecast, Session, Scenario, CohortMember, SessionPlayerType, SessionStatus
 from .models import CampaignScenario, Campaign, PlayerProgress, PlayerProgressStatus, Cohort
+from .models import SessionAllowedType, Result, ActivityLog
 from .utils import log_activity
 
 try:
@@ -266,8 +267,15 @@ class SoloSessions(Resource):
         cm = CohortMember(cohort_id=c.id, user_id=uid)
         db.session.add(cm)
 
-        # Create session
-        s = Session(cohort_id=c.id, scenario_id=scenario_id, status=None, mode="isolated_per_player")
+        # Create session (start immediately; scheduler will run rounds)
+        from datetime import datetime
+        s = Session(
+            cohort_id=c.id,
+            scenario_id=scenario_id,
+            mode="isolated_per_player",
+            status=SessionStatus.running,
+            started_at=datetime.utcnow(),
+        )
         db.session.add(s)
         db.session.flush()
 
@@ -322,8 +330,8 @@ class ActiveSession(Resource):
         config = scenario.config or {}
         general = config.get("general", {})
         
-        # Time remaining is tracked live via WebSocket ticks; return 0 as initial value
-        time_remaining = 0
+        # Time remaining is tracked live via WebSocket ticks; return None initially to avoid false "time is up"
+        time_remaining = None
 
         return {
             "session_id": session.id,
@@ -360,3 +368,95 @@ class PlayerSessionItem(Resource):
         db.session.commit()
         
         return "", HTTPStatus.NO_CONTENT
+
+
+@ns.route("/reset-scenario")
+class ResetScenario(Resource):
+    @jwt_required()
+    def post(self):
+        """Reset all progress for the current player for a given campaign+scenario.
+
+        Body: { campaign_id: int, scenario_id: int }
+        - Set PlayerProgress to not_started, clear timestamps
+        - Delete any solo sessions (isolated_per_player) of this player for the scenario, including forecasts/results
+        - Remove related cohort(s) created for those solo sessions
+        """
+        body = request.json or {}
+        uid = int(get_jwt_identity())
+        campaign_id = body.get("campaign_id")
+        scenario_id = body.get("scenario_id")
+        if not campaign_id or not scenario_id:
+            return {"error": "campaign_id and scenario_id required"}, HTTPStatus.BAD_REQUEST
+
+        # Reset PlayerProgress
+        pp = PlayerProgress.query.filter_by(user_id=uid, campaign_id=int(campaign_id), scenario_id=int(scenario_id)).first()
+        if pp:
+            pp.status = PlayerProgressStatus.not_started
+            pp.started_at = None
+            pp.completed_at = None
+            db.session.add(pp)
+
+        # Find solo sessions for this user and scenario
+        solo_sessions = (
+            db.session.query(Session)
+            .join(CohortMember, CohortMember.cohort_id == Session.cohort_id)
+            .filter(
+                CohortMember.user_id == uid,
+                Session.scenario_id == int(scenario_id),
+                Session.mode == "isolated_per_player",
+            )
+            .all()
+        )
+        for s in solo_sessions:
+            # Capture cohort before deleting session
+            cohort_id = s.cohort_id
+            sid = s.id
+            # Delete forecasts and results tied to session
+            Forecast.query.filter_by(session_id=sid).delete(synchronize_session=False)
+            Result.query.filter_by(session_id=sid).delete(synchronize_session=False)
+            # Delete player type selections/allowed types (if any)
+            SessionPlayerType.query.filter_by(session_id=sid).delete(synchronize_session=False)
+            SessionAllowedType.query.filter_by(session_id=sid).delete(synchronize_session=False)
+            # Delete activity logs for this session
+            ActivityLog.query.filter_by(session_id=sid).delete(synchronize_session=False)
+            # Delete the session itself
+            db.session.delete(s)
+            db.session.flush()
+            # Clean up cohort and its membership (solo cohorts are per-session)
+            try:
+                if cohort_id:
+                    # Remove any activity logs tied to this cohort (may have session_id NULL)
+                    ActivityLog.query.filter_by(cohort_id=cohort_id).delete(synchronize_session=False)
+                    CohortMember.query.filter_by(cohort_id=cohort_id).delete(synchronize_session=False)
+                    # Delete cohort only if no sessions remain for it
+                    remaining = db.session.query(Session.id).filter_by(cohort_id=cohort_id).first()
+                    if not remaining:
+                        c = Cohort.query.get(cohort_id)
+                        if c:
+                            db.session.delete(c)
+            except Exception:
+                pass
+
+        # Clean personal data in cohort sessions for this scenario (do not delete sessions)
+        cohort_sessions = (
+            db.session.query(Session)
+            .join(CohortMember, CohortMember.cohort_id == Session.cohort_id)
+            .filter(
+                CohortMember.user_id == uid,
+                Session.scenario_id == int(scenario_id),
+                Session.mode != "isolated_per_player",
+            )
+            .all()
+        )
+        for s in cohort_sessions:
+            sid = s.id
+            # Remove this player's forecasts/results from the cohort session
+            Forecast.query.filter_by(session_id=sid, player_id=uid).delete(synchronize_session=False)
+            Result.query.filter_by(session_id=sid, player_id=uid).delete(synchronize_session=False)
+            # Remove type selection for this player (if any)
+            SessionPlayerType.query.filter_by(session_id=sid, user_id=uid).delete(synchronize_session=False)
+            # Remove player's activity logs for this session
+            ActivityLog.query.filter_by(session_id=sid, user_id=uid).delete(synchronize_session=False)
+
+        db.session.commit()
+        return {"status": "ok"}

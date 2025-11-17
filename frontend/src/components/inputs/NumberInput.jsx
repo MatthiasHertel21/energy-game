@@ -1,6 +1,6 @@
 import React from 'react';
-import { TextField, InputAdornment, IconButton } from '@mui/material';
-import { Add as AddIcon, Remove as RemoveIcon } from '@mui/icons-material';
+import { TextField, InputAdornment, IconButton, Tooltip } from '@mui/material';
+import { Add as AddIcon, Remove as RemoveIcon, InfoOutlined as InfoIcon } from '@mui/icons-material';
 
 /**
  * NumberInput - Standardized numeric input with stepper buttons and units
@@ -16,6 +16,7 @@ import { Add as AddIcon, Remove as RemoveIcon } from '@mui/icons-material';
  * @param {string} helperText - Helper/error text
  * @param {boolean} error - Error state
  * @param {boolean} required - Required field
+ * @param {string} tooltip - Optional tooltip text; shows a help icon in the field
  */
 export default function NumberInput({
   label,
@@ -29,6 +30,7 @@ export default function NumberInput({
   helperText = '',
   error = false,
   required = false,
+  tooltip = '',
   ...props
 }) {
   const handleIncrement = () => {
@@ -66,6 +68,10 @@ export default function NumberInput({
       required={required}
       fullWidth
       size="small"
+      InputLabelProps={{
+        shrink: true,
+        sx: { whiteSpace: 'normal', lineHeight: 1.2 }
+      }}
       InputProps={{
         startAdornment: (
           <InputAdornment position="start">
@@ -81,6 +87,13 @@ export default function NumberInput({
         ),
         endAdornment: unit ? (
           <InputAdornment position="end">
+            {tooltip ? (
+              <Tooltip title={tooltip} arrow>
+                <IconButton size="small" tabIndex={-1} aria-label="help">
+                  <InfoIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : null}
             <IconButton
               size="small"
               onClick={handleIncrement}
@@ -94,6 +107,13 @@ export default function NumberInput({
           </InputAdornment>
         ) : (
           <InputAdornment position="end">
+            {tooltip ? (
+              <Tooltip title={tooltip} arrow>
+                <IconButton size="small" tabIndex={-1} aria-label="help">
+                  <InfoIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : null}
             <IconButton
               size="small"
               onClick={handleIncrement}

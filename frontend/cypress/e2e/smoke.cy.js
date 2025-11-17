@@ -20,7 +20,7 @@ describe('EMSG Smoke', () => {
     cy.contains('Admin')
   })
 
-  it('loads KSE and validates simple config (Market & Preview merged)', () => {
+  it('loads KSE and validates simple config (Market tab)', () => {
     // mock preview endpoint
     cy.intercept('POST', '/api/engine/preview', { mcp: 1000, volume: 123.456 })
     cy.intercept('POST', '/api/engine/preview/hourly', { hours: 24, mcp: Array(24).fill(1000), volume: Array(24).fill(5000) })
@@ -32,8 +32,8 @@ describe('EMSG Smoke', () => {
     window.localStorage.setItem('refresh_token', 'mock')
     cy.visit('/kse')
     cy.contains('KSE – Scenario Editor')
-    // switch to Market & Preview tab
-    cy.contains('button', 'Market & Preview').click()
+    // switch to Market tab
+    cy.contains('button', 'Market').click()
     cy.contains('Preview MCP').click()
     cy.contains('MCP: 1000')
     // hourly preview

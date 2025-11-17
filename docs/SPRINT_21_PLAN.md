@@ -3,7 +3,7 @@
 Date: 2025-11-18
 Duration: 14 Tage (18.11. – 01.12.2025)
 Branch: feature/catalog-campaigns
-Status: Active
+Status: Closed (open items deferred to Sprint 22)
 
 ---
 
@@ -394,6 +394,19 @@ Sprint 20 delivered Cypress tests but left Performance Testing and DevOps stabil
 - Issue #8: Participant split - exact UI design (table vs. form)
 - Issue #12: Chart zoom modal - layout with tabular data
 - Issue #13: ATC inline - max rows before scroll
+
+### Deferred to Sprint 22
+- Performance Testing: Locust authenticated run (staging), results in PERFORMANCE_RESULTS.md
+- E2E Coverage: Add Cypress specs for KSE ValidationPanel scroll, inline ATC, tab hash-sync, A11y on all tabs
+- KSE Issues (Polish):
+  - #7 Chart bounds/clipPath
+  - #8 Participant split controls
+  - #10 Narrow number inputs + helper text cleanup
+  - #11 Align preview buttons + icons
+  - #12 Chart zoom modal (MCP/Volume/Steps)
+  - #6 Apply Profiles info dialog
+- Multiplayer smoke tests (shared_market) + MULTIPLAYER_STATUS.md
+- Documentation: README, DEPLOYMENT, QA_CHECKS final polish
 
 ### Optional Enhancements (out of scope)
 - W10: Wizard "Create Scenario"

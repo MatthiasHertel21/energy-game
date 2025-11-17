@@ -11,6 +11,7 @@ from .device_types import DEVICE_SPECS, DeviceType, validate_device
 from .config import Config
 from .templates import list_templates, get_template
 import os
+import uuid
 
 try:
     from PIL import Image
@@ -176,7 +177,15 @@ class Campaigns(Resource):
     def get(self):
         rows = Campaign.query.order_by(Campaign.id.desc()).all()
         return [
-            {"id": c.id, "name": c.name, "description": c.description, "designer_id": c.designer_id, "seed": c.seed}
+            {
+                "id": c.id,
+                "name": c.name,
+                "description": c.description,
+                "designer_id": c.designer_id,
+                "seed": c.seed,
+                "published": bool(c.published),
+                "cover_image_url": c.cover_image_url,
+            }
             for c in rows
         ]
 
@@ -687,6 +696,66 @@ class TemplateDetail(Resource):
         if not template:
             ns.abort(HTTPStatus.NOT_FOUND, f"Template '{template_id}' not found")
         return template
+@ns.route("/images")
+class ImageUpload(Resource):
+    @jwt_required()
+    @role_required("designer", "admin")
+    def post(self):
+        """Upload an image and return its public URL for Markdown usage.
+        Accepts multipart/form-data with field name 'file'. Optionally supports 'max_width' to downscale.
+        """
+        if 'file' not in request.files:
+            return {"error": "file required"}, HTTPStatus.BAD_REQUEST
+        f = request.files['file']
+        if not f or f.filename == '':
+            return {"error": "empty file"}, HTTPStatus.BAD_REQUEST
+
+        upload_dir = os.getenv('UPLOAD_DIR', '/app/uploads')
+        dest_dir = os.path.join(upload_dir, 'images')
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # Generate a random filename
+        uid = uuid.uuid4().hex
+        out_path = os.path.join(dest_dir, f"{uid}.png")
+        max_width = None
+        try:
+            max_width_val = request.form.get('max_width')
+            if max_width_val:
+                max_width = int(max_width_val)
+        except Exception:
+            max_width = None
+
+        # Try to process via Pillow; fallback to raw save
+        try:
+            if Image is None:
+                raise RuntimeError("PIL unavailable")
+            img = Image.open(f.stream)
+            # convert to RGB for consistency; preserve alpha by converting to RGBA then to PNG
+            if img.mode not in ('RGB', 'RGBA'):
+                img = img.convert('RGBA')
+            # downscale if requested or if image is very large
+            if max_width and img.width > max_width:
+                ratio = max_width / float(img.width)
+                img = img.resize((int(img.width * ratio), int(img.height * ratio)))
+            elif img.width > 2400:
+                ratio = 2400.0 / float(img.width)
+                img = img.resize((int(img.width * ratio), int(img.height * ratio)))
+            img.save(out_path, format='PNG')
+        except Exception:
+            # Fallback: save original bytes; ensure unique name and extension
+            try:
+                _, ext = os.path.splitext(f.filename or '')
+                ext = (ext.lower() if ext.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.webp'] else '.bin')
+                out_path = os.path.join(dest_dir, f"{uid}{ext}")
+                f.stream.seek(0)
+                with open(out_path, 'wb') as out:
+                    out.write(f.read())
+            except Exception:
+                return {"error": "failed to save image"}, HTTPStatus.INTERNAL_SERVER_ERROR
+
+        public_url = "/uploads/images/" + os.path.basename(out_path)
+        return {"url": public_url}, HTTPStatus.CREATED
+
 
 
 @ns.route("/scenarios/<int:sid>/sessions")

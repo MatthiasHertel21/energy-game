@@ -1,3 +1,15 @@
+2025-11-17 Market Preview: Non-linear supply/demand curves based on generator mix (PV/Wind/Hydro/Coal/Gas/Nuclear) with adjustable capacity/price jitter; Consumer Mix added (Industrial/Household/Agriculture); Y-axis scales to data max; charts export via click (PNG); tooltips only (over-label texts removed).
+2025-11-17 UI: Rename KSE tab 'Market & Preview' → 'Market' and update Cypress tests.
+2025-11-17 Feature: Add player reset endpoint `/api/player/reset-scenario` and UI button in Campaign Detail to fully reset scenario progress (solo sessions, forecasts/results).
+2025-11-17 Fix: Reset endpoint now also clears the current player's data in cohort sessions for the scenario (forecasts, results, type selection, activity logs) without deleting trainer sessions.
+2025-11-17 Fix: Player initial timer handling uses null (not 0); CampaignDetail passes `sessionId` to `/player` after starting solo for reliable session loading.
+2025-11-17 Implement freeze override for round 1 and default forecast profiles (diurnal; per-device aggregation for shared market) when no saved forecasts exist.
+2025-11-17 UI: Player adds round progress bar and color-coded Live KPIs chips; unified editor toggle with icons and improved fields layout.
+2025-11-17 Fix: Player chart drag-and-drop not applying changes (data index bug) — corrected; fields editor inputs widened to avoid clipping.
+2025-11-17 Fix: Solo sessions created from Catalog now start with status=running and emit ticks; Player timer initializes and counts down consistently on both `/player` and `/player?sessionId=…`.
+- 2025-11-17: KSE General tab polished (inline Advanced, removed over-label texts, kept tooltips, computed Scenario Horizon). Fixed Load Template error by adding template picker dialog and moved button into General tab.
+2025-11-17 Fix: Solo sessions start with status=running and started_at; `/api/player/active-session` returns time_remaining=null initially to avoid false "Time is up!" in Player.
+2025-11-17 Fix: Include `published` and `cover_image_url` in `GET /api/kse/campaigns` to persist publish state in Designer UI.
 - E2E-Tests (Cypress)
   - Setup: cypress.config.js, support, smoke test `cypress/e2e/smoke.cy.js`
   - Mocked Login und KSE Preview; Trainer-Start; Player Full‑Forecast+Submit
@@ -155,6 +167,18 @@ Tests
 - E2E: Trainer/Player‑Type Flow; Replay stabilisieren.
 - Performance: Locust 80 Spieler; p95 < 2s.
 - Polish: Mobile, Pro‑Device Charts optional, konsistente Toasters.
+
+---
+
+## 2025-11-17 – KSE UX Tweaks
+
+- KSE: Description Tab first and default; deep-link `#kse-desc` supported.
+- KSE: Description now single-pane with icon toggle (Edit ↔ Preview).
+- KSE: Removed redundant help text above Scenario Name.
+- Footer toolbar: Removed Save, Import/Export, and Edit Description (kept Validate + Preview, Load Template). Header still has Save and Import/Export.
+- Description paste-to-upload: Added `POST /api/kse/images` and editor paste handler to upload and insert Markdown image links; free-form width input (e.g., `640px`, `75%`) adds `w:<value>` hint parsed in preview for responsive sizing.
+  - Added optional height hint `h:<value>`; preview honors both width and height while preserving aspect ratio when only one is set.
+  - Added "Reset size" action in editor to strip `w:`/`h:` hints from the selected text or entire description.
 
 ## Device Model (Gerätemodell) – 10.11.2025
 

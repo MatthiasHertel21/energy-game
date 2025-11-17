@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, Grid } from '@mui/material'
-import { Edit as EditIcon, Add as AddIcon } from '@mui/icons-material'
+import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, Grid, Accordion, AccordionSummary, AccordionDetails, Tooltip, InputAdornment } from '@mui/material'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import { Edit as EditIcon, Add as AddIcon, Visibility as VisibilityIcon } from '@mui/icons-material'
 import InfoLabel from '../components/InfoLabel'
 import NumberInput from '../components/inputs/NumberInput'
 import RangeInput from '../components/inputs/RangeInput'
@@ -15,21 +16,31 @@ import * as d3 from 'd3'
 import ReactMarkdown from 'react-markdown'
 import ValidationPanel from '../components/ValidationPanel'
 import StickyActionBar from '../components/StickyActionBar'
+import { exportPNG, exportSVG } from '../utils/exportSvg'
 
 const defaultConfig = {
   version: '1.0.0',
-  general: { horizon_hours: 24, forecast_horizon_hours: 48, round_span_hours: 6, rounds: 4, description: '' },
-  market: { base_price: 1000, base_volume_mwh: 20000, price_floor: -500, price_cap: 5000 },
+  general: { horizon_hours: 24, forecast_horizon_hours: 48, freeze_hours: 6, round_span_hours: 6, rounds: 4, description: '' },
+  market: {
+    base_price: 1000,
+    base_volume_mwh: 20000,
+    price_floor: -500,
+    price_cap: 5000,
+    generator_mix: { pv: 25, wind: 20, hydro: 10, coal: 30, gas: 15, nuclear: 0 },
+    consumer_mix: { industrial: 40, household: 50, agriculture: 10 },
+    random_capacity_pct: 10,
+    random_price_pct: 10,
+  },
   grid: { zones: 2, atc: [[0,5000],[5000,0]] },
-  environment: { seed: 'preview' },
+  environment: { seed: 'preview', actual_noise_pct: 5 },
   events: [],
   devices: [],
   scoring: { weights: { profit: 0.6, imbalance: 0.3, curtailment: 0.1 } },
 }
 
-function Curves({ cfg, preview, groups }){
+function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMcp=true, svgRef }){
   // Step supply/demand preview with axes and legend
-  const ref = useRef(null)
+  const ref = svgRef ?? useRef(null)
   useEffect(() => {
     const svg = d3.select(ref.current)
     svg.selectAll('*').remove()
@@ -41,41 +52,76 @@ function Curves({ cfg, preview, groups }){
     const baseP = Number(cfg.market.base_price || 1000)
     const baseV = Number(cfg.market.base_volume_mwh || 20000)
     const participants = Math.max(2, Number(cfg?.environment?.participants || 20))
-    const dist = groups || { solar: 40, wind: 30, gas: 30 }
-    const distArr = Object.entries(dist)
+    const mix = cfg?.market?.generator_mix || groups || { pv: 25, wind: 20, hydro: 10, coal: 30, gas: 15 }
+    const distArr = Object.entries(mix)
     const totalShare = distArr.reduce((s, [, v]) => s + Number(v || 0), 0) || 100
 
     // Build block volumes by groups, then split into ~participants blocks
-    const rng = d3.randomLcg((cfg.environment?.seed || 'step').split('').reduce((a, c) => a + c.charCodeAt(0), 0) % 2147483647 / 2147483647)
-    let blocks = []
-    distArr.forEach(([k, pct]) => {
+    const seedStr = cfg.environment?.seed || 'step'
+    const seedNum = seedStr.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+    const rng = d3.randomLcg((seedNum % 2147483647) / 2147483647)
+
+    // Jitter magnitudes
+    const capJitter = Math.max(0, Math.min(0.5, Number(cfg?.market?.random_capacity_pct || 0) / 100))
+    const priceJitter = Math.max(0, Math.min(0.5, Number(cfg?.market?.random_price_pct || 0) / 100))
+
+    // Type-specific marginal cost ranges (ZAR/MWh)
+    const COST = {
+      pv: [0, 50],
+      wind: [50, 150],
+      hydro: [50, 200],
+      nuclear: [200, 400],
+      coal: [400, 700],
+      gas: [700, 1200],
+    }
+
+    // Build SUPPLY blocks per type based on shares and participants
+    let sBlocks = []
+    distArr.forEach(([type, pct]) => {
       const vol = baseV * (Number(pct || 0) / totalShare)
-      // number of blocks for this group proportional to share
       const n = Math.max(1, Math.round(participants * (Number(pct || 0) / totalShare)))
       const avg = vol / n
+      const [pMin, pMax] = COST[type] || [baseP - 500, baseP + 500]
       for (let i = 0; i < n; i++) {
-        // jitter volume per block ±15%
-        const jitter = 1 + (rng() - 0.5) * 0.3
-        blocks.push({ group: k, volume: Math.max(0, avg * jitter) })
+        const qJ = 1 + (rng() - 0.5) * 2 * capJitter
+        const basePrice = pMin + rng() * (pMax - pMin)
+        const pJ = 1 + (rng() - 0.5) * 2 * priceJitter
+        sBlocks.push({ q: Math.max(0, avg * qJ), p: basePrice * pJ })
       }
     })
-    // normalize to baseV
-    const sumV = blocks.reduce((s, b) => s + b.volume, 0) || 1
-    blocks.forEach(b => (b.volume = (b.volume / sumV) * baseV))
+    // normalize volumes to baseV and clamp prices to floor/cap
+    const sSum = sBlocks.reduce((s, b) => s + b.q, 0) || 1
+    const floor = Number(cfg.market.price_floor ?? -Infinity)
+    const cap = Number(cfg.market.price_cap ?? Infinity)
+    sBlocks.forEach(b => { b.q = (b.q / sSum) * baseV; b.p = Math.min(cap, Math.max(floor, b.p)) })
 
-    // Supply prices increasing, Demand prices decreasing
-    const minP = baseP - 500
-    const maxP = baseP + 500
-    // assign price levels - ensure strict monotonicity
-    const supply = blocks
-      .slice()
-      .map((b, i) => ({ q: b.volume, p: minP + (i / Math.max(1, blocks.length - 1)) * (maxP - minP), idx: i }))
-      .sort((a, b) => a.p - b.p) // sort by price ascending for supply
-    
-    const demand = blocks
-      .slice()
-      .map((b, i) => ({ q: b.volume, p: maxP - (i / Math.max(1, blocks.length - 1)) * (maxP - minP), idx: i }))
-      .sort((a, b) => b.p - a.p) // sort by price descending for demand
+    // Sort supply ascending by price
+    const supply = sBlocks.sort((a, b) => a.p - b.p)
+
+    // Build DEMAND blocks by consumer mix with non-linear decreasing schedule and jitter
+    const cmix = (cfg?.market?.consumer_mix) || { industrial: 40, household: 50, agriculture: 10 }
+    const cArr = Object.entries(cmix)
+    const cShare = cArr.reduce((s, [, v]) => s + Number(v || 0), 0) || 100
+    const nD = Math.max(2, participants)
+    let dBlocks = []
+    cArr.forEach(([ctype, pct]) => {
+      const vol = baseV * (Number(pct || 0) / cShare)
+      const n = Math.max(1, Math.round(nD * (Number(pct || 0) / cShare)))
+      for (let i = 0; i < n; i++) {
+        const t = n > 1 ? i / (n - 1) : 0
+        // WTP base by segment, then apply non-linear shape and jitter
+        let wtpBase = baseP + 400 - 800 * Math.pow(t, 2)
+        if (ctype === 'industrial') wtpBase += 100
+        if (ctype === 'agriculture') wtpBase -= 100
+        const p = Math.min(cap, Math.max(floor, wtpBase * (1 + (rng() - 0.5) * 2 * priceJitter * 0.5)))
+        const q = Math.max(0, (vol / n) * (1 + (rng() - 0.5) * 2 * capJitter))
+        dBlocks.push({ q, p })
+      }
+    })
+    // normalize demand volume to baseV and sort descending by price
+    const dSum = dBlocks.reduce((s, b) => s + b.q, 0) || 1
+    dBlocks.forEach(b => { b.q = (b.q / dSum) * baseV })
+    const demand = dBlocks.sort((a, b) => b.p - a.p)
 
     // Build cumulative x (quantity) for step plot (price vs quantity)
     const cum = (arr) => {
@@ -87,7 +133,12 @@ function Curves({ cfg, preview, groups }){
     const xMax = Math.max(d3.sum(supply, (d) => d.q), d3.sum(demand, (d) => d.q)) || baseV
 
     const x = d3.scaleLinear().domain([0, xMax]).range([0, W]).clamp(true)
-    const y = d3.scaleLinear().domain([minP, maxP]).nice().range([H, 0]).clamp(true)
+    // dynamic Y domain: scale to min/max of actual prices (with small padding)
+    const allPrices = [...supply.map(d=>d.p), ...demand.map(d=>d.p)]
+    const minP = d3.min(allPrices)
+    const maxP = d3.max(allPrices)
+    const pad = (maxP - minP) * 0.05
+    const y = d3.scaleLinear().domain([minP - pad, maxP + pad]).nice().range([H, 0]).clamp(true)
 
     // axes
     g.append('g').attr('transform', `translate(0,${H})`).call(d3.axisBottom(x).ticks(5))
@@ -108,12 +159,12 @@ function Curves({ cfg, preview, groups }){
     const sPts = toStep(sCum)
     const dPts = toStep(dCum)
 
-    g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2)
-    g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', '#c62828').attr('stroke-width', 2)
+    if (showSupply) g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2)
+    if (showDemand) g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', '#c62828').attr('stroke-width', 2)
 
     // MCP line (horizontal at preview.mcp if available)
     const mcpVal = Number(preview?.mcp)
-    if (!Number.isNaN(mcpVal)) {
+    if (showMcp && !Number.isNaN(mcpVal)) {
       g.append('line')
         .attr('x1', 0)
         .attr('x2', W)
@@ -132,15 +183,15 @@ function Curves({ cfg, preview, groups }){
 
     // Legend
     const legend = svg.append('g').attr('transform', `translate(${M.left + 4},${M.top + 4})`)
-    legend.append('rect').attr('x', 0).attr('y', 0).attr('width', 10).attr('height', 10).attr('fill', '#2e7d32')
+    legend.append('rect').attr('x', 0).attr('y', 0).attr('width', 10).attr('height', 10).attr('fill', showSupply ? '#2e7d32' : '#ccc')
     legend.append('text').attr('x', 14).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('Supply')
-    legend.append('rect').attr('x', 70).attr('y', 0).attr('width', 10).attr('height', 10).attr('fill', '#c62828')
+    legend.append('rect').attr('x', 70).attr('y', 0).attr('width', 10).attr('height', 10).attr('fill', showDemand ? '#c62828' : '#ccc')
     legend.append('text').attr('x', 84).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('Demand')
-    legend.append('line').attr('x1', 140).attr('x2', 150).attr('y1', 5).attr('y2', 5).attr('stroke', '#1976d2').attr('stroke-dasharray', '4 4')
+    legend.append('line').attr('x1', 140).attr('x2', 150).attr('y1', 5).attr('y2', 5).attr('stroke', showMcp ? '#1976d2' : '#ccc').attr('stroke-dasharray', '4 4')
     legend.append('text').attr('x', 156).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('MCP')
   }, [cfg, preview, groups])
 
-  return <svg ref={ref} width={360} height={180} style={{ border: '1px solid #ddd' }} />
+  return <svg ref={ref} width={360} height={180} style={{ border: '1px solid #ddd', cursor:'pointer' }} onClick={()=> ref.current && exportPNG(ref.current, 'kse_step.png')} />
 }
 
 export default function KSE(){
@@ -158,7 +209,7 @@ export default function KSE(){
   const [hPrev, setHPrev] = useState(null)
   const mcpRef = useRef(null)
   const volRef = useRef(null)
-  const [groups, setGroups] = useState({ solar: 40, wind: 30, gas: 30 })
+  // generator mix now stored in cfg.market.generator_mix
   const [zoneSplit, setZoneSplit] = useState(50)
   const [envGen, setEnvGen] = useState(null)
   const [deviceTypes, setDeviceTypes] = useState([])
@@ -168,11 +219,42 @@ export default function KSE(){
   const [eventEditorOpen, setEventEditorOpen] = useState(false)
   const [editingEvent, setEditingEvent] = useState(null)
   const [editingEventIndex, setEditingEventIndex] = useState(null)
+  // Template dialog
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false)
+  const [templates, setTemplates] = useState([])
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
   // Modals (IO + Description)
   const [ioOpen, setIoOpen] = useState(false)
   const [ioTab, setIoTab] = useState(0)
   const [descOpen, setDescOpen] = useState(false)
   const [descDraft, setDescDraft] = useState('')
+  const [descMode, setDescMode] = useState('edit') // 'edit' | 'preview'
+  const [descImgWidth, setDescImgWidth] = useState('100%') // default width for pasted images
+  const [descImgHeight, setDescImgHeight] = useState('') // optional height for pasted images
+  // Step chart toggles + ref
+  const [showSupply, setShowSupply] = useState(true)
+  const [showDemand, setShowDemand] = useState(true)
+  const [showMcp, setShowMcp] = useState(true)
+  const stepRef = useRef(null)
+  const [showHourlyPoints, setShowHourlyPoints] = useState(true)
+  const [showHourlyGrid, setShowHourlyGrid] = useState(true)
+  const descInputRef = useRef(null)
+  // Refs for validation scroll
+  const refZones = useRef(null)
+  const refForecastH = useRef(null)
+  const refHorizon = useRef(null)
+  const refRoundSpan = useRef(null)
+  const refRounds = useRef(null)
+  const refWeights = useRef(null)
+  const refDescName = useRef(null)
+  const refHours = useRef(null)
+  const refAddEvent = useRef(null)
+  const refAddPlayerType = useRef(null)
+  // Debounce/abort for previews
+  const previewTimer = useRef(null)
+  const hourlyTimer = useRef(null)
+  const previewController = useRef(null)
+  const hourlyController = useRef(null)
 
   useEffect(()=>{
     // Load device types on mount
@@ -190,11 +272,39 @@ export default function KSE(){
     }
   },[])
 
+  // URL hash ↔ tab sync for deep-linking and back/forward
+  useEffect(()=>{
+    const map = ['#kse-desc','#kse-general','#kse-market','#kse-grid','#kse-events','#kse-ptypes','#kse-scoring']
+    const applyHash = ()=>{
+      const h = window.location.hash
+      const idx = map.indexOf(h)
+      if (idx >= 0) setTab(idx)
+    }
+    // on mount
+    applyHash()
+    // on hash change
+    const onHash = ()=> applyHash()
+    window.addEventListener('hashchange', onHash)
+    return ()=> window.removeEventListener('hashchange', onHash)
+  },[])
+
+  useEffect(()=>{
+    const map = ['#kse-desc','#kse-general','#kse-market','#kse-grid','#kse-events','#kse-ptypes','#kse-scoring']
+    const h = map[tab]
+    if (h) {
+      try { window.history.replaceState(null, '', h) } catch(_) {}
+    }
+  }, [tab])
+
   const update = (path, value)=>{
     setCfg(prev=>{
       const next = structuredClone(prev)
       let node = next
-      for(let i=0;i<path.length-1;i++) node = node[path[i]]
+      for(let i=0;i<path.length-1;i++){
+        const key = path[i]
+        if (node[key] == null || typeof node[key] !== 'object') node[key] = {}
+        node = node[key]
+      }
       node[path[path.length-1]] = value
       return next
     })
@@ -216,13 +326,31 @@ export default function KSE(){
   }
 
   useEffect(()=>{ validate() },[cfg])
+  
+  // Fetch templates when dialog opens
+  useEffect(()=>{
+    if (templateDialogOpen) {
+      api.get('/api/kse/templates')
+        .then(({data})=> setTemplates(Array.isArray(data)? data : []))
+        .catch(()=> setTemplates([]))
+    }
+  }, [templateDialogOpen])
 
-  const doPreview = async ()=>{
+  const doPreviewNow = async ()=>{
     if(!validate()) return
     const totalRounds = Number(cfg?.general?.rounds || 4)
     const r = Math.min(Math.max(1, Number(roundPrev)||1), totalRounds)
-    const { data } = await api.post('/api/engine/preview', { config: cfg, round: r })
-    setPreview(data)
+    try{
+      if (previewController.current) previewController.current.abort()
+      const controller = new AbortController()
+      previewController.current = controller
+      const { data } = await api.post('/api/engine/preview', { config: cfg, round: r }, { signal: controller.signal })
+      setPreview(data)
+    }catch(err){ /* aborted or failed */ }
+  }
+  const doPreview = ()=>{
+    if (previewTimer.current) clearTimeout(previewTimer.current)
+    previewTimer.current = setTimeout(doPreviewNow, 300)
   }
 
   const save = async ()=>{
@@ -231,6 +359,16 @@ export default function KSE(){
     if (!cfg.version) {
       setCfg(prev => ({ ...prev, version: '1.0.0' }))
     }
+    // ensure horizon stays consistent on save
+    try {
+      setCfg(prev => {
+        const n = structuredClone(prev)
+        const r = Number(n?.general?.rounds || 0)
+        const sp = Number(n?.general?.round_span_hours || 0)
+        if (r > 0 && sp > 0) n.general.horizon_hours = r * sp
+        return n
+      })
+    } catch(_) {}
     if (scenarioId) {
       await api.put(`/api/kse/scenarios/${scenarioId}`, { name, config: cfg })
       alert('Saved changes')
@@ -265,23 +403,27 @@ export default function KSE(){
       const y = d3.scaleLinear().domain([d3.min(data.mcp)||0, d3.max(data.mcp)||1]).nice().range([H,0])
       const line = d3.line().x((_,i)=> x(i+1)).y((d)=> y(d))
   // gridlines
-  g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
+  if (showHourlyGrid) {
+    g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
+  }
       g.append('path').datum(data.mcp).attr('fill','none').attr('stroke','#2e7d32').attr('stroke-width',2).attr('d', line)
   g.append('g').attr('transform',`translate(0,${H})`).call(d3.axisBottom(x).ticks(Math.min(h,12)))
   g.append('g').call(d3.axisLeft(y).ticks(4))
       // points + tooltips
-      g.selectAll('circle.point')
-        .data((data.mcp||[]).map((v,i)=> ({ x:i+1, y:v })))
-        .enter()
-        .append('circle')
-        .attr('class','point')
-        .attr('cx', d=> x(d.x))
-        .attr('cy', d=> y(d.y))
-        .attr('r', 2.5)
-  .attr('fill', '#2e7d32')
-  .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`h${d.x}: ${d.y} ZAR/MWh`) })
-  .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
-  .on('mouseleave', ()=> { tooltip.style('display','none') })
+      if (showHourlyPoints) {
+        g.selectAll('circle.point')
+          .data((data.mcp||[]).map((v,i)=> ({ x:i+1, y:v })))
+          .enter()
+          .append('circle')
+          .attr('class','point')
+          .attr('cx', d=> x(d.x))
+          .attr('cy', d=> y(d.y))
+          .attr('r', 2.5)
+          .attr('fill', '#2e7d32')
+          .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`h${d.x}: ${d.y} ZAR/MWh`) })
+          .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
+          .on('mouseleave', ()=> { tooltip.style('display','none') })
+      }
   // axis labels
   g.append('text').attr('x', W/2).attr('y', H+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Hour')
   g.append('text').attr('transform','rotate(-90)').attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('MCP (ZAR/MWh)')
@@ -295,35 +437,89 @@ export default function KSE(){
       const y = d3.scaleLinear().domain([0, d3.max(data.volume)||1]).nice().range([H,0])
       const line = d3.line().x((_,i)=> x(i+1)).y((d)=> y(d))
   // gridlines
-  g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
+  if (showHourlyGrid) {
+    g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
+  }
       g.append('path').datum(data.volume).attr('fill','none').attr('stroke','#1976d2').attr('stroke-width',2).attr('d', line)
   g.append('g').attr('transform',`translate(0,${H})`).call(d3.axisBottom(x).ticks(Math.min(h,12)))
   g.append('g').call(d3.axisLeft(y).ticks(4))
       // points + tooltips
-      g.selectAll('circle.point')
-        .data((data.volume||[]).map((v,i)=> ({ x:i+1, y:v })))
-        .enter()
-        .append('circle')
-        .attr('class','point')
-        .attr('cx', d=> x(d.x))
-        .attr('cy', d=> y(d.y))
-        .attr('r', 2.5)
-  .attr('fill', '#1976d2')
-  .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`h${d.x}: ${d.y} MWh`) })
-  .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
-  .on('mouseleave', ()=> { tooltip.style('display','none') })
+      if (showHourlyPoints) {
+        g.selectAll('circle.point')
+          .data((data.volume||[]).map((v,i)=> ({ x:i+1, y:v })))
+          .enter()
+          .append('circle')
+          .attr('class','point')
+          .attr('cx', d=> x(d.x))
+          .attr('cy', d=> y(d.y))
+          .attr('r', 2.5)
+          .attr('fill', '#1976d2')
+          .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`h${d.x}: ${d.y} MWh`) })
+          .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
+          .on('mouseleave', ()=> { tooltip.style('display','none') })
+      }
   // axis labels
   g.append('text').attr('x', W/2).attr('y', H+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Hour')
   g.append('text').attr('transform','rotate(-90)').attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Volume (MWh)')
     }
   }
 
-  const doHourly = async ()=>{
+  const doHourlyNow = async ()=>{
     if(!validate()) return
-    const { data } = await api.post('/api/engine/preview/hourly', { config: cfg, hours: Number(hours)||24 })
-    setHPrev(data)
-    drawHourly(data)
+    try{
+      if (hourlyController.current) hourlyController.current.abort()
+      const controller = new AbortController()
+      hourlyController.current = controller
+      const { data } = await api.post('/api/engine/preview/hourly', { config: cfg, hours: Number(hours)||24 }, { signal: controller.signal })
+      setHPrev(data)
+      drawHourly(data)
+    }catch(err){ /* aborted or failed */ }
   }
+  const doHourly = ()=>{
+    if (hourlyTimer.current) clearTimeout(hourlyTimer.current)
+    hourlyTimer.current = setTimeout(doHourlyNow, 300)
+  }
+
+  // Auto update previews when Market tab is active and relevant inputs change
+  useEffect(()=>{
+    if (tab===2) doPreview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, cfg, roundPrev])
+
+  useEffect(()=>{
+    if (tab===2) doHourly()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, cfg, hours])
+
+  const onValidationSelect = (_idx, text)=>{
+    const map = [
+      { match: 'Zones must be 1–5', el: refZones, tab: 3 },
+      { match: 'forecast_horizon_hours must be > 0', el: refForecastH, tab: 1 },
+      { match: 'forecast_horizon_hours must be >= horizon_hours', el: refForecastH, tab: 1 },
+      { match: 'Scoring weights must sum to 1.0', el: refWeights, tab: 6 },
+      { match: 'horizon ÷ round_span must equal rounds', el: refRoundSpan, tab: 1 },
+    ]
+    const m = map.find(m => text.includes(m.match))
+    if (m) {
+      setTab(m.tab)
+      setTimeout(()=> m.el.current && m.el.current.scrollIntoView({ behavior:'smooth', block:'center' }), 50)
+    }
+  }
+
+  // Focus management on tab change
+  useEffect(()=>{
+    const focusEl = (elRef)=> { try { elRef?.current && elRef.current.focus() } catch(_) {} }
+    switch(tab){
+      case 0: focusEl(refDescName); break
+      case 1: focusEl(refHorizon); break
+      case 2: focusEl(refHours); break
+      case 3: focusEl(refZones); break
+      case 4: focusEl(refAddEvent); break
+      case 5: focusEl(refAddPlayerType); break
+      case 6: focusEl(refWeights); break
+      default: break
+    }
+  }, [tab])
 
   const exportCurrentConfig = ()=>{
     const data = { name, config: cfg }
@@ -361,7 +557,7 @@ export default function KSE(){
           <Button variant="contained" onClick={save} disabled={errors.length>0}>Save</Button>
         </Stack>
       </Stack>
-  <Paper sx={{ p:2 }}>
+      <Paper sx={{ p:2 }}>
         <Tabs 
           value={tab} 
           onChange={(_,v)=>setTab(v)} 
@@ -369,181 +565,425 @@ export default function KSE(){
           role="tablist"
           aria-label="KSE scenario editor sections"
         >
-          <Tab label="General" role="tab" aria-selected={tab===0} />
-          <Tab label="Market & Preview" role="tab" aria-selected={tab===1} />
-          <Tab label="Grid" role="tab" aria-selected={tab===2} />
-          <Tab label="Events" role="tab" aria-selected={tab===3} />
-          <Tab label="Player Types" role="tab" aria-selected={tab===4} />
-          <Tab label="Scoring" role="tab" aria-selected={tab===5} />
-          <Tab label="Description" role="tab" aria-selected={tab===6} />
+          <Tab id="kse-tab-0" aria-controls="kse-panel-0" label="Description" role="tab" aria-selected={tab===0} />
+          <Tab id="kse-tab-1" aria-controls="kse-panel-1" label="General" role="tab" aria-selected={tab===1} />
+          <Tab id="kse-tab-2" aria-controls="kse-panel-2" label="Market" role="tab" aria-selected={tab===2} />
+          <Tab id="kse-tab-3" aria-controls="kse-panel-3" label="Grid" role="tab" aria-selected={tab===3} />
+          <Tab id="kse-tab-4" aria-controls="kse-panel-4" label="Events" role="tab" aria-selected={tab===4} />
+          <Tab id="kse-tab-5" aria-controls="kse-panel-5" label="Player Types" role="tab" aria-selected={tab===5} />
+          <Tab id="kse-tab-6" aria-controls="kse-panel-6" label="Scoring" role="tab" aria-selected={tab===6} />
         </Tabs>
         <Stack direction="row" spacing={2} sx={{ mt:2 }}>
           <Box sx={{ flex: 1 }}>
+          {tab===1 && (()=>{
+            const rounds = Number(cfg.general.rounds || 0)
+            const span = Number(cfg.general.round_span_hours || 0)
+            const computedH = rounds > 0 && span > 0 ? rounds * span : 0
+            const setRounds = (val)=>{
+              setCfg(prev=>{
+                const n = structuredClone(prev)
+                n.general.rounds = val
+                const sp = Number(n.general.round_span_hours || 0)
+                n.general.horizon_hours = val>0 && sp>0 ? val*sp : 0
+                return n
+              })
+            }
+            const setSpan = (val)=>{
+              setCfg(prev=>{
+                const n = structuredClone(prev)
+                n.general.round_span_hours = val
+                const r = Number(n.general.rounds || 0)
+                n.general.horizon_hours = r>0 && val>0 ? r*val : 0
+                return n
+              })
+            }
+            const fhErr = !(cfg.general.forecast_horizon_hours>0) || (Number(cfg.general.forecast_horizon_hours) < computedH)
+            return (
+              <Stack id="kse-panel-1" role="tabpanel" aria-labelledby="kse-tab-1" spacing={2}>
+                {/* Round Timings group */}
+                <Paper sx={{ p:2 }}>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                    <Typography variant="subtitle2">Round Timings</Typography>
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    Set the fictional date/time and the number/length of rounds. Scenario Horizon is computed as Rounds × Round span.
+                  </Typography>
+                  <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+                    <TextField
+                    type="date"
+                    label="Fictional Date"
+                    value={cfg.general.fake_date || ''}
+                    onChange={e=>update(['general','fake_date'], e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                    size="small"
+                    InputProps={{
+                      endAdornment: (
+                        <InputAdornment position="end">
+                          <Tooltip title="Contextual date for briefings and charts. Not used in simulation." arrow>
+                            <IconButton size="small" tabIndex={-1} aria-label="help">
+                              <VisibilityIcon fontSize="small"/>
+                            </IconButton>
+                          </Tooltip>
+                        </InputAdornment>
+                      )
+                    }}
+                  />
+                    <TextField
+                    type="time"
+                    label="Start Time"
+                    value={cfg.general.start_time || ''}
+                    onChange={e=>update(['general','start_time'], e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                    size="small"
+                    InputProps={{
+                      endAdornment: (
+                        <InputAdornment position="end">
+                          <Tooltip title="Fictional clock time of hour 1; used for labels." arrow>
+                            <IconButton size="small" tabIndex={-1} aria-label="help">
+                              <VisibilityIcon fontSize="small"/>
+                            </IconButton>
+                          </Tooltip>
+                        </InputAdornment>
+                      )
+                    }}
+                  />
+                  </Stack>
+                  <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap' }}>
+                    <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
+                      <NumberInput
+                        label="Rounds"
+                        value={cfg.general.rounds}
+                        onChange={setRounds}
+                        min={1}
+                        max={48}
+                        step={1}
+                        tooltip="Total rounds in the scenario."
+                        inputRef={refRounds}
+                      />
+                    </Box>
+                    <Box sx={{ flex: '1 1 240px', minWidth: 240 }}>
+                      <NumberInput
+                        label="Round span (h)"
+                        value={cfg.general.round_span_hours}
+                        onChange={setSpan}
+                        min={1}
+                        max={24}
+                        step={1}
+                        unit="h"
+                        tooltip="Simulated hours per round."
+                        inputRef={refRoundSpan}
+                      />
+                    </Box>
+                    <Box sx={{ flex: '1 1 260px', minWidth: 260 }}>
+                      <TextField
+                        label="Scenario Horizon (h)"
+                        value={computedH}
+                        size="small"
+                        disabled
+                        fullWidth
+                        InputLabelProps={{ shrink: true, sx: { whiteSpace: 'normal', lineHeight: 1.2 } }}
+                        InputProps={{
+                          endAdornment: (
+                            <InputAdornment position="end">h</InputAdornment>
+                          )
+                        }}
+                        inputRef={refHorizon}
+                      />
+                    </Box>
+                  </Stack>
+                </Paper>
+                {/* Forecast horizon group */}
+                <Paper sx={{ p:2 }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>Forecast Horizon</Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    Player forecast inputs must cover at least the computed scenario horizon.
+                  </Typography>
+                  <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                    <Box sx={{ flex: '1 1 260px', minWidth: 260 }}>
+                      <NumberInput
+                        label="Forecast Horizon (h)"
+                        value={cfg.general.forecast_horizon_hours}
+                        onChange={(val)=>update(['general','forecast_horizon_hours'], val)}
+                        min={1}
+                        max={168}
+                        step={1}
+                        unit="h"
+                        tooltip="Must be ≥ Scenario Horizon. Controls forecast inputs."
+                        error={fhErr}
+                        helperText={fhErr ? 'Must be ≥ Scenario Horizon' : ''}
+                        inputRef={refForecastH}
+                      />
+                    </Box>
+                    <Box sx={{ flex: '1 1 240px', minWidth: 240 }}>
+                      <NumberInput
+                        label="Freeze hours (h)"
+                        value={cfg.general.freeze_hours ?? 0}
+                        onChange={(val)=>update(['general','freeze_hours'], val)}
+                        min={0}
+                        max={Number(cfg.general.round_span_hours||24)}
+                        step={1}
+                        unit="h"
+                        tooltip="Hours locked after submission (DA → IDM). Typically ≤ Round span."
+                      />
+                    </Box>
+                  </Stack>
+                </Paper>
+                {/* Player zone group */}
+                <Paper sx={{ p:2 }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>Player Zone</Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    Default zone used for player-facing context and inputs.
+                  </Typography>
+                  <TextField
+                    type="number"
+                    label="Player Zone (1..zones)"
+                    value={cfg.general.player_zone||1}
+                    onChange={e=>update(['general','player_zone'], Number(e.target.value))}
+                    size="small"
+                  />
+                </Paper>
+              </Stack>
+            )
+          })()}
           {tab===0 && (
-            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Total simulated hours"
-                  tooltip="Typical 24h. Must be consistent with Round span and Rounds (horizon = rounds × round span)."
-                />
-                <NumberInput 
-                  label="Scenario Horizon (h)" 
-                  value={cfg.general.horizon_hours} 
-                  onChange={(val)=>update(['general','horizon_hours'], val)}
-                  min={1}
-                  max={168}
-                  step={1}
-                  unit="h"
-                  error={cfg.general.horizon_hours<=0}
-                  helperText={cfg.general.horizon_hours<=0 ? 'Must be > 0' : ''}
-                />
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Hours players can forecast"
-                  tooltip="Must be ≥ Scenario Horizon. Controls number of forecast inputs in Player UI and validation in sessions."
-                />
-                <NumberInput
-                  label="Forecast Horizon (h)" 
-                  value={cfg.general.forecast_horizon_hours} 
-                  onChange={(val)=>update(['general','forecast_horizon_hours'], val)}
-                  min={1}
-                  max={168}
-                  step={1}
-                  unit="h"
-                  error={!(cfg.general.forecast_horizon_hours>0) || (cfg.general.forecast_horizon_hours < cfg.general.horizon_hours)}
-                  helperText={!(cfg.general.forecast_horizon_hours>0) ? 'Must be > 0' : (cfg.general.forecast_horizon_hours < cfg.general.horizon_hours ? 'Must be ≥ Scenario Horizon' : '')}
-                />
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Hours per round"
-                  tooltip="Simulated hours per round. Constraint: horizon ÷ round span must equal rounds (integer)."
-                />
-                <NumberInput
-                  label="Round span (h)" 
-                  value={cfg.general.round_span_hours} 
-                  onChange={(val)=>update(['general','round_span_hours'], val)}
-                  min={1}
-                  max={24}
-                  step={1}
-                  unit="h"
-                  error={!(cfg.general.round_span_hours>0) || (Math.floor(cfg.general.horizon_hours / (cfg.general.round_span_hours||1)) !== cfg.general.rounds)}
-                  helperText={!(cfg.general.round_span_hours>0) ? 'Must be > 0' : (Math.floor(cfg.general.horizon_hours / (cfg.general.round_span_hours||1)) !== cfg.general.rounds ? 'horizon ÷ span must equal rounds' : '')}
-                />
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Number of rounds"
-                  tooltip="Total rounds in the scenario. Must satisfy: rounds = horizon ÷ round span."
-                />
-                <NumberInput
-                  label="Rounds" 
-                  value={cfg.general.rounds} 
-                  onChange={(val)=>update(['general','rounds'], val)}
-                  min={1}
-                  max={48}
-                  step={1}
-                  error={Math.floor(cfg.general.horizon_hours / (cfg.general.round_span_hours||1)) !== cfg.general.rounds}
-                  helperText={Math.floor(cfg.general.horizon_hours / (cfg.general.round_span_hours||1)) !== cfg.general.rounds ? 'Must satisfy: horizon ÷ span' : ''}
-                />
-                <TextField type="number" label="Player Zone (1..zones)" value={cfg.general.player_zone||1} onChange={e=>update(['general','player_zone'], Number(e.target.value))}/>
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Fictional date (YYYY-MM-DD)"
-                  tooltip="Contextual date for briefings and charts. Not used in simulation, only for presentation."
-                />
-                <TextField 
-                  type="date" 
-                  label="Fictional Date" 
-                  value={cfg.general.fake_date || ''} 
-                  onChange={e=>update(['general','fake_date'], e.target.value)}
-                  InputLabelProps={{ shrink: true }}
-                  helperText="Optional, e.g. 2025-06-15"
-                />
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Simulation start time (HH:MM)"
-                  tooltip="Fictional time when the first hour starts. Useful for X-axis labels in charts."
-                />
-                <TextField 
-                  type="time" 
-                  label="Start Time" 
-                  value={cfg.general.start_time || ''} 
-                  onChange={e=>update(['general','start_time'], e.target.value)}
-                  InputLabelProps={{ shrink: true }}
-                  helperText="Optional, e.g. 08:00"
-                />
-              </Stack>
-            </Stack>
-          )}
-          {tab===6 && (
-            <Stack spacing={2}>
+            <Stack id="kse-panel-0" role="tabpanel" aria-labelledby="kse-tab-0" spacing={2}>
               <Stack spacing={0.5} sx={{ maxWidth: 520 }}>
-                <InfoLabel
-                  title="Scenario name for identification"
-                  tooltip="Free text used to identify this scenario in lists and exports."
-                />
-                <TextField fullWidth label="Scenario Name" value={name} onChange={e=>setName(e.target.value)} />
+                <TextField inputRef={refDescName} fullWidth label="Scenario Name" value={name} onChange={e=>setName(e.target.value)} />
               </Stack>
-              <Stack direction="row" spacing={2} alignItems="center">
-                <Typography variant="subtitle2">Description</Typography>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Typography variant="subtitle2" sx={{ flex: 1 }}>Description</Typography>
+                <IconButton size="small" aria-label={descMode==='edit'?'Preview description':'Edit description'} onClick={()=> setDescMode(m=> m==='edit'?'preview':'edit')}>
+                  {descMode==='edit' ? <VisibilityIcon fontSize="small"/> : <EditIcon fontSize="small"/>}
+                </IconButton>
+                <Button size="small" variant="outlined" onClick={()=> setTemplateDialogOpen(true)}>Load Template</Button>
+                {descMode==='edit' && (
+                  <>
+                    <TextField
+                      size="small"
+                      label="Img width"
+                      value={descImgWidth}
+                      onChange={(e)=> setDescImgWidth(e.target.value)}
+                      placeholder="e.g., 640px or 75%"
+                      sx={{ width: 160 }}
+                    />
+                    <TextField
+                      size="small"
+                      label="Img height"
+                      value={descImgHeight}
+                      onChange={(e)=> setDescImgHeight(e.target.value)}
+                      placeholder="optional, e.g., 400px"
+                      sx={{ width: 170 }}
+                    />
+                    <Button size="small" onClick={()=>{
+                      try{
+                        const el = descInputRef.current
+                        const cur = cfg?.general?.description || ''
+                        const hasSel = el && typeof el.selectionStart === 'number' && el.selectionStart !== el.selectionEnd
+                        const start = hasSel ? el.selectionStart : 0
+                        const end = hasSel ? el.selectionEnd : cur.length
+                        const before = cur.slice(0, start)
+                        const target = cur.slice(start, end)
+                        const after = cur.slice(end)
+                        const cleaned = target
+                          .replace(/\s*w:([0-9.]+(?:px|%|em|rem|vw|vh))/gi, '')
+                          .replace(/\s*h:([0-9.]+(?:px|%|em|rem|vw|vh))/gi, '')
+                        const next = before + cleaned + after
+                        update(['general','description'], next)
+                        setTimeout(()=>{
+                          try{
+                            if (el){
+                              const pos = start + cleaned.length
+                              el.setSelectionRange(pos, pos)
+                            }
+                          }catch(_){ }
+                        },0)
+                      }catch(_){ /* ignore */ }
+                    }}>Reset size</Button>
+                  </>
+                )}
               </Stack>
-              <Stack direction={{ xs:'column', md:'row' }} spacing={2}>
+              {descMode==='edit' ? (
                 <TextField
                   label="Markdown"
                   value={cfg?.general?.description || ''}
                   onChange={(e)=> update(['general','description'], e.target.value)}
-                  multiline minRows={10}
-                  sx={{ flex: 1 }}
+                  onPaste={async (e)=>{
+                    try{
+                      const items = e.clipboardData && e.clipboardData.items
+                      if (!items) return
+                      const images = []
+                      for (let i=0;i<items.length;i++){
+                        const it = items[i]
+                        if (it.type && it.type.startsWith('image/')){
+                          const file = it.getAsFile()
+                          if (file) images.push(file)
+                        }
+                      }
+                      if (images.length===0) return
+                      e.preventDefault()
+                      const el = descInputRef.current
+                      const start = el?.selectionStart ?? (cfg?.general?.description || '').length
+                      const end = el?.selectionEnd ?? start
+                      let insertText = ''
+                      for (const file of images){
+                        const fd = new FormData()
+                        fd.append('file', file)
+                        // optional default downscale
+                        fd.append('max_width', '1600')
+                        const res = await api.post('/api/kse/images', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+                        const url = res?.data?.url
+                        if (url){
+                          const hints = [`w:${descImgWidth}`].concat(descImgHeight ? [`h:${descImgHeight}`] : [])
+                          insertText += (insertText? '\n' : '') + `![${hints.join(' ')}](${url})\n`
+                        }
+                      }
+                      const cur = cfg?.general?.description || ''
+                      const next = cur.slice(0, start) + insertText + cur.slice(end)
+                      update(['general','description'], next)
+                      setTimeout(()=>{
+                        try{ el && el.setSelectionRange(start + insertText.length, start + insertText.length) }catch(_){ }
+                      }, 0)
+                    }catch(_){ /* ignore */ }
+                  }}
+                  multiline minRows={12}
+                  fullWidth
+                  inputRef={descInputRef}
                 />
-                <Paper variant="outlined" sx={{ p:2, flex: 1, '& h1,h2,h3':{ mt:1 }, '& p':{ mb:1 } }}>
+              ) : (
+                <Paper variant="outlined" sx={{ p:2, '& h1,h2,h3':{ mt:1 }, '& p':{ mb:1 }, '& img': { maxWidth: '100%', height: 'auto' } }}>
                   <Typography variant="subtitle2" sx={{ mb: 1 }}>Preview</Typography>
-                  <Box sx={{ maxHeight: 360, overflow: 'auto' }}>
-                    <ReactMarkdown>{cfg?.general?.description || '*No content*'}</ReactMarkdown>
+                  <Box sx={{ maxHeight: 480, overflow: 'auto' }}>
+                    <ReactMarkdown components={{
+                      img: ({node, ...props}) => {
+                        const alt = props.alt || ''
+                        const mw = alt && alt.match(/w:([0-9.]+(?:px|%|em|rem|vw|vh))/i)
+                        const mh = alt && alt.match(/h:([0-9.]+(?:px|%|em|rem|vw|vh))/i)
+                        const style = { maxWidth: '100%', height: 'auto' }
+                        if (mw) style.width = mw[1]
+                        if (mh) style.height = mh[1]
+                        const cleanAlt = alt
+                          .replace(/\s*w:([0-9.]+(?:px|%|em|rem|vw|vh))\s*/i, ' ')
+                          .replace(/\s*h:([0-9.]+(?:px|%|em|rem|vw|vh))\s*/i, ' ')
+                          .trim()
+                        return <img {...props} alt={cleanAlt} style={style} />
+                      }
+                    }}>
+                      {cfg?.general?.description || '*No content*'}
+                    </ReactMarkdown>
                   </Box>
                 </Paper>
-              </Stack>
+              )}
+              {descMode==='edit' && (
+                <Typography variant="caption" color="text.secondary">Tip: Paste images to upload; width/height hints like <code>![w:640px h:400px](...)</code> or <code>![w:75%](...)</code> are added. Leave height empty to keep aspect ratio.</Typography>
+              )}
             </Stack>
           )}
-          {tab===1 && (
-            <Stack direction="row" spacing={2}>
+          {tab===2 && (
+            <Stack id="kse-panel-2" role="tabpanel" aria-labelledby="kse-tab-2" direction="row" spacing={2}>
               {/* Left: Parameters */}
               <Stack spacing={2} sx={{ minWidth: 320, flex: 1 }}>
                 <Typography variant="subtitle2">Market Basics</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                   <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                    <InfoLabel title="Baseline price level (ZAR/MWh)" tooltip="Center price used for sample supply/demand curves and previews." />
+                    <InfoLabel title="Baseline price level (ZAR/MWh)" tooltip="Center price used for sample supply/demand curves and previews." showTitle={false} />
                     <NumberInput label="Base Price" value={cfg.market.base_price} onChange={(val)=>update(['market','base_price'], val)} min={0} max={10000} step={100} unit="ZAR/MWh" />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                    <InfoLabel title="Baseline traded volume (MWh)" tooltip="Scales the preview supply/demand curves and initial market environment." />
+                    <InfoLabel title="Baseline traded volume (MWh)" tooltip="Scales the preview supply/demand curves and initial market environment." showTitle={false} />
                     <NumberInput label="Base Volume" value={cfg.market.base_volume_mwh} onChange={(val)=>update(['market','base_volume_mwh'], val)} min={1000} max={100000} step={1000} unit="MWh" />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                    <InfoLabel title="Minimum allowed market price" tooltip="Price floor in ZAR/MWh (e.g., -500)." />
+                    <InfoLabel title="Minimum allowed market price" tooltip="Price floor in ZAR/MWh (e.g., -500)." showTitle={false} />
                     <NumberInput label="Floor" value={cfg.market.price_floor} onChange={(val)=>update(['market','price_floor'], val)} min={-1000} max={5000} step={100} unit="ZAR/MWh" />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                    <InfoLabel title="Maximum allowed market price" tooltip="Price cap in ZAR/MWh (e.g., +5000)." />
+                    <InfoLabel title="Maximum allowed market price" tooltip="Price cap in ZAR/MWh (e.g., +5000)." showTitle={false} />
                     <NumberInput label="Cap" value={cfg.market.price_cap} onChange={(val)=>update(['market','price_cap'], val)} min={1000} max={20000} step={500} unit="ZAR/MWh" />
+                  </Stack>
+                </Stack>
+
+                <Typography variant="subtitle2">Generator Mix</Typography>
+                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                    <InfoLabel title="PV share" tooltip="Share of PV in preview supply mix (percent of total)." showTitle={false} />
+                    <NumberInput label="PV (%)" value={cfg.market.generator_mix?.pv||0} onChange={(val)=>update(['market','generator_mix','pv'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                    <InfoLabel title="Wind share" tooltip="Share of Wind in preview supply mix (percent of total)." showTitle={false} />
+                    <NumberInput label="Wind (%)" value={cfg.market.generator_mix?.wind||0} onChange={(val)=>update(['market','generator_mix','wind'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                    <InfoLabel title="Hydro share" tooltip="Share of Hydro in preview supply mix (percent of total)." showTitle={false} />
+                    <NumberInput label="Hydro (%)" value={cfg.market.generator_mix?.hydro||0} onChange={(val)=>update(['market','generator_mix','hydro'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                    <InfoLabel title="Coal share" tooltip="Share of Coal in preview supply mix (percent of total)." showTitle={false} />
+                    <NumberInput label="Coal (%)" value={cfg.market.generator_mix?.coal||0} onChange={(val)=>update(['market','generator_mix','coal'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                    <InfoLabel title="Gas share" tooltip="Share of Gas in preview supply mix (percent of total)." showTitle={false} />
+                    <NumberInput label="Gas (%)" value={cfg.market.generator_mix?.gas||0} onChange={(val)=>update(['market','generator_mix','gas'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                    <InfoLabel title="Nuclear share" tooltip="Share of Nuclear in preview supply mix (percent of total)." showTitle={false} />
+                    <NumberInput label="Nuclear (%)" value={cfg.market.generator_mix?.nuclear||0} onChange={(val)=>update(['market','generator_mix','nuclear'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                  </Stack>
+                </Stack>
+                {(() => {
+                  const gm = cfg.market.generator_mix||{}
+                  const sum = ['pv','wind','hydro','coal','gas','nuclear'].reduce((s,k)=> s + Number(gm[k]||0), 0)
+                  return <Typography variant="caption" color={Math.abs(sum-100)<1e-6? 'text.secondary':'warning.main'}>Shares total: {sum}% (normalized in preview)</Typography>
+                })()}
+
+                <Typography variant="subtitle2">Consumer Mix</Typography>
+                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                    <InfoLabel title="Industrial share" tooltip="Share of Industrial consumers (percent of demand)." showTitle={false} />
+                    <NumberInput label="Industrial (%)" value={cfg.market.consumer_mix?.industrial||0} onChange={(val)=>update(['market','consumer_mix','industrial'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                    <InfoLabel title="Household share" tooltip="Share of Household consumers (percent of demand)." showTitle={false} />
+                    <NumberInput label="Household (%)" value={cfg.market.consumer_mix?.household||0} onChange={(val)=>update(['market','consumer_mix','household'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                    <InfoLabel title="Agriculture share" tooltip="Share of Agriculture consumers (percent of demand)." showTitle={false} />
+                    <NumberInput label="Agriculture (%)" value={cfg.market.consumer_mix?.agriculture||0} onChange={(val)=>update(['market','consumer_mix','agriculture'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                  </Stack>
+                </Stack>
+                {(() => {
+                  const cm = cfg.market.consumer_mix||{}
+                  const sum = ['industrial','household','agriculture'].reduce((s,k)=> s + Number(cm[k]||0), 0)
+                  return <Typography variant="caption" color={Math.abs(sum-100)<1e-6? 'text.secondary':'warning.main'}>Shares total: {sum}% (normalized in preview)</Typography>
+                })()}
+
+                <Typography variant="subtitle2">Randomness</Typography>
+                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                    <InfoLabel title="Capacity jitter (%)" tooltip="Random variation of individual block quantities. 0–50%." showTitle={false} />
+                    <NumberInput label="Capacity Jitter" value={cfg.market.random_capacity_pct} onChange={(val)=>update(['market','random_capacity_pct'], Number(val)||0)} min={0} max={50} step={1} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                    <InfoLabel title="Price jitter (%)" tooltip="Random variation of marginal costs and demand price steps. 0–50%." showTitle={false} />
+                    <NumberInput label="Price Jitter" value={cfg.market.random_price_pct} onChange={(val)=>update(['market','random_price_pct'], Number(val)||0)} min={0} max={50} step={1} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                    <InfoLabel title="Actual vs Forecast noise (%)" tooltip="Std. deviation of actual dispatch around dispatched plan used in sessions. Affects Actual vs Forecast (default 5%)." showTitle={false} />
+                    <NumberInput label="Actual Noise" value={cfg.environment.actual_noise_pct ?? 5} onChange={(val)=>update(['environment','actual_noise_pct'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
                   </Stack>
                 </Stack>
 
                 <Typography variant="subtitle2">Environment</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                   <Stack spacing={0.5} sx={{ minWidth: 260 }}>
-                    <InfoLabel title="Preview seed" tooltip="Used only for KSE previews. Simulation uses campaign.seed." />
+                    <InfoLabel title="Preview seed" tooltip="Used only for KSE previews. Simulation uses campaign.seed." showTitle={false} />
                     <TextField label="Preview Seed" value={cfg.environment.seed} onChange={e=>update(['environment','seed'], e.target.value)}/>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 260 }}>
-                    <InfoLabel title="Participants (preview)" tooltip="Approximate number of aggregated blocks for step preview." />
+                    <InfoLabel title="Participants (preview)" tooltip="Approximate number of aggregated blocks for step preview." showTitle={false} />
                     <TextField type="number" label="Participants" value={cfg.environment.participants || 20} onChange={e=>update(['environment','participants'], Number(e.target.value))}/>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 260 }}>
-                    <InfoLabel title="Profiles" tooltip="Select preset diurnal/seasonal profiles or import JSON with diurnal_profile[24], seasonal_factors[12]." />
+                    <InfoLabel title="Profiles" tooltip="Select preset diurnal/seasonal profiles or import JSON with diurnal_profile[24], seasonal_factors[12]." showTitle={false} />
                     <Select size="small" value={cfg.environment.profile_preset || ''} onChange={(e)=>{
                       const p = e.target.value
                       const presets = {
@@ -582,11 +1022,27 @@ export default function KSE(){
               </Stack>
               {/* Right: Sticky Preview */}
               <Box sx={{ width: 380 }}>
-                <Curves cfg={cfg} preview={preview} groups={groups} />
+                <Curves cfg={cfg} preview={preview} groups={cfg.market?.generator_mix} showSupply={showSupply} showDemand={showDemand} showMcp={showMcp} svgRef={stepRef} />
                 <Stack spacing={1} sx={{ mt:1 }}>
                   <Stack direction="row" spacing={1} alignItems="center">
+                    <FormControlLabel control={<Switch size="small" checked={showSupply} onChange={(_,v)=> setShowSupply(v)} />} label="Supply" />
+                    <FormControlLabel control={<Switch size="small" checked={showDemand} onChange={(_,v)=> setShowDemand(v)} />} label="Demand" />
+                    <FormControlLabel control={<Switch size="small" checked={showMcp} onChange={(_,v)=> setShowMcp(v)} />} label="MCP" />
+                  </Stack>
+                  {/* Auto-updating MCP/Volume preview; round selection moved below charts */}
+                  {preview && <Typography sx={{ mt:1 }}>MCP: {preview.mcp} | Volume: {preview.volume}</Typography>}
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <FormControlLabel control={<Switch size="small" checked={showHourlyPoints} onChange={(_,v)=> setShowHourlyPoints(v)} />} label="Points" />
+                    <FormControlLabel control={<Switch size="small" checked={showHourlyGrid} onChange={(_,v)=> setShowHourlyGrid(v)} />} label="Grid" />
+                  </Stack>
+                  <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly MCP</Typography>
+                  <svg ref={mcpRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> mcpRef.current && exportPNG(mcpRef.current, 'kse_hourly_mcp.png')} />
+                  <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly Volume</Typography>
+                  <svg ref={volRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> volRef.current && exportPNG(volRef.current, 'kse_hourly_volume.png')} />
+                  {/* Controls moved under hourly charts */}
+                  <Stack direction="row" spacing={2} alignItems="flex-start" sx={{ mt:1 }}>
                     <Stack spacing={0.5} sx={{ minWidth: 180 }}>
-                      <InfoLabel title="Preview round" tooltip="Select a round to preview." />
+                      <InfoLabel title="Preview round" tooltip="Select a round used for MCP/Volume preview rendering." showTitle={false} />
                       {(() => {
                         const totalRounds = Number(cfg?.general?.rounds || 4)
                         const items = Array.from({ length: totalRounds }, (_, i) => i + 1)
@@ -598,29 +1054,23 @@ export default function KSE(){
                         )
                       })()}
                     </Stack>
-                    <Button variant="outlined" onClick={doPreview}>Preview MCP</Button>
+                    <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                      <InfoLabel title="Hours (hourly charts)" tooltip="Number of hours for hourly MCP/Volume preview. Auto-updates charts." showTitle={false} />
+                      <TextField inputRef={refHours} type="number" size="small" label="Hours" value={hours} onChange={e=>setHours(e.target.value)} sx={{ width: 140 }} />
+                    </Stack>
                   </Stack>
-                  {preview && <Typography sx={{ mt:1 }}>MCP: {preview.mcp} | Volume: {preview.volume}</Typography>}
-                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mt:2 }}>
-                    <TextField type="number" size="small" label="Hours" value={hours} onChange={e=>setHours(e.target.value)} sx={{ width: 120 }} />
-                    <Button variant="outlined" onClick={doHourly}>Hourly Preview</Button>
-                  </Stack>
-                  <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly MCP</Typography>
-                  <svg ref={mcpRef} width={360} height={120} style={{ border:'1px solid #eee' }} />
-                  <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly Volume</Typography>
-                  <svg ref={volRef} width={360} height={120} style={{ border:'1px solid #eee' }} />
                 </Stack>
               </Box>
             </Stack>
           )}
-          {tab===2 && (
-            <Stack spacing={2}>
+          {tab===3 && (
+            <Stack id="kse-panel-3" role="tabpanel" aria-labelledby="kse-tab-3" spacing={2}>
               <Stack spacing={0.5} sx={{ maxWidth: 260 }}>
                 <InfoLabel
                   title="Number of grid zones"
                   tooltip="Supported range: 1–5. Changing this rebuilds the symmetric ATC matrix; diagonal stays 0 MW."
                 />
-                <TextField type="number" label="Zones" value={cfg.grid.zones} onChange={e=>{
+                <TextField inputRef={refZones} type="number" label="Zones" value={cfg.grid.zones} onChange={e=>{
                 const z = Number(e.target.value)
                 const atc = Array.from({length:z}, (_,i)=> Array.from({length:z}, (_,j)=> i===j?0: (cfg.grid.atc?.[i]?.[j] ?? 0)))
                 setCfg(prev=> ({...prev, grid: { ...prev.grid, zones: z, atc }}))
@@ -714,8 +1164,8 @@ export default function KSE(){
             </Stack>
           )}
           {/* Environment tab removed (merged) */}
-          {tab===3 && (
-            <Stack spacing={2}>
+          {tab===4 && (
+            <Stack id="kse-panel-4" role="tabpanel" aria-labelledby="kse-tab-4" spacing={2}>
               <Stack direction="row" justifyContent="space-between" alignItems="center">
                 <Stack spacing={0.5}>
                   <InfoLabel
@@ -732,6 +1182,7 @@ export default function KSE(){
                     setEditingEventIndex(null)
                     setEventEditorOpen(true)
                   }}
+                  ref={refAddEvent}
                 >
                   Add Event
                 </Button>
@@ -763,8 +1214,8 @@ export default function KSE(){
               />
             </Stack>
           )}
-          {tab===4 && (
-            <Stack spacing={2}>
+          {tab===5 && (
+            <Stack id="kse-panel-5" role="tabpanel" aria-labelledby="kse-tab-5" spacing={2}>
               <Stack spacing={0.5}>
                 <InfoLabel
                   title="Player Types for this scenario"
@@ -801,16 +1252,21 @@ export default function KSE(){
                         }}/>
                       </Grid>
                       <Grid item xs={12} md={6}>
-                        <TextField size="small" fullWidth type="number" label="Capacity variability (%)" value={pt.capacity_variability_pct ?? 0} onChange={e=>{
-                          const v = e.target.value === '' ? undefined : Number(e.target.value)
-                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].capacity_variability_pct = v; return n })
-                        }}/>
-                      </Grid>
-                      <Grid item xs={12} md={6}>
-                        <TextField size="small" fullWidth type="number" label="Marginal cost variability (%)" value={pt.marginal_cost_variability_pct ?? 0} onChange={e=>{
-                          const v = e.target.value === '' ? undefined : Number(e.target.value)
-                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].marginal_cost_variability_pct = v; return n })
-                        }}/>
+                        <Accordion>
+                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>Advanced</AccordionSummary>
+                          <AccordionDetails>
+                            <Stack direction={{ xs:'column', md:'row' }} spacing={2}>
+                              <TextField size="small" fullWidth type="number" label="Capacity variability (%)" value={pt.capacity_variability_pct ?? 0} onChange={e=>{
+                                const v = e.target.value === '' ? undefined : Number(e.target.value)
+                                setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].capacity_variability_pct = v; return n })
+                              }}/>
+                              <TextField size="small" fullWidth type="number" label="Marginal cost variability (%)" value={pt.marginal_cost_variability_pct ?? 0} onChange={e=>{
+                                const v = e.target.value === '' ? undefined : Number(e.target.value)
+                                setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].marginal_cost_variability_pct = v; return n })
+                              }}/>
+                            </Stack>
+                          </AccordionDetails>
+                        </Accordion>
                       </Grid>
                       <Grid item xs={12}>
                         <Button size="small" color="error" onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.player_types.splice(idx,1); return n })}>Remove Type</Button>
@@ -905,17 +1361,17 @@ export default function KSE(){
                   </Stack>
                 </Paper>
               ))}
-              <Button variant="outlined" onClick={()=> setCfg(prev=> ({ ...prev, player_types: [...(prev.player_types||[]), { id:'', name:'', devices:[] }] }))}>Add Player Type</Button>
+              <Button ref={refAddPlayerType} variant="outlined" onClick={()=> setCfg(prev=> ({ ...prev, player_types: [...(prev.player_types||[]), { id:'', name:'', devices:[] }] }))}>Add Player Type</Button>
             </Stack>
           )}
-          {tab===5 && (
-            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+          {tab===6 && (
+            <Stack id="kse-panel-6" role="tabpanel" aria-labelledby="kse-tab-6" direction="row" spacing={2} flexWrap="wrap" useFlexGap>
               <Stack spacing={0.5} sx={{ minWidth: 220 }}>
                 <InfoLabel
                   title="Weight for Profit KPI"
                   tooltip="Weights must sum to 1.0 across Profit, Imbalance, and Curtailment. Higher weight increases influence on final score."
                 />
-                <TextField type="number" label="Profit" value={cfg.scoring.weights.profit} onChange={e=>update(['scoring','weights','profit'], Number(e.target.value))}/>
+                <TextField inputRef={refWeights} type="number" label="Profit" value={cfg.scoring.weights.profit} onChange={e=>update(['scoring','weights','profit'], Number(e.target.value))}/>
               </Stack>
               <Stack spacing={0.5} sx={{ minWidth: 220 }}>
                 <InfoLabel
@@ -935,7 +1391,7 @@ export default function KSE(){
           )}
           {/* Preview tab removed (merged) */}
         </Box>
-        <ValidationPanel errors={errors} />
+        <ValidationPanel errors={errors} onSelect={onValidationSelect} />
       </Stack>
       </Paper>
       {errors.length>0 && <Paper sx={{p:2}}>
@@ -1038,13 +1494,59 @@ export default function KSE(){
         </DialogActions>
       </Dialog>
 
+      {/* Template Picker Dialog */}
+      <Dialog open={templateDialogOpen} onClose={()=> setTemplateDialogOpen(false)} fullWidth maxWidth="sm" aria-label="Load Scenario Template">
+        <DialogTitle>Load Template</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.5}>
+            <Typography variant="body2">Select a template to load. Current unsaved changes will be replaced.</Typography>
+            <Select
+              size="small"
+              value={selectedTemplateId}
+              onChange={(e)=> setSelectedTemplateId(e.target.value)}
+              displayEmpty
+            >
+              <MenuItem value=""><em>Select template…</em></MenuItem>
+              {templates.map(t=> (
+                <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>
+              ))}
+            </Select>
+            {(() => {
+              const t = templates.find(x=> x.id === selectedTemplateId)
+              return t ? (
+                <Paper variant="outlined" sx={{ p:1 }}>
+                  <Typography variant="subtitle2" sx={{ mb:0.5 }}>{t.name}</Typography>
+                  <Typography variant="body2" color="text.secondary">{t.description}</Typography>
+                </Paper>
+              ) : null
+            })()}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setTemplateDialogOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={!selectedTemplateId}
+            onClick={async ()=>{
+              try{
+                const { data } = await api.get(`/api/kse/templates/${selectedTemplateId}`)
+                if (data?.name) setName(data.name)
+                if (data?.config) setCfg(data.config)
+                setTemplateDialogOpen(false)
+              }catch(_){ alert('Failed to load template') }
+            }}
+          >
+            Load
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Sticky Action Bar */}
       <StickyActionBar
         onSave={save}
         onValidate={doPreview}
         onImportExport={()=> setIoOpen(true)}
         onEditDescription={()=> { setDescDraft(cfg?.general?.description || ''); setDescOpen(true) }}
-        onLoadTemplate={()=> setTemplateDialogOpen(true)}
         disabled={errors.length>0}
       />
       

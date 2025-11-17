@@ -3,6 +3,7 @@ import { Box, Grid, Card, CardMedia, CardContent, Typography, CardActions, Butto
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
+import DocsFab from '../components/DocsFab'
 
 export default function Catalog(){
   const [rows, setRows] = useState(null)
@@ -53,6 +54,7 @@ export default function Catalog(){
           )
         })}
       </Grid>
+      <DocsFab href="/docs/player" label="Open Player Handbook" />
     </Box>
   )
 }

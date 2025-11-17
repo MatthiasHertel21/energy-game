@@ -1,12 +1,14 @@
 import React from 'react'
 import { Stack, Tooltip, Typography, Box } from '@mui/material'
 
-export default function InfoLabel({ title, tooltip }){
+export default function InfoLabel({ title, tooltip, showTitle = true }){
   return (
     <Stack direction="row" spacing={0.75} alignItems="center">
-      <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
-        {title}
-      </Typography>
+      {showTitle && (
+        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
+          {title}
+        </Typography>
+      )}
       <Tooltip title={tooltip} arrow enterDelay={300}>
         <Box
           component="span"

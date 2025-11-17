@@ -1,9 +1,6 @@
 import React from 'react'
 import { Box, Button, Stack } from '@mui/material'
-import SaveIcon from '@mui/icons-material/Save'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
-import DownloadIcon from '@mui/icons-material/Download'
-import DescriptionIcon from '@mui/icons-material/Description'
 import TemplateIcon from '@mui/icons-material/GetApp'
 
 export default function StickyActionBar({
@@ -32,41 +29,21 @@ export default function StickyActionBar({
     >
       <Stack direction="row" spacing={2} justifyContent="center" flexWrap="wrap" useFlexGap>
         <Button
-          variant="contained"
-          startIcon={<SaveIcon />}
-          onClick={onSave}
-          disabled={disabled}
-        >
-          Save
-        </Button>
-        <Button
           variant="outlined"
           startIcon={<PlayArrowIcon />}
           onClick={onValidate}
         >
           Validate + Preview
         </Button>
-        <Button
-          variant="outlined"
-          startIcon={<DownloadIcon />}
-          onClick={onImportExport}
-        >
-          Import/Export
-        </Button>
-        <Button
-          variant="outlined"
-          startIcon={<DescriptionIcon />}
-          onClick={onEditDescription}
-        >
-          Edit Description
-        </Button>
-        <Button
-          variant="outlined"
-          startIcon={<TemplateIcon />}
-          onClick={onLoadTemplate}
-        >
-          Load Template
-        </Button>
+        {onLoadTemplate ? (
+          <Button
+            variant="outlined"
+            startIcon={<TemplateIcon />}
+            onClick={onLoadTemplate}
+          >
+            Load Template
+          </Button>
+        ) : null}
       </Stack>
     </Box>
   )

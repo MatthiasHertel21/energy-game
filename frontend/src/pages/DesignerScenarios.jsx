@@ -14,16 +14,16 @@ export default function DesignerScenarios(){
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(10)
   const navigate = useNavigate()
-  const { showSnackbar } = useSnackbar()
+  const { showSnack } = useSnackbar()
 
   const load = async ()=>{
     setLoading(true)
     try{ 
       const { data } = await api.get('/api/kse/scenarios')
       setRows(data||[])
-      showSnackbar('Scenarios loaded', 'success')
+      showSnack('Scenarios loaded', 'success')
     } catch(e) {
-      showSnackbar('Failed to load scenarios', 'error')
+      showSnack('Failed to load scenarios', 'error')
     } finally{ 
       setLoading(false) 
     }
@@ -44,10 +44,10 @@ export default function DesignerScenarios(){
     try{ 
       await api.delete(`/api/kse/scenarios/${confirm.id}`)
       setConfirm({ open:false, id:null, name:'' })
-      showSnackbar('Scenario deleted', 'success')
+      showSnack('Scenario deleted', 'success')
       load()
     } catch(e){
-      showSnackbar(e.response?.data?.error || 'Failed to delete scenario', 'error')
+      showSnack(e.response?.data?.error || 'Failed to delete scenario', 'error')
     }
   }
 
@@ -56,10 +56,10 @@ export default function DesignerScenarios(){
       const { data } = await api.get(`/api/kse/scenarios/${row.id}`)
       const body = { name: `${row.name} (Copy)`, campaign_id: data.campaign_id, config: data.config }
       await api.post('/api/kse/scenarios', body)
-      showSnackbar('Scenario duplicated', 'success')
+      showSnack('Scenario duplicated', 'success')
       load()
     }catch(e){
-      showSnackbar('Failed to duplicate scenario', 'error')
+      showSnack('Failed to duplicate scenario', 'error')
     }
   }
 
@@ -76,9 +76,9 @@ export default function DesignerScenarios(){
       link.click()
       document.body.removeChild(link)
       URL.revokeObjectURL(url)
-      showSnackbar('Scenario exported', 'success')
+      showSnack('Scenario exported', 'success')
     } catch(e) {
-      showSnackbar('Failed to export scenario', 'error')
+      showSnack('Failed to export scenario', 'error')
     }
   }
 

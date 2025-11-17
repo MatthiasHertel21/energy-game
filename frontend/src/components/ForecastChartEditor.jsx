@@ -45,7 +45,7 @@ export default function ForecastChartEditor({ hours = [], lockedUntil = 0, onCha
     // drag behavior
     const drag = d3.drag()
       .on('drag', (event, d) => {
-        const i = d.index
+        const i = d.i
         if (i < lockedUntil) return
         const [, y0] = d3.pointer(event, g.node())
         const newVal = Math.max(0, Math.min(yMax, y.invert(y0)))

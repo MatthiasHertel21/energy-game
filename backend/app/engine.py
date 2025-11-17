@@ -296,10 +296,16 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     if mode == "shared_market" and total_planned > 0:
         # pro‑rata dispatch if planned exceeds market volume
         dispatch_factor = min(1.0, vol / total_planned)
+    # configurable actual vs forecast deviation (pct) from config.environment.actual_noise_pct, default 5%
+    try:
+        noise_pct = float((config.get("environment", {}) or {}).get("actual_noise_pct", 5))
+    except Exception:
+        noise_pct = 5.0
+    frac = max(0.0, min(1.0, noise_pct / 100.0))
     for pid in players:
         planned = plans.get(pid, 0.0)
         dispatched = planned * dispatch_factor
-        noise = random.uniform(-0.05, 0.05) * max(1.0, dispatched)
+        noise = random.uniform(-frac, frac) * max(1.0, dispatched)
         actual = max(0.0, dispatched + noise)
         imbalance_cost = settle_balancing(dispatched, actual)
         revenue = round(dispatched * price, 0)

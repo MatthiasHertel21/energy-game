@@ -4,6 +4,7 @@ import { ArrowUpward, ArrowDownward, Delete } from '@mui/icons-material'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
 import InfoLabel from '../components/InfoLabel'
+import DocsFab from '../components/DocsFab'
 
 export default function DesignerCampaigns(){
   const [campaigns, setCampaigns] = useState(null)
@@ -206,6 +207,7 @@ export default function DesignerCampaigns(){
         )}
       </Grid>
       </Grid>
+      <DocsFab href="/docs/designer" label="Open Designer Handbook" />
     </>
   )
 }

@@ -1,17 +1,27 @@
 from locust import HttpUser, task, between
+import os
 import random
 
 
 class EMSGUser(HttpUser):
     wait_time = between(1, 3)
     token = None
+    headers = None
 
     def on_start(self):
-        # Login once per user
-        resp = self.client.post("/api/auth/login", json={"email": "admin@example.com", "password": "admin123"})
-        if resp.status_code == 200:
-            data = resp.json()
-            self.token = data.get("access_token")
+        # Login once per user using env vars if present
+        email = os.getenv("EMSG_EMAIL")
+        password = os.getenv("EMSG_PASSWORD")
+        if email and password:
+            try:
+                resp = self.client.post("/api/auth/login", json={"email": email, "password": password})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self.token = data.get("access_token")
+                    if self.token:
+                        self.headers = {"Authorization": f"Bearer {self.token}"}
+            except Exception:
+                pass
 
     @task(3)
     def health(self):
@@ -26,7 +36,7 @@ class EMSGUser(HttpUser):
             "events": [],
             "devices": []
         }
-        self.client.post("/api/engine/preview", json={"config": cfg})
+        self.client.post("/api/engine/preview", json={"config": cfg}, headers=self.headers or {})
 
     @task(1)
     def preview_hourly(self):
@@ -38,13 +48,13 @@ class EMSGUser(HttpUser):
             "events": [],
             "devices": []
         }
-        self.client.post("/api/engine/preview/hourly", json={"config": cfg, "hours": 24})
+        self.client.post("/api/engine/preview/hourly", json={"config": cfg, "hours": 24}, headers=self.headers or {})
 
     @task(1)
     def catalog_browse(self):
-        self.client.get("/api/catalog/campaigns", headers={"Authorization": f"Bearer {self.token}"} if self.token else {})
+        self.client.get("/api/catalog/campaigns", headers=self.headers or {})
 
     @task(1)
     def player_progress(self):
-        if self.token:
-            self.client.get("/api/player/progress", headers={"Authorization": f"Bearer {self.token}"})
+        if self.headers:
+            self.client.get("/api/player/progress", headers=self.headers)

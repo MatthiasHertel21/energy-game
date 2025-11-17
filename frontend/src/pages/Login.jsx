@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { TextField, Button, Paper, Typography, Stack } from '@mui/material'
+import { TextField, Button, Paper, Typography, Stack, Divider, Box } from '@mui/material'
 import api from '../services/api'
 import useAuth from '../store/auth'
 import { useNavigate } from 'react-router-dom'
@@ -24,7 +24,7 @@ export default function Login() {
   }
 
   return (
-    <Paper sx={{ maxWidth: 420, mx: 'auto', p: 3 }}>
+    <Paper sx={{ maxWidth: 520, mx: 'auto', p: 3 }}>
       <Typography variant="h5" gutterBottom>Sign in to EMSG</Typography>
       <form onSubmit={onSubmit}>
         <Stack spacing={2}>
@@ -34,6 +34,16 @@ export default function Login() {
           <Button type="submit" variant="contained">Sign in</Button>
         </Stack>
       </form>
+      <Divider sx={{ my: 3 }} />
+      <Box>
+        <Typography variant="subtitle2" gutterBottom>Handbooks</Typography>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+          <Button size="small" component="a" href="/docs/player" target="_blank" rel="noopener noreferrer">Player</Button>
+          <Button size="small" component="a" href="/docs/trainer" target="_blank" rel="noopener noreferrer">Trainer</Button>
+          <Button size="small" component="a" href="/docs/designer" target="_blank" rel="noopener noreferrer">Designer</Button>
+          <Button size="small" component="a" href="/docs/admin" target="_blank" rel="noopener noreferrer">Admin</Button>
+        </Stack>
+      </Box>
     </Paper>
   )
 }

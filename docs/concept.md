@@ -65,7 +65,7 @@ The system has **four roles**, each with **specific permissions** to support col
 
 The KSE is the **core tool for Designers** to create and customize content. It is a **tabbed interface** within the Editor App, allowing **full control** over all parameters. All defaults are explained below, and **everything is configurable per scenario**. KSE ensures **implementation-ready** specs by validating inputs (syntax, plausibility, feasibility).
 
-**Usability Standard (Field Help + Tooltips):** Every input field in the KSE shows a one-line short description above the control and provides an info tooltip with detailed guidance (valid ranges, validation rules, and system impact). All texts are in English.
+**Usability Standard (Field Help + Tooltips):** Every input field in the KSE provides an info tooltip with detailed guidance (valid ranges, validation rules, and system impact). Above-field short descriptions can be disabled per tab for compactness (e.g., KSE Market tab uses tooltips only). All texts are in English.
 
 **KSE Tabs and Options (Detailed)**:
 
@@ -95,6 +95,8 @@ The KSE is the **core tool for Designers** to create and customize content. It i
    - **Ancillary Services**: Not supported.
    - **Validation**: Preview clearing with sample data.
 
+  Note: For preview convenience, the KSE Market tab also exposes generator mix shares (PV/Wind/Hydro/Coal/Gas) and randomness controls (capacity/price jitter) used to render supply/demand preview curves. These do not change engine clearing rules.
+
 3. **Grid Tab** – Zonal and Transmission Setup:
    - **Number of Zones**: 2 (default), 1–5 max.
    - **ATC Matrix**: Symmetric MW between zones (default Z1↔Z2 = 5,000 MW).
@@ -106,7 +108,7 @@ The KSE is the **core tool for Designers** to create and customize content. It i
 4. **Environment Generator Tab** – Baseline Market Setup:
    - **Baseline Capacities**: Producer 30,000 MW, Consumer 25,000 MW.
    - **Agents**: 100 per side (supply/demand).
-   - **Group Shares**: Configurable percentages (e.g., 30% PV, 25% Gas).
+  - **Group Shares**: Configurable percentages (e.g., 30% PV, 25% Gas). Also accessible on the Market tab for quick preview tuning.
    - **Zonal Splits**: Per group (e.g., PV 60% in Z1).
    - **RNG Seed**: Trainer-provided (for reproducibility).
    - **Templates**: "Standard Day", "High Renewables", "Peak Winter".

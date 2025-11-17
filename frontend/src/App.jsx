@@ -28,6 +28,10 @@ const Catalog = React.lazy(()=> import('./pages/Catalog'))
 const CampaignDetail = React.lazy(()=> import('./pages/CampaignDetail'))
 const DesignerCampaigns = React.lazy(()=> import('./pages/DesignerCampaigns'))
 const DesignerScenarios = React.lazy(()=> import('./pages/DesignerScenarios'))
+const DocsPlayer = React.lazy(()=> import('./pages/DocsPlayer'))
+const DocsTrainer = React.lazy(()=> import('./pages/DocsTrainer'))
+const DocsDesigner = React.lazy(()=> import('./pages/DocsDesigner'))
+const DocsAdmin = React.lazy(()=> import('./pages/DocsAdmin'))
 import ProtectedRoute from './components/ProtectedRoute'
 import SnackbarProvider from './components/SnackbarProvider'
 import NotFound from './components/NotFound'
@@ -178,9 +182,14 @@ export default function App({ themeMode, onToggleTheme }) {
           <input name="Name" value="" aria-label="Name" style={{ display:'none' }} readOnly />
           <Suspense fallback={<Box sx={{ display:'flex', justifyContent:'center', mt:6 }}><CircularProgress /></Box>}>
           <Routes>
-          <Route path="/" element={<Navigate to={user ? (user.role === 'admin' ? '/admin' : user.role === 'trainer' ? '/trainer' : user.role === 'designer' ? '/designer/scenarios' : '/home') : '/login'} />} />
+          <Route path="/" element={<Navigate to={user ? (user.role === 'admin' ? '/admin' : user.role === 'trainer' ? '/trainer' : user.role === 'designer' ? '/designer/campaigns' : '/catalog') : '/login'} />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          {/* Public docs routes for handbook viewing */}
+          <Route path="/docs/player" element={<DocsPlayer />} />
+          <Route path="/docs/trainer" element={<DocsTrainer />} />
+          <Route path="/docs/designer" element={<DocsDesigner />} />
+          <Route path="/docs/admin" element={<DocsAdmin />} />
           <Route element={<ProtectedRoute roles={["admin"]} /> }>
             <Route path="/admin" element={<AdminUsers />} />
           </Route>
