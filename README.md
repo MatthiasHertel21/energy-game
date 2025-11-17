@@ -146,6 +146,12 @@ See `docs/DEPLOYMENT.md` for details on:
 - `docs/SPRINT_*_PLAN.md` - Development roadmap
 - `docs/QA_CHECKS.md` - Pre-launch checklist
 
+Role Handbooks
+- `docs/guide/player-handbook.md` - Player Guide
+- `docs/guide/trainer-handbook.md` - Trainer Guide
+- `docs/guide/designer-handbook.md` - Designer/KSE Guide
+- `docs/guide/admin-handbook.md` - Admin Guide
+
 ---
 
 **Last Updated**: Sprint 21 (2025-11-17)

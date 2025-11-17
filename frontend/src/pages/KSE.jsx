@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material'
+import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, Grid } from '@mui/material'
 import { Edit as EditIcon, Add as AddIcon } from '@mui/icons-material'
 import InfoLabel from '../components/InfoLabel'
 import NumberInput from '../components/inputs/NumberInput'
@@ -652,6 +652,64 @@ export default function KSE(){
                     {cfg.grid.zones} zone(s) configured. Click "Edit Matrix" to modify ATC values in fullscreen editor with CSV import/export.
                   </Typography>
                 </Paper>
+
+                {/* Inline editable ATC matrix */}
+                <Box sx={{ mt: 2, overflowX: 'auto' }}>
+                  {(() => {
+                    const z = Number(cfg.grid.zones || 0)
+                    if (!z || z < 1) return null
+                    const atc = cfg.grid.atc || []
+                    const updateCell = (i, j, val) => {
+                      const v = Number(val) || 0
+                      setCfg(prev => {
+                        const n = structuredClone(prev)
+                        if (!n.grid.atc) n.grid.atc = []
+                        for (let r = 0; r < z; r++) {
+                          if (!Array.isArray(n.grid.atc[r])) n.grid.atc[r] = Array.from({ length: z }, (_, c) => (r === c ? 0 : 0))
+                        }
+                        if (i !== j) {
+                          n.grid.atc[i][j] = v
+                          n.grid.atc[j][i] = v // enforce symmetry
+                        }
+                        return n
+                      })
+                    }
+                    return (
+                      <table style={{ borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr>
+                            <th style={{ width: 80 }} />
+                            {Array.from({ length: z }, (_, j) => (
+                              <th key={j} style={{ border: '1px solid #ddd', padding: 4, textAlign: 'center' }}>Z{j+1}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Array.from({ length: z }, (_, i) => (
+                            <tr key={i}>
+                              <th style={{ padding: 4, textAlign: 'left' }}>Z{i+1}</th>
+                              {Array.from({ length: z }, (_, j) => (
+                                <td key={j} style={{ border: '1px solid #eee', padding: 4 }}>
+                                  {i === j ? (
+                                    <TextField size="small" type="number" value={0} disabled sx={{ width: 100 }} />
+                                  ) : (
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      sx={{ width: 100 }}
+                                      value={Number(atc?.[i]?.[j] ?? 0)}
+                                      onChange={(e) => updateCell(i, j, e.target.value)}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  })()}
+                </Box>
               </Box>
             </Stack>
           )}
@@ -717,33 +775,47 @@ export default function KSE(){
               {(cfg.player_types||[]).map((pt, idx)=> (
                 <Paper key={idx} sx={{ p:1.5, border:'1px solid #ddd' }}>
                   <Stack spacing={1.5}>
-                    <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
-                      <TextField size="small" label="ID" value={pt.id||''} onChange={e=>{
-                        const v = e.target.value
-                        setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].id = v; return n })
-                      }} sx={{ minWidth: 180 }}/>
-                      <TextField size="small" label="Name" value={pt.name||''} onChange={e=>{
-                        const v = e.target.value
-                        setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].name = v; return n })
-                      }} sx={{ minWidth: 220 }}/>
-                      <TextField size="small" label="Description" value={pt.description||''} onChange={e=>{
-                        const v = e.target.value
-                        setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].description = v; return n })
-                      }} sx={{ minWidth: 260 }}/>
-                      <TextField size="small" type="number" label="Zone (optional)" value={pt.zone||''} onChange={e=>{
-                        const v = e.target.value === '' ? undefined : Number(e.target.value)
-                        setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].zone = v; return n })
-                      }} sx={{ minWidth: 160 }}/>
-                      <TextField size="small" type="number" label="Capacity variability (%)" value={pt.capacity_variability_pct ?? 0} onChange={e=>{
-                        const v = e.target.value === '' ? undefined : Number(e.target.value)
-                        setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].capacity_variability_pct = v; return n })
-                      }} sx={{ minWidth: 200 }}/>
-                      <TextField size="small" type="number" label="Marginal cost variability (%)" value={pt.marginal_cost_variability_pct ?? 0} onChange={e=>{
-                        const v = e.target.value === '' ? undefined : Number(e.target.value)
-                        setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].marginal_cost_variability_pct = v; return n })
-                      }} sx={{ minWidth: 240 }}/>
-                      <Button size="small" color="error" onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.player_types.splice(idx,1); return n })}>Remove Type</Button>
-                    </Stack>
+                    <Grid container spacing={2} alignItems="center">
+                      <Grid item xs={12} md={6}>
+                        <TextField size="small" fullWidth label="ID" value={pt.id||''} onChange={e=>{
+                          const v = e.target.value
+                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].id = v; return n })
+                        }}/>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <TextField size="small" fullWidth label="Name" value={pt.name||''} onChange={e=>{
+                          const v = e.target.value
+                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].name = v; return n })
+                        }}/>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <TextField size="small" fullWidth label="Description" value={pt.description||''} onChange={e=>{
+                          const v = e.target.value
+                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].description = v; return n })
+                        }}/>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <TextField size="small" fullWidth type="number" label="Zone (optional)" value={pt.zone||''} onChange={e=>{
+                          const v = e.target.value === '' ? undefined : Number(e.target.value)
+                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].zone = v; return n })
+                        }}/>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <TextField size="small" fullWidth type="number" label="Capacity variability (%)" value={pt.capacity_variability_pct ?? 0} onChange={e=>{
+                          const v = e.target.value === '' ? undefined : Number(e.target.value)
+                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].capacity_variability_pct = v; return n })
+                        }}/>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <TextField size="small" fullWidth type="number" label="Marginal cost variability (%)" value={pt.marginal_cost_variability_pct ?? 0} onChange={e=>{
+                          const v = e.target.value === '' ? undefined : Number(e.target.value)
+                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].marginal_cost_variability_pct = v; return n })
+                        }}/>
+                      </Grid>
+                      <Grid item xs={12}>
+                        <Button size="small" color="error" onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.player_types.splice(idx,1); return n })}>Remove Type</Button>
+                      </Grid>
+                    </Grid>
                     
                     {/* Devices with Card UI */}
                     <Stack spacing={1}>
