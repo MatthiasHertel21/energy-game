@@ -353,21 +353,13 @@ export default function KSE(){
 
   return (
     <Stack spacing={2}>
-      <Typography variant="h5">KSE – Scenario Editor</Typography>
-      {/* Toolbar */}
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-        <Button variant="contained" onClick={save} disabled={errors.length>0}>Save</Button>
-        <Button variant="outlined" onClick={doPreview} disabled={errors.length>0}>Validate + Preview</Button>
-        <Button variant="outlined" startIcon={<EditIcon />} onClick={()=> setAtcEditorOpen(true)}>Edit Matrix</Button>
-        <Button variant="outlined" onClick={()=> setIoOpen(true)}>Import/Export</Button>
-        <Button variant="outlined" onClick={()=> { setDescDraft(cfg?.general?.description || ''); setDescOpen(true) }}>Edit Description</Button>
-      </Stack>
-      <Stack spacing={0.5}>
-        <InfoLabel
-          title="Scenario name for identification"
-          tooltip="Free text used to identify this scenario in lists and exports."
-        />
-        <TextField label="Scenario Name" value={name} onChange={e=>setName(e.target.value)} />
+      {/* Header + Toolbar (right aligned) */}
+      <Stack direction="row" alignItems="center" justifyContent="space-between">
+        <Typography variant="h5">KSE – Scenario Editor</Typography>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Button variant="outlined" onClick={()=> setIoOpen(true)}>Import/Export</Button>
+          <Button variant="contained" onClick={save} disabled={errors.length>0}>Save</Button>
+        </Stack>
       </Stack>
   <Paper sx={{ p:2 }}>
         <Tabs 
@@ -383,6 +375,7 @@ export default function KSE(){
           <Tab label="Events" role="tab" aria-selected={tab===3} />
           <Tab label="Player Types" role="tab" aria-selected={tab===4} />
           <Tab label="Scoring" role="tab" aria-selected={tab===5} />
+          <Tab label="Description" role="tab" aria-selected={tab===6} />
         </Tabs>
         <Stack direction="row" spacing={2} sx={{ mt:2 }}>
           <Box sx={{ flex: 1 }}>
@@ -483,6 +476,35 @@ export default function KSE(){
                   InputLabelProps={{ shrink: true }}
                   helperText="Optional, e.g. 08:00"
                 />
+              </Stack>
+            </Stack>
+          )}
+          {tab===6 && (
+            <Stack spacing={2}>
+              <Stack spacing={0.5} sx={{ maxWidth: 520 }}>
+                <InfoLabel
+                  title="Scenario name for identification"
+                  tooltip="Free text used to identify this scenario in lists and exports."
+                />
+                <TextField fullWidth label="Scenario Name" value={name} onChange={e=>setName(e.target.value)} />
+              </Stack>
+              <Stack direction="row" spacing={2} alignItems="center">
+                <Typography variant="subtitle2">Description</Typography>
+              </Stack>
+              <Stack direction={{ xs:'column', md:'row' }} spacing={2}>
+                <TextField
+                  label="Markdown"
+                  value={cfg?.general?.description || ''}
+                  onChange={(e)=> update(['general','description'], e.target.value)}
+                  multiline minRows={10}
+                  sx={{ flex: 1 }}
+                />
+                <Paper variant="outlined" sx={{ p:2, flex: 1, '& h1,h2,h3':{ mt:1 }, '& p':{ mb:1 } }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>Preview</Typography>
+                  <Box sx={{ maxHeight: 360, overflow: 'auto' }}>
+                    <ReactMarkdown>{cfg?.general?.description || '*No content*'}</ReactMarkdown>
+                  </Box>
+                </Paper>
               </Stack>
             </Stack>
           )}

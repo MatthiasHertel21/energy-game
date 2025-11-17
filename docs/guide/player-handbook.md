@@ -1,4 +1,211 @@
-# Player Handbuch
+# Player Handbook
+## Energy Market Simulation Game (EMSG)
+
+Version: 1.0  
+Date: 17 Nov 2025  
+Audience: Players/Students
+
+---
+
+## Quick Guide
+
+- Purpose: Practice market decisions in a 24h day, 4 rounds.
+- Flow: Login → Home/Catalog → Briefing → Play → Evaluation.
+- Modes: `isolated_per_player` (solo) or `shared_market` (multiplayer).
+- Timer: Each round has a fixed countdown (e.g., 300s). No submit after 0s.
+- Key actions:
+  - Save Full Forecast: Save all hours (no submission).
+  - Submit Current Round: Submit only the hours for the current round.
+- Essentials:
+  - Freeze Hours: Early hours become locked after the first round (Day-Ahead).
+  - MCP/Volume charts update after each round.
+  - Live KPIs show MCP and market volume for the last clearing.
+
+Terminology
+- Round: One stage of play (e.g., 6 simulated hours per round).
+- Forecast: Your planned quantity per simulated hour (MW or MWh).
+- Freeze: Hours that cannot be edited anymore (Day-Ahead commitment).
+- MCP: Market Clearing Price (ZAR/MWh) from uniform price clearing.
+- Imbalance: Deviation between planned and actual; costs apply.
+- Curtailment: System reduces your output due to grid/market constraints.
+
+---
+
+## Detailed Guide
+
+### 1) Getting Started
+
+1.1 Registration and Login
+- Register: `/register` → Email, Password, Confirm Password. You may need approval.
+- Login: `/login` → Email + Password → redirected to `/home`.
+- Logout: User menu (top-right) → Logout.
+
+1.2 Home
+- URL: `/home`.
+- Shows your assigned scenarios/sessions and recent results.
+- Scenario cards include: name, status chip (Not Started | In Progress | Completed), actions: Briefing, Play, Replay.
+- If empty: “No Scenarios Assigned” → contact your trainer.
+
+1.3 Catalog
+- URL: `/catalog` → browse published campaigns.
+- Campaign detail lists scenarios in designer-defined order with your personal progress.
+- Start options per scenario:
+  - Play Solo: creates an isolated session (if allowed).
+  - Join Cohort: join an active trainer session (if available).
+- Disabled states show a tooltip (e.g., solo not enabled, no active session).
+
+---
+
+### 2) Briefing
+
+- URL: `/briefing?sessionId=...`.
+- Read objectives, key parameters, market rules, grid, devices, events.
+- Sections:
+  - Objectives: learning targets and role hints.
+  - General Parameters: rounds, round duration, forecast horizon, freeze hours, fake date/time.
+  - Market Rules: DA/IDM/Balancing enabled, floor/cap, imbalance pricing, losses.
+  - Grid: zones, ATC matrix.
+  - Your Role & Devices: player type (if multiplayer) and assigned device list with core parameters.
+  - Events: systemic/device events with trigger and impact.
+  - Scoring: KPI weights for ranking.
+- Buttons: Start Playing → opens Player; Back to Home.
+
+---
+
+### 3) Player (Game Interface)
+
+- URL: `/player?sessionId=...`.
+- Header: scenario name, current round; shows type if in shared market.
+
+Layout
+- Left panel: Countdown timer, Session Info, Live KPIs.
+- Right panel: Forecast editor (hourly inputs), device sparkline charts (if type devices), Save/Submit buttons.
+- Bottom: Market charts (MCP, Volume) across rounds.
+
+3.1 Left Panel
+- Countdown Timer: time remaining with color thresholds (green >60s; amber 31–60s; red ≤30s). At 0s, submitting is blocked.
+- Session Info card:
+  - Status: chip (active, paused, ended).
+  - Round: e.g., 2/4.
+  - Forecast Horizon: e.g., 48h.
+  - Locked Until: hX (freeze boundary).
+- Live KPIs card:
+  - MCP (Round N): last cleared MCP (ZAR/MWh).
+  - Volume: cleared volume (MWh).
+  - Shows “Waiting for market data...” until the first clearing arrives.
+
+3.2 Right Panel – Forecast Editor
+- Title: Enter your hourly forecast (MWh).
+- Tooltip: Values per simulated hour; hours ≤ freeze are locked. Full horizon is saved; slices are submitted per round.
+
+Modes
+- Solo (isolated): one aggregate series across all your assets.
+- Shared Market (multiplayer): per-device inputs for your selected type; an aggregate total is auto-summed.
+
+Inputs
+- Hour fields: h1..hH (H = forecast horizon). Numeric, min/max/step per scenario. Disabled when hour < lockedUntil or timeRemaining = 0.
+- Device inputs (shared market): a section per device with h1..hH fields and a mini sparkline.
+
+Buttons
+- Save Full Forecast → POST `/api/player/forecast/full` with `{ session_id, hours, devices? }` → snackbar on success/failure.
+- Submit Current Round → POST `/api/player/forecast` with `{ session_id, round_num, hours: slice, devices? }` → confetti + snackbar on success; disabled at 0s.
+
+Validation
+- Numbers are range-checked. Invalid values show red borders and error tooltips.
+- Freeze hours cannot be edited after the round that locks them.
+
+Accessibility
+- All actionable elements have `aria-label`.
+- Alerts use `role="alert"`.
+- Confetti respects prefers-reduced-motion.
+
+3.3 Market Charts (Bottom)
+- MCP over rounds: green line; tooltip on hover (Round → MCP).
+- Volume over rounds: blue line; tooltip on hover (Round → Volume).
+- Update: after each clearing via WebSocket events.
+
+3.4 Player Type Selection (Shared Market)
+- If session mode is shared_market and allowed types exist and none is selected, a dialog appears:
+  - Lists allowed types with remaining capacity; disabled if full.
+  - On select: join type, close dialog, load type devices.
+
+---
+
+### 4) After Playing
+
+4.1 Evaluation
+- URL: `/evaluation?sessionId=...` (or a tab within Player if integrated).
+- Sections:
+  - Summary KPIs: total Profit, Revenue, Imbalance Cost, Curtailment Cost.
+  - Round Table: per-round MCP, your forecast vs. actuals (if provided), imbalance, curtailment, profit.
+  - Charts: profit trend, imbalance bars, curtailment bars, forecast vs. actual line chart.
+  - Benchmarking: your rank, cohort averages where available.
+- Export: Download PDF Report.
+
+4.2 Leaderboard
+- URL: `/leaderboard?sessionId=...`.
+- Controls: Metric (Profit/Revenue/Imbalance/Curtailment), Sort order.
+- Table: Rank, Player, metrics, rounds completed; highlights your row.
+- Chart: horizontal bars for the selected metric.
+- Export: PNG (chart), CSV (table).
+
+4.3 Replay
+- URL: `/replay?sessionId=...`.
+- Controls: round selector, autoplay, pause; arrows for prev/next.
+- Details: your submitted slice, MCP/volume per round, KPIs.
+- Optionally overlay cohort average or reference runs.
+
+---
+
+### 5) Tips, Troubleshooting, FAQ
+
+Tips
+- Save early, save often. Saving does not submit.
+- Watch the freeze boundary; locked hours can’t be changed later.
+- Use the timer warnings to plan your submissions.
+
+Troubleshooting
+- Can’t submit: timer ended, session paused/ended, or type not selected.
+- No charts yet: wait for first clearing; refresh if the socket dropped.
+- No scenarios at Home: ask your trainer to assign you or activate a session.
+
+FAQ
+- Rounds: default 4; may vary per scenario.
+- Late submissions: not accepted after 0s; you score 0 for that round.
+- Edit after submit: not possible for the submitted slice.
+- Negative prices: allowed; floor/cap configured by the scenario.
+- Solo vs. Cohort: solo is private; cohort is shared competitive market.
+
+---
+
+### 6) Glossary
+- ATC: Available Transfer Capacity between zones (MW).
+- DA/IDM/Balancing: Day-Ahead, Intraday, Real-time settlement.
+- Freeze: locked hours that represent Day-Ahead commitment.
+- Imbalance: actual minus planned; priced with penalties.
+- KPI: key performance indicator used in scoring/ranking.
+- MCP: market clearing price (ZAR/MWh) from uniform price clearing.
+- Player Type: predefined role archetype with assigned devices (shared market).
+- Session: one run of a scenario with rounds and a timer.
+- Zone: geographical grid region with ATC links.
+
+---
+
+Support
+- Technical: support@emsg.example.com
+- Trainer/Admin: via your cohort contact.
+
+---
+
+## South Africa Context
+
+- Market scope: Simulates the South African Wholesale Electricity Market (SAWEM) with an Eskom System Operator perspective; market administration aligns with NTCSA concepts for training purposes.
+- Currency & units: Prices in ZAR (R). Quantities in MW/MWh. Typical defaults: price floor −500 and cap +5,000 ZAR/MWh (scenario-specific).
+- Timezone: SAST (UTC+2), no DST. Fake date/time and hour labels use local time.
+- Grid model: Default two-zone example with ATC 5,000 MW between zones; congestion handled via ATC and curtailment (most expensive first).
+- Negative pricing: Enabled; expect MCP < 0 in oversupply conditions.
+- Formatting: Decimal “.”; thousands “1 000” or “1,000” accepted; values are normalised internally.
+- Regulators: NERSA referenced for context. Educational simulation; not an operational market system.
 ## Energy Market Simulation Game (EMSG)
 
 **Version:** 1.0  

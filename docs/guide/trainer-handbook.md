@@ -1,4 +1,175 @@
-# Trainer Handbuch
+# Trainer Handbook
+## Energy Market Simulation Game (EMSG)
+
+Version: 1.0  
+Date: 17 Nov 2025  
+Audience: Trainers/Facilitators
+
+---
+
+## Quick Guide
+
+- Role: Run cohorts, start/stop sessions, monitor live, compare results.
+- Five steps: Create cohort → Add players → Activate campaigns → Start session → Monitor & evaluate.
+- Key controls:
+  - Start/Pause/Resume/End session.
+  - Broadcast messages to all players.
+  - Force round end (emergency only).
+- Live tools:
+  - Presence panel, status matrix, type distribution, capacity remaining, device frequency.
+  - MCP/Volume charts; aggregated KPIs by player.
+- Post-session:
+  - Leaderboard, comparison dashboard, replay, PDF exports.
+
+---
+
+## Detailed Guide
+
+### 1) Navigation
+
+- `/cohorts`: manage groups and visibility of campaigns.
+- `/trainer`: start and control a session; monitor status and KPIs.
+- `/comparison?sessionId=...`: compare players across metrics.
+- `/leaderboard?sessionId=...`: ranking view.
+- `/replay?sessionId=...`: step through past rounds.
+
+---
+
+### 2) Cohorts
+
+2.1 List and Create
+- URL: `/cohorts` → list all cohorts. Create new with a name.
+
+2.2 Members
+- Table: Name, Email, Role, Joined; actions: remove.
+- Add members: CSV import (`email,name`) or invite single players.
+- API: POST `/api/cohorts/:id/players` (invite/add), DELETE to remove.
+
+2.3 Campaigns Visibility
+- Toggle “Visible” and “Active” per campaign for the cohort.
+- Drill down to campaign → scenario list in defined order.
+- Start session directly from a scenario line (Open Session).
+
+2.4 Sessions Tab (History)
+- Shows sessions for the cohort: scenario, status, rounds, players; open evaluation/replay/export.
+
+---
+
+### 3) Start & Control a Session (Trainer)
+
+3.1 Start Form (top of `/trainer`)
+- Fields:
+  - Cohort ID: numeric; only members participate.
+  - Scenario ID: numeric; should be activated for the cohort.
+  - Mode: `isolated_per_player` (default) or `shared_market`.
+  - Force Navigate: redirect players to `/player` on start.
+- Shared market (optional): select allowed player types and optional caps (`max_players`).
+- Start Session button → POST `/api/sessions` → returns `id`; if types enabled, PATCH allowed types.
+
+3.2 Session Controls
+- Pause → PATCH `/api/sessions/:id/pause`.
+- Resume → PATCH `/api/sessions/:id/resume`.
+- End → PATCH `/api/sessions/:id/end` (final; blocks inputs and shows “Session ended”).
+- Force Round End → POST `/api/sessions/:id/force-round-end` (confirm dialog; use sparingly).
+- Status indicators: timer, round N/M, mode, running/paused/ended chip.
+
+3.3 Broadcast Messages
+- Input + “Send to All Players” → POST `/api/sessions/:id/broadcast`.
+- Receivers see in-app notification/snackbar.
+
+3.4 Live Status Matrix
+- Table shows per player: online, ready/forecasted/submitted, type (shared), last activity.
+- Auto-refresh every 5s and on WebSocket events.
+- Filters: show submitted/not submitted/online/offline.
+
+3.5 Participants & Type Distribution (shared_market)
+- Summary: total, joined, pending by type.
+- Charts:
+  - Type distribution (players per type).
+  - Capacity remaining (if caps configured).
+  - Device frequency (top devices × players of that type).
+
+3.6 Market Charts
+- MCP and Volume over rounds; tooltips; export PNG/SVG.
+
+3.7 Aggregated KPIs
+- Table per player: Profit, Revenue, Imbalance, Curtailment, Rounds.
+- Sort by any column; export CSV.
+
+3.8 Event Log
+- Rolling list of WebSocket and control events: session_started/paused/resumed/ended, player_submit, round_results, tick, message.
+- Clear log button; simple filters.
+
+---
+
+### 4) Evaluation & Reporting
+
+4.1 Comparison Dashboard
+- Filters: metric (Profit/Revenue/Imbalance/Curtailment) and sort order.
+- Chart: horizontal bars per player; table with totals.
+- Export: PNG (chart) and CSV (table).
+
+4.2 Leaderboard
+- Rank all players by scoring rules; highlight top performers.
+- Export PDF for handouts (if enabled).
+
+4.3 Replay
+- Step through rounds: view MCP/volume and submitted slices.
+- Overlay averages or reference runs (if uploaded).
+
+4.4 Player Detail
+- Deep-dive for one player: same KPIs/charts as player evaluation, plus cohort overlays.
+
+---
+
+### 5) Advanced
+
+5.1 Presence Monitoring
+- `/api/trainer/presence` table: who is online, which page, when seen last; filter by cohort.
+
+5.2 Reference Runs
+- Upload expert/optimal runs; compare in charts/tables.
+
+5.3 Activity Dashboard (optional)
+- Timeline of actions: login, forecast submit, round complete; filters and CSV export.
+
+5.4 Best Practices
+- Prepare cohorts and invites at least one day before.
+- Run a short dry-run to test timer and sockets.
+- Use broadcast for timed guidance; use force end only if necessary.
+- Debrief with leaderboard and comparison charts.
+
+---
+
+### 6) Troubleshooting & FAQ
+
+Common Issues
+- Session won’t start: cohort empty, scenario not active, or API error.
+- Players don’t see the session: not in cohort, not active, or force navigate off.
+- Timer not moving: socket issue or paused; check event log, refresh.
+- Status matrix empty: session not started or API failing; check network tab.
+
+FAQ
+- Change round duration? Only in scenario (designer), not mid-session.
+- Add players mid-session? Yes to cohort; they join from current round onward.
+- Re-open ended session? No; use replay/evaluation.
+
+---
+
+Support
+ - Technical: support@emsg.example.com
+ - Admin contact: admin@emsg.example.com
+
+---
+
+## South Africa Context
+
+- Market scope: SAWEM training context with Eskom System Operator perspective; NTCSA-style market constructs used in examples.
+- Currency & units: ZAR (R), MW/MWh across all dashboards, charts, and exports.
+- Timezone: SAST (UTC+2); no DST. Timers and fake dates assume local time.
+- Grid model: Example 2-zone grid with ATC 5,000 MW; congestion handled by ATC and curtailment priority (most expensive first).
+- Negative pricing: Allowed; coach players to consider oversupply periods.
+- Data handling: Follow POPIA principles when exporting/sharing data; avoid unnecessary PII in reports.
 ## Energy Market Simulation Game (EMSG)
 
 **Version:** 1.0  
