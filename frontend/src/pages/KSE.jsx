@@ -66,15 +66,16 @@ function Curves({ cfg, preview, groups }){
     // Supply prices increasing, Demand prices decreasing
     const minP = baseP - 500
     const maxP = baseP + 500
-    // assign price levels
+    // assign price levels - ensure strict monotonicity
     const supply = blocks
       .slice()
-      .sort((a, b) => a.volume - b.volume)
-      .map((b, i) => ({ q: b.volume, p: minP + (i / Math.max(1, blocks.length - 1)) * (maxP - minP) }))
+      .map((b, i) => ({ q: b.volume, p: minP + (i / Math.max(1, blocks.length - 1)) * (maxP - minP), idx: i }))
+      .sort((a, b) => a.p - b.p) // sort by price ascending for supply
+    
     const demand = blocks
       .slice()
-      .sort((a, b) => b.volume - a.volume)
-      .map((b, i) => ({ q: b.volume, p: maxP - (i / Math.max(1, blocks.length - 1)) * (maxP - minP) }))
+      .map((b, i) => ({ q: b.volume, p: maxP - (i / Math.max(1, blocks.length - 1)) * (maxP - minP), idx: i }))
+      .sort((a, b) => b.p - a.p) // sort by price descending for demand
 
     // Build cumulative x (quantity) for step plot (price vs quantity)
     const cum = (arr) => {
@@ -83,10 +84,10 @@ function Curves({ cfg, preview, groups }){
     }
     const sCum = cum(supply)
     const dCum = cum(demand)
-    const xMax = Math.max(d3.sum(supply, (d) => d.q), d3.sum(demand, (d) => d.q))
+    const xMax = Math.max(d3.sum(supply, (d) => d.q), d3.sum(demand, (d) => d.q)) || baseV
 
-    const x = d3.scaleLinear().domain([0, xMax]).range([0, W])
-    const y = d3.scaleLinear().domain([minP, maxP]).nice().range([H, 0])
+    const x = d3.scaleLinear().domain([0, xMax]).range([0, W]).clamp(true)
+    const y = d3.scaleLinear().domain([minP, maxP]).nice().range([H, 0]).clamp(true)
 
     // axes
     g.append('g').attr('transform', `translate(0,${H})`).call(d3.axisBottom(x).ticks(5))

@@ -1,52 +1,154 @@
-# EMSG – Sprint 1 (Foundation & Auth & Admin)
+# Energy Market Simulation Game (EMSG)
 
-Dieser Stand liefert die Sprint‑1‑Deliverables:
-- Docker Compose Infrastruktur (backend, frontend, postgres, redis, traefik)
-- Backend API (Flask + Flask‑RESTX): Auth (Register, Login, JWT, Invites, RBAC)
-- Admin‑Endpoints: User‑Liste, Rollen ändern
-- DB‑Schema (users, invites) + Auto‑Migration via SQLAlchemy create_all (vorläufig)
-- Swagger UI unter /api/docs
-- Frontend (Vite + React + MUI): Login, Register, Protected Routes, Admin User‑Tabelle
-- Health‑Check: GET /api/health → 200
+**MVP Version** | Sprint 21 (November 2025)
 
-Hinweis: Netdata/Sentry sind für Prod vorgesehen, aktuell auskommentiert in docker‑compose.yml.
+A web-based energy market simulation platform for educational and training purposes. Players manage virtual power plants, forecast market conditions, and compete in realistic energy markets with dynamic pricing.
 
-## Schnellstart (Lokale Entwicklung mit Docker)
+---
 
-1) .env anlegen
-```
+## Features
+
+### 🎮 Core Gameplay
+- **Solo & Multiplayer Sessions**: Individual learning or competitive cohort-based play
+- **Real-time Market Simulation**: Double-auction market clearing with supply/demand dynamics
+- **Device Management**: Solar, Wind, Gas, Battery, Hydro with realistic constraints
+- **Multi-round Scenarios**: Progress through time-based energy market challenges
+- **Leaderboard & Comparisons**: Track performance and learn from strategies
+
+### 🛠️ Scenario Designer (KSE)
+- **Visual Editor**: Drag-and-drop device configuration
+- **Market Parameters**: Price floors/caps, volumes, variability
+- **Grid Simulation**: Multi-zone grids with transmission constraints (ATC matrices)
+- **Events System**: Scheduled or probabilistic market shocks
+- **Preview & Validation**: Real-time supply/demand curve visualization
+- **Import/Export**: JSON-based scenario sharing
+
+### 👥 Trainer Tools
+- **Campaign Management**: Sequential scenario progressions
+- **Cohort Administration**: Group management, CSV import
+- **Live Monitoring**: Real-time participant tracking
+- **Force Navigation**: Synchronized cohort progression
+- **Session Controls**: Start/stop rounds, view aggregate results
+
+### 📊 Analytics
+- **Player Dashboard**: Balance tracking, device portfolios, forecast accuracy
+- **Comparison View**: Side-by-side player strategy analysis
+- **Activity Logs**: Comprehensive audit trail
+- **Performance Metrics**: Profit, imbalance penalties, curtailment costs
+
+---
+
+## Quick Start
+
+### Prerequisites
+- Docker & Docker Compose
+- Git
+
+### 1. Clone and Setup
+```bash
+git clone https://github.com/MatthiasHertel21/energy-game.git
+cd energy-game
 cp .env.example .env
 ```
 
-2) Container bauen und starten
+### 2. Launch
+```bash
+docker-compose up -d --build
 ```
-docker compose up -d --build
+
+### 3. Access
+- **Frontend**: http://localhost
+- **API Docs**: http://localhost/api/docs
+- **Health**: http://localhost/api/health
+
+### 4. First Login
+- Register at `/register` (first user gets `player` role)
+- Admin can create invites via `/api/docs` → POST `/api/admin/invites`
+- Assign roles: `player`, `trainer`, `designer`, `admin`
+
+---
+
+## Architecture
+
+```
+┌─────────────┐      ┌──────────────┐      ┌──────────────┐
+│   React     │─────▶│ Flask API    │─────▶│  PostgreSQL  │
+│   (Vite)    │      │ (REST+WS)    │      │   (State)    │
+└─────────────┘      └──────────────┘      └──────────────┘
+                            │
+                            ├─────▶ Redis (Sessions)
+                            └─────▶ Traefik (Routing)
 ```
 
-3) URLs
-- Frontend: http://localhost/
-- Swagger UI: http://localhost/api/docs
-- Health: http://localhost/api/health
+### Stack
+- **Frontend**: React 18, Material-UI, D3.js, Socket.io-client
+- **Backend**: Flask, SQLAlchemy, Flask-SocketIO, Gunicorn
+- **Database**: PostgreSQL 15 (state), Redis 7 (sessions/cache)
+- **Proxy**: Traefik v2 with Let's Encrypt
+- **Testing**: Pytest (backend), Cypress (E2E)
 
-4) Login/Registration
-- Erstnutzer-Registrierung ohne Invite erzeugt Rolle "player".
-- Invites können als Admin im Swagger unter POST /api/admin/invites erstellt werden.
+### Key Components
+- **Engine** (`backend/app/engine.py`): Market clearing algorithm (double-auction)
+- **Device Types** (`backend/app/device_types.py`): Power plant models
+- **Sessions** (`backend/app/sessions.py`): Game state management
+- **KSE** (`frontend/src/pages/KSE.jsx`): Scenario editor
+- **Player** (`frontend/src/pages/Player.jsx`): Forecast interface
 
-## Manuelles Setup (ohne Docker)
-- Backend: Python 3.11, `pip install -r backend/requirements.txt`, `FLASK_APP=backend/app:create_app flask run` (oder `python backend/run.py`)
+---
+
 ## Testing
 
-Backend unit tests
-- Create venv and install deps:
-	- python3 -m venv .venv
-	- .venv/bin/python -m pip install -r backend/requirements.txt
-- Run tests:
-	- PYTHONPATH=backend .venv/bin/pytest -q backend/tests
+### Backend Unit Tests
+```bash
+# In Docker
+docker-compose exec backend python -m pytest tests/ -v
 
-What’s covered
-- Device models and validation (compat for legacy keys)
-- Engine core calculations (MCP/curtailment)
-- Use case validation (player types, storage)
+# Specific tests
+docker-compose exec backend python -m pytest tests/test_engine.py -v
+```
+
+**Coverage**:
+- Market clearing algorithm
+- Device models and validation
+- Curtailment priority logic
+- Use case scenarios
+
+### Frontend E2E Tests (Cypress)
+```bash
+cd frontend
+npm run cy:open  # Interactive
+npm run cy:run   # Headless
+```
+
+**Test Suites**:
+- `smoke.cy.js` - Core user flows
+- `trainer.cy.js` - Session management
+- `player.cy.js` - Forecast submission
+- `kse-devices.cy.js` - Device editor
+- `a11y.cy.js` - Accessibility audits
+
+---
+
+## Database & Deployment
+
+See `docs/DEPLOYMENT.md` for details on:
+- Database migrations (`flask db upgrade`)
+- Backup procedures (`backend/scripts/backup.sh`)
+- Production deployment
+- Docker Compose stability
+
+---
+
+## Documentation
+
+- `docs/concept.md` - Architecture & MVP scope
+- `docs/usecases.md` - Functional requirements
+- `docs/SPRINT_*_PLAN.md` - Development roadmap
+- `docs/QA_CHECKS.md` - Pre-launch checklist
+
+---
+
+**Last Updated**: Sprint 21 (2025-11-17)
 	- flask db migrate -m "init"
 	- flask db upgrade
 - Weitere Änderungen:

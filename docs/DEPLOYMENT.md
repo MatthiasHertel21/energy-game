@@ -1,57 +1,91 @@
-# Deployment Guide (Production)
+# Deployment Guide
 
-This guide describes how to deploy EMSG to a production-like environment using Docker Compose with SSL, PostgreSQL, and Redis.
+Production deployment guide for Energy Market Simulation Game (EMSG).
+
+---
 
 ## Prerequisites
-- Linux host with Docker and docker-compose installed
-- Domain name (e.g., emsg.example.com)
-- Email for Let's Encrypt (for SSL certificates)
-- SMTP credentials for email sending (optional)
 
-## Environment Variables (.env.production)
-Create a file `.env.production` in the project root:
+- **Host**: Linux server (Ubuntu 22.04+ recommended)
+- **Docker**: v24+ with Docker Compose v2+
+- **Domain**: Configured DNS (e.g., `emsg.example.com`)
+- **Email**: For Let's Encrypt SSL certificates
+- **Ports**: 80, 443 (HTTP/HTTPS)
 
-```
-# App
+---
+
+## Environment Configuration
+
+### .env.production
+
+Create `.env.production` in project root:
+
+```bash
+# Flask
 FLASK_ENV=production
-SECRET_KEY=change-this
-JWT_SECRET_KEY=change-this-too
+SECRET_KEY=<generate-random-64-chars>
+JWT_SECRET_KEY=<generate-random-64-chars>
 ALLOWED_ORIGINS=https://emsg.example.com
 
 # Database
 POSTGRES_HOST=postgres
-POSTGRES_DB=emsg
+POSTGRES_DB=emsg_db
 POSTGRES_USER=emsg
-POSTGRES_PASSWORD=strong-password
+POSTGRES_PASSWORD=<strong-password>
 
 # Redis
 REDIS_URL=redis://redis:6379/0
 
-# Mail (optional)
+# Mail (Optional - for invites)
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USER=no-reply@example.com
-SMTP_PASSWORD=app-password
-SMTP_FROM=no-reply@example.com
-
-# PDF Branding (optional)
-PDF_PRIMARY_COLOR=#1976d2
-PDF_SECONDARY_COLOR=#e0e0e0
-PDF_LOGO_PATH=/app/static/logo.png
+SMTP_PASSWORD=<app-password>
+SMTP_FROM=EMSG <no-reply@example.com>
 
 # System Limits
 MAX_USERS=1000
-MAX_COHORTS=10
+MAX_COHORTS=100
 MAX_PLAYERS_PER_COHORT=80
-MAX_SCENARIOS=100
+MAX_SCENARIOS=500
+
+# Logging
+LOG_LEVEL=INFO
 ```
 
-## Docker Compose
-Use the provided `docker-compose.yml`. Ensure services are exposed via reverse proxy (Traefik or Nginx) with SSL.
-
-### Example Traefik labels (compose override)
+**Generate secrets**:
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
+
+---
+
+## Docker Compose Setup
+
+### 1. Traefik Configuration
+
+The stack includes Traefik for automatic HTTPS via Let's Encrypt.
+
+**docker-compose.yml** (relevant sections):
+
+```yaml
 services:
+  traefik:
+    image: traefik:v2.11
+    command:
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@example.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./letsencrypt:/letsencrypt
+
   frontend:
     labels:
       - "traefik.enable=true"
@@ -60,44 +94,134 @@ services:
       - "traefik.http.routers.emsg.tls.certresolver=letsencrypt"
 ```
 
-## Database Setup
-1. Start services: `docker compose --env-file .env.production up -d`
-2. Initialize DB (if needed):
-   - Inside backend container: `flask db upgrade` (if migrations available)
-   - Fallback: the app auto-creates tables if migrations are not present
-3. Create admin user (first registered user becomes admin) or use admin create endpoint.
+### 2. Launch Stack
 
-## Backup Strategy
-- PostgreSQL: Nightly `pg_dump` of database
-- Static uploads: Backup `uploads/` directory
+```bash
+# Build and start
+docker-compose --env-file .env.production up -d --build
 
-## Monitoring and Error Tracking
-- Netdata for system metrics
-- Sentry (optional) for error tracking (configure DSN if used)
+# Check status
+docker-compose ps
 
-## Updates
-- Pull latest code: `git pull`
-- Rebuild containers: `docker compose build`
-- Restart services: `docker compose up -d`
-- Apply DB migrations: `flask db upgrade`
-
-## Troubleshooting
-- CORS issues: Verify ALLOWED_ORIGINS matches your domain
-- WebSocket issues: Ensure reverse proxy supports WebSocket (Traefik or Nginx config)
-- DB connection: Verify POSTGRES_* variables and container health
-
-### docker-compose KeyError/ContainerConfig (Stability)
-On some hosts, `docker-compose up -d` sporadically fails with internal python errors (e.g., `KeyError: 'ContainerConfig'`).
-
-Workarounds implemented in `deploy.sh`:
-- Retry logic: after a failure, script runs `docker-compose pull` and retries `up -d` once.
-- Full rebuild path: `--frontend-only` and `--backend-only` also use the retry helper.
-
-Manual fallback:
+# View logs
+docker-compose logs -f backend
 ```
-docker-compose down && docker-compose pull && docker-compose build && docker-compose up -d
+
+---
+
+## Database Initialization
+
+### First Deploy
+
+```bash
+# Run migrations
+docker-compose exec backend flask db upgrade
+
+# Verify DB connection
+docker-compose exec backend flask shell
+>>> from app.extensions import db
+>>> db.session.execute('SELECT 1').scalar()
+1
 ```
-If the error persists, update Docker/compose and enable BuildKit/buildx.
+
+### Migration Workflow
+
+```bash
+# After model changes
+docker-compose exec backend flask db migrate -m "Add campaign cover images"
+docker-compose exec backend flask db upgrade
+```
+
+**Helper script**: `backend/scripts/migrate.sh` (auto-detects and runs init/migrate/upgrade)
+
+---
+
+## Backup & Restore
+
+### Automated Backups
+
+```bash
+# Manual backup (creates /backup/emsg_YYYYMMDD_HHMMSS.dump)
+docker-compose exec backend bash /app/scripts/backup.sh
+
+# Systemd timer or cron
+0 2 * * * cd /opt/energy-game && docker-compose exec -T backend bash /app/scripts/backup.sh
+```
+
+### Restore
+
+```bash
+# Copy dump to postgres container
+docker cp backup/emsg_20251117_020000.dump $(docker-compose ps -q postgres):/tmp/
+
+# Restore
+docker-compose exec postgres pg_restore -U emsg -d emsg_db -c /tmp/emsg_20251117_020000.dump
+```
+
+### Uploads Directory
+
+Backup `uploads/` directory separately (campaign images, exports):
+```bash
+tar -czf uploads_backup_$(date +%Y%m%d).tar.gz uploads/
+```
+
+---
+
+## Updates & Deployment
+
+### deploy.sh Script
+
+**Quick frontend-only update**:
+```bash
+./deploy.sh --frontend-only
+```
+
+**Full stack rebuild**:
+```bash
+./deploy.sh
+```
+
+**Manual steps**:
+```bash
+git pull origin main
+docker-compose build
+docker-compose up -d
+docker-compose exec backend flask db upgrade
+```
+
+---
+
+## Docker Compose Stability Workaround
+
+**Issue**: On some systems, `docker-compose up -d` fails with `KeyError: 'ContainerConfig'`
+
+**Root Cause**: Docker Compose/BuildKit internal state inconsistency
+
+**Solution** (implemented in `deploy.sh`):
+```bash
+# Retry logic after failure
+docker-compose down
+docker-compose pull
+docker-compose up -d --build
+```
+
+**deploy.sh** includes automatic retry on failure.
+
+**Manual workaround**:
+```bash
+docker-compose down && \
+docker-compose pull && \
+docker-compose build && \
+docker-compose up -d
+```
+
+**Long-term fix**: Upgrade Docker Compose to v2.23+ or enable BuildKit explicitly:
+```bash
+export DOCKER_BUILDKIT=1
+export COMPOSE_DOCKER_CLI_BUILD=1
+```
+
+---
 
 ## Security Checklist
 - Strong SECRET_KEY and JWT_SECRET_KEY

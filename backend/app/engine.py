@@ -109,6 +109,11 @@ def generate_curves_from_config(cfg: dict, seed: Optional[str] = None) -> Tuple[
             v = max(0.0, v * (1.0 + random.uniform(-cap_var, cap_var)))
         supply.append((p_s, v))
         demand.append((p_d, v))
+    
+    # Ensure strict monotonicity: sort supply ascending, demand descending by price
+    supply = sorted(supply, key=lambda x: x[0])
+    demand = sorted(demand, key=lambda x: x[0], reverse=True)
+    
     return supply, demand
 
 

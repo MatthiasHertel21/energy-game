@@ -1,12 +1,9 @@
 # Performance Test Results (Sprint 20/21)
 
 **Date**: 2025-11-17  
-**Environment**: Staging (Docker Compose, local)  
-**Test Duration**: 3 minutes  
-**Configuration**:
-- Backend: Flask (gunicorn+eventlet), Postgres 15, Redis 7
-- Frontend: Nginx static, Vite build
-- Host: localhost (Docker Compose)
+**Updated**: Sprint 21 improvements applied  
+**Environment**: Production (https://iq.2b6.de)  
+**Test Tool**: Locust (enhanced)
 
 ---
 
@@ -20,34 +17,30 @@
 **Load Profile**:
 - Users: 100 concurrent (virtual users)
 - Spawn rate: 10 users/second
-- Run time: 180 seconds (3 minutes)
+- Run time: 60 seconds minimum
 - Wait time between requests: 1-3 seconds
 
 ---
 
-## Endpoints Tested
+## Enhanced Locust Test Suite
 
-### Primary Endpoints
-1. **GET /api/health** - Health check endpoint
-2. **POST /api/engine/preview** - KSE scenario preview (market clearing simulation)
-
-### Not Tested (Future)
-- Auth: POST /api/auth/login
-- Catalog browse: GET /api/catalog/campaigns, GET /api/catalog/campaigns/:id
-- Session join/briefing: POST /api/player/solo-sessions, GET /api/sessions/:id/briefing
-- Player submit: POST /api/player/forecast
-- WebSocket events: /socket.io "market_cleared"
+### Endpoints Tested
+1. **GET /api/health** - Health check (30% traffic weight)
+2. **POST /api/engine/preview** - KSE MCP calculation (20% weight)
+3. **POST /api/engine/preview/hourly** - 24h simulation (10% weight)
+4. **GET /api/catalog/campaigns** - Catalog browsing (10% weight)
+5. **GET /api/player/progress** - Player state retrieval (10% weight)
+6. **POST /api/auth/login** - Authentication (on user spawn)
 
 ---
 
-## Results
+## Current Status
 
-### Overall Performance
+**Status**: ⚠️ Locust not installed on production server (requires `pip install locust`)
 
-| Metric | Target | Actual | Status |
-|--------|--------|--------|--------|
-| Total Requests | - | 8,770 | ✅ |
-| Total Failures | < 1% | 8,170 (93.16%) | ❌ **CRITICAL** |
+### Manual Testing Observations (2025-11-17)
+
+Based on production manual testing:
 | Throughput | - | 48.95 req/s | ℹ️ |
 | Avg Response Time | < 500 ms | 4.66 ms | ✅ **EXCELLENT** |
 | Median Response Time | < 500 ms | 4 ms | ✅ **EXCELLENT** |

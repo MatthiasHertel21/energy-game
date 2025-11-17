@@ -20,7 +20,7 @@ describe('Accessibility (axe)', () => {
     cy.checkA11y(undefined, checkOptions)
   })
 
-  it('KSE Editor has no serious/critical violations', () => {
+  it('KSE Editor General tab has no serious/critical violations', () => {
     cy.window().then(setAuth)
     cy.intercept('POST', '/api/engine/preview', { mcp: 1000, volume: 123.456 }).as('preview')
     cy.intercept('POST', '/api/engine/preview/hourly', {
@@ -30,6 +30,22 @@ describe('Accessibility (axe)', () => {
     }).as('hourly')
     cy.visit('/kse')
     cy.wait(['@preview','@hourly'])
+    cy.injectAxe()
+    cy.checkA11y(undefined, checkOptions)
+  })
+
+  it('KSE Editor Market & Preview tab has no serious/critical violations', () => {
+    cy.window().then(setAuth)
+    cy.intercept('POST', '/api/engine/preview', { mcp: 1000, volume: 123.456 }).as('preview')
+    cy.intercept('POST', '/api/engine/preview/hourly', {
+      hours: 24,
+      mcp: Array.from({length:24},()=>1000),
+      volume: Array.from({length:24},(_,i)=> 8000 + i*50)
+    }).as('hourly')
+    cy.visit('/kse')
+    cy.wait(['@preview','@hourly'])
+    // Switch to Market & Preview tab (tab index 1)
+    cy.contains('button', 'Market & Preview').click()
     cy.injectAxe()
     cy.checkA11y(undefined, checkOptions)
   })
