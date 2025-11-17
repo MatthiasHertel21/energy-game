@@ -10,11 +10,15 @@ export default function Trainer(){
   const [cohortId, setCohortId] = useState('1')
   const [scenarioId, setScenarioId] = useState('1')
   const [sessionId, setSessionId] = useState(null)
+  // Presence panel state
+  const [presence, setPresence] = useState({ users: [] })
+  const [presenceFilters, setPresenceFilters] = useState({ cohort: '', campaign: '', scenario: '' })
   const [log, setLog] = useState([])
   const [message, setMessage] = useState('')
   const [tick, setTick] = useState(null)
   const [status, setStatus] = useState({ rounds: 0, players: [] })
   const [mode, setMode] = useState('isolated_per_player')
+  const [forceNavigate, setForceNavigate] = useState(false)
   const [typesCfg, setTypesCfg] = useState([]) // from scenario config
   const [allowedTypes, setAllowedTypes] = useState([]) // [{type_id, enabled, max_players}]
   const [brief, setBrief] = useState(null)
@@ -61,8 +65,31 @@ export default function Trainer(){
     return ()=> s.close()
   },[])
 
+  // Presence auto-refresh every 5s
+  useEffect(()=>{
+    const load = async ()=>{
+      try{
+        const qs = presenceFilters.cohort ? `?cohort_id=${encodeURIComponent(presenceFilters.cohort)}` : ''
+        const { data } = await api.get(`/api/trainer/presence${qs}`)
+        setPresence(data || { users: [] })
+      }catch(_){ setPresence({ users: [] }) }
+    }
+    load()
+    const t = setInterval(load, 5000)
+    return ()=> clearInterval(t)
+  },[presenceFilters.cohort])
+
+  // Auto refresh participants/status every 5s when a session is active
+  useEffect(()=>{
+    if(!sessionId) return
+    const t = setInterval(()=>{
+      loadStatus()
+    }, 5000)
+    return ()=> clearInterval(t)
+  },[sessionId])
+
   const start = async ()=>{
-    const { data } = await api.post('/api/sessions', { cohort_id: Number(cohortId), scenario_id: Number(scenarioId), mode })
+    const { data } = await api.post('/api/sessions', { cohort_id: Number(cohortId), scenario_id: Number(scenarioId), mode, force_navigate: !!forceNavigate })
     setSessionId(data.id)
     // apply allowed types after start if any selected
     if(mode==='shared_market' && allowedTypes?.some(t=> t.enabled)){
@@ -181,6 +208,10 @@ export default function Trainer(){
             <MenuItem value="shared_market">shared_market</MenuItem>
           </Select>
         </Stack>
+        <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+          <InfoLabel title="Force navigate players" tooltip="If enabled, logged-in players of the cohort will be navigated to the briefing page when the session starts." />
+          <FormControlLabel control={<Checkbox checked={forceNavigate} onChange={e=> setForceNavigate(e.target.checked)} />} label="Navigate cohort on start" />
+        </Stack>
         <Stack direction="row" spacing={1} alignItems="center">
           <Tooltip arrow title="Starts a new session with the selected cohort, scenario, and mode."><span><Button variant="contained" onClick={start}>Start</Button></span></Tooltip>
           <Tooltip arrow title="Pauses the countdown and submissions."><span><Button onClick={pause} disabled={!sessionId}>Pause</Button></span></Tooltip>
@@ -189,6 +220,51 @@ export default function Trainer(){
         </Stack>
       </Stack>
       <Stack direction="row" spacing={2} sx={{ mt:2 }}>
+        {/* Presence Panel */}
+        <Paper variant="outlined" sx={{ p:2, flex:1 }}>
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb:1 }}>
+            <Typography variant="subtitle1">Online now</Typography>
+            <span style={{ flex:1 }} />
+            <TextField size="small" label="Filter Cohort" value={presenceFilters.cohort} onChange={e=> setPresenceFilters(f=> ({...f, cohort: e.target.value}))} sx={{ width: 140 }} />
+            <TextField size="small" label="Filter Campaign" value={presenceFilters.campaign} onChange={e=> setPresenceFilters(f=> ({...f, campaign: e.target.value}))} sx={{ width: 160 }} />
+            <TextField size="small" label="Filter Scenario" value={presenceFilters.scenario} onChange={e=> setPresenceFilters(f=> ({...f, scenario: e.target.value}))} sx={{ width: 160 }} />
+            <Button size="small" onClick={async()=>{
+              try{
+                const qs = presenceFilters.cohort ? `?cohort_id=${encodeURIComponent(presenceFilters.cohort)}` : ''
+                const { data } = await api.get(`/api/trainer/presence${qs}`)
+                setPresence(data || { users: [] })
+              }catch(_){ /* ignore */ }
+            }}>Refresh</Button>
+          </Stack>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Email</TableCell>
+                <TableCell>Cohort</TableCell>
+                <TableCell>Campaign</TableCell>
+                <TableCell>Scenario</TableCell>
+                <TableCell>Status</TableCell>
+                <TableCell>Last seen</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {presence.users
+                .filter(u=> !presenceFilters.campaign || String(u.campaign_name||'').toLowerCase().includes(presenceFilters.campaign.toLowerCase()))
+                .filter(u=> !presenceFilters.scenario || String(u.scenario_name||'').toLowerCase().includes(presenceFilters.scenario.toLowerCase()))
+                .map(u=> (
+                <TableRow key={`${u.user_id}-${u.session_id||'none'}`}>
+                  <TableCell>{u.email || '—'}</TableCell>
+                  <TableCell>{u.cohort_name || '—'}</TableCell>
+                  <TableCell>{u.campaign_name || '—'}</TableCell>
+                  <TableCell>{u.scenario_name || '—'}</TableCell>
+                  <TableCell>{u.status || '—'}</TableCell>
+                  <TableCell>{u.last_seen ? new Date(u.last_seen).toLocaleTimeString() : '—'}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Paper>
+        
         <Stack spacing={0.5} sx={{ flex: 1 }}>
           <InfoLabel title="Broadcast message to all players" tooltip="Sends a trainer message to all connected players in this session. Keep it brief (≤200 chars)." />
           <TextField label="Broadcast" value={message} onChange={e=>setMessage(e.target.value)} size="small" fullWidth/>

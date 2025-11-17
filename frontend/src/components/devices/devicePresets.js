@@ -53,17 +53,29 @@ export const DEVICE_PRESETS = {
     efficiency_pct: 85,
     initial_soc_pct: 50,
   },
-  load: {
-    type: 'load',
-    capacity_mw: 500,
-    cost_per_mwh_zar: 0,
-    curtailment_penalty_zar_per_mwh: 10000,
+  industrial_load: {
+    type: 'industrial_load',
+    baseline_load_mw: 300,
+    peak_load_mw: 450,
+    drm_capable: true,
+  },
+  commercial_load: {
+    type: 'commercial_load',
+    baseline_load_mw: 100,
+    peak_load_mw: 200,
+    drm_capable: false,
+  },
+  residential_load: {
+    type: 'residential_load',
+    baseline_load_mw: 150,
+    peak_load_mw: 300,
+    drm_capable: false,
   },
 };
 
 /**
  * Create a new device from preset with unique ID
- * @param {string} presetName - One of: coal, gas, hydro, nuclear, solar, wind, battery, load
+ * @param {string} presetName - One of: coal, gas, hydro, nuclear, solar, wind, battery, industrial_load, commercial_load, residential_load
  * @returns {object} Device object with unique ID
  */
 export function createDeviceFromPreset(presetName) {

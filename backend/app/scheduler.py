@@ -111,6 +111,37 @@ def run_rounds(session_id: int):
             # run engine for this round
             sc = Scenario.query.get(s.scenario_id)
             res = run_round(s.id, current, players, forecasts, sc.config or {}, mode=s.mode or "isolated_per_player", seed=camp_seed)
+            
+            # Emit active events for this round
+            try:
+                events = (sc.config or {}).get("events", [])
+                active_events = []
+                for evt in events:
+                    trigger = evt.get("trigger", {})
+                    ttype = trigger.get("type", "round")
+                    tval = trigger.get("value")
+                    
+                    # Check if event is active in this round
+                    if ttype == "round" and tval == current:
+                        active_events.append({
+                            "event_id": evt.get("id", f"evt-{len(active_events)}"),
+                            "type": evt.get("type", "unknown"),
+                            "name": evt.get("name", "Event"),
+                            "description": evt.get("description", ""),
+                            "multiplier": evt.get("multiplier", 1.0),
+                            "additive": evt.get("additive", 0),
+                            "duration_rounds": evt.get("duration_rounds", 1),
+                            "target": evt.get("target", ""),
+                            "round": current
+                        })
+                
+                # Broadcast active events to players
+                for event in active_events:
+                    event["session_id"] = s.id
+                    socketio.emit("event_triggered", event, namespace=f"/game/{s.id}")
+            except Exception as e:
+                current_app.logger.warning(f"Failed to emit events: {e}")
+            
             # persist per-player results
             for pid, kp in (res.get("round_kpis") or {}).items():
                 data = {

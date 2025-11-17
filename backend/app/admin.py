@@ -6,9 +6,10 @@ from datetime import datetime, timedelta
 from sqlalchemy import func
 
 from .extensions import db, bcrypt
-from .models import User, Invite, Role, ActivityLog, Session, Forecast, SessionStatus
+from .models import User, Invite, Role, ActivityLog, Session, Forecast, SessionStatus, Scenario, Cohort
 from . import mailer
 from .utils import role_required
+from .config import Config
 
 
 ns = Namespace("admin", description="Admin endpoints")
@@ -68,6 +69,11 @@ class Users(Resource):
 
         if not email:
             ns.abort(HTTPStatus.BAD_REQUEST, "Email required")
+
+        # Check system limit for max users
+        user_count = User.query.count()
+        if user_count >= Config.MAX_USERS:
+            ns.abort(HTTPStatus.FORBIDDEN, f"System limit reached: maximum {Config.MAX_USERS} users allowed")
 
         if User.query.filter_by(email=email).first():
             ns.abort(HTTPStatus.CONFLICT, "Email already registered")
@@ -341,3 +347,128 @@ class ActivityRecent(Resource):
             })
         
         return {"activities": result, "total": len(result)}
+
+
+@ns.route("/sessions")
+class AdminSessions(Resource):
+    @jwt_required()
+    @role_required("admin")
+    def get(self):
+        """Get all sessions with filters for admin management."""
+        status_filter = request.args.get("status", "")
+        scenario_id = request.args.get("scenario_id", type=int)
+        date_from = request.args.get("date_from", "")
+        date_to = request.args.get("date_to", "")
+        limit = request.args.get("limit", 100, type=int)
+        offset = request.args.get("offset", 0, type=int)
+        
+        query = Session.query
+        
+        # Apply filters
+        if status_filter:
+            try:
+                status_enum = SessionStatus(status_filter)
+                query = query.filter(Session.status == status_enum)
+            except ValueError:
+                pass
+        
+        if scenario_id:
+            query = query.filter(Session.scenario_id == scenario_id)
+        
+        if date_from:
+            try:
+                from_date = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
+                query = query.filter(Session.started_at >= from_date)
+            except ValueError:
+                pass
+        
+        if date_to:
+            try:
+                to_date = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
+                query = query.filter(Session.started_at <= to_date)
+            except ValueError:
+                pass
+        
+        # Get total count before pagination
+        total = query.count()
+        
+        # Pagination
+        sessions = query.order_by(Session.started_at.desc()).limit(limit).offset(offset).all()
+        
+        result = []
+        for session in sessions:
+            scenario = Scenario.query.get(session.scenario_id) if session.scenario_id else None
+            cohort = Cohort.query.get(session.cohort_id) if session.cohort_id else None
+            
+            # Count players in this session
+            from .models import PlayerProgress
+            player_count = PlayerProgress.query.filter_by(session_id=session.id).count()
+            
+            result.append({
+                "id": session.id,
+                "scenario_id": session.scenario_id,
+                "scenario_name": scenario.name if scenario else "Deleted Scenario",
+                "cohort_id": session.cohort_id,
+                "cohort_name": cohort.name if cohort else ("Solo" if session.mode == "solo" else "Unknown"),
+                "status": session.status.value if session.status else "unknown",
+                "mode": session.mode,
+                "created_at": session.started_at.isoformat() + "Z" if session.started_at else None,
+                "updated_at": session.updated_at.isoformat() + "Z" if session.updated_at else None,
+                "round": session.round,
+                "player_count": player_count
+            })
+        
+        return {"sessions": result, "total": total, "limit": limit, "offset": offset}
+    
+    cleanup_in = ns.model(
+        "SessionCleanup",
+        {
+            "status": fields.String(description="Filter by status (completed, abandoned, etc.)"),
+            "older_than_days": fields.Integer(description="Delete sessions older than N days", default=90),
+        },
+    )
+    
+    @jwt_required()
+    @role_required("admin")
+    @ns.expect(cleanup_in, validate=True)
+    def post(self):
+        """Bulk cleanup of sessions based on criteria."""
+        body = request.json
+        status_filter = body.get("status", "")
+        older_than_days = body.get("older_than_days", 90)
+        
+        cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+        
+        query = Session.query.filter(Session.started_at < cutoff_date)
+        
+        if status_filter:
+            try:
+                status_enum = SessionStatus(status_filter)
+                query = query.filter(Session.status == status_enum)
+            except ValueError:
+                ns.abort(HTTPStatus.BAD_REQUEST, "Invalid status")
+        
+        # Count before deletion
+        count = query.count()
+        
+        # Delete sessions (cascade will handle PlayerProgress, Forecasts, etc.)
+        query.delete(synchronize_session=False)
+        db.session.commit()
+        
+        return {"deleted_count": count}, HTTPStatus.OK
+
+
+@ns.route("/sessions/<int:session_id>")
+class AdminSessionDetail(Resource):
+    @jwt_required()
+    @role_required("admin")
+    def delete(self, session_id):
+        """Delete a specific session."""
+        session = Session.query.get(session_id)
+        if not session:
+            ns.abort(HTTPStatus.NOT_FOUND, "Session not found")
+        
+        db.session.delete(session)
+        db.session.commit()
+        
+        return "", HTTPStatus.NO_CONTENT

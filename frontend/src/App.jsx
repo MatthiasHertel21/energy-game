@@ -1,5 +1,5 @@
-import React, { Suspense } from 'react'
-import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom'
+import React, { Suspense, useEffect } from 'react'
+import { Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AppBar, Toolbar, Typography, Button, Container, Box, CircularProgress } from '@mui/material'
 import { 
   AdminPanelSettings as AdminIcon, 
@@ -34,10 +34,12 @@ import NotFound from './components/NotFound'
 import UserMenu from './components/UserMenu'
 import ThemeToggle from './components/ThemeToggle'
 import useAuth from './store/auth'
+import api from './services/api'
 
 export default function App({ themeMode, onToggleTheme }) {
   const user = useAuth((state) => state.user)
   const location = useLocation()
+  const navigate = useNavigate()
   
   const isActive = (path) => location.pathname === path || location.pathname.startsWith(path + '/')
   
@@ -168,6 +170,10 @@ export default function App({ themeMode, onToggleTheme }) {
       </AppBar>
       <SnackbarProvider>
         <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+          {/* Force navigate poll for players */}
+          {user && user.role === 'player' && (
+            <ForceNavigateWatcher onNavigate={(url)=> navigate(url)} />
+          )}
           {/* Hidden test hook for Cypress selector */}
           <input name="Name" value="" aria-label="Name" style={{ display:'none' }} readOnly />
           <Suspense fallback={<Box sx={{ display:'flex', justifyContent:'center', mt:6 }}><CircularProgress /></Box>}>
@@ -206,4 +212,22 @@ export default function App({ themeMode, onToggleTheme }) {
       </SnackbarProvider>
     </>
   )
+}
+
+function ForceNavigateWatcher({ onNavigate }){
+  useEffect(()=>{
+    let stopped = false
+    const tick = async ()=>{
+      try{
+        const { data } = await api.get('/api/me/navigate')
+        if(!stopped && data?.url){
+          onNavigate(data.url)
+        }
+      }catch(_){ /* ignore */ }
+    }
+    tick()
+    const t = setInterval(tick, 5000)
+    return ()=> { stopped = true; clearInterval(t) }
+  },[onNavigate])
+  return null
 }

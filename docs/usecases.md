@@ -204,9 +204,7 @@ Security/RBAC
 
 ---
 
-## UC-9 Designer – Fiktives Datum und Startuhrzeit je Szenario festlegen
-
-Status: Nicht unterstützt (NEU)
+## UC-9 Designer – Fiktives Datum und Startuhrzeit je Szenario festlegen (IMPLEMENTIERT)
 
 - Ziel: Ein fiktiver Kalendertag (z. B. 2025‑01‑15) und eine Startuhrzeit (z. B. 08:00) werden in der Szenario‑Config gepflegt und im Briefing/Detail angezeigt (Kontext für Teilnehmer, Zeitachsenbeschriftung).
 
@@ -215,13 +213,11 @@ Status: Nicht unterstützt (NEU)
    2) Validierung: Datum/Format korrekt; Zeit 00:00–23:59.
    3) Anzeige: Briefing (`/api/sessions/:id/briefing`) und Campaign Detail zeigen Datum/Zeit; (optional) X‑Achse in Previews mit lokaler Uhrzeit.
 
-- UI Mapping (neu): `KSE.jsx` Felder in General; Briefing Page zeigt Meta.
-- API Mapping (neu): Validierung in `backend/app/kse.py` (validate_config), Briefing Response ergänzt Felder.
+- UI Mapping: `KSE.jsx` Felder in General; Briefing Page zeigt Meta.
+- API Mapping: Validierung in `backend/app/kse.py` (validate_config), Briefing Response ergänzt Felder.
 - Acceptance: Werte werden gespeichert, validiert und an Player/Trainer UI ausgeliefert.
 
-## UC-10 Player – Forecast per Drag&Drop in Chart eingeben
-
-Status: Nicht unterstützt (NEU)
+## UC-10 Player – Forecast per Drag&Drop in Chart eingeben (IMPLEMENTIERT)
 
 - Ziel: Forecast (MWh/MW) interaktiv als Linie im Zeit‑Chart erfassen; Snap‑to‑Hour; DA/IDM Freeze respektieren; optional per‑Device im Typen‑Kontext.
 
@@ -231,39 +227,30 @@ Status: Nicht unterstützt (NEU)
    3) Constraints: Freeze‑Stunden gesperrt (Cursor/Tooltip „locked"); Min/Max/Step validiert (Server/Client).
    4) Speichern: „Save Full Forecast" sendet Linienwerte (Array) an `/api/player/forecast/full`; Submit sendet Slice an `/api/player/forecast`.
 
-- UI Mapping (neu): `frontend/src/pages/Player.jsx` → Komponente `ForecastChartEditor` (SVG/Canvas) mit Tooltips und Rückfall auf Textfelder.
-- Acceptance: Linie editierbar, Freeze sichtbar, Werte setzen Textfelder; Speichern/Submit funktioniert mit Validation.
+- UI Mapping: `frontend/src/pages/Player.jsx` → Komponente `ForecastChartEditor` (SVG/d3) mit Drag-Interaktion und Rückfall auf Textfelder.
+- Acceptance: Linie editierbar, Freeze sichtbar (locked Punkte); Werte setzen Stundenliste; Speichern/Submit funktioniert mit Validation.
 
 ---
 
-## UC-11 Trainer – Cohort bearbeiten und löschen
+## UC-11 Trainer – Cohort bearbeiten und löschen (IMPLEMENTIERT)
 
-Status: Teilweise unterstützt (ERWEITERUNG ERFORDERLICH)
-
-- Ist‑Stand:
-  - POST `/api/cohorts` – Cohort erstellen (Name, trainer_id)
-  - GET `/api/cohorts` – Liste aller Cohorts
-  - POST `/api/cohorts/:id/players` – Spieler CSV-Import (Mitglieder hinzufügen)
-  - Keine Endpoints zum Umbenennen, Löschen von Cohorts, oder Entfernen einzelner Mitglieder
-
-- Ziel: Trainer kann eine bestehende Cohort umbenennen, Mitglieder einzeln entfernen, oder die gesamte Cohort löschen.
+- Umfang:
+   - POST `/api/cohorts` – Cohort erstellen (Name, trainer_id)
+   - GET `/api/cohorts` – Liste aller Cohorts
+   - POST `/api/cohorts/:id/players` – Spieler CSV‑Import (Mitglieder hinzufügen)
+   - PATCH `/api/cohorts/:id` { name? } – Umbenennen
+   - DELETE `/api/cohorts/:id/players/:user_id` – Mitgliedschaft entfernen
+   - DELETE `/api/cohorts/:id` – Cohort löschen (cascading delete auf CohortMember, CohortCampaign; Sessions bleiben für History erhalten)
 
 - Flow:
-   1) Trainer öffnet „Cohorts" (`/cohorts`) und wählt eine Cohort aus der Liste.
-   2) **Bearbeiten**: Button „Edit" öffnet Inline-Editor oder Modal, erlaubt Umbenennung des Cohort-Namens; PATCH `/api/cohorts/:id` { name }.
-   3) **Mitglieder entfernen**: In der Mitgliederliste pro Spieler ein „Remove"-Button; DELETE `/api/cohorts/:id/players/:user_id`.
-   4) **Cohort löschen**: Button „Delete Cohort" mit Bestätigungsdialog („This will permanently delete the cohort and all memberships. Sessions remain."); DELETE `/api/cohorts/:id`.
+    1) Trainer öffnet „Cohorts" (`/cohorts`) und wählt eine Cohort aus der Liste.
+    2) Edit/Remove/Delete wie oben; Confirm‑Dialoge sichern zerstörerische Aktionen ab.
 
-- API Mapping (neu):
-  - PATCH `/api/cohorts/:id` { name? } → Update Cohort-Name
-  - DELETE `/api/cohorts/:id/players/:user_id` → Mitgliedschaft entfernen
-  - DELETE `/api/cohorts/:id` → Cohort löschen (cascading delete auf CohortMember, CohortCampaign)
-
-- UI Mapping (neu): `frontend/src/pages/Cohorts.jsx` – Edit/Delete Buttons, Confirm-Dialog
-- Acceptance:
-  - Trainer kann Cohort-Namen ändern; Änderung wird sofort sichtbar.
-  - Einzelne Spieler können aus Cohort entfernt werden (erscheinen nicht mehr in Liste).
-  - Cohort kann gelöscht werden; Sessions bleiben erhalten (cohort_id wird nullable oder bleibt referenziert für History).
+- UI Mapping: `frontend/src/pages/Cohorts.jsx` – Edit/Delete‑Buttons, Confirm‑Dialoge, Members‑Tabelle
+- Acceptance (erfüllt):
+   - Umbenennen wirkt sofort in der Liste.
+   - Einzelne Mitglieder können entfernt werden (Liste aktualisiert).
+   - Cohort‑Löschen erfordert Bestätigung; Sessions bleiben erhalten (History).
 
 ---
 
@@ -323,9 +310,7 @@ Status: Nicht unterstützt (NEU)
 
 ---
 
-## UC-14 Trainer – Session-Teilnehmer und Spielertypen live sehen
-
-Status: Teilweise unterstützt (ERWEITERUNG ERFORDERLICH)
+## UC-14 Trainer – Session-Teilnehmer und Spielertypen live sehen (IMPLEMENTIERT)
 
 - Ist‑Stand:
   - Trainer sieht in `Trainer.jsx` Status-Matrix (Spieler × Runde × Status/Score).
@@ -347,7 +332,7 @@ Status: Teilweise unterstützt (ERWEITERUNG ERFORDERLICH)
   - Status „joined" = hat Typ gewählt und Briefing abgerufen; „pending" = Mitglied der Cohort, aber noch nicht in Session aktiv.
   - Nutzt bestehende Daten: `CohortMember`, `SessionPlayerType` (oder Redis `session:X:selected:Y`).
 
-- UI Mapping (neu): `frontend/src/pages/Trainer.jsx` → neues Panel „Participants" (Sticky oder Collapsible Sidebar)
+- UI Mapping: `frontend/src/pages/Trainer.jsx` → Panel „Participants" mit Auto-Refresh (5s), Verteilung/Charts
 - Acceptance:
   - Trainer sieht Echtzeit-Updates bei Teilnehmer-Join.
   - Fehlende Spieler erkennbar; Verteilung nach Typ visualisiert (optional: Pie Chart).
@@ -355,9 +340,7 @@ Status: Teilweise unterstützt (ERWEITERUNG ERFORDERLICH)
 
 ---
 
-## UC-15 Player – Angefangene oder beendete Sessions/Scenarios löschen
-
-Status: Nicht unterstützt (NEU)
+## UC-15 Player – Angefangene oder beendete Sessions/Scenarios löschen (IMPLEMENTIERT)
 
 - Ziel: Spieler kann eigene Solo-Sessions (Status: running, paused, ended) aus der Liste „My Sessions" entfernen, um Übersichtlichkeit zu wahren. Cohort-Sessions bleiben unberührt (Trainer-Kontrolle).
 
@@ -368,11 +351,11 @@ Status: Nicht unterstützt (NEU)
    4) Nach Bestätigung: DELETE `/api/player/sessions/:id` → Session wird gelöscht (oder `deleted_at` gesetzt).
    5) Session verschwindet aus Liste; verwandte Forecasts/Results bleiben optional für Archiv oder werden cascading gelöscht.
 
-- API Mapping (neu):
-  - DELETE `/api/player/sessions/:id` → Löscht Session (oder Soft-Delete), nur wenn `mode=isolated_per_player` UND `user_id == current_user`.
-  - Validation: Verhindere Löschen von Cohort-Sessions (`mode=shared_market` oder cohort_id nicht null).
+- API Mapping:
+   - DELETE `/api/player/sessions/:id` → Löscht Solo-Session; validiert `mode=isolated_per_player` und Besitz.
+   - Validation: Cohort-/Shared-Market-Sessions können nicht gelöscht werden.
 
-- UI Mapping (neu): `frontend/src/pages/Home.jsx` → „My Sessions" Tab mit Delete-Button (Confirm-Dialog)
+- UI Mapping: `frontend/src/pages/Home.jsx` → Delete-Button (Confirm-Dialog) für Solo-Sessions (created/ended)
 - Acceptance:
   - Spieler kann nur eigene Solo-Sessions löschen; Cohort-Sessions zeigen keinen Delete-Button.
   - Bestätigungsdialog verhindert versehentliches Löschen.
@@ -380,39 +363,15 @@ Status: Nicht unterstützt (NEU)
 
 ---
 
-## UC-16 Player – Grafische Timeline der Kampagnen-Szenarien mit Fortschritt
+## UC-16 Player – Grafische Timeline der Kampagnen-Szenarien mit Fortschritt (IMPLEMENTIERT)
 
-Status: Nicht unterstützt (NEU)
+- Umsetzung:
+   - `frontend/src/pages/CampaignDetail.jsx` mit Komponente `CampaignTimeline` (SVG; ARIA‑Labels; Keyboard‑Navigation für Bubbles).
+   - Farben: Grün = completed, Orange = in_progress, Grau = not_started; Klick scrollt/aktiviert die Karte.
+   - Responsive: Horizontaler Scroll bei vielen Szenarien; Desktop/Tablet optimiert.
 
-- Ist‑Stand:
-  - `CampaignDetail.jsx` zeigt Szenarien als Kartenliste mit Status-Chips (completed/in_progress/not_started).
-  - Keine visuelle Timeline oder Bubble-Darstellung zur schnellen Übersicht.
-
-- Ziel: Spieler sieht auf einen Blick den Fortschritt einer Kampagne als horizontale Timeline mit Bubbles (Kreise) für jedes Szenario, farblich kodiert nach Status.
-
-- Flow:
-   1) Player öffnet „Campaign Detail" (`/catalog/:id`).
-   2) Über der Szenario-Kartenliste erscheint eine horizontale Timeline:
-      - Linie mit Bubbles (Kreise) für jedes Szenario in `order_index`-Reihenfolge.
-      - Farben: Grün = completed, Orange = in_progress, Grau = not_started.
-      - Bubble-Größe: Alle gleich (oder optional größer für aktives Szenario).
-      - Label: Szenario-Nummer (#1, #2, ...) im Bubble; Szenario-Name als Tooltip.
-   3) Interaktion: Klick auf Bubble scrollt zur entsprechenden Karte in der Liste oder öffnet die Karte direkt.
-   4) Optional: Animation beim Laden (Bubbles faden ein, Linie zeichnet sich von links nach rechts).
-
-- UI Mapping (neu): `frontend/src/pages/CampaignDetail.jsx` → neue Komponente `CampaignTimeline` (SVG mit d3.js oder Canvas)
-  - Responsive: Horizontaler Scroll bei vielen Szenarien (>10).
-  - Accessibility: ARIA-Labels, Keyboard-Navigation (Tab zwischen Bubbles, Enter zum Aktivieren).
-
-- Datenmodell (bestehend): Nutzt vorhandene API-Daten aus `GET /api/catalog/campaigns/:id`:
-  - `scenarios[]` mit `order_index`, `status` (not_started|in_progress|completed), `name`
-
-- Acceptance:
-  - Timeline zeigt alle Szenarien in korrekter Reihenfolge.
-  - Farbkodierung klar erkennbar (Grün/Orange/Grau).
-  - Klick auf Bubble führt zur entsprechenden Karte.
-  - Timeline funktioniert auf Desktop (1280px+) und Tablet (768px+); Mobile zeigt vereinfachte Liste.
-  - Keine Backend-Änderungen erforderlich (nutzt bestehende Catalog API).
+- Datenquelle: `GET /api/catalog/campaigns/:id` liefert `scenarios[]` inkl. `order_index`, `status`, `name`.
+- Acceptance (erfüllt): Timeline in korrekter Reihenfolge, klare Farbkodierung, Klick/Keyboard‑Navigation funktionieren; keine Backend‑Änderungen nötig.
 
 ---
 
@@ -522,3 +481,91 @@ Status: Teilweise unterstützt (ERWEITERUNG ERFORDERLICH)
   - Campaign löschen entfernt Zuordnungen; Scenarios bleiben.
   - Scenario löschen mit Sessions zeigt Warnung und löscht alles bei Bestätigung.
   - Keine verwaisten Sessions nach Scenario-Löschung (außer explizit gewünscht).
+
+---
+
+## UC-20 Trainer – Online-Übersicht: Wer ist angemeldet, Cohort, Kampagne/Szenario
+
+Status: NEU (geplant)
+
+- Ziel: Trainer sieht in Echtzeit, welche Spieler online sind, zu welcher Cohort sie gehören und welches Kampagne/Szenario sie aktuell spielen.
+
+- Flow:
+   1) Trainer öffnet „Trainer“ (`/trainer`).
+   2) Panel „Online now“ zeigt Liste: Spieler (Name/Email), Cohort, Kampagne, Szenario, Status (Lobby/Briefing/Playing), last_seen.
+   3) Filter: nach Cohort, Kampagne, Szenario.
+   4) Auto‑Refresh (WebSocket Presence, Fallback Polling 5s).
+
+- API Mapping (neu):
+   - GET `/api/trainer/presence?cohort_id?` → `{ users: [{ user_id, email, cohort_id, cohort_name, session_id?, campaign_id?, campaign_name?, scenario_id?, scenario_name?, status, last_seen }] }`
+   - Server: Presence aus Socket.IO (Rooms) + DB (Sessions, CohortMember), Fallback via `activity_log` (login/heartbeat).
+
+- UI Mapping: `frontend/src/pages/Trainer.jsx` → Panel „Online now“ (Tabelle mit Filtern).
+
+- Acceptance:
+   - Online‑Liste aktualisiert sich live; Filter funktionieren.
+   - Status/Zuordnung korrekt; bei fehlender Session wird „Lobby“ angezeigt.
+
+---
+
+## UC-21 Trainer – Cohort für gemeinsame Spiele aktiv schalten (IMPLEMENTIERT)
+
+- Ziel: Gemeinsame Spiele (shared_market) für eine Cohort aktivieren, indem Kampagnen für die Cohort als „active“ markiert werden.
+
+- Flow:
+   1) Trainer öffnet „Cohorts“ → Tab „Campaigns“.
+   2) Für Kampagnen der Cohort: Toggle „Active“ setzen.
+   3) Nur aktive Kampagnen erlauben Session‑Start im Modus `shared_market` für die Cohort.
+
+- API Mapping (bestehend):
+   - GET `/api/cohorts/:id/campaigns`
+   - PATCH `/api/cohorts/:id/campaigns/:cid` { active }
+
+- UI Mapping: `frontend/src/pages/Cohorts.jsx` → Campaigns‑Tab mit Visible/Active‑Toggles.
+
+- Acceptance (erfüllt):
+   - Nur aktive Kampagnen erlauben gemeinsames Spiel; UI reflektiert Status.
+
+---
+
+## UC-22 Trainer – Szenario für alle starten und Browsers „ziehen“ (Deep‑Link Push)
+
+Status: NEU (geplant)
+
+- Ziel: Trainer startet ein Szenario für die Cohort mit Option, angemeldete Spieler per WebSocket in das Szenario (Briefing/Player) zu navigieren.
+
+- Flow:
+   1) Trainer klickt „Open for cohort“ (Start‑Dialog) und wählt Option „Force navigate players“.
+   2) Server startet Session und sendet WebSocket‑Event `navigate` an Cohort‑Mitglieder: `{ url: "/briefing/:sessionId" }` (oder `/player`).
+   3) Clients navigieren automatisch; Fallback: Snackbar mit „Join now“‑Link, falls Tab im Hintergrund/Navigation blockiert.
+
+- API/Socket (neu):
+   - POST `/api/sessions` (bestehend) – erweitert um Flag `force_navigate=true`.
+   - Socket: Namespace `/game/{sessionId}` + Trainer‑Broadcast `navigate` an Cohort‑Room.
+
+- UI Mapping: `frontend/src/pages/Trainer.jsx` (Start‑Formular, Checkbox „Force navigate players“).
+
+- Acceptance:
+   - Online‑Spieler erhalten Navigation/Link; Nicht‑Online sehen beim nächsten Aufruf die Briefing‑Seite.
+   - Kein Blockieren bei Popup‑Blockern (Fallback‑Link vorhanden).
+
+---
+
+## UC-23 Player – Meine Cohorts und gemeinsames Szenario sehen (IMPLEMENTIERT)
+
+- Ziel: Player sieht, zu welchen Cohorts er gehört und welche Szenarien aktuell gemeinsam gespielt werden können.
+
+- Flow:
+   1) Player öffnet „Home“ (`/home`) oder „Catalog“ (`/catalog`).
+   2) Home: Liste „My Cohorts“ (Name, aktive Kampagnen, aktive Sessions). Buttons: „View Briefing“, „Play/Resume“.
+   3) Catalog: Filter „for_me=1&active=1“ zeigt Kampagnen, die in Player‑Cohorts sichtbar/aktiv sind.
+
+- API Mapping (bestehend):
+   - GET `/api/me/sessions` – persönliche Sessions/Status
+   - GET `/api/cohorts/:id/campaigns` – Sichtbar/Aktiv je Kampagne
+   - GET `/api/catalog/campaigns?for_me=1&active=1` – für meine Cohorts sicht-/aktive Kampagnen
+
+- UI Mapping: `frontend/src/pages/Home.jsx`, `frontend/src/pages/Catalog.jsx`.
+
+- Acceptance (erfüllt):
+   - Player sieht seine Cohorts und laufende/aktive gemeinsame Szenarien und kann beitreten.

@@ -16,6 +16,8 @@ import {
   Chip
 } from '@mui/material'
 import InfoLabel from '../components/InfoLabel'
+import ForecastChartEditor from '../components/ForecastChartEditor'
+import EventNotification from '../components/EventNotification'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useSnackbar } from '../components/SnackbarProvider'
 import api from '../services/api'
@@ -80,6 +82,9 @@ export default function Player() {
   const [typeDevices, setTypeDevices] = useState([]) // device ids for selected type
   const [deviceHours, setDeviceHours] = useState({}) // { device_id: number[] }
   const deviceChartRefs = useRef({})
+  const [activeEvents, setActiveEvents] = useState([])
+  const [dismissedEvents, setDismissedEvents] = useState(new Set())
+  const [useChartEditor, setUseChartEditor] = useState(true)
 
   // Auto-load active session
   useEffect(() => {
@@ -204,6 +209,28 @@ export default function Player() {
       if (p && Number(p.session_id) === Number(sessionId)) {
         setLive({ mcp: p.mcp, volume: p.volume, round: p.round })
         setSeries((prev) => [...prev, { r: p.round, mcp: p.mcp, volume: p.volume }])
+      }
+    })
+
+    s.on('event_triggered', (p) => {
+      if (p && Number(p.session_id) === Number(sessionId)) {
+        // Add new event to active events list
+        const event = {
+          id: p.event_id || `event-${Date.now()}`,
+          type: p.type,
+          name: p.name,
+          description: p.description,
+          multiplier: p.multiplier,
+          additive: p.additive,
+          duration_rounds: p.duration_rounds,
+          target: p.target,
+          round: p.round
+        }
+        setActiveEvents((prev) => {
+          // Avoid duplicates
+          if (prev.some(e => e.id === event.id)) return prev
+          return [...prev, event]
+        })
       }
     })
 
@@ -369,6 +396,13 @@ export default function Player() {
     }
   }
 
+  const handleDismissEvent = (eventId) => {
+    setDismissedEvents((prev) => new Set([...prev, eventId]))
+  }
+
+  // Filter out dismissed events
+  const visibleEvents = activeEvents.filter(e => !dismissedEvents.has(e.id))
+
   const isEditable = status === 'running' && sessionId
   const span = Number(cfg.general.round_span_hours || 6)
   const cur = Number(cfg.current_round || 1)
@@ -433,6 +467,12 @@ export default function Player() {
       <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
         {cfg.scenario_name} - Round {cfg.current_round} {mode==='shared_market' && selectedType ? `(Type: ${selectedType})` : ''}
       </Typography>
+
+      {/* Event Notifications */}
+      <EventNotification 
+        events={visibleEvents}
+        onDismiss={handleDismissEvent}
+      />
 
       <Grid container spacing={3}>
         {/* Left: Timer and KPIs */}
@@ -568,6 +608,17 @@ export default function Player() {
                 ))}
               </Stack>
             ) : (
+              <>
+              {useChartEditor && (
+                <Box sx={{ mb: 2 }}>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                    <Typography variant="subtitle2">Chart Editor (drag points to edit)</Typography>
+                    <Button size="small" onClick={()=> setUseChartEditor(false)}>Switch to fields</Button>
+                  </Stack>
+                  <ForecastChartEditor hours={hours} lockedUntil={lockedUntil} onChange={(i, val)=> onChange(i, val)} />
+                </Box>
+              )}
+              {!useChartEditor && (
               <Stack direction="row" spacing={1} sx={{ mt: 2, flexWrap: 'wrap' }}>
                 {hours.map((v, i) => {
                   const disabled = i < lockedUntil || timeRemaining === 0
@@ -590,6 +641,13 @@ export default function Player() {
                   )
                 })}
               </Stack>
+              )}
+              {!useChartEditor && (
+                <Box sx={{ mt: 1 }}>
+                  <Button size="small" onClick={()=> setUseChartEditor(true)}>Switch to chart editor</Button>
+                </Box>
+              )}
+              </>
             )}
 
             <Stack direction="row" spacing={2} sx={{ mt: 3 }}>

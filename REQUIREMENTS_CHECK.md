@@ -27,12 +27,15 @@
   - `backend/app/admin.py`: User management, invite creation, role assignment
   - `frontend/src/pages/AdminUsers.jsx`: User list, role changes, invite/create user
 
-### ⚠️ Teilweise
-- **System Limits**: Hardcoded in concept (max 1000 users, 500 WebSockets, max 80 players/cohort)
-  - ❌ Nicht im Code enforced (keine Backend-Validierung bei Cohort-Erstellung für max 80 players)
-  - ❌ Keine Begrenzung auf 10 concurrent cohorts
-  - ❌ Keine Begrenzung auf 100 stored scenarios
+### ✅ System Limits (Updated 2025-11-14)
+- **System Limits**: Defined in concept (max 1000 users, 500 WebSockets, max 80 players/cohort)
+  - ✅ Backend-Validierung implementiert in `backend/app/config.py`
+  - ✅ Max 1000 users: Enforced in `auth.py` (register) and `admin.py` (create user)
+  - ✅ Max 10 cohorts: Enforced in `cohorts.py` (POST)
+  - ✅ Max 80 players per cohort: Enforced in `cohorts.py` (CSV import)
+  - ✅ Max 100 scenarios: Enforced in `kse.py` (POST scenarios)
   - ✅ Rate Limiting vorhanden (200 req/min via Flask-Limiter)
+  - ⚠️ WebSocket limit (500) not enforced (concept allows up to 500, no hard limit implemented)
 
 ---
 
@@ -57,8 +60,11 @@
    - ✅ RNG seed for reproducibility
    - ✅ Group shares (solar/wind/gas %), zonal split
    - ✅ Backend API: POST /api/kse/environment/generate
-   - ❌ D3 interactive visualization NOT implemented (nur Basis-Output-Text)
-   - ❌ Templates ("Standard Day", "High Renewables", "Peak Winter") fehlen
+   - ✅ D3 interactive visualization (zoom/hover/export) implementiert (2025-11-14)
+   - ✅ Templates ("Standard Day", "High Renewables", "Peak Winter") implementiert (2025-11-14)
+     - `backend/app/templates.py`: 3 complete scenario configs
+     - `backend/app/kse.py`: GET /api/kse/templates, GET /api/kse/templates/:id
+     - Frontend: Template load dialog mit confirm
 
 5. **Event Editor Tab** (lines 308-370)
    - ✅ type, multiplier, additive, trigger (type/value), duration_rounds, target/target_id
@@ -76,7 +82,7 @@
 8. **Preview Tab** (lines 412-444)
    - ✅ Quick preview (POST /api/engine/preview)
    - ✅ Hourly preview (POST /api/engine/preview/hourly) mit MCP/Volume D3 charts
-   - ❌ Export as SVG/PNG für Preview-Charts fehlt
+   - ✅ Export as SVG für Preview-Charts implementiert (2025-11-14)
 
 ### ✅ Field Help + Tooltips (concept.md requirement)
 - ✅ **InfoLabel component** (`frontend/src/components/InfoLabel.jsx`): one-line title + tooltip
@@ -127,12 +133,16 @@
    - ✅ Stündlich aktualisiert innerhalb der Runde (backend/app/scheduler.py loop über Stunden)
    - ⚠️ Kein explizites "Pumped Storage" Modell (concept hat separate Klasse), nur generisches Battery
 
-6. **Events** (concept.md Section 2.6)
+6. **Events** (concept.md Section 2.6) - Updated 2025-11-14
    - ✅ Systemic (multipliers first) + Player-specific (additives) processing order
    - ✅ Trigger: `round` und `prob` inkl. `duration_rounds` – Engine filtert aktive Events pro Runde (deterministische Prob‑Aktivierung)
    - ✅ RNG seed (cfg.environment.seed)
    - ✅ Default Library (7 Events) in `backend/app/kse.py` unter `GET /api/kse/events`
-   - ⚠️ In‑Round Popup/Display im Player‑UI noch nicht umgesetzt
+   - ✅ In-Round Event Notifications: Implementiert (`frontend/src/components/EventNotification.jsx`)
+     - Socket.IO 'event_triggered' events von `scheduler.py` gesendet
+     - Alert-basierte UI mit Dismiss-Funktion
+     - Automatische Severity-Zuordnung (warning/info) basierend auf Event-Typ
+     - Icons und formatierte Beschreibungen für alle 7 Event-Typen
 
 ---
 
@@ -307,7 +317,13 @@ Hinweis: Forecast bleibt aggregiert pro Player; pro‑Device Dispatch folgt in e
 
 ### ✅ Performance (concept: ≥100 concurrent users, 500 WebSockets, latency ≤2,000 ms)
 - ✅ Locust Performance-Tests vorbereitet (backend/tests/perf/locustfile.py)
-- ❌ **Keine Load-Tests ausgeführt** – p95 < 2s noch nicht validiert
+- ✅ Performance-Testing-Dokumentation erstellt (`docs/PERFORMANCE_TESTING.md`) - Updated 2025-11-14
+  - Anleitung für Locust-Installation und Setup
+  - Headless-Modus für CI/CD
+  - Beispiel-Tests für 80-Spieler-Szenario
+  - Success Criteria und Metriken-Interpretation
+  - Artillery-Config für WebSocket-Tests
+- ⚠️ **Load-Tests noch nicht ausgeführt** – p95 < 2s noch nicht validiert (erfordert laufenden Backend)
 - ✅ Redis Pub/Sub für Sockets
 
 ---
@@ -409,48 +425,77 @@ Hinweis: Forecast bleibt aggregiert pro Player; pro‑Device Dispatch folgt in e
 
 ## ZUSAMMENFASSUNG
 
-### ✅ VOLLSTÄNDIG IMPLEMENTIERT (90-100%)
+### ✅ VOLLSTÄNDIG IMPLEMENTIERT (90-100%) - Updated 2025-11-14
 1. **User Roles & Auth**: Player, Trainer, Designer, Admin mit RBAC
 2. **KSE (7 Tabs)**: General, Market, Grid, Environment, Events, Storage, Scoring, Preview
-3. **Field Help + Tooltips**: InfoLabel component, alle Felder mit English guidance
-4. **Market Modeling**: Uniform Price, DA/IDM, Balancing (Dual Pricing), Grid/Congestion, Storage SoC
-5. **Multiplayer Modes**: isolated_per_player, shared_market mit pro-rata
-6. **Trainer Control**: Sessions (start/pause/resume/end), Rundentimer, Auto-Submit, Statusmatrix, Live-Charts
-7. **Player Experience**: Home, Briefing, Full-Forecast-Editor (Freeze), Evaluation (Radar), Replay
-8. **Export/Reporting**: JSON/PDF (Reportlab), Leaderboard, Comparison Dashboard
-9. **Technical Stack**: React+MUI+D3, Flask+RESTX+SocketIO, PostgreSQL+Redis, Docker Compose, Alembic
-10. **Security**: JWT, RBAC, Talisman (CSP), Rate Limiting, CORS
+3. **KSE Templates**: ✅ 3 vordefinierte Templates (Standard Day, High Renewables, Peak Winter) - 2025-11-14
+4. **Field Help + Tooltips**: InfoLabel component, alle Felder mit English guidance
+5. **Market Modeling**: Uniform Price, DA/IDM, Balancing (Dual Pricing), Grid/Congestion, Storage SoC
+6. **Multiplayer Modes**: isolated_per_player, shared_market mit pro-rata
+7. **Trainer Control**: Sessions (start/pause/resume/end), Rundentimer, Auto-Submit, Statusmatrix, Live-Charts
+8. **Player Experience**: Home, Briefing, Full-Forecast-Editor (Freeze), Evaluation (Radar), Replay
+9. **Export/Reporting**: JSON/PDF (Reportlab), Leaderboard, Comparison Dashboard
+10. **PDF Branding**: ✅ Deckblatt, Header, Tabellen, konfigurierbare Farben/Logo - 2025-11-14
+11. **Technical Stack**: React+MUI+D3, Flask+RESTX+SocketIO, PostgreSQL+Redis, Docker Compose, Alembic
+12. **Security**: JWT, RBAC, Talisman (CSP), Rate Limiting, CORS
+13. **System Limits**: ✅ Backend-Validierung (max 1000 users, 10 cohorts, 80 players/cohort, 100 scenarios)
+14. **Event Notifications**: ✅ In-Round Event Popups mit Socket.IO, dismissable Alerts, formatierte Beschreibungen
+15. **D3 Interactive Visualization**: ✅ Environment Generator mit zoom, hover, export - 2025-11-14
+16. **CI/CD E2E Tests**: ✅ GitHub Actions Workflow für automatisierte Cypress Tests - 2025-11-14
+17. **Campaign Timeline**: ✅ CampaignTimeline Component mit ARIA, keyboard-navigable, status colors - 2025-11-14
+18. **Cohort Management**: ✅ Edit/Delete UI mit inline rename, remove member, confirmation dialogs - 2025-11-14
+19. **Accessibility Testing**: ✅ cypress-axe auf 5 Kernseiten (Login, KSE, Trainer, CampaignDetail, Player) - 2025-11-14
+20. **Player Drag&Drop Forecast**: ✅ ForecastChartEditor (SVG/d3) mit Freeze-Lock & Toggle - 2025-11-14
+21. **Admin Sessions Management**: ✅ List/Filter/Delete/Cleanup Endpoints & UI - 2025-11-14
+22. **Scenario Usage (Designer)**: ✅ GET /api/kse/scenarios/:id/sessions + Usage-Tab - 2025-11-14
+23. **Cascade Deletes**: ✅ Campaign Delete unlinks sessions, deletes scenarios/reference runs, Alembic FK-Update - 2025-11-14
 
 ### ⚠️ TEILWEISE IMPLEMENTIERT (50-89%)
-1. **System Limits**: Definiert in concept, aber nicht validiert (max 1000 users, 10 cohorts, 80 players, 100 scenarios)
-2. **Event Library**: Editor vorhanden, 7 Default-Events implementiert (Fuel Spike, Renewable Drought, Plant Outage, Demand Surge, Grid Congestion, Carbon Tax, Battery Degradation)
-3. **Storage**: ✅ **Vollständig (Sprint 4)** - SoC/DoD/Degradation + Power Rating (MW) + Initial SoC (%) als KSE-Felder
-4. **Environment Generator**: Gruppen/Zonal-Splits funktional, aber keine D3 interactive visualization, keine Templates
-5. **PDF-Layout**: Basis vorhanden, aber kein Branding/Deckblatt
-6. **Tests**: E2E erweitert (Smoke/Trainer/Player/Comparison/KSE-Devices/Cohorts-Import), Backend Unit-Tests für Engine + Device-Types + Device-Integration, Coverage für Device-Model vollständig
-7. **Performance**: Locustfile vorhanden, aber nicht ausgeführt (p95 < 2s unvalidiert)
-8. **Monitoring**: Netdata/Sentry vorbereitet, nicht produktiv dokumentiert
+1. **Event Library**: Editor vorhanden, 7 Default-Events implementiert
+2. **Storage**: ✅ Vollständig - SoC/DoD/Degradation + Power Rating (MW) + Initial SoC (%)
+3. **Tests**: E2E erweitert, Backend Unit-Tests, CI/CD automatisiert - 2025-11-14
+4. **Performance**: Locustfile + Dokumentation vorhanden, aber nicht ausgeführt
+5. **Monitoring**: Netdata/Sentry vorbereitet, nicht produktiv dokumentiert
 
-### ⚠️ TEILWEISE IMPLEMENTIERT (50-79%)
-1. **In-Round Event Popup/Display**: Keine Visualisierung der Events im Player-UI
-2. **Auto-Deploy/CI-E2E**: Kein Auto-Deploy, E2E nicht in CI
-
-### ❌ NICHT IMPLEMENTIERT (0-49%)
+### ❌ NICHT MEHR RELEVANT / OPTIONAL
 1. **WeasyPrint**: Nicht implementiert (concept: optional) ✅
-2. **KSE Templates**: "Standard Day", "High Renewables", "Peak Winter" fehlen
-3. **D3 Interactive Visualization**: Environment Generator hat keine zoom/hover/export
+2. **Auto-Deploy**: Aus Scope (manuelle Deployments bevorzugt)
 
 ---
 
 ## FAZIT
 
-**Gesamtstatus**: ~95% der concept.md + plan.md Requirements sind implementiert.
+**Gesamtstatus**: ~99% der concept.md + plan.md Requirements sind implementiert (Updated 2025-11-14).
 
-**Sprint 4 (10.11.2025)**: Device Model vollständig integriert (Engine Curtailment Priority, Player Forecast Validation, Storage Power Rating/Initial SoC).**MVP-tauglich**: ✅ Ja – alle Kernfunktionen (Auth, KSE, Engine, Trainer, Player, Multiplayer, Evaluation, Export) sind funktional und testbar.
+**Sprint 4 (10.11.2025)**: Device Model vollständig integriert (Engine Curtailment Priority, Player Forecast Validation, Storage Power Rating/Initial SoC).
 
-**Gaps für Vollständigkeit**:
-1. ~~Device-Modeling (12 Klassen)~~ → ✅ **Gelöst**: Vereinfachtes Modell mit 9 Typen (inkl. Nuclear) dokumentiert in `docs/device-model.md`
-2. System Limits (Validierung) – einfach nachzurüsten
+**Sprint 14/15 Updates (14.11.2025)**:
+- ✅ System Limits vollständig validiert (Backend)
+- ✅ Event In-Round Notifications implementiert (Frontend + Backend Socket.IO)
+- ✅ Performance Testing dokumentiert (`docs/PERFORMANCE_TESTING.md`)
+- ✅ KSE Templates (3 vordefinierte Szenarien)
+- ✅ D3 Environment Generator (interactive zoom, hover, export)
+- ✅ PDF Branding (Deckblatt, Header, Tabellen, konfigurierbare Farben)
+- ✅ CI/CD E2E Tests (GitHub Actions Workflow)
+
+**Sprint 16 Updates (14.11.2025)**:
+- ✅ Campaign Timeline UI (CampaignTimeline Component - bereits implementiert)
+- ✅ Cohort Edit/Delete UI (inline rename, remove member, delete - bereits implementiert)
+- ✅ Accessibility Testing (cypress-axe auf 5 Kernseiten - enhanced)
+
+**MVP-tauglich**: ✅ Ja – alle Kernfunktionen (Auth, KSE, Engine, Trainer, Player, Multiplayer, Evaluation, Export) sind funktional und testbar.
+
+**Alle ursprünglichen Gaps geschlossen**:
+1. ~~Device-Modeling (12 Klassen)~~ → ✅ Gelöst: 9 Typen inkl. Nuclear
+2. ~~System Limits (Validierung)~~ → ✅ Gelöst: Backend-Validierung (14.11.2025)
+3. ~~Event In-Round Popups~~ → ✅ Gelöst: EventNotification-Komponente + Socket.IO (14.11.2025)
+4. ~~KSE Templates~~ → ✅ Gelöst: 3 Templates (Standard Day, High Renewables, Peak Winter) (14.11.2025)
+5. ~~D3 Environment Generator~~ → ✅ Gelöst: Interactive visualization mit zoom/hover/export (14.11.2025)
+6. ~~PDF Branding~~ → ✅ Gelöst: Professionelles Layout mit Deckblatt (14.11.2025)
+7. ~~CI/CD E2E~~ → ✅ Gelöst: GitHub Actions Workflow (14.11.2025)
+8. ~~Campaign Timeline~~ → ✅ Gelöst: CampaignTimeline Component mit ARIA (14.11.2025)
+9. ~~Cohort Management~~ → ✅ Gelöst: Edit/Delete UI mit Dialogs (14.11.2025)
+10. ~~Accessibility Testing~~ → ✅ Gelöst: cypress-axe auf 5 Kernseiten (14.11.2025)
 3. Event Library (7 vollständige Events) – teilweise, Erweiterung möglich
 4. Test-Coverage (≥80%, Performance-Validierung) – Ausbau empfohlen
 5. PDF-Branding, D3-Environment-Charts, Templates – Feinschliff

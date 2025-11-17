@@ -37,7 +37,7 @@ The system has **four roles**, each with **specific permissions** to support col
 |----------|-------------------------------|---------------------|------------------------|
 | **Player (Student)** | **Focus**: Individual gameplay and learning. Players simulate market decisions in roles, receiving immediate feedback to understand market dynamics. Perspective: Hands-on, role-specific interface with real-time previews and post-scenario analysis. Max 80 per cohort. | Register via email (pending approval), join assigned cohorts, play scenarios, submit forecasts, view own results and cohort benchmarks, replay completed scenarios, export PDF reports. | Game-focused app with dashboard, briefing, round editor, evaluation tabs, replay mode. No editing access. |
 | **Trainer** | **Focus**: Session management and analysis. Trainers orchestrate groups (cohorts), monitor progress, and provide guidance. Perspective: Oversight tool with live monitoring and reporting to facilitate training workshops. | Create/archive cohorts (max 10 concurrent), assign scenarios and players (CSV bulk import), toggle multiplayer mode per scenario, start/pause/end sessions, force round end, send broadcast messages, view all player results and leaderboards, upload reference runs, generate PDF reports. | Management app with cohort overview, live session control, comparison dashboard, player details. |
-| **Designer** | **Focus**: Content creation. Designers build custom scenarios using KSE, defining all parameters for realistic simulations. Perspective: Creative tool with previews and validation to design educational content. | Create/edit/delete campaigns and scenarios in KSE, configure all parameters (e.g., zones, capacities, events, KPIs), generate market environments, assign devices to roles, validate and preview scenarios, export/import JSON configs. | Editor app (KSE) with tabs for general, market, grid, environment, events, storage, scoring, validation. No user management. |
+| **Designer** | **Focus**: Content creation. Designers build custom scenarios using KSE, defining all parameters for realistic simulations. Perspective: Creative tool with previews and validation to design educational content. | Create/edit/delete campaigns and scenarios in KSE, configure all parameters (e.g., zones, capacities, events, KPIs), generate market environments, assign devices to roles, validate and preview scenarios, export/import JSON configs. | Editor app (KSE) with tabs for general, market, grid, environment, events, player types (devices incl. storage), scoring, validation. No user management. |
 | **Admin** | **Focus**: System operations. Admins handle platform-wide settings and maintenance. Perspective: Administrative tool for scalability and compliance. | Manage all users and roles (assign via invite links), configure branding (logo, colors), perform backups/restore, delete data, set system limits (e.g., max 1,000 users, 500 WebSocket connections), monitor logs (errors only). | Admin panel with user/role mgmt, branding, settings, logs. No gameplay access. |
 
 **Role Assignment Workflow**:
@@ -120,14 +120,11 @@ The KSE is the **core tool for Designers** to create and customize content. It i
    - **Processing**: Systemic first (multiply), then player-specific (add).
    - **Validation**: Check trigger overlaps.
 
-6. **Storage Tab** – Hybrid/Storage Configuration:
-   - **Efficiency**: 85% round-trip.
-   - **Capacity**: 100 MWh.
-   - **Power Rating**: 50 MW (charge/discharge).
-   - **Initial SoC**: 50%.
-   - **Degradation**: -0.1% per full cycle.
-   - **DoD**: 80% max.
-   - **Validation**: Check SoC feasibility with sample forecasts.
+6. **Player Types & Devices** – Per-device configuration (incl. storage as Battery):
+  - Storage wird ausschließlich als Device auf Spielertyp‑Ebene modelliert (z. B. Battery).
+  - Battery‑Parameter pro Device: Capacity (MWh), Power Rating (MW), Efficiency (%), Initial SoC (%), Max DoD (%), Degradation (%/cycle).
+  - Keine globalen Storage‑Parameter mehr im Szenario.
+  - Validierung: Parameterbereiche, SoC/DoD‑Plausibilität pro Battery‑Device.
 
 7. **Scoring Tab** – KPIs and Evaluation:
    - **KPIs**: Profit, Imbalance Cost, Curtailment (defaults).
@@ -146,7 +143,7 @@ The KSE is the **core tool for Designers** to create and customize content. It i
 4. Setup grid (zones, ATC).
 5. Generate environment (capacities, groups).
 6. Add events from library.
-7. Define storage params.
+7. Add storage devices (Battery) and set per‑device parameters.
 8. Set KPIs/scoring.
 9. Validate (run preview with events).
 10. Save/export JSON.
@@ -269,7 +266,7 @@ Devices are **instances** of **12 classes**, assigned to roles in KSE. Each has 
 **Player Assignment**:  
 - **1 player = 1 role** per scenario  
 - Devices linked to player/zone  
-- Initial SoC: 50% for Storage  
+- Initial SoC: 50% for Battery devices  
 - Degradation: -0.1% per full cycle (battery)  
 - Must-Run: Wind/Solar (curtailed last)  
 
@@ -399,11 +396,7 @@ def run_simulation(scenario_id, round_num, player_inputs, config):
     # Actuals
     actual = volume + random.gauss(0, 0.05 * volume) + systemic_bias + player_additive
     
-    # Storage
-    eff = config['storage_efficiency'] / 100
-    soc = update_soc(actual, eff)
-    
-    # Profit
+  # Profit
     profit = revenue - fuel - imbalance - curtailment
     
     # Results
@@ -415,9 +408,8 @@ def run_simulation(scenario_id, round_num, player_inputs, config):
 def clear_market(supply, demand, config):
     # Full function as in previous
     # Precision: Price 1 dec, Volume 3 dec, Financial 0 dec
-
-def update_soc(actual, eff):
-    # Full function as in previous
+    
+  # Note: Storage is modeled per Battery device (no global storage state).
 
 def apply_flow(net, atc):
     # Full function as in previous
@@ -503,7 +495,7 @@ components:
         floor_price: { type: number, default: -500 }
         cap_price: { type: number, default: 5000 }
         show_player_names: { type: boolean, default: true }
-        storage_efficiency: { type: number, default: 85 }
+  # removed: global storage_efficiency (storage is per Battery device)
         show_event_warning: { type: boolean, default: false }
         atc_mw: { type: object, default: {"Z1-Z2": 5000, "Z2-Z1": 5000} }
 ```

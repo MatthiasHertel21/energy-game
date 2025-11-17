@@ -14,6 +14,7 @@ from .leaderboard import ns as leaderboard_ns
 from .export import ns as export_ns
 from .health import bp as health_bp
 from .catalog import ns as catalog_ns
+from .trainer import ns as trainer_ns
 
 
 def create_app() -> Flask:
@@ -55,6 +56,7 @@ def create_app() -> Flask:
     api.add_namespace(leaderboard_ns)
     api.add_namespace(export_ns)
     api.add_namespace(catalog_ns)
+    api.add_namespace(trainer_ns)
 
     # Blueprints
     app.register_blueprint(health_bp)
@@ -71,6 +73,7 @@ def create_app() -> Flask:
     # Ensure new tables exist if migrations are not available (fallback)
     try:
         from sqlalchemy import inspect
+        from sqlalchemy import text
         from .models import SessionAllowedType, SessionPlayerType, CohortCampaign
         with app.app_context():
             insp = inspect(db.engine)
@@ -80,6 +83,22 @@ def create_app() -> Flask:
                 SessionPlayerType.__table__.create(bind=db.engine, checkfirst=True)
             if not insp.has_table(CohortCampaign.__tablename__):
                 CohortCampaign.__table__.create(bind=db.engine, checkfirst=True)
+
+            # Lightweight column backfill for campaigns to avoid 500s when migrations weren't run
+            try:
+                cols = {c['name'] for c in insp.get_columns('campaigns')}
+                # Add seed column if missing
+                if 'seed' not in cols:
+                    db.session.execute(text("ALTER TABLE campaigns ADD COLUMN seed VARCHAR(128)"))
+                # Add published column if missing
+                if 'published' not in cols:
+                    db.session.execute(text("ALTER TABLE campaigns ADD COLUMN published BOOLEAN DEFAULT FALSE NOT NULL"))
+                # Add cover_image_url column if missing
+                if 'cover_image_url' not in cols:
+                    db.session.execute(text("ALTER TABLE campaigns ADD COLUMN cover_image_url VARCHAR(512)"))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
     except Exception:
         # Ignore any errors; migrations remain the primary path
         pass

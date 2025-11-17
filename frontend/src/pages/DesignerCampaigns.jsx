@@ -58,7 +58,7 @@ export default function DesignerCampaigns(){
 
   const deleteCampaign = async ()=>{
     if(!selected) return
-    if(!window.confirm('Delete this campaign? This will remove all its scenario mappings.')) return
+    if(!window.confirm('Delete this campaign? This will remove all its scenario mappings and delete its scenarios. Any sessions using those scenarios will be preserved but unlinked.')) return
     setDeleting(true)
     try{
       await api.delete(`/api/kse/campaigns/${selected}`)

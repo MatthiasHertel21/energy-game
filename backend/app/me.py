@@ -3,6 +3,12 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from .extensions import db
 from .models import Session, Scenario, CohortMember, Cohort, SessionStatus
+import os
+try:
+    import redis as _redis
+    _redis_client = _redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+except Exception:
+    _redis_client = None
 
 
 ns = Namespace("me", description="Current user endpoints")
@@ -48,3 +54,25 @@ class MySessions(Resource):
                 "general": general,
             })
         return out
+
+
+@ns.route("/navigate")
+class MyNavigate(Resource):
+    @jwt_required()
+    def get(self):
+        """Return a force navigation URL for the current user if trainer initiated one for any of user's cohorts."""
+        uid = int(get_jwt_identity())
+        if not _redis_client:
+            return {"url": None}
+        # find cohort memberships
+        cohort_ids = [row.cohort_id for row in CohortMember.query.filter_by(user_id=uid).all()]
+        for cid in cohort_ids:
+            key = f"cohort:{cid}:force_nav"
+            try:
+                val = _redis_client.get(key)
+            except Exception:
+                val = None
+            if val:
+                url = val.decode() if isinstance(val, (bytes, bytearray)) else str(val)
+                return {"url": url}
+        return {"url": None}

@@ -38,6 +38,9 @@ const DEVICE_ICONS = {
   wind: WindIcon,
   battery: BatteryIcon,
   load: LoadIcon,
+  industrial_load: LoadIcon,
+  commercial_load: LoadIcon,
+  residential_load: LoadIcon,
 };
 
 const DEVICE_COLORS = {
@@ -49,6 +52,9 @@ const DEVICE_COLORS = {
   wind: '#4fc3f7',
   battery: '#66bb6a',
   load: '#ef5350',
+  industrial_load: '#ef5350',
+  commercial_load: '#ef5350',
+  residential_load: '#ef5350',
 };
 
 /**
@@ -71,14 +77,18 @@ export default function DeviceCard({
   onExpandToggle,
   hasError = false,
 }) {
-  const Icon = DEVICE_ICONS[device.type?.toLowerCase()] || LoadIcon;
-  const color = DEVICE_COLORS[device.type?.toLowerCase()] || '#757575';
+  const typeKey = (device.type || '').toLowerCase();
+  const isLoad = typeKey.includes('load');
+  const Icon = DEVICE_ICONS[typeKey] || (isLoad ? LoadIcon : LoadIcon);
+  const color = DEVICE_COLORS[typeKey] || (isLoad ? DEVICE_COLORS.load : '#757575');
 
   const handleFieldChange = (field, value) => {
     onChange({ ...device, [field]: value });
   };
 
-  const summary = `${device.capacity_mw || 0} MW • ${device.cost_per_mwh_zar || 0} ZAR/MWh`;
+  const summary = isLoad
+    ? `${device.baseline_load_mw || 0}-${device.peak_load_mw || 0} MW`
+    : `${device.capacity_mw || 0} MW • ${device.cost_per_mwh_zar || 0} ZAR/MWh`;
 
   return (
     <Card
@@ -152,27 +162,50 @@ export default function DeviceCard({
       <Collapse in={expanded} timeout="auto" unmountOnExit>
         <CardContent>
           <Stack spacing={2}>
-            {/* Capacity */}
-            <NumberInput
-              label="Capacity"
-              value={device.capacity_mw || 0}
-              onChange={(val) => handleFieldChange('capacity_mw', val)}
-              min={0}
-              max={10000}
-              step={10}
-              unit="MW"
-            />
-
-            {/* Cost */}
-            <NumberInput
-              label="Cost per MWh"
-              value={device.cost_per_mwh_zar || 0}
-              onChange={(val) => handleFieldChange('cost_per_mwh_zar', val)}
-              min={0}
-              max={5000}
-              step={10}
-              unit="ZAR/MWh"
-            />
+            {/* Capacity / Cost or Load fields */}
+            {!isLoad ? (
+              <>
+                <NumberInput
+                  label="Capacity"
+                  value={device.capacity_mw || 0}
+                  onChange={(val) => handleFieldChange('capacity_mw', val)}
+                  min={0}
+                  max={10000}
+                  step={10}
+                  unit="MW"
+                />
+                <NumberInput
+                  label="Cost per MWh"
+                  value={device.cost_per_mwh_zar || 0}
+                  onChange={(val) => handleFieldChange('cost_per_mwh_zar', val)}
+                  min={0}
+                  max={5000}
+                  step={10}
+                  unit="ZAR/MWh"
+                />
+              </>
+            ) : (
+              <>
+                <NumberInput
+                  label="Baseline Load"
+                  value={device.baseline_load_mw || 0}
+                  onChange={(val) => handleFieldChange('baseline_load_mw', val)}
+                  min={0}
+                  max={2000}
+                  step={10}
+                  unit="MW"
+                />
+                <NumberInput
+                  label="Peak Load"
+                  value={device.peak_load_mw || 0}
+                  onChange={(val) => handleFieldChange('peak_load_mw', val)}
+                  min={0}
+                  max={3000}
+                  step={10}
+                  unit="MW"
+                />
+              </>
+            )}
 
             {/* Type-specific fields */}
             {['solar', 'wind'].includes(device.type?.toLowerCase()) && (
@@ -241,10 +274,10 @@ export default function DeviceCard({
               />
             )}
 
-            {device.type?.toLowerCase() === 'load' && (
+            {isLoad && device.curtailment_penalty_zar_per_mwh != null && (
               <NumberInput
                 label="Curtailment Penalty"
-                value={device.curtailment_penalty_zar_per_mwh || 10000}
+                value={device.curtailment_penalty_zar_per_mwh}
                 onChange={(val) => handleFieldChange('curtailment_penalty_zar_per_mwh', val)}
                 min={0}
                 max={50000}

@@ -24,6 +24,7 @@ session_in = ns.model(
         "cohort_id": fields.Integer(required=True),
         "scenario_id": fields.Integer(required=True),
         "mode": fields.String(required=False, enum=["isolated_per_player", "shared_market"], description="Market mode"),
+        "force_navigate": fields.Boolean(required=False, description="If true, push players of the cohort to the briefing page"),
     },
 )
 
@@ -53,6 +54,16 @@ class Sessions(Resource):
         emit_trainer("session_started", {"session_id": s.id})
         # start background round timer
         socketio.start_background_task(run_rounds, s.id)
+        # Optional: force navigate cohort players to briefing
+        try:
+            if bool(data.get("force_navigate")) and _redis_client is not None:
+                url = f"/briefing/{s.id}"
+                key = f"cohort:{s.cohort_id}:force_nav"
+                _redis_client.setex(key, 300, url)
+                # Inform trainer namespace for visibility
+                emit_trainer("navigate", {"cohort_id": s.cohort_id, "url": url})
+        except Exception:
+            pass
         return {"id": s.id, "status": s.status.value}, HTTPStatus.CREATED
 
 

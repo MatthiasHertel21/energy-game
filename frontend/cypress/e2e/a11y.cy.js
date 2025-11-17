@@ -22,8 +22,14 @@ describe('Accessibility (axe)', () => {
 
   it('KSE Editor has no serious/critical violations', () => {
     cy.window().then(setAuth)
-    cy.intercept('POST', '/api/engine/preview', { mcp: 1000, volume: 123.456 })
+    cy.intercept('POST', '/api/engine/preview', { mcp: 1000, volume: 123.456 }).as('preview')
+    cy.intercept('POST', '/api/engine/preview/hourly', {
+      hours: 24,
+      mcp: Array.from({length:24},()=>1000),
+      volume: Array.from({length:24},(_,i)=> 8000 + i*50)
+    }).as('hourly')
     cy.visit('/kse')
+    cy.wait(['@preview','@hourly'])
     cy.injectAxe()
     cy.checkA11y(undefined, checkOptions)
   })
@@ -60,6 +66,27 @@ describe('Accessibility (axe)', () => {
     cy.intercept('GET', '/api/me/sessions', []).as('mysessions')
     cy.visit('/catalog/1')
     cy.wait(['@detail','@mysessions'])
+    cy.injectAxe()
+    cy.checkA11y(undefined, checkOptions)
+  })
+
+  it('Player page has no serious/critical violations', () => {
+    cy.window().then(setAuth)
+    // Mock player session data
+    cy.intercept('GET', '/api/player/progress', {
+      statusCode: 200,
+      body: {
+        id: 1,
+        session_id: 123,
+        round: 1,
+        status: 'waiting',
+        balance: 1000000,
+        devices: [],
+        forecast: { demand: [100, 110, 120], solar: [50, 60, 70], wind: [30, 35, 40] }
+      }
+    }).as('progress')
+    cy.visit('/player')
+    cy.wait('@progress')
     cy.injectAxe()
     cy.checkA11y(undefined, checkOptions)
   })

@@ -78,7 +78,7 @@ export default function Cohorts(){
   
   const loadMembers = async (cid) => {
     try {
-      const { data } = await api.get(`/api/cohorts/${cid}/members`)
+      const { data } = await api.get(`/api/cohorts/${cid}/players`)
       setMembers(data || [])
     } catch (e) {
       setMembers([])

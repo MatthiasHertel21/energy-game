@@ -13,6 +13,8 @@ import EventEditor from '../components/events/EventEditor'
 import api from '../services/api'
 import * as d3 from 'd3'
 import ReactMarkdown from 'react-markdown'
+import ValidationPanel from '../components/ValidationPanel'
+import StickyActionBar from '../components/StickyActionBar'
 
 const defaultConfig = {
   version: '1.0.0',
@@ -367,15 +369,22 @@ export default function KSE(){
         <TextField label="Scenario Name" value={name} onChange={e=>setName(e.target.value)} />
       </Stack>
   <Paper sx={{ p:2 }}>
-        <Tabs value={tab} onChange={(_,v)=>setTab(v)} variant="scrollable">
-          <Tab label="General"/>
-          <Tab label="Market & Preview"/>
-          <Tab label="Grid"/>
-          <Tab label="Events"/>
-          <Tab label="Player Types"/>
-          <Tab label="Scoring"/>
+        <Tabs 
+          value={tab} 
+          onChange={(_,v)=>setTab(v)} 
+          variant="scrollable"
+          role="tablist"
+          aria-label="KSE scenario editor sections"
+        >
+          <Tab label="General" role="tab" aria-selected={tab===0} />
+          <Tab label="Market & Preview" role="tab" aria-selected={tab===1} />
+          <Tab label="Grid" role="tab" aria-selected={tab===2} />
+          <Tab label="Events" role="tab" aria-selected={tab===3} />
+          <Tab label="Player Types" role="tab" aria-selected={tab===4} />
+          <Tab label="Scoring" role="tab" aria-selected={tab===5} />
         </Tabs>
-        <Box sx={{ mt:2 }}>
+        <Stack direction="row" spacing={2} sx={{ mt:2 }}>
+          <Box sx={{ flex: 1 }}>
           {tab===0 && (
             <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
               <Stack spacing={0.5} sx={{ minWidth: 220 }}>
@@ -831,6 +840,8 @@ export default function KSE(){
           )}
           {/* Preview tab removed (merged) */}
         </Box>
+        <ValidationPanel errors={errors} />
+      </Stack>
       </Paper>
       {errors.length>0 && <Paper sx={{p:2}}>
         <Typography color="error">{errors.join(' · ')}</Typography>
@@ -931,6 +942,19 @@ export default function KSE(){
           <Button variant="contained" onClick={()=> { update(['general','description'], descDraft); setDescOpen(false) }}>Save</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Sticky Action Bar */}
+      <StickyActionBar
+        onSave={save}
+        onValidate={doPreview}
+        onImportExport={()=> setIoOpen(true)}
+        onEditDescription={()=> { setDescDraft(cfg?.general?.description || ''); setDescOpen(true) }}
+        onLoadTemplate={()=> setTemplateDialogOpen(true)}
+        disabled={errors.length>0}
+      />
+      
+      {/* Bottom padding to prevent content being hidden by sticky bar */}
+      <Box sx={{ height: 80 }} />
     </Stack>
   )
 }

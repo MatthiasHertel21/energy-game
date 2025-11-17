@@ -9,6 +9,7 @@ from datetime import datetime
 from .extensions import db
 from .models import Cohort, CohortMember, User, Role, Invite, Campaign, CohortCampaign, Session, ActivityLog, Forecast, Result, SessionAllowedType, SessionPlayerType
 from .utils import role_required
+from .config import Config
 
 
 ns = Namespace("cohorts", description="Cohorts & player assignment")
@@ -30,6 +31,11 @@ class Cohorts(Resource):
     @role_required("trainer", "admin")
     @ns.expect(cohort_in, validate=True)
     def post(self):
+        # Check system limit for max cohorts
+        cohort_count = Cohort.query.count()
+        if cohort_count >= Config.MAX_COHORTS:
+            ns.abort(HTTPStatus.FORBIDDEN, f"System limit reached: maximum {Config.MAX_COHORTS} cohorts allowed")
+        
         trainer_id = int(get_jwt_identity())
         c = Cohort(name=request.json["name"], trainer_id=trainer_id)
         db.session.add(c)
@@ -92,6 +98,10 @@ class CohortPlayers(Resource):
     @ns.expect(csv_in, validate=True)
     def post(self, cid: int):
         c = Cohort.query.get_or_404(cid)
+        
+        # Check current cohort size
+        current_members = CohortMember.query.filter_by(cohort_id=cid).count()
+        
         content = request.json["csv"]
         f = io.StringIO(content)
         reader = csv.reader(f)
@@ -103,6 +113,11 @@ class CohortPlayers(Resource):
             email = row[0].strip().lower()
             if not email:
                 continue
+            
+            # Check if adding would exceed limit
+            if current_members + added >= Config.MAX_PLAYERS_PER_COHORT:
+                ns.abort(HTTPStatus.FORBIDDEN, f"Cohort size limit reached: maximum {Config.MAX_PLAYERS_PER_COHORT} players per cohort")
+            
             user = User.query.filter_by(email=email).first()
             if user:
                 # ensure role is player
@@ -117,6 +132,21 @@ class CohortPlayers(Resource):
                 invited += 1
         db.session.commit()
         return {"added": added, "invited": invited}
+
+
+# Backward compatibility alias for older frontend route
+@ns.route("/<int:cid>/members")
+class CohortMembersAlias(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def get(self, cid: int):
+        members = (
+            db.session.query(CohortMember, User)
+            .join(User, User.id == CohortMember.user_id)
+            .filter(CohortMember.cohort_id == cid)
+            .all()
+        )
+        return [{"user_id": m.user_id, "email": u.email, "name": getattr(u, 'name', None)} for m, u in members]
 
 
 @ns.route("/<int:cid>/players/<int:user_id>")

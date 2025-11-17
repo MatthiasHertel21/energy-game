@@ -5,9 +5,11 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from .extensions import db
 from .models import Campaign, Scenario, Role, ReferenceRun
-from .models import CampaignScenario
+from .models import CampaignScenario, Session, SessionStatus
 from .utils import role_required
 from .device_types import DEVICE_SPECS, DeviceType, validate_device
+from .config import Config
+from .templates import list_templates, get_template
 import os
 
 try:
@@ -225,6 +227,17 @@ class CampaignItem(Resource):
         from .models import CampaignScenario, CohortCampaign
         CampaignScenario.query.filter_by(campaign_id=cid).delete(synchronize_session=False)
         CohortCampaign.query.filter_by(campaign_id=cid).delete(synchronize_session=False)
+        # Unlink sessions and delete scenarios belonging to this campaign
+        # 1) Collect scenario ids
+        scenario_ids = [s.id for s in Scenario.query.filter_by(campaign_id=cid).all()]
+        if scenario_ids:
+            # Set sessions.scenario_id = NULL for affected sessions
+            Session.query.filter(Session.scenario_id.in_(scenario_ids)).update({Session.scenario_id: None}, synchronize_session=False)
+            # Delete reference runs tied to scenarios
+            ReferenceRun.query.filter(ReferenceRun.scenario_id.in_(scenario_ids)).delete(synchronize_session=False)
+            # Delete scenarios
+            Scenario.query.filter(Scenario.id.in_(scenario_ids)).delete(synchronize_session=False)
+        # Finally delete campaign
         db.session.delete(c)
         db.session.commit()
         return {"status": "deleted"}, HTTPStatus.NO_CONTENT
@@ -350,6 +363,11 @@ class Scenarios(Resource):
     @role_required("designer", "admin")
     @ns.expect(scenario_in, validate=True)
     def post(self):
+        # Check system limit for max scenarios
+        scenario_count = Scenario.query.count()
+        if scenario_count >= Config.MAX_SCENARIOS:
+            ns.abort(HTTPStatus.FORBIDDEN, f"System limit reached: maximum {Config.MAX_SCENARIOS} scenarios allowed")
+        
         data = request.json
         errors = validate_config(data.get("config", {}))
         if errors:
@@ -648,3 +666,75 @@ class DeviceTypes(Resource):
                 "optional_params": spec.get("optional_params", []),
             })
         return result
+
+
+@ns.route("/templates")
+class Templates(Resource):
+    @jwt_required()
+    @role_required("designer", "admin")
+    def get(self):
+        """List available scenario templates"""
+        return list_templates()
+
+
+@ns.route("/templates/<string:template_id>")
+class TemplateDetail(Resource):
+    @jwt_required()
+    @role_required("designer", "admin")
+    def get(self, template_id: str):
+        """Get a specific template configuration"""
+        template = get_template(template_id)
+        if not template:
+            ns.abort(HTTPStatus.NOT_FOUND, f"Template '{template_id}' not found")
+        return template
+
+
+@ns.route("/scenarios/<int:sid>/sessions")
+class ScenarioSessions(Resource):
+    @jwt_required()
+    @role_required("designer", "admin")
+    def get(self, sid: int):
+        """List sessions that used this scenario. Designers can only see sessions for scenarios mapped to their campaigns."""
+        # If designer, ensure ownership via campaign mapping
+        from flask_jwt_extended import get_jwt_identity
+        user_id = int(get_jwt_identity())
+        # Check if scenario exists
+        Scenario.query.get_or_404(sid)
+        
+        # Ownership check: if role is designer, ensure scenario is in a campaign owned by this designer
+        from .models import Campaign, User, Role as UserRole
+        user = User.query.get(user_id)
+        if user and user.role == UserRole.designer:
+            mapped = (
+                db.session.query(CampaignScenario)
+                .join(Campaign, Campaign.id == CampaignScenario.campaign_id)
+                .filter(CampaignScenario.scenario_id == sid, Campaign.designer_id == user_id)
+                .count()
+            )
+            if mapped == 0:
+                ns.abort(HTTPStatus.FORBIDDEN, "You do not own this scenario or it is not mapped to your campaign")
+
+        limit = request.args.get("limit", 50, type=int)
+        offset = request.args.get("offset", 0, type=int)
+        
+        q = Session.query.filter(Session.scenario_id == sid).order_by(Session.started_at.desc())
+        total = q.count()
+        rows = q.limit(limit).offset(offset).all()
+        
+        # Build response
+        from .models import Cohort
+        result = []
+        for s in rows:
+            cohort = Cohort.query.get(s.cohort_id) if s.cohort_id else None
+            # Player count via PlayerProgress
+            from .models import PlayerProgress
+            pc = PlayerProgress.query.filter_by(session_id=s.id).count()
+            result.append({
+                "session_id": s.id,
+                "cohort_name": cohort.name if cohort else ("Solo" if s.mode == "solo" else None),
+                "status": s.status.value if s.status else None,
+                "created_at": s.started_at.isoformat() + "Z" if s.started_at else None,
+                "round": getattr(s, 'current_round', None) or getattr(s, 'round', None),
+                "player_count": pc,
+            })
+        return {"sessions": result, "total": total, "limit": limit, "offset": offset}

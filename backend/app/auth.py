@@ -13,6 +13,7 @@ from flask_jwt_extended import (
 from .extensions import db, bcrypt, jwt
 from .models import User, Invite, Role
 from .utils import log_activity
+from .config import Config
 
 
 ns = Namespace("auth", description="Authentication & Invite")
@@ -91,9 +92,14 @@ class Register(Resource):
         if User.query.filter_by(email=email).first():
             ns.abort(HTTPStatus.CONFLICT, "Email already registered")
 
+        # Check system limit for max users (skip check if first user/admin bootstrap)
+        user_count = User.query.count()
+        if user_count > 0 and user_count >= Config.MAX_USERS:
+            ns.abort(HTTPStatus.FORBIDDEN, f"System limit reached: maximum {Config.MAX_USERS} users allowed")
+
         role = Role.player
         # Bootstrap: first ever user becomes admin
-        if User.query.count() == 0:
+        if user_count == 0:
             role = Role.admin
         if invite_token and role != Role.admin:
             inv = Invite.query.filter_by(token=invite_token).first()

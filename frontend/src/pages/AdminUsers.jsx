@@ -63,6 +63,13 @@ export default function AdminUsers(){
   const [series, setSeries] = useState({ logins: [], registrations: [], sessions: [] })
   const [recent, setRecent] = useState([])
   const [loadingActivity, setLoadingActivity] = useState(false)
+  // Admin Sessions (UC-17)
+  const [sessLoading, setSessLoading] = useState(false)
+  const [sessList, setSessList] = useState([])
+  const [sessTotal, setSessTotal] = useState(0)
+  const [sessPage, setSessPage] = useState(0)
+  const [sessRows, setSessRows] = useState(25)
+  const [sessFilters, setSessFilters] = useState({ status: '', scenario_id: '', date_from: '', date_to: '' })
 
   const load = async () => {
     setLoading(true)
@@ -98,6 +105,7 @@ export default function AdminUsers(){
 
   useEffect(()=>{
     if (tab === 1) loadActivity(period)
+    if (tab === 2) loadSessions()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, period])
 
@@ -120,6 +128,28 @@ export default function AdminUsers(){
       setInvEmail('')
     } catch (e) {
       setSnack(e?.response?.data?.message || 'Failed to create invite')
+    }
+  }
+
+  const loadSessions = async () => {
+    setSessLoading(true)
+    try {
+      const params = {
+        status: sessFilters.status || undefined,
+        scenario_id: sessFilters.scenario_id ? Number(sessFilters.scenario_id) : undefined,
+        date_from: sessFilters.date_from || undefined,
+        date_to: sessFilters.date_to || undefined,
+        limit: 1000,
+        offset: 0,
+      }
+      const { data } = await api.get('/api/admin/sessions', { params })
+      setSessList(data.sessions || [])
+      setSessTotal(data.total || 0)
+    } catch (e) {
+      setSessList([])
+      setSessTotal(0)
+    } finally {
+      setSessLoading(false)
     }
   }
 
@@ -154,6 +184,7 @@ export default function AdminUsers(){
       <Tabs value={tab} onChange={(_,v)=>setTab(v)} aria-label="Admin tabs">
         <Tab label="Users" />
         <Tab label="Activity Dashboard" />
+        <Tab label="Sessions" />
       </Tabs>
 
       {tab === 0 && (
@@ -416,6 +447,89 @@ export default function AdminUsers(){
               </TableBody>
             </Table>
           )}
+        </Box>
+      )}
+
+      {tab === 2 && (
+        <Box sx={{ mt: 2 }}>
+          <Box sx={{ display:'flex', alignItems:'center', gap:1, flexWrap:'wrap', mb:2 }}>
+            <Typography variant="h6" sx={{ mr: 2 }}>Sessions</Typography>
+            <Select size="small" value={sessFilters.status} onChange={e=> setSessFilters(f=>({ ...f, status: e.target.value }))} displayEmpty aria-label="Filter by status">
+              <MenuItem value=""><em>All statuses</em></MenuItem>
+              {['created','running','paused','ended'].map(s=> <MenuItem key={s} value={s}>{s}</MenuItem>)}
+            </Select>
+            <TextField size="small" label="Scenario ID" value={sessFilters.scenario_id} onChange={e=> setSessFilters(f=>({ ...f, scenario_id: e.target.value }))} sx={{ width: 140 }} />
+            <TextField size="small" type="date" label="From" InputLabelProps={{ shrink:true }} value={sessFilters.date_from} onChange={e=> setSessFilters(f=>({ ...f, date_from: e.target.value }))} />
+            <TextField size="small" type="date" label="To" InputLabelProps={{ shrink:true }} value={sessFilters.date_to} onChange={e=> setSessFilters(f=>({ ...f, date_to: e.target.value }))} />
+            <Button variant="outlined" onClick={()=> setSessPage(0)} disabled={sessLoading}>Apply</Button>
+            <Button variant="text" onClick={()=> { setSessFilters({ status:'', scenario_id:'', date_from:'', date_to:'' }); setSessPage(0) }}>Reset</Button>
+            <Box sx={{ flexGrow:1 }} />
+            <Button variant="contained" color="error" onClick={async()=>{
+              const older = prompt('Bulk cleanup: delete sessions older than N days (default 90). Enter number or Cancel.')
+              if(older===null) return
+              const olderNum = Number(older||90)
+              if(Number.isNaN(olderNum)) return alert('Invalid number')
+              try{
+                await api.post('/api/admin/sessions', { status: sessFilters.status || undefined, older_than_days: olderNum })
+                if(window.__showSnack) window.__showSnack('Bulk cleanup executed', 'success')
+                loadSessions()
+              }catch(e){ if(window.__showSnack) window.__showSnack('Cleanup failed','error') }
+            }}>Bulk Cleanup…</Button>
+          </Box>
+
+          {/* Sessions Table */}
+          <Box>
+            {sessLoading ? (
+              [...Array(5)].map((_,i)=> <Skeleton key={i} variant="rectangular" height={40} sx={{ mb:1 }} />)
+            ) : sessList.length===0 ? (
+              <EmptyState title="No sessions found" message="Try adjusting filters or date range." />
+            ) : (
+              <Table size="small" aria-label="sessions table">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>ID</TableCell>
+                    <TableCell>Scenario</TableCell>
+                    <TableCell>Cohort</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Mode</TableCell>
+                    <TableCell>Round</TableCell>
+                    <TableCell>Players</TableCell>
+                    <TableCell>Created</TableCell>
+                    <TableCell align="right">Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {sessList.slice(sessPage*sessRows, sessPage*sessRows+sessRows).map(s => (
+                    <TableRow key={s.id}>
+                      <TableCell>{s.id}</TableCell>
+                      <TableCell>{s.scenario_name} ({s.scenario_id || '-'})</TableCell>
+                      <TableCell>{s.cohort_name || '-'}</TableCell>
+                      <TableCell>{s.status}</TableCell>
+                      <TableCell>{s.mode}</TableCell>
+                      <TableCell>{s.round}</TableCell>
+                      <TableCell>{s.player_count}</TableCell>
+                      <TableCell>{s.created_at ? new Date(s.created_at).toLocaleString() : '-'}</TableCell>
+                      <TableCell align="right">
+                        <Button size="small" color="error" onClick={async()=>{
+                          if(!window.confirm(`Delete session #${s.id}? This cannot be undone.`)) return
+                          try{ await api.delete(`/api/admin/sessions/${s.id}`); if(window.__showSnack) window.__showSnack('Session deleted','success'); loadSessions() }catch(e){ if(window.__showSnack) window.__showSnack('Delete failed','error') }
+                        }}>Delete</Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            <Box sx={{ display:'flex', alignItems:'center', justifyContent:'flex-end', gap:1, mt:1 }}>
+              <Typography variant="caption" sx={{ mr:1 }}>Rows per page:</Typography>
+              <Select size="small" value={sessRows} onChange={e=>{ setSessRows(Number(e.target.value)); setSessPage(0) }} sx={{ width: 80 }}>
+                {[10,25,50,100].map(n=> <MenuItem key={n} value={n}>{n}</MenuItem>)}
+              </Select>
+              <Button size="small" disabled={sessPage===0} onClick={()=> setSessPage(p=>Math.max(0,p-1))}>Prev</Button>
+              <Typography variant="caption">{sessPage+1}</Typography>
+              <Button size="small" disabled={(sessPage+1)*sessRows >= sessList.length} onClick={()=> setSessPage(p=>p+1)}>Next</Button>
+            </Box>
+          </Box>
         </Box>
       )}
 

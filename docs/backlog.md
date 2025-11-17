@@ -48,9 +48,10 @@ Status (2025-11-11): All P0 items completed.
 	- Sektionen mit klaren Überschriften + 1‑Zeilen‑Guidance.
 - Target files: `frontend/src/pages/KSE.jsx` (+ neue Komponenten `FormSection`, `StickyActions`, `ValidationPanel`).
 - Acceptance:
-	- Kein horizontaler Scroll bei md≥1280px; Felder/HelperTexts nicht abgeschnitten.
-	- Max. 7 sichtbare Kernfelder pro Sektion; Advanced vollständig einklappbar.
-	- Fehlerliste klickbar → scrollt zum Feld; CTAs bleiben beim Scrollen sichtbar.
+  - Kein horizontaler Scroll bei md≥1280px; Felder/HelperTexts nicht abgeschnitten.
+  - Max. 7 sichtbare Kernfelder pro Sektion; Advanced vollständig einklappbar.
+  - Fehlerliste klickbar → scrollt zum Feld; CTAs bleiben beim Scrollen sichtbar.
+- Status: ✅ Implemented (Sprint 19 – Sticky Actions, Mini-TOC/Breadcrumb; Advanced teilweise)
 
 ---
 
@@ -331,7 +332,7 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
   - Import validiert Schema; bei Fehlern präzise Fehlermeldungen, kein Zustandsverlust.
   - Export lädt korrekte JSON der aktuellen Scenario-Konfiguration herunter.
   - A11y: Fokus-Trap, ESC schließt, ARIA-Labels vorhanden.
-- Status: ⏳ Planned (Sprint 14)
+- Status: ✅ Implemented (Sprint 16)
 
 33) KSE – Szenario-Beschreibung per Modal editieren (UC-KSE-21)
 - Problem: Beschreibung ist nicht prominent/editierbar ohne Kontextwechsel.
@@ -343,7 +344,7 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
   - Öffnen/Speichern/Abbrechen funktionieren; ESC schließt; Enter speichert (wenn valide).
   - Beschreibung erscheint an allen Stellen (Briefing, Catalog/Campaign Detail) aktualisiert.
   - Validierung verhindert leere-only-Whitespace und Überlänge; Fehlermeldung inline.
-- Status: ⏳ Planned (Sprint 14)
+- Status: ✅ Implemented (Sprint 16)
 
 34) KSE – „Edit Matrix“ als Modal konsolidieren (UC-KSE-22)
 - Problem: Matrix-Editor existiert bereits als Vollbild-Dialog (`components/grid/AtcEditor.jsx`), Trigger/UX jedoch nicht überall konsistent; CSV-Flow soll im Modal gebündelt werden.
@@ -355,7 +356,7 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
   - Button öffnet Fullscreen-Dialog; Speichern persistiert Matrix; Abbrechen verwirft Änderungen.
   - CSV-Import zeigt präzise Fehler (Zeile/Spalte); Export entspricht aktuellem Zustand.
   - Tastaturkürzel: Ctrl+S speichert, ESC schließt; Fokus bleibt im Dialog.
-- Status: ⏳ Planned (Sprint 14) — Hinweis: baut auf bestehendem `AtcEditor.jsx` (Sprint 11) auf.
+- Status: ✅ Implemented (Sprint 11/16) — Fullscreen AtcEditor, Toolbar-Trigger, CSV Import/Export
 
 35) KSE – Tabs „Market“, „Environment“ und „Preview“ zusammenführen (UC-KSE-23)
 - Problem: Fragmentierte Eingaben; Visualisierung getrennt von Parametern; hoher Navigationsaufwand.
@@ -369,7 +370,7 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
   - Keine Datenverluste beim Refactor; Validierung unverändert oder verbessert.
   - Preview aktualisiert sich in <500ms nach Eingabe; keine Layout‑Sprünge; kein horizontaler Scroll ≥1280px.
   - A11y: Reihenfolge im DOM sinnvoll; Screenreader liest Sektionstitel; Keyboard‑Navigation möglich.
-- Status: ⏳ Planned (Sprint 14)
+- Status: ✅ Implemented (Sprint 14/16) — „Market & Preview“ kombiniert, Live-Update, D3 Stufenkurven
 
 36) Engine – Marktteilnehmer mit Seed‑basierter Streuung (UC-KSE-24)
 - Problem: Teilnehmer jedes Typs sind bislang identisch parametrisiert; unrealistische Homogenität.
@@ -383,7 +384,7 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
   - Gleicher Seed ⇒ identische generierte Teilnehmer; anderer Seed ⇒ andere, aber innerhalb des Bereichs liegende Werte.
   - Variabilität 0% ⇒ identische Teilnehmer (Status quo).
   - Performance: Generierung ≤50ms bei 1.000 Teilnehmern.
-- Status: ⏳ Planned (Sprint 14)
+- Status: ✅ Implemented (Sprint 19 – Preview-Variabilität global; Engine optional)
 
 37) Engine – Tages‑ und Jahresverlauf berücksichtigen (UC-KSE-25)
 - Problem: Nachfrage/Erzeugung ist zeitlich konstant modelliert; es fehlen typische Tages‑/Jahresmuster.
@@ -395,7 +396,7 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
   - Änderung von Startdatum/Uhrzeit beeinflusst die Muster (z. B. Winter höhere Basen, Abendspitze sichtbar).
   - Presets umschaltbar; JSON‑Import validiert (Summe ~1.0 ±5%).
   - Engine‑API liefert konsistente Ergebnisse für gleiche Seeds/Parameter.
-- Status: ⏳ Planned (Sprint 14) — baut optional auf Item 20 (fiktives Datum) auf.
+- Status: ✅ Implemented (Sprint 16/19 – Profile-Presets & JSON Import in KSE; Speicherung in config.environment)
 
 
 ## Rollout notes
@@ -519,9 +520,9 @@ PT3) Player: Pre-Session Type Selection
   - ✅ Bestätigungsdialog verhindert versehentliches Löschen.
   - ✅ Nach Löschung: Session nicht mehr in `/api/me/sessions`.
 
-27) Player – Grafische Timeline der Kampagnen-Szenarien mit Fortschritt (UC-16) — 🚧 Planned (Sprint 13)
+27) Player – Grafische Timeline der Kampagnen-Szenarien mit Fortschritt (UC-16) — ✅ Implemented (Sprint 13)
 - Problem: Spieler sehen Szenarien nur als Kartenliste; keine schnelle visuelle Übersicht über Kampagnen-Fortschritt.
-- Status: 🚧 Planned for Sprint 13
+- Status: ✅ Implemented in CampaignDetail (SVG Timeline)
 - Action:
   - Frontend: `CampaignDetail.jsx` → neue Komponente `CampaignTimeline` (SVG mit d3.js oder Canvas)
     - Horizontale Timeline mit Bubbles (Kreise) für jedes Szenario in `order_index`-Reihenfolge
@@ -534,10 +535,10 @@ PT3) Player: Pre-Session Type Selection
   - Accessibility: ARIA-Labels, Keyboard-Navigation (Tab, Enter)
   - Keine Backend-Änderungen (nutzt bestehende `GET /api/catalog/campaigns/:id`)
 - Acceptance:
-  - Timeline zeigt alle Szenarien in korrekter Reihenfolge mit Farbkodierung.
-  - Klick auf Bubble führt zur entsprechenden Karte.
-  - Funktioniert auf Desktop/Tablet (768px+); Mobile zeigt alternative Ansicht.
-  - Performance: <200ms Rendering bei 20 Szenarien.
+  - ✅ Timeline zeigt alle Szenarien in korrekter Reihenfolge mit Farbkodierung.
+  - ✅ Klick auf Bubble führt zur entsprechenden Karte.
+  - ✅ Funktioniert auf Desktop/Tablet (768px+); Mobile zeigt alternative Ansicht.
+  - ✅ Performance: <200ms Rendering bei 20 Szenarien.
 
 28) Admin – Verwaiste Sessions aufräumen (UC-17)
 - Problem: Gelöschte Scenarios/Cohorts hinterlassen verwaiste Sessions; keine UI zum Bereinigen.
@@ -586,4 +587,290 @@ PT3) Player: Pre-Session Type Selection
   - Campaign löschen entfernt Zuordnungen; Scenarios bleiben.
   - Scenario löschen mit Sessions zeigt Warnung („X sessions will be deleted") und löscht alles bei Bestätigung.
   - Keine verwaisten Sessions nach Scenario-Löschung.
+
+31) Trainer – Online Presence Panel (UC-20)
+- Problem: Trainer sieht nicht, wer aktuell angemeldet ist und woran gespielt wird.
+- Action:
+  - Backend: GET `/api/trainer/presence?cohort_id?` – Aggregation aus Socket‑Presence/`activity_log`/Sessions
+  - Frontend: `Trainer.jsx` → Panel „Online now“ mit Liste (Spieler, Cohort, Kampagne, Szenario, Status, last_seen) und Filtern
+  - Tests: E2E (Filter/Auto‑Refresh), Unit (API)
+- Acceptance: Live‑Liste aktualisiert; Filter nach Cohort/Kampagne/Szenario funktionieren; Status korrekt.
+
+32) Trainer – Force Navigate Players on Start (UC-22)
+- Problem: Beim Session‑Start müssen Spieler manuell in die Seite gehen; Trainer möchte alle rüberziehen.
+- Action:
+  - Backend: `POST /api/sessions` Flag `force_navigate`; Socket‑Broadcast `navigate { url }` an Cohort‑Room
+  - Frontend: Start‑Dialog Checkbox; Client handler → Router push; Fallback Snackbar mit Link
+  - Tests: E2E (Start mit Navigate; Clients navigieren), Unit (Socket event payload)
+- Acceptance: Angemeldete Spieler werden automatisch in Briefing/Player geführt; Fallback funktioniert.
+
+
+38) Docs – Remove global storage model from Concept (CON-Storage-01)
+- Problem: Die Konzept-Doku beschreibt noch einen globalen Storage‑Tab/Storage‑State; die Engine verwendet ausschließlich per‑Device Storage (Battery).
+- Action:
+  - `docs/concept.md`:
+    - Ersetze „Storage Tab“ durch „Player Types & Devices – Battery per device“.
+    - Entferne globale Storage‑Parameter/Codebeispiele (storage_efficiency, update_soc).
+    - Passe Workflow‑Schritt an („Add storage devices (Battery) …“).
+  - Hinweis im OpenAPI‑Ausschnitt: globale Storage‑Felder entfernt.
+- Acceptance: Konzept enthält keine globalen Storage‑Felder/Tab mehr; Storage ist klar als Battery‑Device beschrieben.
+
+39) Backend/KSE – Deprecate top‑level storage fields in configs (KSE-Storage-02)
+- Problem: Ältere Szenario‑Configs könnten `config.storage_*` Felder enthalten; Validierung soll diese ablehnen bzw. migrieren.
+- Action:
+  - `backend/app/kse.py`: Validierung erweitert – top‑level `storage_*` Felder (z. B. storage_efficiency) sind ungültig; Fehlermeldung mit Hinweis auf Battery‑Device.
+  - Optionales Migrationsskript (`backend/scripts/migrate_storage_fields.py`): scannt Szenarien und entfernt/verschiebt veraltete Felder nach Battery‑Devices (falls eindeutig möglich), sonst protokolliert.
+- Acceptance: Neue/aktualisierte Szenarien enthalten keine globalen Storage‑Felder; Validierung liefert präzise Fehlermeldungen; optionales Script erzeugt Report über migrierte/offene Szenarien.
+
+40) Frontend/KSE – Remove Storage tab and consolidate in Player Types (KSE-UI-Storage-03)
+- Problem: UI darf keinen separaten „Storage“-Tab mehr anzeigen; Battery‑Parameter gehören in Device‑Karten der Player Types.
+- Action:
+  - `frontend/src/pages/KSE.jsx`: Entferne Storage‑Tab falls noch vorhanden; stelle sicher, dass DeviceCard Battery‑Felder (Capacity, Power, Efficiency, Initial SoC, DoD, Degradation) vollständig unterstützt.
+  - Tooltips/Helpertexte aktualisieren („Storage is modeled per Battery device“).
+- Acceptance: Kein Storage‑Tab sichtbar; Battery‑Devices vollständig editierbar; Preview/Validierung funktionieren unverändert.
+
+41) Tests – Update specs for storage changes (TEST-Storage-04)
+- Problem: E2E/Unit‑Tests könnten noch auf Storage‑Tab oder globale Felder verweisen.
+- Action:
+  - Cypress: Entferne/aktualisiere Steps, die den Storage‑Tab öffnen; ergänze Battery‑Device‑Bearbeitung in Player‑Types‑Flows.
+  - Backend Unit‑Tests: Entferne Annahmen zu `storage_efficiency` auf Top‑Level; ggf. neue Tests für KSE‑Validierung (verbotene Felder) hinzufügen.
+- Acceptance: Test‑Suite grün; keine Referenzen auf globalen Storage; Battery‑Device‑Flows abgedeckt.
+
+---
+
+## Sprint 21 – KSE Hardening (from open-issues.md)
+
+**Context**: 14 critical KSE UI/UX issues discovered during Sprint 20 analysis. These block productive designer workflows and must be resolved before MVP launch.
+
+**Priority**: P0 (MVP blocking)  
+**Sprint**: 21 (18.11. – 01.12.2025)  
+**Source**: Migrated from `docs/open-issues.md` Issues #3-#16
+
+### KSE-1) Supply/Demand Curves Not Monotonic (Issue #3)
+- **Severity**: High (misleading preview)
+- **Problem**: Market&Preview tab shows Supply/Demand curves with zigzag instead of strict monotonic behavior. Jitter/variability causes visual confusion.
+- **Action**:
+  - Backend (`backend/app/engine.py`): Enforce monotonicity in preview functions (sort + cumulative steps; jitter volume-only)
+  - Frontend (`frontend/src/pages/KSE.jsx`): Use step chart, clamp domains, add padding
+  - Add unit test for monotonicity verification
+- **Files**: `backend/app/engine.py`, `frontend/src/pages/KSE.jsx` (Market&Preview tab)
+- **Acceptance**: 
+  - Supply curves strictly monotonic increasing
+  - Demand curves strictly monotonic decreasing
+  - Step chart visualization
+  - Unit test green
+- **Estimate**: 1 day
+- **Status**: 🔴 Open
+
+### KSE-2) Duplicate Tab Bars (Issue #4)
+- **Severity**: High (UX confusion)
+- **Problem**: Two tab rows displayed in KSE; lower one should be removed, keep top functional one.
+- **Action**: Remove duplicate tab bar in KSE.jsx
+- **Files**: `frontend/src/pages/KSE.jsx`
+- **Acceptance**: 
+  - Only one tab bar visible (top)
+  - Active tabs correctly highlighted
+  - Navigation stable
+- **Estimate**: 0.5 days
+- **Status**: 🔴 Open
+
+### KSE-3) General Tab: Spacing, Field Width, Grouping (Issue #5)
+- **Severity**: Medium
+- **Problem**: 
+  - Helper text too close to field name
+  - Number fields too wide
+  - Fields not grouped logically
+  - Player Zones in wrong tab (should be in Grid)
+- **Action**:
+  - Increase helper text spacing (top/bottom)
+  - Uniform XS/SM field widths
+  - Group fields by logical sections
+  - Move Player Zones from General to Grid tab
+- **Files**: `frontend/src/pages/KSE.jsx` (General + Grid tabs)
+- **Acceptance**:
+  - General tab feels airier
+  - Uniform input widths
+  - Player Zones visible under Grid tab
+- **Estimate**: 0.5 days
+- **Status**: 🔴 Open
+
+### KSE-4) Apply Profiles Info Popup (Issue #6)
+- **Severity**: Low
+- **Problem**: No guidance for "Apply Profiles" feature
+- **Action**: 
+  - Add info icon next to "Apply Profiles"
+  - Click opens dialog with:
+    - Description of what profiles do
+    - JSON structure example (diurnal_profile[24], seasonal_factors[12])
+    - Short explanation of time-based impact on Supply/Demand
+- **Files**: `frontend/src/pages/KSE.jsx` (Market&Preview tab)
+- **Acceptance**:
+  - Info dialog present, non-blocking
+  - Closable via ESC
+  - Clear content with example
+- **Estimate**: 0.25 days
+- **Status**: 🔴 Open
+
+### KSE-5) Market&Preview: Lines Overflow Chart Box (Issue #7)
+- **Severity**: Medium
+- **Problem**: Curves cut chart boundaries; missing clipping/domain constraints
+- **Action**: 
+  - Set clipPath on SVG
+  - Derive and clamp domains from data
+  - Check padding
+- **Files**: `frontend/src/pages/KSE.jsx` (Market&Preview charts)
+- **Acceptance**:
+  - No visual overflow
+  - Responsive rendering correct
+- **Estimate**: 0.5 days
+- **Status**: 🔴 Open
+
+### KSE-6) Market&Preview: Restore Participant Type Split (Issue #8)
+- **Severity**: Medium
+- **Problem**: Fields for type distribution (Supply/Demand shares) are missing
+- **Action**:
+  - Compact table layout:
+    - Rows = participant types (Supply/Demand groups)
+    - Column = share percentage
+    - Control via slider + number field (coupled)
+  - Validate sum = 100%
+  - Preview reacts to changes
+- **Files**: `frontend/src/pages/KSE.jsx` (Market&Preview tab)
+- **Acceptance**:
+  - Fields present and validated
+  - Preview updates on change
+- **Estimate**: 0.75 days
+- **Status**: 🔴 Open
+
+### KSE-7) Market Basics to General Tab (Issue #9)
+- **Severity**: Medium
+- **Problem**: Market Basics group (base_price, base_volume_mwh, price_floor, price_cap) belongs in General tab
+- **Action**: Move these fields from Market&Preview tab to General tab
+- **Files**: `frontend/src/pages/KSE.jsx` (General + Market tabs)
+- **Acceptance**:
+  - Fields in General tab
+  - No duplicates in Market&Preview tab
+- **Estimate**: 0.25 days
+- **Status**: 🔴 Open
+
+### KSE-8) Market&Preview: Narrow Number Fields (Issue #10)
+- **Severity**: Low
+- **Problem**: Number inputs too wide; explanatory text above field (should be below as helper text)
+- **Action**:
+  - XS/SM width for all number inputs
+  - Remove explanatory text above fields
+  - Use only helper text below fields
+- **Files**: `frontend/src/pages/KSE.jsx` (Market&Preview tab)
+- **Acceptance**:
+  - Uniform XS/SM inputs
+  - Clean layout
+- **Estimate**: 0.25 days
+- **Status**: 🔴 Open
+
+### KSE-9) Preview Buttons: Align & Icons (Issue #11)
+- **Severity**: Low
+- **Problem**: "Preview MCP" and "Hourly Preview" buttons not aligned consistently
+- **Action**:
+  - Right-align both buttons
+  - Convert to IconButtons (Reload/Calculate icons)
+  - Add tooltips
+  - Same height
+- **Files**: `frontend/src/pages/KSE.jsx` (Market&Preview tab)
+- **Acceptance**:
+  - Consistent alignment and icons
+  - Same button height
+- **Estimate**: 0.25 days
+- **Status**: 🔴 Open
+
+### KSE-10) Chart Zoom as Modal (Issue #12)
+- **Severity**: Low
+- **Problem**: No detailed view for charts
+- **Action**:
+  - Click on chart opens modal/dialog
+  - Large chart view
+  - Tabular data below (MCP/Volume/Steps)
+  - A11y: ESC closes, focus trap
+- **Files**: `frontend/src/pages/KSE.jsx` (Market&Preview tab)
+- **Acceptance**:
+  - Modal opens/closes correctly
+  - A11y compliant (ESC, focus)
+  - Table visible below chart
+- **Estimate**: 0.5 days
+- **Status**: 🔴 Open
+
+### KSE-11) Grid: Inline ATC Matrix Editing (Issue #13)
+- **Severity**: Medium (workflow friction)
+- **Problem**: ATC matrix opens in modal; should be inline. CSV Import/Export no longer needed.
+- **Action**:
+  - Remove modal/fullscreen editor
+  - Remove CSV import/export
+  - Inline table in Grid tab with:
+    - Symmetry lock
+    - Validation
+    - Sticky headers
+- **Files**: 
+  - `frontend/src/pages/KSE.jsx` (Grid tab)
+  - `frontend/src/components/grid/AtcEditor.jsx` (refactor to inline component)
+- **Acceptance**:
+  - Inline editing without horizontal scroll
+  - Symmetry guaranteed
+  - No modal/CSV features
+- **Estimate**: 1 day
+- **Status**: 🔴 Open
+
+### KSE-12) Player Types: Two-Column Layout (Issue #14)
+- **Severity**: Medium (usability)
+- **Problem**: Player Types tab lacks clear structure
+- **Action**:
+  - Left column: Player Types list
+  - Right column: Devices of selected type (DeviceCards)
+  - Max 1 device expanded at a time
+- **Files**: `frontend/src/pages/KSE.jsx` (Player Types tab)
+- **Acceptance**:
+  - Selection in left updates right reliably
+  - No layout jumps
+- **Estimate**: 1 day
+- **Status**: 🔴 Open
+
+### KSE-13) Usage Tab: White Page / Render Error (Issue #15)
+- **Severity**: High (complete tab failure)
+- **Problem**: Opening "Usage" tab shows white page with no error message
+- **Action**:
+  - Debug browser console/network errors
+  - Add guarded rendering + ErrorBoundary
+  - Show empty state with guidance when no data
+- **Files**: `frontend/src/pages/KSE.jsx` (Usage tab)
+- **Acceptance**:
+  - Tab renders without errors
+  - Empty state shown when no data
+  - Helpful error message if issues occur
+- **Estimate**: 0.5 days
+- **Status**: 🔴 Open
+
+### KSE-14) Toolbar: Right-Align + Description Tab (Issue #16)
+- **Severity**: Medium (high impact)
+- **Problem**: 
+  - Toolbar not properly aligned
+  - Buttons need cleanup
+  - Missing dedicated Description tab
+- **Action**:
+  - Toolbar right-aligned at "KSE Editor" level
+  - "Save" button rightmost
+  - Remove: "Edit Matrix", "Edit Description", "Validate + Preview"
+  - New "Description" tab with:
+    - Scenario Name field
+    - Description field (Markdown with preview toggle)
+- **Files**: `frontend/src/pages/KSE.jsx` (toolbar + new Description tab)
+- **Acceptance**:
+  - Toolbar clean per specification
+  - Description tab functional
+  - "Validate + Preview" removed
+- **Estimate**: 1 day
+- **Status**: 🔴 Open
+
+---
+
+**Total KSE Issues**: 14  
+**Total Estimate**: 8.75 days  
+**Sprint 21 Allocation**: Days 3-12 (with 1.5d buffer)
 
