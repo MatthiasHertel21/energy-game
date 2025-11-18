@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Box, Stack, Typography, Chip, Button, Card, CardMedia, CardContent, Divider, LinearProgress, Select, MenuItem } from '@mui/material'
+import { Box, Stack, Typography, Chip, Button, Card, CardMedia, CardContent, Divider, LinearProgress } from '@mui/material'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
 import InfoLabel from '../components/InfoLabel'
@@ -12,7 +12,6 @@ export default function CampaignDetail(){
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [sessions, setSessions] = useState([])
-  const [cohortSessionId, setCohortSessionId] = useState('')
   const cardRefs = useRef({})
 
   useEffect(()=>{
@@ -31,10 +30,15 @@ export default function CampaignDetail(){
 
   const activeByScenario = useMemo(()=>{
     const m = new Map()
-    sessions.filter(s=> s.status==='running').forEach(s=>{
+    sessions.filter(s=> s.status==='running' || s.status==='created').forEach(s=>{
       const arr = m.get(s.scenario_id) || []
       arr.push(s)
       m.set(s.scenario_id, arr)
+    })
+    // Keep only the most recent session per scenario
+    m.forEach((arr, sid)=>{
+      arr.sort((a,b)=> b.id - a.id)
+      m.set(sid, [arr[0]])
     })
     return m
   },[sessions])
@@ -68,12 +72,6 @@ export default function CampaignDetail(){
     const card = cardRefs.current[scenario_id]
     if (card) {
       card.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }
-  }
-
-  const joinCohort = ()=>{
-    if(cohortSessionId){
-      navigate(`/briefing/${cohortSessionId}`)
     }
   }
 
@@ -125,13 +123,9 @@ export default function CampaignDetail(){
                       <Stack spacing={0.5}>
                         <InfoLabel title="Trainer cohort" tooltip="Join an active trainer session if available in your cohorts." />
                         {actives.length>0 ? (
-                          <Stack direction="row" spacing={1} alignItems="center">
-                            <Select size="small" value={cohortSessionId} onChange={(e)=> setCohortSessionId(e.target.value)} sx={{ minWidth: 220 }} displayEmpty>
-                              <MenuItem value=""><em>Select session</em></MenuItem>
-                              {actives.map(s=> <MenuItem key={s.id} value={s.id}>{`${s.cohort_name || 'Cohort'} – Session ${s.id}`}</MenuItem>)}
-                            </Select>
-                            <Button variant="outlined" onClick={joinCohort}>Join</Button>
-                          </Stack>
+                          <Button variant="outlined" onClick={()=> navigate(`/briefing/${actives[0].id}`)}>
+                            Join {actives[0].cohort_name || 'Cohort'} Session
+                          </Button>
                         ) : (
                           <Typography variant="body2" color="text.secondary">No active session</Typography>
                         )}

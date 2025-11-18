@@ -83,8 +83,10 @@ export default function Player() {
   const [typeDialogOpen, setTypeDialogOpen] = useState(false)
   const [allowedTypes, setAllowedTypes] = useState([])
   const [selectedType, setSelectedType] = useState(null)
+  const [playerTypes, setPlayerTypes] = useState([]) // all player types from scenario
   const [typeDevices, setTypeDevices] = useState([]) // device ids for selected type
   const [deviceHours, setDeviceHours] = useState({}) // { device_id: number[] }
+  const [scenarioDevices, setScenarioDevices] = useState([]) // full device definitions from scenario
   const deviceChartRefs = useRef({})
   const [activeEvents, setActiveEvents] = useState([])
   const [dismissedEvents, setDismissedEvents] = useState(new Set())
@@ -160,10 +162,13 @@ export default function Player() {
           const brief = await api.get(`/api/sessions/${sessionId}/briefing`)
           const allowed = brief.data?.allowed_player_types || []
           const sel = brief.data?.selected_type || null
+          const pts = brief.data?.player_types || []
+          const devices = brief.data?.devices || []
           setAllowedTypes(allowed)
           setSelectedType(sel)
+          setPlayerTypes(pts)
+          setScenarioDevices(devices)
           // load type devices from scenario config if selected
-          const pts = brief.data?.player_types || []
           if(sel){
             const t = (pts||[]).find(x=> x.id===sel)
             const devs = t?.devices || []
@@ -222,10 +227,18 @@ export default function Player() {
   const [series, setSeries] = useState([])
   const mcpRef = useRef(null)
   const volRef = useRef(null)
+  const localTimerRef = useRef(null)
 
   useEffect(() => {
     if (!sessionId) return
-    const s = io(`/game/${sessionId}`, { path: '/socket.io', transports: ['websocket', 'polling'], forceNew: true })
+    // Primary: static namespace + join room
+    const s = io(`/game`, { path: '/socket.io', transports: ['websocket', 'polling'], forceNew: true })
+    // Backward-compat: legacy per-session namespace
+    const sLegacy = io(`/game/${sessionId}`, { path: '/socket.io', transports: ['websocket', 'polling'], forceNew: true })
+
+    s.on('connect', () => {
+      try { s.emit('join_session', { session_id: Number(sessionId) }) } catch(_) {}
+    })
 
     s.on('round_start', (p) => {
       if (Number(p?.session_id) === Number(sessionId)) {
@@ -274,8 +287,47 @@ export default function Player() {
       }
     })
 
-    return () => s.close()
+    s.on('trainer_message', (p) => {
+      if (p && Number(p.session_id) === Number(sessionId)) {
+        showSnack(`Trainer: ${p.message}`, 'info')
+      }
+    })
+
+    // Mirror the same handlers on legacy socket for safety
+    sLegacy.on('round_start', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) setTimeRemaining(null) })
+    sLegacy.on('tick', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) setTimeRemaining(Number(p.remaining)) })
+    sLegacy.on('round_end', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) setTimeRemaining(0) })
+    sLegacy.on('market_cleared', (p)=>{
+      if (p && Number(p.session_id)===Number(sessionId)){
+        setLive({ mcp: p.mcp, volume: p.volume, round: p.round })
+        setSeries(prev=> [...prev, { r:p.round, mcp:p.mcp, volume:p.volume }])
+      }
+    })
+    sLegacy.on('event_triggered', (p)=>{ if (p && Number(p.session_id)===Number(sessionId)){
+      const event = { id: p.event_id||`event-${Date.now()}`, type:p.type, name:p.name, description:p.description, multiplier:p.multiplier, additive:p.additive, duration_rounds:p.duration_rounds, target:p.target, round:p.round }
+      setActiveEvents(prev=> prev.some(e=>e.id===event.id)? prev : [...prev, event])
+    }})
+    sLegacy.on('trainer_message', (p)=>{ if (p && Number(p.session_id)===Number(sessionId)) showSnack(`Trainer: ${p.message}`, 'info') })
+
+    return () => { try{ s.close() }catch(_){} try{ sLegacy.close() }catch(_){} }
   }, [sessionId])
+
+  // Local fallback countdown (in case server ticks are delayed)
+  useEffect(()=>{
+    if (status === 'running' && Number.isFinite(Number(timeRemaining)) && timeRemaining !== null) {
+      if (localTimerRef.current) clearInterval(localTimerRef.current)
+      localTimerRef.current = setInterval(()=>{
+        setTimeRemaining(prev=>{
+          if (!Number.isFinite(Number(prev))) return prev
+          const next = Number(prev) - 1
+          return next >= 0 ? next : 0
+        })
+      }, 1000)
+      return ()=> { if (localTimerRef.current) clearInterval(localTimerRef.current) }
+    } else {
+      if (localTimerRef.current) clearInterval(localTimerRef.current)
+    }
+  }, [status, timeRemaining])
 
   // D3 Charts
   useEffect(() => {
@@ -483,12 +535,16 @@ export default function Player() {
         <DialogTitle>Select your player type</DialogTitle>
         <DialogContent>
           <Stack spacing={1} sx={{ mt:1 }}>
-            {allowedTypes.map(t=> (
-              <Stack key={t.type_id} direction="row" spacing={2} alignItems="center">
-                <Button variant={selectedType===t.type_id? 'contained':'outlined'} onClick={()=> setSelectedType(t.type_id)} disabled={t.remaining===0}>{t.type_id}</Button>
-                <Typography variant="caption" color="text.secondary">{t.remaining==null? 'no cap' : `remaining: ${t.remaining}`}</Typography>
-              </Stack>
-            ))}
+            {allowedTypes.map(t=> {
+              const typeInfo = playerTypes.find(pt=> pt.id === t.type_id)
+              const typeName = typeInfo?.name || t.type_id
+              return (
+                <Stack key={t.type_id} direction="row" spacing={2} alignItems="center">
+                  <Button variant={selectedType===t.type_id? 'contained':'outlined'} onClick={()=> setSelectedType(t.type_id)} disabled={t.remaining===0} sx={{ minWidth: 160, justifyContent: 'flex-start' }}>{typeName}</Button>
+                  <Typography variant="caption" color="text.secondary">{t.remaining==null? 'unlimited' : `${t.remaining} slots left`}</Typography>
+                </Stack>
+              )
+            })}
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -506,9 +562,40 @@ export default function Player() {
       <Typography variant="h4" gutterBottom>
         Round Editor
       </Typography>
-      <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-        {cfg.scenario_name} - Round {cfg.current_round} {mode==='shared_market' && selectedType ? `(Type: ${selectedType})` : ''}
-      </Typography>
+      <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 3 }}>
+        <Typography variant="body1" color="text.secondary">
+          {cfg.scenario_name} - Round {cfg.current_round}
+        </Typography>
+        <Tooltip arrow title={
+          mode === 'isolated_per_player' 
+            ? 'Solo Mode: You have your own private market. Your decisions only affect your own results.' 
+            : 'Shared Market: All players trade in the same market. Your decisions affect market prices and other players.'
+        }>
+          <Chip 
+            label={mode === 'isolated_per_player' ? 'Solo' : 'Shared Market'}
+            size="small"
+            color={mode === 'isolated_per_player' ? 'default' : 'primary'}
+            variant="outlined"
+          />
+        </Tooltip>
+        {mode==='shared_market' && selectedType && (
+          <Tooltip arrow title={(() => {
+            const typeInfo = playerTypes.find(pt=> pt.id === selectedType)
+            if (!typeInfo) return selectedType
+            const devices = typeDevices.map(did => {
+              const dev = scenarioDevices.find(d => d.id === did)
+              return dev ? `${did} (${dev.type})` : did
+            }).join(', ')
+            return `${typeInfo.name} • Devices: ${devices || 'none'}`
+          })()}>
+            <Chip 
+              label={playerTypes.find(pt=> pt.id === selectedType)?.name || selectedType} 
+              size="small" 
+              color="secondary"
+            />
+          </Tooltip>
+        )}
+      </Stack>
 
       {/* Event Notifications */}
       <EventNotification 
@@ -566,7 +653,7 @@ export default function Player() {
                 <Typography variant="h6">Live KPIs</Typography>
                 <Tooltip
                   title={
-                    'Updates after each round when the market clears.\nMCP = Market Clearing Price; Volume = total traded energy in the round.'
+                    'Market results update after each round.\n\nMCP (Market Clearing Price): The price in ZAR/MWh where supply meets demand.\n\nVolume: Total energy traded in MWh during the round.\n\nThe charts below show the trend across all rounds.'
                   }
                   placement="left"
                 >
@@ -615,54 +702,69 @@ export default function Player() {
             )}
 
             {(mode==='shared_market' && selectedType && typeDevices.length>0) ? (
-              <Stack spacing={2} sx={{ mt:2 }}>
-                {typeDevices.map(did=> (
-                  <Box key={did}>
-                    <Typography variant="subtitle2" sx={{ mb: 1 }}>Device {did}</Typography>
-                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
-                      {(deviceHours[did]||[]).map((v,i)=>{
-                        const disabled = i < lockedUntil || timeRemaining === 0
-                        return (
-                          <Tooltip key={`${did}-${i}`} arrow title={`Hour h${i+1} for ${did}`}>
-                            <TextField
-                              label={`h${i+1}`}
-                              value={v}
-                              onChange={(e)=> onDeviceChange(did, i, e.target.value)}
-                              size="small"
-                              type="number"
-                              disabled={disabled}
-                              sx={{ width: 90, m: 0.5 }}
-                            />
-                          </Tooltip>
-                        )
-                      })}
-                    </Stack>
-                    {/* Sparkline */}
-                    <svg
-                      ref={(el)=>{
-                        if(!el) return
-                        deviceChartRefs.current[did] = el
-                        const hrs = (deviceHours[did]||[])
-                        const svg = d3.select(el); svg.selectAll('*').remove()
-                        const W=360, H=60, m={top:6,right:6,bottom:14,left:30}
-                        const iw=W-m.left-m.right, ih=H-m.top-m.bottom
-                        const g = svg.attr('width',W).attr('height',H).append('g').attr('transform',`translate(${m.left},${m.top})`)
-                        const x = d3.scaleLinear().domain([1, Math.max(1, hrs.length)]).range([0, iw])
-                        const y = d3.scaleLinear().domain([0, Math.max(1, d3.max(hrs)||1)]).nice().range([ih, 0])
-                        const line = d3.line().x((_,i)=> x(i+1)).y(d=> y(d))
-                        g.append('path').datum(hrs).attr('fill','none').attr('stroke','#1976d2').attr('stroke-width',1.5).attr('d', line)
-                        g.append('g').attr('transform',`translate(0,${ih})`).call(d3.axisBottom(x).ticks(6))
-                        g.append('g').call(d3.axisLeft(y).ticks(3))
-                      }}
-                      width={360}
-                      height={60}
-                      style={{border:'1px solid #eee', marginTop: 8}}
-                    />
-                  </Box>
-                ))}
+              <Stack spacing={3} sx={{ mt:2 }}>
+                <Alert severity="info" sx={{ mb: 1 }}>
+                  Enter your hourly forecast for each device. Locked hours (before freeze) cannot be changed.
+                </Alert>
+                {typeDevices.map(did=> {
+                  const deviceDef = scenarioDevices.find(d=> d.id === did)
+                  const deviceType = deviceDef?.type || 'unknown'
+                  const deviceParams = deviceDef || {}
+                  return (
+                    <Card key={did} variant="outlined">
+                      <CardContent>
+                        <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }}>
+                          <Box sx={{ 
+                            width: 48, 
+                            height: 48, 
+                            borderRadius: 1, 
+                            bgcolor: deviceType === 'solar' ? '#ffa726' : deviceType === 'wind' ? '#42a5f5' : deviceType === 'gas' ? '#ef5350' : deviceType === 'storage' ? '#66bb6a' : '#9e9e9e',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: 'white',
+                            fontWeight: 'bold',
+                            fontSize: '20px'
+                          }}>
+                            {deviceType === 'solar' ? '☀' : deviceType === 'wind' ? '🌀' : deviceType === 'gas' ? '🔥' : deviceType === 'storage' ? '🔋' : '⚡'}
+                          </Box>
+                          <Box sx={{ flex: 1 }}>
+                            <Typography variant="h6">{did}</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              Type: {deviceType}
+                              {deviceParams.capacity_mw && ` • Capacity: ${deviceParams.capacity_mw} MW`}
+                              {deviceParams.marginal_cost && ` • Cost: ${deviceParams.marginal_cost} ZAR/MWh`}
+                            </Typography>
+                          </Box>
+                        </Stack>
+                        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
+                          {(deviceHours[did]||[]).map((v,i)=>{
+                            const disabled = i < lockedUntil || timeRemaining === 0
+                            return (
+                              <Tooltip key={`${did}-${i}`} arrow title={`Hour h${i+1} for ${did}`}>
+                                <TextField
+                                  label={`h${i+1}`}
+                                  value={v}
+                                  onChange={(e)=> onDeviceChange(did, i, e.target.value)}
+                                  size="small"
+                                  type="number"
+                                  disabled={disabled}
+                                  sx={{ width: 90, m: 0.5 }}
+                                />
+                              </Tooltip>
+                            )
+                          })}
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                  )
+                })}
               </Stack>
             ) : (
               <>
+                <Alert severity="info" sx={{ mt: 2, mb: 2 }}>
+                  Enter your hourly energy forecast (in MWh). Use the chart editor to drag points or switch to fields for precise values. Locked hours cannot be changed.
+                </Alert>
                 {/* Unified editor header with toggle */}
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
                   <Typography variant="subtitle2">

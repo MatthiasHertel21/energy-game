@@ -425,15 +425,17 @@ class ResetScenario(Resource):
             # Clean up cohort and its membership (solo cohorts are per-session)
             try:
                 if cohort_id:
-                    # Remove any activity logs tied to this cohort (may have session_id NULL)
-                    ActivityLog.query.filter_by(cohort_id=cohort_id).delete(synchronize_session=False)
-                    CohortMember.query.filter_by(cohort_id=cohort_id).delete(synchronize_session=False)
-                    # Delete cohort only if no sessions remain for it
-                    remaining = db.session.query(Session.id).filter_by(cohort_id=cohort_id).first()
-                    if not remaining:
-                        c = Cohort.query.get(cohort_id)
-                        if c:
-                            db.session.delete(c)
+                    # Only delete cohort members if this is a solo cohort (trainer_id == player_id)
+                    cohort = Cohort.query.get(cohort_id)
+                    if cohort and cohort.trainer_id == uid:
+                        # This is a solo cohort, safe to delete members
+                        # Remove any activity logs tied to this cohort (may have session_id NULL)
+                        ActivityLog.query.filter_by(cohort_id=cohort_id).delete(synchronize_session=False)
+                        CohortMember.query.filter_by(cohort_id=cohort_id).delete(synchronize_session=False)
+                        # Delete cohort only if no sessions remain for it
+                        remaining = db.session.query(Session.id).filter_by(cohort_id=cohort_id).first()
+                        if not remaining:
+                            db.session.delete(cohort)
             except Exception:
                 pass
 

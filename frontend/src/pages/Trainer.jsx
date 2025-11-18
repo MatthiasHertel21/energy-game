@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Select, MenuItem, Tooltip, Checkbox, FormControlLabel } from '@mui/material'
+import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Select, MenuItem, Tooltip, Checkbox, FormControlLabel, Chip, Box } from '@mui/material'
 import InfoLabel from '../components/InfoLabel'
 import { io } from 'socket.io-client'
 import api from '../services/api'
@@ -18,7 +18,7 @@ export default function Trainer(){
   const [message, setMessage] = useState('')
   const [tick, setTick] = useState(null)
   const [status, setStatus] = useState({ rounds: 0, players: [] })
-  const [mode, setMode] = useState('isolated_per_player')
+  const [mode, setMode] = useState('shared_market')
   const [forceNavigate, setForceNavigate] = useState(false)
   const [typesCfg, setTypesCfg] = useState([]) // from scenario config
   const [allowedTypes, setAllowedTypes] = useState([]) // [{type_id, enabled, max_players}]
@@ -32,6 +32,9 @@ export default function Trainer(){
   const volRef = useRef(null)
   const topRef = useRef(null)
   const [participants, setParticipants] = useState({ participants: [], summary: { total: 0, joined: 0, pending: 0, by_type: {} } })
+  const [cohorts, setCohorts] = useState([])
+  const [scenarios, setScenarios] = useState([])
+  const [sessionInfo, setSessionInfo] = useState(null)
 
   useEffect(()=>{
     const s = io('/trainer', { path: '/socket.io', transports: ['websocket','polling'], forceNew: true })
@@ -66,6 +69,26 @@ export default function Trainer(){
     return ()=> s.close()
   },[])
 
+  // Load cohorts and scenarios on mount
+  useEffect(()=>{
+    const loadData = async ()=>{
+      try{
+        const [cohortRes, scenarioRes] = await Promise.all([
+          api.get('/api/cohorts'),
+          api.get('/api/kse/scenarios')
+        ])
+        setCohorts(cohortRes.data || [])
+        setScenarios(scenarioRes.data || [])
+        // Set first cohort/scenario as default if available
+        if(cohortRes.data?.length > 0) setCohortId(String(cohortRes.data[0].id))
+        if(scenarioRes.data?.length > 0) setScenarioId(String(scenarioRes.data[0].id))
+      }catch(err){
+        console.error('Failed to load cohorts/scenarios:', err)
+      }
+    }
+    loadData()
+  },[])
+
   // Presence auto-refresh every 5s
   useEffect(()=>{
     const load = async ()=>{
@@ -90,15 +113,21 @@ export default function Trainer(){
   },[sessionId])
 
   const start = async ()=>{
-    const { data } = await api.post('/api/sessions', { cohort_id: Number(cohortId), scenario_id: Number(scenarioId), mode, force_navigate: !!forceNavigate })
-    setSessionId(data.id)
-    // apply allowed types after start if any selected
-    if(mode==='shared_market' && allowedTypes?.some(t=> t.enabled)){
-      try{
-        await api.patch(`/api/sessions/${data.id}/allowed-types`, { allowed: allowedTypes.filter(t=> t.enabled).map(t=> ({ type_id: t.type_id, max_players: t.max_players ?? null })) })
-      }catch(_){ /* ignore for now */ }
+    try{
+      const { data } = await api.post('/api/sessions', { cohort_id: Number(cohortId), scenario_id: Number(scenarioId), mode, force_navigate: !!forceNavigate })
+      setSessionId(data.id)
+      // apply allowed types after start if any selected
+      if(mode==='shared_market' && allowedTypes?.some(t=> t.enabled)){
+        try{
+          await api.patch(`/api/sessions/${data.id}/allowed-types`, { allowed: allowedTypes.filter(t=> t.enabled).map(t=> ({ type_id: t.type_id, max_players: t.max_players ?? null })) })
+        }catch(_){ /* ignore for now */ }
+      }
+      setTimeout(loadStatus, 300)
+    }catch(e){
+      const msg = e.response?.data?.error || 'Failed to start session'
+      if(window.__showSnack) window.__showSnack(msg, 'error')
+      console.error('Start session error:', e)
     }
-    setTimeout(loadStatus, 300)
   }
   const pause = async ()=>{ await api.patch(`/api/sessions/${sessionId}/pause`) }
   const resume = async ()=>{ await api.patch(`/api/sessions/${sessionId}/resume`) }
@@ -118,6 +147,11 @@ export default function Trainer(){
       const res = await api.get(`/api/sessions/${sessionId}/participants`)
       setParticipants(res.data)
     }catch(_){ setParticipants({ participants: [], summary: { total:0, joined:0, pending:0, by_type:{} } }) }
+    // load session info (status, round, etc.)
+    try{
+      const info = await api.get(`/api/sessions/${sessionId}`)
+      setSessionInfo(info.data)
+    }catch(_){ setSessionInfo(null) }
   }
 
   // load scenario types when scenarioId changes
@@ -129,7 +163,7 @@ export default function Trainer(){
         const s = (res.data||[]).find(x=> Number(x.id)===Number(scenarioId))
         const pts = s?.config?.player_types || []
         setTypesCfg(pts)
-        setAllowedTypes(pts.map(pt=> ({ type_id: pt.id, enabled: false, max_players: '' })))
+        setAllowedTypes(pts.map(pt=> ({ type_id: pt.id, name: pt.name || pt.id, enabled: true, max_players: 10 })))
       }catch(_){ setTypesCfg([]); setAllowedTypes([]) }
     }
     run()
@@ -193,36 +227,128 @@ export default function Trainer(){
   return (
     <Paper sx={{ p:2 }}>
       <Typography variant="h5" gutterBottom>Trainer – Session Control</Typography>
-      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-        <Stack spacing={0.5} sx={{ minWidth: 180 }}>
-          <InfoLabel title="Cohort to run the session for" tooltip="Numeric cohort identifier. Players assigned to this cohort will participate in the session." />
-          <TextField label="Cohort ID" value={cohortId} onChange={e=>setCohortId(e.target.value)} size="small"/>
+      
+      {/* Session Info - Prominent if active */}
+      {sessionId && sessionInfo && (
+        <Paper variant="outlined" sx={{ p:2, mb:2, bgcolor: sessionInfo.status==='running'?'#e8f5e9':'#f5f5f5' }}>
+          <Stack spacing={1.5}>
+            <Stack direction="row" spacing={3} alignItems="center" flexWrap="wrap">
+              <Chip label={`Session #${sessionId}`} size="small" variant="outlined" />
+              <Chip label={sessionInfo.status || 'unknown'} color={sessionInfo.status==='running'?'success':sessionInfo.status==='created'?'default':sessionInfo.status==='paused'?'warning':'error'} />
+              <Typography variant="body2" fontWeight="bold">Round {sessionInfo.current_round || 1} / {sessionInfo.general?.rounds || '?'}</Typography>
+              <Typography variant="body2">{sessionInfo.scenario_name || 'Scenario'}</Typography>
+              <Typography variant="caption" color="text.secondary">Mode: {sessionInfo.mode === 'isolated_per_player' ? 'Solo' : 'Shared Market'}</Typography>
+              <Box sx={{ flexGrow: 1 }} />
+              <Typography variant="h6" color={tick && tick > 0 ? 'primary' : 'text.secondary'}>{tick !== null ? `${tick}s` : ''}</Typography>
+            </Stack>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Button onClick={pause} disabled={!sessionId} variant="outlined" size="small">Pause</Button>
+              <Button onClick={resume} disabled={!sessionId} variant="outlined" size="small">Resume</Button>
+              <Button onClick={end} disabled={!sessionId} variant="outlined" color="error" size="small">End</Button>
+            </Stack>
+          </Stack>
+        </Paper>
+      )}
+      
+      {/* Start New Session Section */}
+      <Paper variant="outlined" sx={{ p:2, mb:2 }}>
+        <Typography variant="subtitle1" gutterBottom>Start New Session</Typography>
+        <Stack spacing={1.5}>
+          {/* First row: Cohort, Scenario, Mode, Player Types */}
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-end">
+            <Stack spacing={0.5} sx={{ minWidth: 180 }}>
+              <InfoLabel title="Cohort" tooltip="Select the cohort whose players will participate." />
+              <Select size="small" value={cohortId} onChange={e=>setCohortId(e.target.value)} displayEmpty>
+                {cohorts.length === 0 && <MenuItem value="">Loading...</MenuItem>}
+                {cohorts.map(c => (
+                  <MenuItem key={c.id} value={String(c.id)}>
+                    {c.name || `Cohort ${c.id}`}
+                  </MenuItem>
+                ))}
+              </Select>
+            </Stack>
+            <Stack spacing={0.5} sx={{ minWidth: 180 }}>
+              <InfoLabel title="Scenario" tooltip="Select the scenario configuration." />
+              <Select size="small" value={scenarioId} onChange={e=>setScenarioId(e.target.value)} displayEmpty>
+                {scenarios.length === 0 && <MenuItem value="">Loading...</MenuItem>}
+                {scenarios.map(s => (
+                  <MenuItem key={s.id} value={String(s.id)}>
+                    {s.name || `Scenario ${s.id}`}
+                  </MenuItem>
+                ))}
+              </Select>
+            </Stack>
+            <Stack spacing={0.5} sx={{ minWidth: 140 }}>
+              <InfoLabel title="Mode" tooltip="Solo: private markets; Shared: one market for all" />
+              <Select size="small" value={mode} onChange={e=>setMode(e.target.value)}>
+                <MenuItem value="isolated_per_player">Solo</MenuItem>
+                <MenuItem value="shared_market">Shared</MenuItem>
+              </Select>
+            </Stack>
+            {mode==='shared_market' && allowedTypes.map((row, idx)=> (
+              <Stack key={row.type_id} spacing={0.5} sx={{ minWidth: 160 }}>
+                <InfoLabel title={row.name || row.type_id} tooltip={`Max players for ${row.name || row.type_id}`} />
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Checkbox 
+                    checked={!!row.enabled} 
+                    onChange={async(e)=> {
+                      const newAllowed = allowedTypes.map((r,i)=> i===idx? { ...r, enabled: e.target.checked }: r)
+                      setAllowedTypes(newAllowed)
+                      if(sessionId){
+                        try{
+                          await api.patch(`/api/sessions/${sessionId}/allowed-types`, { 
+                            allowed: newAllowed.filter(t=> t.enabled).map(t=> ({ type_id: t.type_id, max_players: t.max_players ?? null })) 
+                          })
+                        }catch(_){}
+                      }
+                    }} 
+                    size="small" 
+                  />
+                  <TextField 
+                    size="small" 
+                    type="number" 
+                    placeholder="Max" 
+                    value={row.max_players} 
+                    onChange={async(e)=>{
+                      const v = e.target.value
+                      const newAllowed = allowedTypes.map((r,i)=> i===idx? { ...r, max_players: v===''? '' : Number(v) }: r)
+                      setAllowedTypes(newAllowed)
+                    }}
+                    onBlur={async()=>{
+                      if(sessionId){
+                        try{
+                          await api.patch(`/api/sessions/${sessionId}/allowed-types`, { 
+                            allowed: allowedTypes.filter(t=> t.enabled).map(t=> ({ type_id: t.type_id, max_players: t.max_players ?? null })) 
+                          })
+                        }catch(_){}
+                      }
+                    }}
+                    sx={{ width: 80 }} 
+                  />
+                </Stack>
+              </Stack>
+            ))}
+          </Stack>
+          {/* Second row: Auto-navigate and Start button */}
+          <Stack direction="row" spacing={2} alignItems="center">
+            <FormControlLabel control={<Checkbox checked={forceNavigate} onChange={e=> setForceNavigate(e.target.checked)} size="small" />} label="Auto-navigate players" />
+            <Button variant="contained" onClick={start} size="large">Start Session</Button>
+          </Stack>
         </Stack>
-        <Stack spacing={0.5} sx={{ minWidth: 180 }}>
-          <InfoLabel title="Scenario to execute" tooltip="Numeric scenario identifier created in the KSE. Its configuration controls time, markets, grid, and scoring." />
-          <TextField label="Scenario ID" value={scenarioId} onChange={e=>setScenarioId(e.target.value)} size="small"/>
-        </Stack>
-        <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-          <InfoLabel title="Session mode" tooltip="isolated_per_player: each player clears a private market; shared_market: all players are aggregated and clear a shared market." />
-          <Select size="small" value={mode} onChange={e=>setMode(e.target.value)}>
-            <MenuItem value="isolated_per_player">isolated_per_player</MenuItem>
-            <MenuItem value="shared_market">shared_market</MenuItem>
-          </Select>
-        </Stack>
-        <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-          <InfoLabel title="Force navigate players" tooltip="If enabled, logged-in players of the cohort will be navigated to the briefing page when the session starts." />
-          <FormControlLabel control={<Checkbox checked={forceNavigate} onChange={e=> setForceNavigate(e.target.checked)} />} label="Navigate cohort on start" />
-        </Stack>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Tooltip arrow title="Starts a new session with the selected cohort, scenario, and mode."><span><Button variant="contained" onClick={start}>Start</Button></span></Tooltip>
-          <Tooltip arrow title="Pauses the countdown and submissions."><span><Button onClick={pause} disabled={!sessionId}>Pause</Button></span></Tooltip>
-          <Tooltip arrow title="Resumes a paused session."><span><Button onClick={resume} disabled={!sessionId}>Resume</Button></span></Tooltip>
-          <Tooltip arrow title="Ends the session and finalizes results."><span><Button onClick={end} disabled={!sessionId}>End</Button></span></Tooltip>
-        </Stack>
-      </Stack>
-      <Stack direction="row" spacing={2} sx={{ mt:2 }}>
-        {/* Presence Panel */}
-        <Paper variant="outlined" sx={{ p:2, flex:1 }}>
+      </Paper>
+
+      {/* Broadcast - above Online Now */}
+      {sessionId && (
+        <Paper variant="outlined" sx={{ p:1.5, mt:2, mb:1 }}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <TextField size="small" label="Broadcast message" value={message} onChange={e=>setMessage(e.target.value)} sx={{ flexGrow: 1, minWidth: 300 }} />
+            <Button onClick={broadcast} disabled={!sessionId || !message} variant="contained">Send</Button>
+          </Stack>
+        </Paper>
+      )}
+
+      {/* Presence Panel - integrated with player/type info */}
+      <Paper variant="outlined" sx={{ p:2, mt:2, flex:1 }}>
           <Stack direction="row" alignItems="center" spacing={1} sx={{ mb:1 }}>
             <Typography variant="subtitle1">Online now</Typography>
             <span style={{ flex:1 }} />
@@ -244,6 +370,7 @@ export default function Trainer(){
                 <TableCell>Cohort</TableCell>
                 <TableCell>Campaign</TableCell>
                 <TableCell>Scenario</TableCell>
+                <TableCell>Player Type</TableCell>
                 <TableCell>Status</TableCell>
                 <TableCell>Last seen</TableCell>
               </TableRow>
@@ -252,107 +379,35 @@ export default function Trainer(){
               {presence.users
                 .filter(u=> !presenceFilters.campaign || String(u.campaign_name||'').toLowerCase().includes(presenceFilters.campaign.toLowerCase()))
                 .filter(u=> !presenceFilters.scenario || String(u.scenario_name||'').toLowerCase().includes(presenceFilters.scenario.toLowerCase()))
-                .map(u=> (
-                <TableRow key={`${u.user_id}-${u.session_id||'none'}`}>
-                  <TableCell>{u.email || '—'}</TableCell>
-                  <TableCell>{u.cohort_name || '—'}</TableCell>
-                  <TableCell>{u.campaign_name || '—'}</TableCell>
-                  <TableCell>{u.scenario_name || '—'}</TableCell>
-                  <TableCell>{u.status || '—'}</TableCell>
-                  <TableCell>{u.last_seen ? new Date(u.last_seen).toLocaleTimeString() : '—'}</TableCell>
-                </TableRow>
-              ))}
+                .filter(u=> u.role !== 'trainer') // Hide trainers from list
+                .map(u=> {
+                  const participantInfo = participants.participants.find(p=> p.user_id === u.user_id)
+                  const playerType = participantInfo?.selected_type || '—'
+                  const playerStatus = participantInfo?.status || u.status || '—'
+                  const bgColor = playerStatus === 'playing' ? '#e8f5e9' : playerStatus === 'joined' ? '#fff3e0' : 'transparent'
+                  return (
+                    <TableRow key={`${u.user_id}-${u.session_id||'none'}`} sx={{ bgcolor: bgColor }}>
+                      <TableCell>{u.email || '—'}</TableCell>
+                      <TableCell>{u.cohort_name || '—'}</TableCell>
+                      <TableCell>{u.campaign_name || '—'}</TableCell>
+                      <TableCell>{u.scenario_name || '—'}</TableCell>
+                      <TableCell>{playerType}</TableCell>
+                      <TableCell>
+                        <Chip label={playerStatus} size="small" color={playerStatus === 'playing' ? 'success' : playerStatus === 'joined' ? 'warning' : 'default'} />
+                      </TableCell>
+                      <TableCell>{u.last_seen ? new Date(u.last_seen).toLocaleTimeString() : '—'}</TableCell>
+                    </TableRow>
+                  )
+                })}
             </TableBody>
           </Table>
         </Paper>
         
-        <Stack spacing={0.5} sx={{ flex: 1 }}>
-          <InfoLabel title="Broadcast message to all players" tooltip="Sends a trainer message to all connected players in this session. Keep it brief (≤200 chars)." />
-          <TextField label="Broadcast" value={message} onChange={e=>setMessage(e.target.value)} size="small" fullWidth/>
-        </Stack>
-        <Tooltip arrow title="Sends the broadcast to session players."><span><Button onClick={broadcast} disabled={!sessionId || !message}>Send</Button></span></Tooltip>
-      </Stack>
-      {/* Participants panel */}
-      {sessionId && (
-        <Paper variant="outlined" sx={{ p:2, mt:2 }}>
-          <Stack direction="row" alignItems="center" spacing={1}>
-            <Typography variant="subtitle1">Participants</Typography>
-            <Typography variant="body2" color="text.secondary">({participants.summary.joined}/{participants.summary.total} joined)</Typography>
-            <span style={{ flex:1 }} />
-            <Button size="small" onClick={loadStatus}>Refresh</Button>
-          </Stack>
-          <Table size="small" sx={{ mt:1 }}>
-            <TableHead>
-              <TableRow>
-                <TableCell>Email</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell>Selected Type</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {participants.participants.map(p => (
-                <TableRow key={p.user_id}>
-                  <TableCell>{p.email}</TableCell>
-                  <TableCell>{p.status}</TableCell>
-                  <TableCell>{p.selected_type || '—'}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Paper>
-      )}
-      {mode==='shared_market' && typesCfg.length>0 && (
-        <Paper variant="outlined" sx={{ p:2, mt:2 }}>
-          <Typography variant="subtitle1" gutterBottom>Allowed Player Types (shared market)</Typography>
-          <Stack spacing={1}>
-            {allowedTypes.map((row, idx)=> (
-              <Stack key={row.type_id} direction="row" spacing={2} alignItems="center">
-                <FormControlLabel control={<Checkbox checked={!!row.enabled} onChange={e=> setAllowedTypes(prev=> prev.map((r,i)=> i===idx? { ...r, enabled: e.target.checked }: r))} />} label={row.type_id} />
-                <TextField size="small" type="number" label="Max players (optional)" value={row.max_players} onChange={e=>{
-                  const v = e.target.value
-                  setAllowedTypes(prev=> prev.map((r,i)=> i===idx? { ...r, max_players: v===''? '' : Number(v) }: r))
-                }} sx={{ width: 180 }} />
-              </Stack>
-            ))}
-            <Stack direction="row" spacing={1}>
-              <Button size="small" variant="outlined" disabled={!sessionId} onClick={async()=>{
-                try{
-                  await api.patch(`/api/sessions/${sessionId}/allowed-types`, { allowed: allowedTypes.filter(t=> t.enabled).map(t=> ({ type_id: t.type_id, max_players: t.max_players===''? null : Number(t.max_players) })) })
-                }catch(_){ /* show snack later */ }
-              }}>Apply to Session</Button>
-              <Button size="small" onClick={async()=>{
-                if(!sessionId) return
-                const res = await api.get(`/api/sessions/${sessionId}/briefing`)
-                alert(JSON.stringify(res.data?.allowed_player_types || [], null, 2))
-              }}>Preview Remaining</Button>
-            </Stack>
-          </Stack>
-        </Paper>
-      )}
-  <Typography variant="subtitle1" sx={{ mt:2 }}>Countdown: {tick ?? '—'} s</Typography>
-  <Typography variant="subtitle1" sx={{ mt:2 }}>Events</Typography>
+      <Typography variant="subtitle1" sx={{ mt:2 }}>Events</Typography>
       <Paper variant="outlined" sx={{ p:1, maxHeight:220, overflow:'auto' }}>
         {log.map((l,i)=>(<Typography key={i} variant="caption" display="block">{l}</Typography>))}
       </Paper>
-      <Typography variant="subtitle1" sx={{ mt:2 }}>Status</Typography>
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Player</TableCell>
-            <TableCell>Type</TableCell>
-            {Array.from({length: status.rounds||0}, (_,i)=> <TableCell key={i}>R{i+1}</TableCell>)}
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {status.players.map(p=> (
-            <TableRow key={p.player_id}>
-              <TableCell>{p.email}</TableCell>
-              <TableCell>{p.type || '—'}</TableCell>
-              {p.status.map(s=> <TableCell key={s.round}>{s.submitted ? '✓' : '—'}</TableCell>)}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      
       {/* MCP Chart */}
       {series.length>0 && <Stack direction="row" spacing={1} alignItems="center" sx={{ mt:2 }}><Typography variant="subtitle2">MCP</Typography>
         <span style={{ flex:1 }} />

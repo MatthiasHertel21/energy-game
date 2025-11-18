@@ -12,10 +12,6 @@ export default function Cohorts(){
   const [csv, setCsv] = useState('')
   const [selected, setSelected] = useState(null)
   const [campaigns, setCampaigns] = useState([])
-  const [startCamp, setStartCamp] = useState(null)
-  const [startScenarios, setStartScenarios] = useState([])
-  const [startScenarioId, setStartScenarioId] = useState('')
-  const [startMode, setStartMode] = useState('isolated_per_player')
   const [editDialog, setEditDialog] = useState(null)
   const [editName, setEditName] = useState('')
   const [deleteDialog, setDeleteDialog] = useState(null)
@@ -145,7 +141,12 @@ export default function Cohorts(){
       loadCampaigns(selected)
       loadMembers(selected)
       if (tab === 2) loadActivity(selected)
-    } 
+    } else {
+      // Clear members when no cohort selected
+      setMembers([])
+      setCampaigns([])
+      setActivities([])
+    }
   },[selected, tab, activityPage, activityLimit, activityFilters])
   const toggleCampaign = async (campId, key, val)=>{
     try{
@@ -153,27 +154,7 @@ export default function Cohorts(){
       setCampaigns(list=> list.map(c=> c.campaign_id===campId ? ({ ...c, [key]: val }) : c))
     }catch(e){}
   }
-  const openFromCampaign = async (campId, name)=>{
-    setStartCamp({ id: campId, name })
-    try{
-      const { data } = await api.get(`/api/kse/campaigns/${campId}/scenarios`)
-      const onlyActive = (campaigns.find(c=> c.campaign_id===campId)?.active) === true
-      const list = (data||[])
-      setStartScenarios(list)
-      setStartScenarioId(list[0]?.scenario_id || '')
-      if(!onlyActive){
-        if (window.__showSnack) window.__showSnack('Campaign is not active for this cohort. Activate to allow multiplayer.', 'warning')
-      }
-    }catch(e){ setStartScenarios([]); setStartScenarioId('') }
-  }
-  const startSession = async ()=>{
-    if(!selected || !startScenarioId) return
-    try{
-      await api.post('/api/sessions', { cohort_id: selected, scenario_id: Number(startScenarioId), mode: startMode })
-      if(window.__showSnack) window.__showSnack('Session started', 'success')
-      navigate('/trainer')
-    }catch(e){}
-  }
+  
   return (
     <Paper sx={{ p:2 }}>
       <Typography variant="h5" gutterBottom>Cohorts</Typography>
@@ -287,7 +268,6 @@ export default function Cohorts(){
                   <TableCell>Published</TableCell>
                   <TableCell>Visible</TableCell>
                   <TableCell>Active</TableCell>
-                  <TableCell>Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -302,31 +282,19 @@ export default function Cohorts(){
                     <TableCell>
                       <FormControlLabel control={<Switch checked={!!c.active} onChange={(e)=> toggleCampaign(c.campaign_id, 'active', e.target.checked)} />} label="" />
                     </TableCell>
-                    <TableCell>
-                      <Button size="small" disabled={!c.active} onClick={()=> openFromCampaign(c.campaign_id, c.name)}>Open</Button>
-                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           )}
-          {startCamp && (
-            <Box sx={{ mt:2, p:2, border:'1px solid #e0e0e0', borderRadius:1 }}>
-              <Typography variant="subtitle1">Open session from: {startCamp.name}</Typography>
-              <Stack direction="row" spacing={2} alignItems="center" sx={{ mt:1 }}>
-                <Select size="small" value={startScenarioId} onChange={e=> setStartScenarioId(e.target.value)} displayEmpty sx={{ minWidth: 260 }}>
-                  <MenuItem value=""><em>Select scenario</em></MenuItem>
-                  {startScenarios.map(s=> <MenuItem key={s.scenario_id} value={s.scenario_id}>{s.name}</MenuItem>)}
-                </Select>
-                <Select size="small" value={startMode} onChange={e=> setStartMode(e.target.value)}>
-                  <MenuItem value="isolated_per_player">Isolated per player</MenuItem>
-                  <MenuItem value="shared_market">Shared market</MenuItem>
-                </Select>
-                <Button variant="contained" disabled={!startScenarioId} onClick={startSession}>Start</Button>
-                <Button onClick={()=> { setStartCamp(null); setStartScenarios([]); setStartScenarioId('') }}>Cancel</Button>
-              </Stack>
-            </Box>
-          )}
+          <Box sx={{ mt: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              To start a session for this cohort, use the Trainer Panel:
+            </Typography>
+            <Button variant="contained" onClick={() => navigate('/trainer')}>
+              Go to Trainer Panel
+            </Button>
+          </Box>
         </Box>
           )}
           

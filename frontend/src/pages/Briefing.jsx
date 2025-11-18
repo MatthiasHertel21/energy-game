@@ -9,7 +9,8 @@ import {
   Divider,
   Grid,
   Chip,
-  CircularProgress
+  CircularProgress,
+  Stack
 } from '@mui/material'
 import { ArrowBack as BackIcon, PlayArrow as PlayIcon } from '@mui/icons-material'
 import api from '../services/api'
@@ -25,6 +26,10 @@ export default function Briefing() {
       try {
         const { data } = await api.get(`/api/sessions/${sessionId}/briefing`)
         setData(data)
+        // Auto-redirect if user already selected a type (avoid repeated timer resets)
+        if (data.selected_type !== undefined && data.selected_type !== null) {
+          navigate(`/player?sessionId=${sessionId}`, { replace: true })
+        }
       } catch (error) {
         console.error('Failed to load briefing:', error)
       } finally {
@@ -32,7 +37,7 @@ export default function Briefing() {
       }
     }
     load()
-  }, [sessionId])
+  }, [sessionId, navigate])
 
   if (loading) {
     return (
@@ -70,6 +75,20 @@ export default function Briefing() {
         <Typography variant="h5" color="primary" gutterBottom>
           {data.name}
         </Typography>
+
+        {data.description && (
+          <>
+            <Divider sx={{ my: 3 }} />
+            <Box sx={{ mb: 3 }}>
+              <Typography variant="h6" gutterBottom>
+                Scenario Description
+              </Typography>
+              <Typography variant="body1" paragraph sx={{ whiteSpace: 'pre-wrap' }}>
+                {data.description}
+              </Typography>
+            </Box>
+          </>
+        )}
 
         <Divider sx={{ my: 3 }} />
 
@@ -180,6 +199,60 @@ export default function Briefing() {
 
         <Box sx={{ mb: 3 }}>
           <Typography variant="h6" gutterBottom>
+            Player Types
+          </Typography>
+          {data.player_types && data.player_types.length > 0 ? (
+            <Stack spacing={2}>
+              {data.player_types.map((pt, idx) => {
+                const deviceIds = pt.devices || []
+                const devices = (data.devices || []).filter(d => deviceIds.includes(d.id))
+                return (
+                  <Box key={idx} sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                    <Typography variant="subtitle1" fontWeight={600}>
+                      {pt.name || `Type ${idx + 1}`}
+                    </Typography>
+                    {pt.description && (
+                      <Typography variant="body2" color="text.secondary" paragraph>
+                        {pt.description}
+                      </Typography>
+                    )}
+                    {pt.zone !== undefined && (
+                      <Typography variant="body2" color="text.secondary">
+                        Zone: {pt.zone}
+                      </Typography>
+                    )}
+                    {devices.length > 0 && (
+                      <Box sx={{ mt: 1 }}>
+                        <Typography variant="body2" fontWeight={600}>
+                          Devices:
+                        </Typography>
+                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 0.5 }}>
+                          {devices.map((dev, didx) => (
+                            <Chip
+                              key={didx}
+                              label={dev.name || dev.type?.toUpperCase() || `Device ${didx + 1}`}
+                              size="small"
+                              variant="outlined"
+                            />
+                          ))}
+                        </Box>
+                      </Box>
+                    )}
+                  </Box>
+                )
+              })}
+            </Stack>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              No player types configured
+            </Typography>
+          )}
+        </Box>
+
+        <Divider sx={{ my: 3 }} />
+
+        <Box sx={{ mb: 3 }}>
+          <Typography variant="h6" gutterBottom>
             Events
           </Typography>
           {data.events && data.events.length > 0 ? (
@@ -207,7 +280,7 @@ export default function Briefing() {
             startIcon={<PlayIcon />}
             onClick={() => navigate(`/player?sessionId=${sessionId}`)}
           >
-            Start Playing
+            {data.selected_type !== undefined && data.selected_type !== null ? 'Continue Playing' : 'Select Player Type & Start'}
           </Button>
           <Button variant="outlined" size="large" onClick={() => navigate('/home')}>
             Back to Home

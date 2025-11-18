@@ -105,5 +105,10 @@ def create_app() -> Flask:
 
     # attach socketio
     socketio.init_app(app)
+    # register socket handlers (namespaces, join room, etc.)
+    try:
+        from . import socket_handlers  # noqa: F401
+    except Exception:
+        pass
 
     return app

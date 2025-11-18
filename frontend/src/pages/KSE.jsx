@@ -162,23 +162,76 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMc
     if (showSupply) g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2)
     if (showDemand) g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', '#c62828').attr('stroke-width', 2)
 
-    // MCP line (horizontal at preview.mcp if available)
-    const mcpVal = Number(preview?.mcp)
+    // Compute MCP as intersection of supply and demand curves
+    let mcpVal = Number(preview?.mcp)
+    let mcpQty = null
+    
+    // Find intersection point by scanning through cumulative curves
+    if (showMcp && sCum.length > 0 && dCum.length > 0) {
+      // Convert to continuous functions for intersection search
+      let sIdx = 0, dIdx = 0
+      let qCur = 0
+      let foundIntersection = false
+      
+      // Step through quantity range looking for where supply price >= demand price
+      const step = xMax / 1000
+      for (let q = 0; q < xMax && !foundIntersection; q += step) {
+        // Find supply price at quantity q
+        while (sIdx < sCum.length - 1 && sCum[sIdx].x1 < q) sIdx++
+        const sPrice = sCum[sIdx]?.p || 0
+        
+        // Find demand price at quantity q
+        while (dIdx < dCum.length - 1 && dCum[dIdx].x1 < q) dIdx++
+        const dPrice = dCum[dIdx]?.p || 0
+        
+        // Intersection occurs when supply crosses above demand
+        if (sPrice >= dPrice) {
+          mcpVal = (sPrice + dPrice) / 2  // Average of the two prices at intersection
+          mcpQty = q
+          foundIntersection = true
+        }
+      }
+    }
+    
     if (showMcp && !Number.isNaN(mcpVal)) {
+      const mcpY = y(mcpVal)
+      const mcpX = mcpQty !== null ? x(mcpQty) : W
+      
+      // Draw horizontal MCP line
       g.append('line')
         .attr('x1', 0)
         .attr('x2', W)
-        .attr('y1', y(mcpVal))
-        .attr('y2', y(mcpVal))
+        .attr('y1', mcpY)
+        .attr('y2', mcpY)
         .attr('stroke', '#1976d2')
         .attr('stroke-dasharray', '4 4')
+      
+      // Draw vertical line at intersection point if found
+      if (mcpQty !== null) {
+        g.append('line')
+          .attr('x1', mcpX)
+          .attr('x2', mcpX)
+          .attr('y1', 0)
+          .attr('y2', H)
+          .attr('stroke', '#1976d2')
+          .attr('stroke-dasharray', '2 2')
+          .attr('opacity', 0.5)
+        
+        // Highlight intersection point
+        g.append('circle')
+          .attr('cx', mcpX)
+          .attr('cy', mcpY)
+          .attr('r', 4)
+          .attr('fill', '#1976d2')
+      }
+      
       g.append('text')
         .attr('x', W - 4)
-        .attr('y', y(mcpVal) - 4)
+        .attr('y', mcpY - 4)
         .attr('text-anchor', 'end')
         .attr('fill', '#1976d2')
         .attr('font-size', 10)
-        .text(`MCP ${mcpVal}`)
+        .text(`MCP ${mcpVal.toFixed(1)}`)
     }
 
     // Legend
@@ -728,19 +781,30 @@ export default function KSE(){
                     </Box>
                   </Stack>
                 </Paper>
-                {/* Player zone group */}
+                {/* Market Basics group */}
                 <Paper sx={{ p:2 }}>
-                  <Typography variant="subtitle2" sx={{ mb: 1 }}>Player Zone</Typography>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>Market Basics</Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    Default zone used for player-facing context and inputs.
+                    Baseline price/volume levels and floor/cap limits for market simulation.
                   </Typography>
-                  <TextField
-                    type="number"
-                    label="Player Zone (1..zones)"
-                    value={cfg.general.player_zone||1}
-                    onChange={e=>update(['general','player_zone'], Number(e.target.value))}
-                    size="small"
-                  />
+                  <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                    <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                      <InfoLabel title="Baseline price level (ZAR/MWh)" tooltip="Center price used for sample supply/demand curves and previews." showTitle={false} />
+                      <NumberInput label="Base Price" value={cfg.market.base_price} onChange={(val)=>update(['market','base_price'], val)} min={0} max={10000} step={100} unit="ZAR/MWh" />
+                    </Stack>
+                    <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                      <InfoLabel title="Baseline traded volume (MWh)" tooltip="Scales the preview supply/demand curves and initial market environment." showTitle={false} />
+                      <NumberInput label="Base Volume" value={cfg.market.base_volume_mwh} onChange={(val)=>update(['market','base_volume_mwh'], val)} min={1000} max={100000} step={1000} unit="MWh" />
+                    </Stack>
+                    <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                      <InfoLabel title="Minimum allowed market price" tooltip="Price floor in ZAR/MWh (e.g., -500)." showTitle={false} />
+                      <NumberInput label="Floor" value={cfg.market.price_floor} onChange={(val)=>update(['market','price_floor'], val)} min={-1000} max={5000} step={100} unit="ZAR/MWh" />
+                    </Stack>
+                    <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                      <InfoLabel title="Maximum allowed market price" tooltip="Price cap in ZAR/MWh (e.g., +5000)." showTitle={false} />
+                      <NumberInput label="Cap" value={cfg.market.price_cap} onChange={(val)=>update(['market','price_cap'], val)} min={1000} max={20000} step={500} unit="ZAR/MWh" />
+                    </Stack>
+                  </Stack>
                 </Paper>
               </Stack>
             )
@@ -882,26 +946,6 @@ export default function KSE(){
             <Stack id="kse-panel-2" role="tabpanel" aria-labelledby="kse-tab-2" direction="row" spacing={2}>
               {/* Left: Parameters */}
               <Stack spacing={2} sx={{ minWidth: 320, flex: 1 }}>
-                <Typography variant="subtitle2">Market Basics</Typography>
-                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                    <InfoLabel title="Baseline price level (ZAR/MWh)" tooltip="Center price used for sample supply/demand curves and previews." showTitle={false} />
-                    <NumberInput label="Base Price" value={cfg.market.base_price} onChange={(val)=>update(['market','base_price'], val)} min={0} max={10000} step={100} unit="ZAR/MWh" />
-                  </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                    <InfoLabel title="Baseline traded volume (MWh)" tooltip="Scales the preview supply/demand curves and initial market environment." showTitle={false} />
-                    <NumberInput label="Base Volume" value={cfg.market.base_volume_mwh} onChange={(val)=>update(['market','base_volume_mwh'], val)} min={1000} max={100000} step={1000} unit="MWh" />
-                  </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                    <InfoLabel title="Minimum allowed market price" tooltip="Price floor in ZAR/MWh (e.g., -500)." showTitle={false} />
-                    <NumberInput label="Floor" value={cfg.market.price_floor} onChange={(val)=>update(['market','price_floor'], val)} min={-1000} max={5000} step={100} unit="ZAR/MWh" />
-                  </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                    <InfoLabel title="Maximum allowed market price" tooltip="Price cap in ZAR/MWh (e.g., +5000)." showTitle={false} />
-                    <NumberInput label="Cap" value={cfg.market.price_cap} onChange={(val)=>update(['market','price_cap'], val)} min={1000} max={20000} step={500} unit="ZAR/MWh" />
-                  </Stack>
-                </Stack>
-
                 <Typography variant="subtitle2">Generator Mix</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
@@ -958,15 +1002,15 @@ export default function KSE(){
 
                 <Typography variant="subtitle2">Randomness</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
                     <InfoLabel title="Capacity jitter (%)" tooltip="Random variation of individual block quantities. 0–50%." showTitle={false} />
                     <NumberInput label="Capacity Jitter" value={cfg.market.random_capacity_pct} onChange={(val)=>update(['market','random_capacity_pct'], Number(val)||0)} min={0} max={50} step={1} unit="%" />
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
                     <InfoLabel title="Price jitter (%)" tooltip="Random variation of marginal costs and demand price steps. 0–50%." showTitle={false} />
                     <NumberInput label="Price Jitter" value={cfg.market.random_price_pct} onChange={(val)=>update(['market','random_price_pct'], Number(val)||0)} min={0} max={50} step={1} unit="%" />
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 220 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
                     <InfoLabel title="Actual vs Forecast noise (%)" tooltip="Std. deviation of actual dispatch around dispatched plan used in sessions. Affects Actual vs Forecast (default 5%)." showTitle={false} />
                     <NumberInput label="Actual Noise" value={cfg.environment.actual_noise_pct ?? 5} onChange={(val)=>update(['environment','actual_noise_pct'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
                   </Stack>
@@ -1022,6 +1066,8 @@ export default function KSE(){
               </Stack>
               {/* Right: Sticky Preview */}
               <Box sx={{ width: 380 }}>
+                {/* Auto-updating MCP/Volume preview above chart */}
+                {preview && <Typography sx={{ mb:1 }}>MCP: {preview.mcp} | Volume: {preview.volume}</Typography>}
                 <Curves cfg={cfg} preview={preview} groups={cfg.market?.generator_mix} showSupply={showSupply} showDemand={showDemand} showMcp={showMcp} svgRef={stepRef} />
                 <Stack spacing={1} sx={{ mt:1 }}>
                   <Stack direction="row" spacing={1} alignItems="center">
@@ -1029,16 +1075,15 @@ export default function KSE(){
                     <FormControlLabel control={<Switch size="small" checked={showDemand} onChange={(_,v)=> setShowDemand(v)} />} label="Demand" />
                     <FormControlLabel control={<Switch size="small" checked={showMcp} onChange={(_,v)=> setShowMcp(v)} />} label="MCP" />
                   </Stack>
-                  {/* Auto-updating MCP/Volume preview; round selection moved below charts */}
-                  {preview && <Typography sx={{ mt:1 }}>MCP: {preview.mcp} | Volume: {preview.volume}</Typography>}
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <FormControlLabel control={<Switch size="small" checked={showHourlyPoints} onChange={(_,v)=> setShowHourlyPoints(v)} />} label="Points" />
-                    <FormControlLabel control={<Switch size="small" checked={showHourlyGrid} onChange={(_,v)=> setShowHourlyGrid(v)} />} label="Grid" />
-                  </Stack>
                   <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly MCP</Typography>
                   <svg ref={mcpRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> mcpRef.current && exportPNG(mcpRef.current, 'kse_hourly_mcp.png')} />
                   <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly Volume</Typography>
                   <svg ref={volRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> volRef.current && exportPNG(volRef.current, 'kse_hourly_volume.png')} />
+                  {/* Points/Grid switches moved below hourly charts */}
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <FormControlLabel control={<Switch size="small" checked={showHourlyPoints} onChange={(_,v)=> setShowHourlyPoints(v)} />} label="Points" />
+                    <FormControlLabel control={<Switch size="small" checked={showHourlyGrid} onChange={(_,v)=> setShowHourlyGrid(v)} />} label="Grid" />
+                  </Stack>
                   {/* Controls moved under hourly charts */}
                   <Stack direction="row" spacing={2} alignItems="flex-start" sx={{ mt:1 }}>
                     <Stack spacing={0.5} sx={{ minWidth: 180 }}>
@@ -1065,46 +1110,76 @@ export default function KSE(){
           )}
           {tab===3 && (
             <Stack id="kse-panel-3" role="tabpanel" aria-labelledby="kse-tab-3" spacing={2}>
-              <Stack spacing={0.5} sx={{ maxWidth: 260 }}>
-                <InfoLabel
-                  title="Number of grid zones"
-                  tooltip="Supported range: 1–5. Changing this rebuilds the symmetric ATC matrix; diagonal stays 0 MW."
-                />
-                <TextField inputRef={refZones} type="number" label="Zones" value={cfg.grid.zones} onChange={e=>{
-                const z = Number(e.target.value)
-                const atc = Array.from({length:z}, (_,i)=> Array.from({length:z}, (_,j)=> i===j?0: (cfg.grid.atc?.[i]?.[j] ?? 0)))
-                setCfg(prev=> ({...prev, grid: { ...prev.grid, zones: z, atc }}))
-              }}
-              error={cfg.grid.zones<1 || cfg.grid.zones>5}
-              helperText={(cfg.grid.zones<1 || cfg.grid.zones>5) ? 'Supported range: 1–5' : ''}
-              />
+              <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                <Box sx={{ minWidth: 220 }}>
+                  <NumberInput
+                    inputRef={refZones}
+                    label="Zones"
+                    value={cfg.grid.zones}
+                    onChange={z => {
+                      const atc = Array.from({length:z}, (_,i)=> Array.from({length:z}, (_,j)=> i===j?0: (cfg.grid.atc?.[i]?.[j] ?? 0)))
+                      setCfg(prev=> ({...prev, grid: { ...prev.grid, zones: z, atc }}))
+                    }}
+                    min={1}
+                    max={5}
+                    step={1}
+                    error={cfg.grid.zones<1 || cfg.grid.zones>5}
+                    helperText={(cfg.grid.zones<1 || cfg.grid.zones>5) ? 'Supported range: 1–5' : ''}
+                    tooltip="Supported range: 1–5. Changing this rebuilds the symmetric ATC matrix; diagonal stays 0 MW."
+                  />
+                </Box>
+                <Box sx={{ minWidth: 220 }}>
+                  <NumberInput
+                    label="Player Zone (1..zones)"
+                    value={cfg.general.player_zone||1}
+                    onChange={val=>update(['general','player_zone'], val)}
+                    min={1}
+                    max={cfg.grid.zones||1}
+                    step={1}
+                    tooltip="Default zone used for player-facing context and inputs."
+                  />
+                </Box>
+                <Box sx={{ minWidth: 220 }}>
+                  <NumberInput
+                    label="Transmission Loss (%)"
+                    value={cfg.grid.transmission_loss_pct ?? 2}
+                    onChange={val=>update(['grid','transmission_loss_pct'], val)}
+                    min={0}
+                    max={20}
+                    step={0.5}
+                    unit="%"
+                    tooltip="Percentage of energy lost during inter-zone transmission (default 2%)."
+                  />
+                </Box>
               </Stack>
               <Box>
-                <Stack direction="row" spacing={2} alignItems="center" sx={{ mb:1 }}>
-                  <Box sx={{ flex: 1 }}>
-                    <InfoLabel
-                      title="Available Transfer Capacity between zones (MW)"
-                      tooltip={"Symmetric off-diagonals; diagonal is 0 MW. Limits power flow per direction between zones. Engine applies 2% transmission losses and enforces ATC when clearing with congestion."}
-                    />
-                    <Typography variant="subtitle2">ATC Matrix (MW)</Typography>
-                  </Box>
-                  <Button
-                    variant="outlined"
-                    startIcon={<EditIcon />}
-                    onClick={() => setAtcEditorOpen(true)}
-                    disabled={cfg.grid.zones < 1}
-                  >
-                    Edit Matrix
-                  </Button>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
+                  <Typography variant="subtitle2">ATC Matrix (MW)</Typography>
+                  <Tooltip title="Symmetric off-diagonals; diagonal is 0 MW. Limits power flow per direction between zones. Engine applies transmission losses and enforces ATC when clearing with congestion." arrow>
+                    <Box
+                      component="span"
+                      sx={{
+                        width: 16,
+                        height: 16,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderRadius: '50%',
+                        bgcolor: 'action.hover',
+                        color: 'text.secondary',
+                        fontSize: 12,
+                        cursor: 'help',
+                        userSelect: 'none',
+                      }}
+                      aria-label="More info"
+                    >
+                      i
+                    </Box>
+                  </Tooltip>
                 </Stack>
-                <Paper variant="outlined" sx={{ p: 2, bgcolor: 'action.hover' }}>
-                  <Typography variant="body2" color="text.secondary">
-                    {cfg.grid.zones} zone(s) configured. Click "Edit Matrix" to modify ATC values in fullscreen editor with CSV import/export.
-                  </Typography>
-                </Paper>
 
                 {/* Inline editable ATC matrix */}
-                <Box sx={{ mt: 2, overflowX: 'auto' }}>
+                <Box sx={{ overflowX: 'auto' }}>
                   {(() => {
                     const z = Number(cfg.grid.zones || 0)
                     if (!z || z < 1) return null
@@ -1225,56 +1300,85 @@ export default function KSE(){
               </Stack>
               {(cfg.player_types||[]).map((pt, idx)=> (
                 <Paper key={idx} sx={{ p:1.5, border:'1px solid #ddd' }}>
-                  <Stack spacing={1.5}>
-                    <Grid container spacing={2} alignItems="center">
-                      <Grid item xs={12} md={6}>
-                        <TextField size="small" fullWidth label="ID" value={pt.id||''} onChange={e=>{
-                          const v = e.target.value
-                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].id = v; return n })
-                        }}/>
-                      </Grid>
-                      <Grid item xs={12} md={6}>
-                        <TextField size="small" fullWidth label="Name" value={pt.name||''} onChange={e=>{
-                          const v = e.target.value
-                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].name = v; return n })
-                        }}/>
-                      </Grid>
-                      <Grid item xs={12} md={6}>
-                        <TextField size="small" fullWidth label="Description" value={pt.description||''} onChange={e=>{
-                          const v = e.target.value
-                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].description = v; return n })
-                        }}/>
-                      </Grid>
-                      <Grid item xs={12} md={6}>
-                        <TextField size="small" fullWidth type="number" label="Zone (optional)" value={pt.zone||''} onChange={e=>{
-                          const v = e.target.value === '' ? undefined : Number(e.target.value)
-                          setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].zone = v; return n })
-                        }}/>
-                      </Grid>
-                      <Grid item xs={12} md={6}>
+                  <Grid container spacing={2}>
+                    {/* Left Column: Player Type Fields */}
+                    <Grid item xs={12} md={4}>
+                      <Stack spacing={2}>
+                        <TextField 
+                          size="small" 
+                          fullWidth 
+                          label="Name" 
+                          value={pt.name||''} 
+                          onChange={e=>{
+                            const v = e.target.value
+                            setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].name = v; return n })
+                          }}
+                        />
+                        <TextField 
+                          size="small" 
+                          fullWidth 
+                          label="Description" 
+                          value={pt.description||''} 
+                          onChange={e=>{
+                            const v = e.target.value
+                            setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].description = v; return n })
+                          }}
+                          multiline
+                          minRows={3}
+                        />
+                        <TextField 
+                          size="small" 
+                          fullWidth 
+                          type="number" 
+                          label="Zone (optional)" 
+                          value={pt.zone||''} 
+                          onChange={e=>{
+                            const v = e.target.value === '' ? undefined : Number(e.target.value)
+                            setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].zone = v; return n })
+                          }}
+                        />
                         <Accordion>
                           <AccordionSummary expandIcon={<ExpandMoreIcon />}>Advanced</AccordionSummary>
                           <AccordionDetails>
-                            <Stack direction={{ xs:'column', md:'row' }} spacing={2}>
-                              <TextField size="small" fullWidth type="number" label="Capacity variability (%)" value={pt.capacity_variability_pct ?? 0} onChange={e=>{
-                                const v = e.target.value === '' ? undefined : Number(e.target.value)
-                                setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].capacity_variability_pct = v; return n })
-                              }}/>
-                              <TextField size="small" fullWidth type="number" label="Marginal cost variability (%)" value={pt.marginal_cost_variability_pct ?? 0} onChange={e=>{
-                                const v = e.target.value === '' ? undefined : Number(e.target.value)
-                                setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].marginal_cost_variability_pct = v; return n })
-                              }}/>
+                            <Stack spacing={2}>
+                              <TextField 
+                                size="small" 
+                                fullWidth 
+                                type="number" 
+                                label="Capacity variability (%)" 
+                                value={pt.capacity_variability_pct ?? 0} 
+                                onChange={e=>{
+                                  const v = e.target.value === '' ? undefined : Number(e.target.value)
+                                  setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].capacity_variability_pct = v; return n })
+                                }}
+                              />
+                              <TextField 
+                                size="small" 
+                                fullWidth 
+                                type="number" 
+                                label="Marginal cost variability (%)" 
+                                value={pt.marginal_cost_variability_pct ?? 0} 
+                                onChange={e=>{
+                                  const v = e.target.value === '' ? undefined : Number(e.target.value)
+                                  setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].marginal_cost_variability_pct = v; return n })
+                                }}
+                              />
                             </Stack>
                           </AccordionDetails>
                         </Accordion>
-                      </Grid>
-                      <Grid item xs={12}>
-                        <Button size="small" color="error" onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.player_types.splice(idx,1); return n })}>Remove Type</Button>
-                      </Grid>
+                        <Button 
+                          size="small" 
+                          color="error" 
+                          onClick={()=> setCfg(prev=>{ const n = structuredClone(prev); n.player_types.splice(idx,1); return n })}
+                        >
+                          Remove Type
+                        </Button>
+                      </Stack>
                     </Grid>
                     
-                    {/* Devices with Card UI */}
-                    <Stack spacing={1}>
+                    {/* Right Column: Devices */}
+                    <Grid item xs={12} md={8}>
+                      <Stack spacing={1}>
                       <InfoLabel title="Devices of this type" tooltip="Each device belongs exactly to one player type. Click expand to edit, or use presets to add quickly." />
                       {(() => {
                         const devMap = new Map((cfg.devices||[]).map(d=> [d.id, d]))
@@ -1357,8 +1461,9 @@ export default function KSE(){
                           </Stack>
                         )
                       })()}
-                    </Stack>
-                  </Stack>
+                      </Stack>
+                    </Grid>
+                  </Grid>
                 </Paper>
               ))}
               <Button ref={refAddPlayerType} variant="outlined" onClick={()=> setCfg(prev=> ({ ...prev, player_types: [...(prev.player_types||[]), { id:'', name:'', devices:[] }] }))}>Add Player Type</Button>

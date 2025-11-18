@@ -11,6 +11,7 @@ import {
   Chip,
   Box,
   Tooltip,
+  TextField,
 } from '@mui/material';
 import {
   ExpandMore as ExpandMoreIcon,
@@ -162,6 +163,40 @@ export default function DeviceCard({
       <Collapse in={expanded} timeout="auto" unmountOnExit>
         <CardContent>
           <Stack spacing={2}>
+            {/* Device Name */}
+            <Stack spacing={0.5}>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Typography variant="caption" color="text.secondary">Device Name</Typography>
+                <Tooltip title="Optional name for this device" arrow>
+                  <Box
+                    component="span"
+                    sx={{
+                      width: 16,
+                      height: 16,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      borderRadius: '50%',
+                      bgcolor: 'action.hover',
+                      color: 'text.secondary',
+                      fontSize: 12,
+                      cursor: 'help',
+                      userSelect: 'none',
+                    }}
+                  >
+                    i
+                  </Box>
+                </Tooltip>
+              </Stack>
+              <TextField
+                size="small"
+                fullWidth
+                placeholder="Enter device name"
+                value={device.name || ''}
+                onChange={(e) => handleFieldChange('name', e.target.value)}
+              />
+            </Stack>
+            
             {/* Capacity / Cost or Load fields */}
             {!isLoad ? (
               <>

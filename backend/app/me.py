@@ -19,13 +19,14 @@ class MySessions(Resource):
     @jwt_required()
     def get(self):
         uid = int(get_jwt_identity())
-        # sessions for cohorts the user is a member of
+        # sessions for cohorts the user is a member of (only active: created or running)
         q = (
             db.session.query(Session, Scenario, Cohort)
             .join(Scenario, Scenario.id == Session.scenario_id)
             .join(Cohort, Cohort.id == Session.cohort_id)
             .join(CohortMember, CohortMember.cohort_id == Session.cohort_id)
             .filter(CohortMember.user_id == uid)
+            .filter(Session.status.in_([SessionStatus.created, SessionStatus.running]))
             .order_by(Session.id.desc())
         )
         out = []

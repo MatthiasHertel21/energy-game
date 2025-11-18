@@ -42,7 +42,7 @@ def run_rounds(session_id: int):
         current = s.current_round or 1
         while current <= rounds:
             socketio.emit("round_start", {"session_id": s.id, "round": current}, namespace="/trainer")
-            socketio.emit("round_start", {"session_id": s.id, "round": current}, namespace=f"/game/{s.id}")
+            socketio.emit("round_start", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
             db.session.commit()
             # countdown
             remaining = timer_sec
@@ -55,7 +55,7 @@ def run_rounds(session_id: int):
                     time.sleep(1)
                     continue
                 socketio.emit("tick", {"session_id": s.id, "remaining": remaining}, namespace="/trainer")
-                socketio.emit("tick", {"session_id": s.id, "remaining": remaining}, namespace=f"/game/{s.id}")
+                socketio.emit("tick", {"session_id": s.id, "remaining": remaining}, namespace="/game", to=f"session-{s.id}")
             # auto-submit for missing
             _auto_submit_missing(s.id, current, hours_span)
             # collect forecasts per player (full horizon if exists + this round slice fallback)
@@ -138,7 +138,7 @@ def run_rounds(session_id: int):
                 # Broadcast active events to players
                 for event in active_events:
                     event["session_id"] = s.id
-                    socketio.emit("event_triggered", event, namespace=f"/game/{s.id}")
+                    socketio.emit("event_triggered", event, namespace="/game", to=f"session-{s.id}")
             except Exception as e:
                 current_app.logger.warning(f"Failed to emit events: {e}")
             
@@ -172,9 +172,9 @@ def run_rounds(session_id: int):
             payload = {"session_id": s.id, "round": current, "mcp": res["mcp"], "volume": res["volume"], "kpis": res.get("round_kpis")}
             payload['zone'] = zone_payload
             socketio.emit("round_results", payload, namespace="/trainer")
-            socketio.emit("market_cleared", payload, namespace=f"/game/{s.id}")
+            socketio.emit("market_cleared", payload, namespace="/game", to=f"session-{s.id}")
             socketio.emit("round_end", {"session_id": s.id, "round": current}, namespace="/trainer")
-            socketio.emit("round_end", {"session_id": s.id, "round": current}, namespace=f"/game/{s.id}")
+            socketio.emit("round_end", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
             # Log round completion for each player in the session
             try:
                 players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]

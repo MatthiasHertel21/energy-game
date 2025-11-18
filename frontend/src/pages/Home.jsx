@@ -37,7 +37,15 @@ export default function Home() {
   const load = async () => {
     try {
       const { data } = await api.get('/api/me/sessions')
-      setSessions(data)
+      // Group by scenario_id and keep only the most recent session per scenario
+      const byScenario = new Map()
+      data.forEach(s => {
+        const existing = byScenario.get(s.scenario_id)
+        if (!existing || s.id > existing.id) {
+          byScenario.set(s.scenario_id, s)
+        }
+      })
+      setSessions(Array.from(byScenario.values()).sort((a,b) => b.id - a.id))
     } catch (error) {
       console.error('Failed to load sessions:', error)
     } finally {

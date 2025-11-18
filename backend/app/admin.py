@@ -400,9 +400,9 @@ class AdminSessions(Resource):
             scenario = Scenario.query.get(session.scenario_id) if session.scenario_id else None
             cohort = Cohort.query.get(session.cohort_id) if session.cohort_id else None
             
-            # Count players in this session
-            from .models import PlayerProgress
-            player_count = PlayerProgress.query.filter_by(session_id=session.id).count()
+            # Count players in this session (distinct players who submitted forecasts)
+            from .models import Forecast
+            player_count = db.session.query(Forecast.player_id).filter_by(session_id=session.id).distinct().count()
             
             result.append({
                 "id": session.id,

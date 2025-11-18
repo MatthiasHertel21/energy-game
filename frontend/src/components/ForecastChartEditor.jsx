@@ -44,12 +44,14 @@ export default function ForecastChartEditor({ hours = [], lockedUntil = 0, onCha
 
     // drag behavior
     const drag = d3.drag()
-      .on('drag', (event, d) => {
+      .on('drag', function(event, d) {
         const i = d.i
         if (i < lockedUntil) return
         const [, y0] = d3.pointer(event, g.node())
         const newVal = Math.max(0, Math.min(yMax, y.invert(y0)))
         if (onChange) onChange(i, Number(newVal.toFixed(2)))
+        // move the dragged point immediately for visual feedback
+        try { d3.select(this).attr('cy', y(newVal)) } catch(_) {}
       })
 
     // points

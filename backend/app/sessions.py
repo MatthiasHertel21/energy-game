@@ -5,7 +5,7 @@ from flask_jwt_extended import jwt_required, get_jwt
 
 from .extensions import db, socketio
 from .scheduler import run_rounds
-from .models import Session, SessionStatus, Scenario, SessionAllowedType, SessionPlayerType, ActivityLog, User, CohortMember
+from .models import Session, SessionStatus, Scenario, SessionAllowedType, SessionPlayerType, ActivityLog, User, CohortMember, Forecast
 from .utils import role_required, log_activity
 import os, json
 from datetime import datetime
@@ -94,25 +94,29 @@ class SessionParticipants(Resource):
         """List participants for a session: joined (selected a type) and pending (cohort members without selection)."""
         s = Session.query.get_or_404(sid)
         # Get cohort members
-        members = db.session.query(CohortMember.user_id, User.email, User.name).join(User, User.id == CohortMember.user_id).filter(CohortMember.cohort_id == s.cohort_id).all()
-        member_ids = [uid for (uid, _, _) in members]
+        members = db.session.query(CohortMember.user_id, User.email).join(User, User.id == CohortMember.user_id).filter(CohortMember.cohort_id == s.cohort_id).all()
+        member_ids = [uid for (uid, _) in members]
         # Get selected types
         sel = db.session.query(SessionPlayerType).filter_by(session_id=sid).all()
         selected_by_user = {row.user_id: row for row in sel}
+        # Check for forecasts to determine "playing" status
+        forecast_users = set(uid for (uid,) in db.session.query(Forecast.player_id).filter_by(session_id=sid).distinct().all())
         out = []
         by_type = {}
         joined = 0
-        for uid, email, name in members:
+        for uid, email in members:
             row = selected_by_user.get(uid)
             if row:
-                status = "joined"
+                # Determine status: playing if has forecasts, otherwise joined
+                has_forecast = uid in forecast_users
+                status = "playing" if has_forecast else "joined"
                 joined += 1
                 t = row.type_id
                 by_type[t] = by_type.get(t, 0) + 1
                 out.append({
                     "user_id": uid,
                     "email": email,
-                    "name": name,
+                    "name": email,
                     "status": status,
                     "selected_type": row.type_id,
                     "joined_at": getattr(row, 'created_at', None),
@@ -121,7 +125,7 @@ class SessionParticipants(Resource):
                 out.append({
                     "user_id": uid,
                     "email": email,
-                    "name": name,
+                    "name": email,
                     "status": "pending",
                 })
         return {
@@ -139,6 +143,7 @@ class SessionBriefing(Resource):
         cfg = sc.config or {}
         briefing = {
             "name": sc.name,
+            "description": cfg.get("general", {}).get("description", ""),
             "general": cfg.get("general", {}),
             "markets": cfg.get("market", {}),
             "grid": cfg.get("grid", {}),
@@ -146,6 +151,7 @@ class SessionBriefing(Resource):
             "objectives": cfg.get("objectives", ""),
             "roles": cfg.get("roles", []),
             "player_types": cfg.get("player_types", []),
+            "devices": cfg.get("devices", []),
         }
         # include allowed types + remaining capacities from Redis if available
         if True:
@@ -331,7 +337,10 @@ class Broadcast(Resource):
     @ns.expect(broadcast_in, validate=True)
     def post(self, sid: int):
         msg = request.json["message"]
+        # Send to trainer namespace
         emit_trainer("message", {"session_id": sid, "message": msg})
+        # Also send to game namespace for players in this session
+        socketio.emit("trainer_message", {"session_id": sid, "message": msg}, namespace="/game", to=f"session-{sid}")
         return {"status": "ok"}
 
 
