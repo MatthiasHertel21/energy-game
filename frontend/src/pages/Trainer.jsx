@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Select, MenuItem, Tooltip, Checkbox, FormControlLabel, Chip, Box } from '@mui/material'
+import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Select, MenuItem, Tooltip, Checkbox, FormControlLabel, Chip, Box, IconButton } from '@mui/material'
+import { Pause as PauseIcon, PlayArrow as ResumeIcon, Stop as StopIcon } from '@mui/icons-material'
 import InfoLabel from '../components/InfoLabel'
 import { io } from 'socket.io-client'
 import api from '../services/api'
@@ -9,7 +10,8 @@ import DocsFab from '../components/DocsFab'
 
 export default function Trainer(){
   const [cohortId, setCohortId] = useState('1')
-  const [scenarioId, setScenarioId] = useState('1')
+  const [campaignId, setCampaignId] = useState('')
+  const [scenarioId, setScenarioId] = useState('')
   const [sessionId, setSessionId] = useState(null)
   // Presence panel state
   const [presence, setPresence] = useState({ users: [] })
@@ -33,7 +35,8 @@ export default function Trainer(){
   const topRef = useRef(null)
   const [participants, setParticipants] = useState({ participants: [], summary: { total: 0, joined: 0, pending: 0, by_type: {} } })
   const [cohorts, setCohorts] = useState([])
-  const [scenarios, setScenarios] = useState([])
+  const [campaigns, setCampaigns] = useState([])
+  const [campScenarios, setCampScenarios] = useState([])
   const [sessionInfo, setSessionInfo] = useState(null)
 
   useEffect(()=>{
@@ -42,7 +45,14 @@ export default function Trainer(){
     s.on('session_started', p=> setLog(l=>[...l, `session_started ${JSON.stringify(p)}`]))
     s.on('session_paused', p=> setLog(l=>[...l, `session_paused ${JSON.stringify(p)}`]))
     s.on('session_resumed', p=> setLog(l=>[...l, `session_resumed ${JSON.stringify(p)}`]))
-    s.on('session_ended', p=> setLog(l=>[...l, `session_ended ${JSON.stringify(p)}`]))
+    s.on('session_ended', p=> {
+      setLog(l=>[...l, `session_ended ${JSON.stringify(p)}`])
+      if(p?.session_id && Number(p.session_id)===Number(sessionId)){
+        setSessionId(null)
+        setSessionInfo(null)
+        setTick(null)
+      }
+    })
     s.on('message', p=> setLog(l=>[...l, `message ${JSON.stringify(p)}`]))
     s.on('player_submit', p=> setLog(l=>[...l, `player_submit ${JSON.stringify(p)}`]))
     s.on('tick', p=> setTick(p?.remaining))
@@ -69,31 +79,65 @@ export default function Trainer(){
     return ()=> s.close()
   },[])
 
-  // Load cohorts and scenarios on mount
+  // Load cohorts on mount
   useEffect(()=>{
     const loadData = async ()=>{
       try{
-        const [cohortRes, scenarioRes] = await Promise.all([
-          api.get('/api/cohorts'),
-          api.get('/api/kse/scenarios')
-        ])
+        const cohortRes = await api.get('/api/cohorts')
         setCohorts(cohortRes.data || [])
-        setScenarios(scenarioRes.data || [])
-        // Set first cohort/scenario as default if available
         if(cohortRes.data?.length > 0) setCohortId(String(cohortRes.data[0].id))
-        if(scenarioRes.data?.length > 0) setScenarioId(String(scenarioRes.data[0].id))
       }catch(err){
-        console.error('Failed to load cohorts/scenarios:', err)
+        console.error('Failed to load cohorts:', err)
       }
     }
     loadData()
   },[])
 
+  // When cohort changes: check active session and load campaigns visible for cohort
+  useEffect(()=>{
+    if(!cohortId) return
+    const run = async ()=>{
+      try{
+        // Check active session for cohort
+        const activeRes = await api.get('/api/sessions/active', { params: { cohort_id: Number(cohortId) } })
+        const active = activeRes.data?.active
+        if(active && active.id){
+          setSessionId(active.id)
+          setSessionInfo(active)
+        }else{
+          setSessionId(null)
+          setSessionInfo(null)
+        }
+      }catch(_){ setSessionId(null); setSessionInfo(null) }
+      try{
+        const { data } = await api.get(`/api/cohorts/${cohortId}/campaigns`)
+        const visible = (data||[]).filter(c=> c.visible && (c.published===true))
+        setCampaigns(visible)
+        setCampaignId(visible.length? String(visible[0].campaign_id) : '')
+      }catch(_){ setCampaigns([]); setCampaignId('') }
+    }
+    run()
+  },[cohortId])
+
+  // When campaign changes: load scenarios from catalog and filter cohort-enabled
+  useEffect(()=>{
+    if(!campaignId) { setCampScenarios([]); setScenarioId(''); return }
+    const run = async ()=>{
+      try{
+        const { data } = await api.get(`/api/catalog/campaigns/${campaignId}`)
+        const list = (data?.scenarios||[]).filter(s=> s.cohort_enabled !== false)
+        setCampScenarios(list)
+        setScenarioId(list.length? String(list[0].scenario_id): '')
+      }catch(_){ setCampScenarios([]); setScenarioId('') }
+    }
+    run()
+  },[campaignId])
+
   // Presence auto-refresh every 5s
   useEffect(()=>{
     const load = async ()=>{
       try{
-        const qs = presenceFilters.cohort ? `?cohort_id=${encodeURIComponent(presenceFilters.cohort)}` : ''
+        const qs = cohortId ? `?cohort_id=${encodeURIComponent(cohortId)}` : ''
         const { data } = await api.get(`/api/trainer/presence${qs}`)
         setPresence(data || { users: [] })
       }catch(_){ setPresence({ users: [] }) }
@@ -101,7 +145,7 @@ export default function Trainer(){
     load()
     const t = setInterval(load, 5000)
     return ()=> clearInterval(t)
-  },[presenceFilters.cohort])
+  },[cohortId])
 
   // Auto refresh participants/status every 5s when a session is active
   useEffect(()=>{
@@ -131,7 +175,15 @@ export default function Trainer(){
   }
   const pause = async ()=>{ await api.patch(`/api/sessions/${sessionId}/pause`) }
   const resume = async ()=>{ await api.patch(`/api/sessions/${sessionId}/resume`) }
-  const end = async ()=>{ await api.patch(`/api/sessions/${sessionId}/end`) }
+  const end = async ()=>{ 
+    try{
+      await api.patch(`/api/sessions/${sessionId}/end`)
+    }finally{
+      setSessionId(null)
+      setSessionInfo(null)
+      setTick(null)
+    }
+  }
   const broadcast = async ()=>{ await api.post(`/api/sessions/${sessionId}/broadcast`, { message }); setMessage('') }
   const loadStatus = async ()=>{
     if(!sessionId) return
@@ -154,7 +206,7 @@ export default function Trainer(){
     }catch(_){ setSessionInfo(null) }
   }
 
-  // load scenario types when scenarioId changes
+  // load scenario types when scenarioId changes (best-effort; may require designer role)
   useEffect(()=>{
     const run = async ()=>{
       if(!scenarioId) return
@@ -228,37 +280,15 @@ export default function Trainer(){
     <Paper sx={{ p:2 }}>
       <Typography variant="h5" gutterBottom>Trainer – Session Control</Typography>
       
-      {/* Session Info - Prominent if active */}
-      {sessionId && sessionInfo && (
-        <Paper variant="outlined" sx={{ p:2, mb:2, bgcolor: sessionInfo.status==='running'?'#e8f5e9':'#f5f5f5' }}>
-          <Stack spacing={1.5}>
-            <Stack direction="row" spacing={3} alignItems="center" flexWrap="wrap">
-              <Chip label={`Session #${sessionId}`} size="small" variant="outlined" />
-              <Chip label={sessionInfo.status || 'unknown'} color={sessionInfo.status==='running'?'success':sessionInfo.status==='created'?'default':sessionInfo.status==='paused'?'warning':'error'} />
-              <Typography variant="body2" fontWeight="bold">Round {sessionInfo.current_round || 1} / {sessionInfo.general?.rounds || '?'}</Typography>
-              <Typography variant="body2">{sessionInfo.scenario_name || 'Scenario'}</Typography>
-              <Typography variant="caption" color="text.secondary">Mode: {sessionInfo.mode === 'isolated_per_player' ? 'Solo' : 'Shared Market'}</Typography>
-              <Box sx={{ flexGrow: 1 }} />
-              <Typography variant="h6" color={tick && tick > 0 ? 'primary' : 'text.secondary'}>{tick !== null ? `${tick}s` : ''}</Typography>
-            </Stack>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Button onClick={pause} disabled={!sessionId} variant="outlined" size="small">Pause</Button>
-              <Button onClick={resume} disabled={!sessionId} variant="outlined" size="small">Resume</Button>
-              <Button onClick={end} disabled={!sessionId} variant="outlined" color="error" size="small">End</Button>
-            </Stack>
-          </Stack>
-        </Paper>
-      )}
-      
-      {/* Start New Session Section */}
+      {/* Start New Scenario Section - with Cohort -> Campaign -> Scenario selection */}
       <Paper variant="outlined" sx={{ p:2, mb:2 }}>
-        <Typography variant="subtitle1" gutterBottom>Start New Session</Typography>
+        <Typography variant="subtitle1" gutterBottom>Start New Scenario</Typography>
         <Stack spacing={1.5}>
-          {/* First row: Cohort, Scenario, Mode, Player Types */}
+          {/* First row: Cohort, Campaign, Scenario, Mode, Player Types */}
           <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-end">
             <Stack spacing={0.5} sx={{ minWidth: 180 }}>
               <InfoLabel title="Cohort" tooltip="Select the cohort whose players will participate." />
-              <Select size="small" value={cohortId} onChange={e=>setCohortId(e.target.value)} displayEmpty>
+              <Select size="small" value={cohortId} onChange={e=>setCohortId(e.target.value)} displayEmpty disabled={!!sessionId}>
                 {cohorts.length === 0 && <MenuItem value="">Loading...</MenuItem>}
                 {cohorts.map(c => (
                   <MenuItem key={c.id} value={String(c.id)}>
@@ -267,25 +297,44 @@ export default function Trainer(){
                 ))}
               </Select>
             </Stack>
-            <Stack spacing={0.5} sx={{ minWidth: 180 }}>
-              <InfoLabel title="Scenario" tooltip="Select the scenario configuration." />
-              <Select size="small" value={scenarioId} onChange={e=>setScenarioId(e.target.value)} displayEmpty>
-                {scenarios.length === 0 && <MenuItem value="">Loading...</MenuItem>}
-                {scenarios.map(s => (
-                  <MenuItem key={s.id} value={String(s.id)}>
-                    {s.name || `Scenario ${s.id}`}
+            <Stack spacing={0.5} sx={{ minWidth: 200 }}>
+              <InfoLabel title="Campaign" tooltip="Select a campaign available for this cohort." />
+              <Select size="small" value={campaignId} onChange={e=>setCampaignId(e.target.value)} displayEmpty disabled={!!sessionId || campaigns.length===0}>
+                {campaigns.length === 0 && <MenuItem value=""><em>No campaigns</em></MenuItem>}
+                {campaigns.map(c => (
+                  <MenuItem key={c.campaign_id} value={String(c.campaign_id)}>
+                    {c.name}
                   </MenuItem>
                 ))}
               </Select>
             </Stack>
+            <Stack spacing={0.5} sx={{ minWidth: 180 }}>
+              <InfoLabel title="Scenario" tooltip="Pick a scenario from the selected campaign." />
+              {sessionId ? (
+                <TextField size="small" value={sessionInfo?.scenario_name || ''} disabled />
+              ) : (
+                <Select size="small" value={scenarioId} onChange={e=>setScenarioId(e.target.value)} displayEmpty disabled={!campaignId}>
+                  {campScenarios.length === 0 && <MenuItem value=""><em>No scenarios</em></MenuItem>}
+                  {campScenarios.map(s => (
+                    <MenuItem key={s.scenario_id} value={String(s.scenario_id)}>
+                      {s.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              )}
+            </Stack>
             <Stack spacing={0.5} sx={{ minWidth: 140 }}>
               <InfoLabel title="Mode" tooltip="Solo: private markets; Shared: one market for all" />
-              <Select size="small" value={mode} onChange={e=>setMode(e.target.value)}>
+              <Select size="small" value={mode} onChange={e=>setMode(e.target.value)} disabled={!!sessionId}>
                 <MenuItem value="isolated_per_player">Solo</MenuItem>
                 <MenuItem value="shared_market">Shared</MenuItem>
               </Select>
             </Stack>
-            {mode==='shared_market' && allowedTypes.map((row, idx)=> (
+            {/* Player type inputs moved to next row */}
+          </Stack>
+          {/* Second row: Player types on their own line; Start behind them */}
+          <Stack direction="row" spacing={2} alignItems="flex-end" flexWrap="wrap" useFlexGap>
+            {!sessionId && mode==='shared_market' && allowedTypes.map((row, idx)=> (
               <Stack key={row.type_id} spacing={0.5} sx={{ minWidth: 160 }}>
                 <InfoLabel title={row.name || row.type_id} tooltip={`Max players for ${row.name || row.type_id}`} />
                 <Stack direction="row" spacing={1} alignItems="center">
@@ -299,7 +348,7 @@ export default function Trainer(){
                           await api.patch(`/api/sessions/${sessionId}/allowed-types`, { 
                             allowed: newAllowed.filter(t=> t.enabled).map(t=> ({ type_id: t.type_id, max_players: t.max_players ?? null })) 
                           })
-                        }catch(_){}
+                        }catch(_){ }
                       }
                     }} 
                     size="small" 
@@ -309,7 +358,7 @@ export default function Trainer(){
                     type="number" 
                     placeholder="Max" 
                     value={row.max_players} 
-                    onChange={async(e)=>{
+                    onChange={(e)=>{
                       const v = e.target.value
                       const newAllowed = allowedTypes.map((r,i)=> i===idx? { ...r, max_players: v===''? '' : Number(v) }: r)
                       setAllowedTypes(newAllowed)
@@ -320,7 +369,7 @@ export default function Trainer(){
                           await api.patch(`/api/sessions/${sessionId}/allowed-types`, { 
                             allowed: allowedTypes.filter(t=> t.enabled).map(t=> ({ type_id: t.type_id, max_players: t.max_players ?? null })) 
                           })
-                        }catch(_){}
+                        }catch(_){ }
                       }
                     }}
                     sx={{ width: 80 }} 
@@ -328,24 +377,52 @@ export default function Trainer(){
                 </Stack>
               </Stack>
             ))}
-          </Stack>
-          {/* Second row: Auto-navigate and Start button */}
-          <Stack direction="row" spacing={2} alignItems="center">
-            <FormControlLabel control={<Checkbox checked={forceNavigate} onChange={e=> setForceNavigate(e.target.checked)} size="small" />} label="Auto-navigate players" />
-            <Button variant="contained" onClick={start} size="large">Start Session</Button>
+            <Box sx={{ flexGrow: 1 }} />
+            <Button variant="contained" onClick={start} size="large" disabled={!!sessionId || !scenarioId}>Start Scenario</Button>
+            <FormControlLabel control={<Checkbox checked={forceNavigate} onChange={e=> setForceNavigate(e.target.checked)} size="small" />} label="Auto-navigate players" disabled={!!sessionId} />
           </Stack>
         </Stack>
       </Paper>
 
-      {/* Broadcast - above Online Now */}
-      {sessionId && (
-        <Paper variant="outlined" sx={{ p:1.5, mt:2, mb:1 }}>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <TextField size="small" label="Broadcast message" value={message} onChange={e=>setMessage(e.target.value)} sx={{ flexGrow: 1, minWidth: 300 }} />
-            <Button onClick={broadcast} disabled={!sessionId || !message} variant="contained">Send</Button>
+      {/* Session Info - NOW SECOND, with control buttons on right */}
+      {sessionId && sessionInfo && (
+        <Paper variant="outlined" sx={{ p:2, mb:2, bgcolor: sessionInfo.status==='running'?'#e8f5e9':'#f5f5f5' }}>
+          <Stack direction="row" spacing={3} alignItems="center" flexWrap="wrap">
+            <Chip label={`Session #${sessionId}`} size="small" variant="outlined" />
+            <Chip label={sessionInfo.status || 'unknown'} color={sessionInfo.status==='running'?'success':sessionInfo.status==='created'?'default':sessionInfo.status==='paused'?'warning':'error'} />
+            <Typography variant="body2" fontWeight="bold">Round {sessionInfo.current_round || 1} / {sessionInfo.general?.rounds || '?'}</Typography>
+            <Typography variant="body2">{sessionInfo.scenario_name || 'Scenario'}</Typography>
+            <Typography variant="caption" color="text.secondary">Mode: {sessionInfo.mode === 'isolated_per_player' ? 'Solo' : 'Shared Market'}</Typography>
+            <Typography variant="h6" color={tick && tick > 0 ? 'primary' : 'text.secondary'}>{tick !== null ? `${tick}s` : ''}</Typography>
+            <Box sx={{ flexGrow: 1 }} />
+            {/* Control buttons on the right */}
+            <Tooltip title="Pause session"><IconButton onClick={pause} disabled={!sessionId} color="primary" size="small"><PauseIcon /></IconButton></Tooltip>
+            <Tooltip title="Resume session"><IconButton onClick={resume} disabled={!sessionId || (sessionInfo?.status==='running')} color="primary" size="small"><ResumeIcon /></IconButton></Tooltip>
+            <Tooltip title="End session"><IconButton onClick={end} disabled={!sessionId} color="error" size="small"><StopIcon /></IconButton></Tooltip>
           </Stack>
         </Paper>
       )}
+
+      {/* Broadcast - ALWAYS visible, sends to all players */}
+      <Paper variant="outlined" sx={{ p:1.5, mt:2, mb:1 }}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <TextField size="small" label="Broadcast message" value={message} onChange={e=>setMessage(e.target.value)} sx={{ flexGrow: 1, minWidth: 300 }} />
+          <Button onClick={async()=>{
+            if(!message) return
+            try{
+              // Send via socketio to ALL players (not session-specific)
+              await api.post('/api/trainer/broadcast', { message })
+              setMessage('')
+            }catch(e){
+              // Fallback: if session exists, use session broadcast
+              if(sessionId){
+                await api.post(`/api/sessions/${sessionId}/broadcast`, { message })
+                setMessage('')
+              }
+            }
+          }} disabled={!message} variant="contained">Send to All</Button>
+        </Stack>
+      </Paper>
 
       {/* Presence Panel - integrated with player/type info */}
       <Paper variant="outlined" sx={{ p:2, mt:2, flex:1 }}>
@@ -357,7 +434,7 @@ export default function Trainer(){
             <TextField size="small" label="Filter Scenario" value={presenceFilters.scenario} onChange={e=> setPresenceFilters(f=> ({...f, scenario: e.target.value}))} sx={{ width: 160 }} />
             <Button size="small" onClick={async()=>{
               try{
-                const qs = presenceFilters.cohort ? `?cohort_id=${encodeURIComponent(presenceFilters.cohort)}` : ''
+                const qs = cohortId ? `?cohort_id=${encodeURIComponent(cohortId)}` : ''
                 const { data } = await api.get(`/api/trainer/presence${qs}`)
                 setPresence(data || { users: [] })
               }catch(_){ /* ignore */ }
@@ -382,18 +459,25 @@ export default function Trainer(){
                 .filter(u=> u.role !== 'trainer') // Hide trainers from list
                 .map(u=> {
                   const participantInfo = participants.participants.find(p=> p.user_id === u.user_id)
-                  const playerType = participantInfo?.selected_type || '—'
-                  const playerStatus = participantInfo?.status || u.status || '—'
-                  const bgColor = playerStatus === 'playing' ? '#e8f5e9' : playerStatus === 'joined' ? '#fff3e0' : 'transparent'
+                  const playerTypeId = participantInfo?.selected_type || '—'
+                  const playerTypeName = (()=>{
+                    const rec = (brief?.player_types||[]).find(t=> t.id === playerTypeId)
+                    return rec?.name || playerTypeId
+                  })()
+                  const playerStatusRaw = participantInfo?.status || u.status || '—'
+                  const isPlaying = playerStatusRaw === 'playing'
+                  const isConnected = playerStatusRaw === 'joined'
+                  const playerStatus = isPlaying ? 'playing' : isConnected ? 'connected' : playerStatusRaw
+                  const bgColor = isPlaying ? '#e8f5e9' : isConnected ? '#fffde7' : 'transparent'
                   return (
                     <TableRow key={`${u.user_id}-${u.session_id||'none'}`} sx={{ bgcolor: bgColor }}>
                       <TableCell>{u.email || '—'}</TableCell>
                       <TableCell>{u.cohort_name || '—'}</TableCell>
                       <TableCell>{u.campaign_name || '—'}</TableCell>
                       <TableCell>{u.scenario_name || '—'}</TableCell>
-                      <TableCell>{playerType}</TableCell>
+                      <TableCell>{playerTypeName}</TableCell>
                       <TableCell>
-                        <Chip label={playerStatus} size="small" color={playerStatus === 'playing' ? 'success' : playerStatus === 'joined' ? 'warning' : 'default'} />
+                        <Chip label={playerStatus} size="small" color={isPlaying ? 'success' : isConnected ? 'warning' : 'default'} />
                       </TableCell>
                       <TableCell>{u.last_seen ? new Date(u.last_seen).toLocaleTimeString() : '—'}</TableCell>
                     </TableRow>
@@ -408,162 +492,6 @@ export default function Trainer(){
         {log.map((l,i)=>(<Typography key={i} variant="caption" display="block">{l}</Typography>))}
       </Paper>
       
-      {/* MCP Chart */}
-      {series.length>0 && <Stack direction="row" spacing={1} alignItems="center" sx={{ mt:2 }}><Typography variant="subtitle2">MCP</Typography>
-        <span style={{ flex:1 }} />
-        <Button size="small" onClick={()=> mcpRef.current && exportSVG(mcpRef.current, 'trainer_mcp.svg')}>SVG</Button>
-        <Button size="small" onClick={()=> mcpRef.current && exportPNG(mcpRef.current, 'trainer_mcp.png')}>PNG</Button>
-      </Stack>}
-    {series.length>0 && <svg ref={(el)=>{
-          mcpRef.current = el
-          if(!el) return
-      const svg = d3.select(el); svg.selectAll('*').remove();
-    const tipSel = d3.select('body').select('div.emsg-chart-tip')
-    const tooltip = tipSel.empty() ? d3.select('body').append('div').attr('class','emsg-chart-tip') : tipSel
-    tooltip.style('position','absolute').style('pointer-events','none').style('background','#111').style('color','#fff').style('padding','4px 8px').style('border-radius','4px').style('font-size','12px').style('display','none').style('z-index','9999')
-      const m = {top:10,right:10,bottom:30,left:46}; const w=360-m.left-m.right; const h=120-m.top-m.bottom;
-          const g = svg.append('g').attr('transform',`translate(${m.left},${m.top})`)
-          const x = d3.scaleLinear().domain([1, d3.max(series, d=> d.r)||1]).range([0,w])
-          const y = d3.scaleLinear().domain([d3.min(series, d=> d.mcp)||0, d3.max(series, d=> d.mcp)||1]).nice().range([h,0])
-          const line = d3.line().x(d=> x(d.r)).y(d=> y(d.mcp))
-      // gridlines
-      g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-w).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
-          g.append('path').datum(series).attr('fill','none').attr('stroke','#2e7d32').attr('stroke-width',2).attr('d', line)
-          g.append('g').attr('transform',`translate(0,${h})`).call(d3.axisBottom(x).ticks(series.length))
-          g.append('g').call(d3.axisLeft(y).ticks(4))
-          // points + tooltips
-          g.selectAll('circle.point')
-            .data(series)
-            .enter()
-            .append('circle')
-            .attr('class','point')
-            .attr('cx', d=> x(d.r))
-            .attr('cy', d=> y(d.mcp))
-            .attr('r', 3)
-            .attr('fill', '#2e7d32')
-            .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`R${d.r}: ${d.mcp} ZAR/MWh`) })
-            .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
-            .on('mouseleave', ()=> { tooltip.style('display','none') })
-      // axis labels
-      g.append('text').attr('x', w/2).attr('y', h+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Round')
-      g.append('text').attr('transform','rotate(-90)').attr('x', -h/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('MCP (ZAR/MWh)')
-        }} width={360} height={120} style={{border:'1px solid #eee'}} />}
-
-      {/* Volume Chart */}
-      {series.length>0 && <Stack direction="row" spacing={1} alignItems="center" sx={{ mt:2 }}><Typography variant="subtitle2">Volume</Typography>
-        <span style={{ flex:1 }} />
-        <Button size="small" onClick={()=> volRef.current && exportSVG(volRef.current, 'trainer_volume.svg')}>SVG</Button>
-        <Button size="small" onClick={()=> volRef.current && exportPNG(volRef.current, 'trainer_volume.png')}>PNG</Button>
-      </Stack>}
-    {series.length>0 && <svg ref={(el)=>{
-          volRef.current = el
-          if(!el) return
-      const svg = d3.select(el); svg.selectAll('*').remove();
-    const tipSel = d3.select('body').select('div.emsg-chart-tip')
-    const tooltip = tipSel.empty() ? d3.select('body').append('div').attr('class','emsg-chart-tip') : tipSel
-    tooltip.style('position','absolute').style('pointer-events','none').style('background','#111').style('color','#fff').style('padding','4px 8px').style('border-radius','4px').style('font-size','12px').style('display','none').style('z-index','9999')
-      const m = {top:10,right:10,bottom:30,left:46}; const w=360-m.left-m.right; const h=120-m.top-m.bottom;
-          const g = svg.append('g').attr('transform',`translate(${m.left},${m.top})`)
-          const x = d3.scaleLinear().domain([1, d3.max(series, d=> d.r)||1]).range([0,w])
-          const y = d3.scaleLinear().domain([0, d3.max(series, d=> d.volume)||1]).nice().range([h,0])
-          const line = d3.line().x(d=> x(d.r)).y(d=> y(d.volume))
-      // gridlines
-      g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-w).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
-          g.append('path').datum(series).attr('fill','none').attr('stroke','#1976d2').attr('stroke-width',2).attr('d', line)
-          g.append('g').attr('transform',`translate(0,${h})`).call(d3.axisBottom(x).ticks(series.length))
-          g.append('g').call(d3.axisLeft(y).ticks(4))
-          // points + tooltips
-          g.selectAll('circle.point')
-            .data(series)
-            .enter()
-            .append('circle')
-            .attr('class','point')
-            .attr('cx', d=> x(d.r))
-            .attr('cy', d=> y(d.volume))
-            .attr('r', 3)
-            .attr('fill', '#1976d2')
-            .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`R${d.r}: ${d.volume} MWh`) })
-            .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
-            .on('mouseleave', ()=> { tooltip.style('display','none') })
-      // axis labels
-      g.append('text').attr('x', w/2).attr('y', h+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Round')
-      g.append('text').attr('transform','rotate(-90)').attr('x', -h/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Volume (MWh)')
-        }} width={360} height={120} style={{border:'1px solid #eee'}} />}
-
-      {/* KPI Profit Top N */}
-      {Object.keys(agg).length>0 && <Stack direction="row" spacing={1} alignItems="center" sx={{ mt:2 }}><Typography variant="subtitle2">Top Profit</Typography>
-        <span style={{ flex:1 }} />
-        <Button size="small" onClick={()=> topRef.current && exportSVG(topRef.current, 'trainer_top_profit.svg')}>SVG</Button>
-        <Button size="small" onClick={()=> topRef.current && exportPNG(topRef.current, 'trainer_top_profit.png')}>PNG</Button>
-      </Stack>}
-      {Object.keys(agg).length>0 && <svg ref={(el)=>{
-          topRef.current = el
-          if(!el) return
-          const data = Object.entries(agg).map(([pid, v])=> ({ player_id: Number(pid), profit: v.profit }))
-            .sort((a,b)=> b.profit - a.profit).slice(0,8)
-          const svg = d3.select(el); svg.selectAll('*').remove();
-          const m = {top:10,right:10,bottom:20,left:40}; const w=360-m.left-m.right; const h=150-m.top-m.bottom;
-          const g = svg.append('g').attr('transform',`translate(${m.left},${m.top})`)
-          const x = d3.scaleLinear().domain([0, d3.max(data, d=> d.profit)||1]).range([0,w])
-          const y = d3.scaleBand().domain(data.map(d=> String(d.player_id))).range([0,h]).padding(0.2)
-          g.append('g').call(d3.axisLeft(y))
-          g.append('g').attr('transform',`translate(0,${h})`).call(d3.axisBottom(x).ticks(4))
-          g.selectAll('rect').data(data).enter().append('rect')
-            .attr('x', 0).attr('y', d=> y(String(d.player_id)))
-            .attr('width', d=> x(d.profit)).attr('height', y.bandwidth())
-            .attr('fill', '#9c27b0')
-            .append('title').text(d=> `P${d.player_id}: ${d.profit} ZAR`)
-        }} width={360} height={150} style={{border:'1px solid #eee'}} />}
-        {/* KPI Imbalance & Curtailment (Top N combined as two small charts) */}
-        {Object.keys(agg).length>0 && <Stack direction="row" spacing={2} sx={{ mt:2 }}>
-          <svg width={360} height={150} style={{border:'1px solid #eee'}} ref={(el)=>{
-            if(!el) return
-            const data = Object.entries(agg).map(([pid, v])=> ({ player_id: Number(pid), val: v.imbalance }))
-              .sort((a,b)=> b.val - a.val).slice(0,8)
-            const svg = d3.select(el); svg.selectAll('*').remove();
-            const m = {top:10,right:10,bottom:20,left:60}; const w=360-m.left-m.right; const h=150-m.top-m.bottom;
-            const g = svg.append('g').attr('transform',`translate(${m.left},${m.top})`)
-            const x = d3.scaleLinear().domain([0, d3.max(data, d=> d.val)||1]).range([0,w])
-            const y = d3.scaleBand().domain(data.map(d=> String(d.player_id))).range([0,h]).padding(0.2)
-            g.append('g').call(d3.axisLeft(y))
-            g.append('g').attr('transform',`translate(0,${h})`).call(d3.axisBottom(x).ticks(4))
-            g.selectAll('rect').data(data).enter().append('rect')
-              .attr('x', 0).attr('y', d=> y(String(d.player_id)))
-              .attr('width', d=> x(d.val)).attr('height', y.bandwidth())
-              .attr('fill', '#f57c00')
-          }} />
-          <svg width={360} height={150} style={{border:'1px solid #eee'}} ref={(el)=>{
-            if(!el) return
-            const data = Object.entries(agg).map(([pid, v])=> ({ player_id: Number(pid), val: v.curtailment }))
-              .sort((a,b)=> b.val - a.val).slice(0,8)
-            const svg = d3.select(el); svg.selectAll('*').remove();
-            const m = {top:10,right:10,bottom:20,left:60}; const w=360-m.left-m.right; const h=150-m.top-m.bottom;
-            const g = svg.append('g').attr('transform',`translate(${m.left},${m.top})`)
-            const x = d3.scaleLinear().domain([0, d3.max(data, d=> d.val)||1]).range([0,w])
-            const y = d3.scaleBand().domain(data.map(d=> String(d.player_id))).range([0,h]).padding(0.2)
-            g.append('g').call(d3.axisLeft(y))
-            g.append('g').attr('transform',`translate(0,${h})`).call(d3.axisBottom(x).ticks(4))
-            g.selectAll('rect').data(data).enter().append('rect')
-              .attr('x', 0).attr('y', d=> y(String(d.player_id)))
-              .attr('width', d=> x(d.val)).attr('height', y.bandwidth())
-              .attr('fill', '#c62828')
-          }} />
-        </Stack>}
-      <Stack direction="row" spacing={1} sx={{ mt:2 }}>
-        <Button size="small" onClick={()=> { setSeries([]); setAgg({}) }}>Reset Charts</Button>
-      </Stack>
-
-      {/* Type Distribution & Capacity Remaining */}
-      {brief && <>
-        <Typography variant="subtitle1" sx={{ mt:2 }}>Type Distribution</Typography>
-        <svg ref={typeDistRef} width={360} height={150} style={{border:'1px solid #eee'}} />
-        {Array.isArray(brief.allowed_player_types) && <>
-          <Typography variant="subtitle1" sx={{ mt:2 }}>Capacity Remaining (by Type)</Typography>
-          <svg ref={capRemainRef} width={360} height={150} style={{border:'1px solid #eee'}} />
-        </>}
-        <Typography variant="subtitle1" sx={{ mt:2 }}>Top Devices (by assigned players)</Typography>
-        <svg ref={devFreqRef} width={360} height={150} style={{border:'1px solid #eee'}} />
-      </>}
       <DocsFab href="/docs/trainer" label="Open Trainer Handbook" />
     </Paper>
   )

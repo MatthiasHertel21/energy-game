@@ -76,7 +76,7 @@ class ForecastAPI(Resource):
                 # replace hours slice with aggregate for compatibility
                 data["hours"] = agg or data["hours"]
             
-            if devices_cfg:
+            if devices_cfg and not (isinstance(per_device, list) and per_device):
                 validation_errors = []
                 for device in devices_cfg:
                     errors = validate_forecast_constraints(device, data["hours"])
@@ -143,7 +143,7 @@ class ForecastFull(Resource):
                     return {"error": "Forecast validation failed", "details": validation_errors}, HTTPStatus.BAD_REQUEST
                 data["hours"] = agg or data["hours"]
             
-            if devices_cfg:
+            if devices_cfg and not (isinstance(per_device, list) and per_device):
                 validation_errors = []
                 for device in devices_cfg:
                     errors = validate_forecast_constraints(device, data["hours"])

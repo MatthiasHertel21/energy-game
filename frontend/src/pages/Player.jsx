@@ -14,9 +14,10 @@ import {
   Grid,
   CircularProgress,
   Chip,
-  LinearProgress
+  LinearProgress,
+  Divider
 } from '@mui/material'
-import { BarChart, ViewList, InfoOutlined } from '@mui/icons-material'
+import { BarChart, ViewList, InfoOutlined, MenuBook as BriefingIcon } from '@mui/icons-material'
 import { IconButton } from '@mui/material'
 import InfoLabel from '../components/InfoLabel'
 import ForecastChartEditor from '../components/ForecastChartEditor'
@@ -91,6 +92,8 @@ export default function Player() {
   const [activeEvents, setActiveEvents] = useState([])
   const [dismissedEvents, setDismissedEvents] = useState(new Set())
   const [useChartEditor, setUseChartEditor] = useState(true)
+  const [deviceView, setDeviceView] = useState({}) // { device_id: 'chart'|'fields' }
+  const [submitted, setSubmitted] = useState(false)
 
   // Auto-load active session
   useEffect(() => {
@@ -145,15 +148,20 @@ export default function Player() {
         })
         setStatus(data.status || 'pending')
         setMode(data.mode || 'isolated_per_player')
-        // Initialize countdown immediately if running (before first tick arrives)
+        // Initialize duration, but do NOT reset remaining time on reload; wait for server ticks or restore from storage
         try{
+          const initial = Number((gen.round_duration_seconds || 300))
+          const safe = isFinite(initial) ? initial : 300
+          setInitialDuration(safe)
+          // If joining fresh (no stored timer) and session is running, show full duration until first tick arrives
           if ((data.status || 'pending') === 'running'){
-            const initial = Number((gen.round_duration_seconds || 300))
-            const safe = isFinite(initial) ? initial : 300
-            setInitialDuration(safe)
-            setTimeRemaining(safe)
-          } else {
-            setInitialDuration(Number(gen.round_duration_seconds || 300))
+            try{
+              const key = `emsg_timer_${sessionId}`
+              const raw = sessionStorage.getItem(key)
+              if (!raw) {
+                setTimeRemaining(safe)
+              }
+            }catch(_){ }
           }
         }catch(_){ /* ignore */ }
 
@@ -169,9 +177,10 @@ export default function Player() {
           setPlayerTypes(pts)
           setScenarioDevices(devices)
           // load type devices from scenario config if selected
+          let devs = []
           if(sel){
             const t = (pts||[]).find(x=> x.id===sel)
-            const devs = t?.devices || []
+            devs = t?.devices || []
             setTypeDevices(devs)
             // initialize deviceHours if empty
             setDeviceHours(prev=>{
@@ -184,36 +193,36 @@ export default function Player() {
           if((data.mode === 'shared_market') && allowed.length>0 && !sel){
             setTypeDialogOpen(true)
           }
-        }catch(_){ /* ignore */ }
 
-        // Load saved full forecast and seed defaults if empty
-        const saved = await api.get(`/api/player/forecast/full`, { params: { session_id: Number(sessionId) } })
-        const savedHours = Array.isArray(saved.data?.hours) ? saved.data.hours : null
-        const hasNonZero = Array.isArray(savedHours) ? savedHours.some(v => Number(v) !== 0) : false
-        const genDefaultProfile = (len)=>{
-          // simple diurnal shape repeated; scaled baseline 50 MWh
-          const diurnal = [0.6,0.6,0.6,0.6,0.7,0.85,1.0,1.15,1.25,1.2,1.1,1.0,0.95,1.0,1.05,1.15,1.2,1.25,1.15,1.0,0.9,0.8,0.7,0.65]
-          const base = 50
-          return Array.from({length: len}, (_,i)=> Number((base * diurnal[i%24]).toFixed(2)))
-        }
-        if (hasNonZero) {
-          setHours(savedHours)
-        } else {
-          if (data.mode === 'shared_market' && selectedType && (typeDevices||[]).length>0){
-            const n = (typeDevices||[]).length
-            const perDev = Math.max(1, Math.round(50/n))
-            const devDefaults = {}
-            ;(typeDevices||[]).forEach(did=>{
-              devDefaults[did] = genDefaultProfile(fh).map(v=> Number((v * (perDev/50)).toFixed(2)))
-            })
-            setDeviceHours(devDefaults)
-            // aggregate
-            const agg = Array.from({length: fh}, (_,h)=> (typeDevices||[]).reduce((sum, did)=> sum + (devDefaults[did]?.[h]||0), 0))
-            setHours(agg)
-          } else {
-            setHours(genDefaultProfile(fh))
+          // Load saved full forecast and seed defaults if empty
+          const saved = await api.get(`/api/player/forecast/full`, { params: { session_id: Number(sessionId) } })
+          const savedHours = Array.isArray(saved.data?.hours) ? saved.data.hours : null
+          const hasNonZero = Array.isArray(savedHours) ? savedHours.some(v => Number(v) !== 0) : false
+          const fhHours = Number(gen.forecast_horizon_hours || gen.horizon_hours || 24)
+          const genDefaultProfile = (len)=>{
+            const diurnal = [0.6,0.6,0.6,0.6,0.7,0.85,1.0,1.15,1.25,1.2,1.1,1.0,0.95,1.0,1.05,1.15,1.2,1.25,1.15,1.0,0.9,0.8,0.7,0.65]
+            const base = 50
+            return Array.from({length: len}, (_,i)=> Number((base * diurnal[i%24]).toFixed(2)))
           }
-        }
+          if (hasNonZero) {
+            setHours(savedHours)
+          } else {
+            if (data.mode === 'shared_market' && sel && (devs||[]).length>0){
+              const n = devs.length
+              const perDev = Math.max(1, Math.round(50/n))
+              const devDefaults = {}
+              devs.forEach(did=>{
+                devDefaults[did] = genDefaultProfile(fhHours).map(v=> Number((v * (perDev/50)).toFixed(2)))
+              })
+              setDeviceHours(devDefaults)
+              const agg = Array.from({length: fhHours}, (_,h)=> devs.reduce((sum, id)=> sum + (devDefaults[id]?.[h]||0), 0))
+              setHours(agg)
+            } else {
+              setHours(genDefaultProfile(fhHours))
+            }
+          }
+        }catch(_){ /* ignore */ }
+        
       } catch (error) {
         console.error('Failed to load session config:', error)
         showSnack('Failed to load session configuration', 'error')
@@ -240,21 +249,31 @@ export default function Player() {
       try { s.emit('join_session', { session_id: Number(sessionId) }) } catch(_) {}
     })
 
-    s.on('round_start', (p) => {
+    s.on('round_start', async (p) => {
       if (Number(p?.session_id) === Number(sessionId)) {
         setTimeRemaining(null)
+        try{ sessionStorage.removeItem(`emsg_timer_${sessionId}`) }catch(_){ }
+        setSubmitted(false)
+        try{
+          const { data } = await api.get(`/api/sessions/${sessionId}`)
+          setCfg(prev=> ({ ...prev, current_round: Number(data.current_round||prev.current_round), scenario_name: data.scenario_name||prev.scenario_name }))
+          setStatus(data.status||prev.status)
+        }catch(_){ }
       }
     })
 
     s.on('tick', (p) => {
       if (Number(p?.session_id) === Number(sessionId)) {
-        setTimeRemaining(Number(p.remaining))
+        const rem = Number(p.remaining)
+        setTimeRemaining(rem)
+        try{ sessionStorage.setItem(`emsg_timer_${sessionId}`, JSON.stringify({ t: Date.now(), rem })) }catch(_){ }
       }
     })
 
     s.on('round_end', (p) => {
       if (Number(p?.session_id) === Number(sessionId)) {
         setTimeRemaining(0)
+        try{ sessionStorage.setItem(`emsg_timer_${sessionId}`, JSON.stringify({ t: Date.now(), rem: 0 })) }catch(_){ }
       }
     })
 
@@ -294,9 +313,9 @@ export default function Player() {
     })
 
     // Mirror the same handlers on legacy socket for safety
-    sLegacy.on('round_start', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) setTimeRemaining(null) })
-    sLegacy.on('tick', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) setTimeRemaining(Number(p.remaining)) })
-    sLegacy.on('round_end', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) setTimeRemaining(0) })
+    sLegacy.on('round_start', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) { setTimeRemaining(null); try{ sessionStorage.removeItem(`emsg_timer_${sessionId}`) }catch(_){ } } })
+    sLegacy.on('tick', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) { const rem = Number(p.remaining); setTimeRemaining(rem); try{ sessionStorage.setItem(`emsg_timer_${sessionId}`, JSON.stringify({ t: Date.now(), rem })) }catch(_){ } } })
+    sLegacy.on('round_end', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) { setTimeRemaining(0); try{ sessionStorage.setItem(`emsg_timer_${sessionId}`, JSON.stringify({ t: Date.now(), rem: 0 })) }catch(_){ } } })
     sLegacy.on('market_cleared', (p)=>{
       if (p && Number(p.session_id)===Number(sessionId)){
         setLive({ mcp: p.mcp, volume: p.volume, round: p.round })
@@ -320,7 +339,9 @@ export default function Player() {
         setTimeRemaining(prev=>{
           if (!Number.isFinite(Number(prev))) return prev
           const next = Number(prev) - 1
-          return next >= 0 ? next : 0
+          const clamped = next >= 0 ? next : 0
+          try{ sessionStorage.setItem(`emsg_timer_${sessionId}`, JSON.stringify({ t: Date.now(), rem: clamped })) }catch(_){ }
+          return clamped
         })
       }, 1000)
       return ()=> { if (localTimerRef.current) clearInterval(localTimerRef.current) }
@@ -328,6 +349,40 @@ export default function Player() {
       if (localTimerRef.current) clearInterval(localTimerRef.current)
     }
   }, [status, timeRemaining])
+
+  // Restore remaining time from storage on reload to avoid reset
+  useEffect(()=>{
+    if (!sessionId) return
+    try{
+      const raw = sessionStorage.getItem(`emsg_timer_${sessionId}`)
+      if (raw){
+        const { t, rem } = JSON.parse(raw)
+        if (typeof rem === 'number' && typeof t === 'number'){
+          const dt = Math.max(0, (Date.now() - t) / 1000)
+          const est = Math.max(0, Math.round(rem - dt))
+          setTimeRemaining(est)
+        }
+      }
+    }catch(_){ }
+  }, [sessionId])
+
+  // Ensure per-device hours arrays are initialized to horizon length
+  useEffect(()=>{
+    if (!selectedType || !Array.isArray(typeDevices) || typeDevices.length===0) return
+    const fh = Number(cfg.general.forecast_horizon_hours||24)
+    setDeviceHours(prev => {
+      let changed = false
+      const next = { ...prev }
+      typeDevices.forEach(did => {
+        if (!Array.isArray(next[did]) || next[did].length !== fh) {
+          const existing = Array.isArray(prev[did]) ? prev[did] : []
+          next[did] = Array.from({ length: fh }, (_, i) => Number(existing[i] || 0))
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [selectedType, typeDevices, cfg.general.forecast_horizon_hours])
 
   // D3 Charts
   useEffect(() => {
@@ -485,8 +540,11 @@ export default function Player() {
       await api.post('/api/player/forecast', payload)
       showSnack(`Round ${r} submitted successfully!`, 'success')
       triggerConfetti()
+      setSubmitted(true)
     } catch (e) {
-      showSnack(e?.response?.data?.message || 'Submit failed', 'error')
+      const msg = e?.response?.data?.error || e?.response?.data?.message || 'Submit failed'
+      const details = e?.response?.data?.details
+      showSnack(details ? `${msg}: ${Array.isArray(details)? details[0] : details}` : msg, 'error')
     }
   }
 
@@ -560,12 +618,12 @@ export default function Player() {
         </DialogActions>
       </Dialog>
       <Typography variant="h4" gutterBottom>
-        Round Editor
+        Play Scenario – {cfg.scenario_name} (Round {cfg.current_round})
       </Typography>
-      <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 3 }}>
-        <Typography variant="body1" color="text.secondary">
-          {cfg.scenario_name} - Round {cfg.current_round}
-        </Typography>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
+        <Button size="small" startIcon={<BriefingIcon />} onClick={()=> navigate(`/briefing/${sessionId}`)}>
+          Briefing
+        </Button>
         <Tooltip arrow title={
           mode === 'isolated_per_player' 
             ? 'Solo Mode: You have your own private market. Your decisions only affect your own results.' 
@@ -584,7 +642,7 @@ export default function Player() {
             if (!typeInfo) return selectedType
             const devices = typeDevices.map(did => {
               const dev = scenarioDevices.find(d => d.id === did)
-              return dev ? `${did} (${dev.type})` : did
+              return dev ? `${dev.name || did} (${dev.type})` : did
             }).join(', ')
             return `${typeInfo.name} • Devices: ${devices || 'none'}`
           })()}>
@@ -595,6 +653,10 @@ export default function Player() {
             />
           </Tooltip>
         )}
+        <Box sx={{ flexGrow: 1 }} />
+        <Button size="small" variant="outlined" onClick={async()=>{
+          try{ await api.post(`/api/sessions/${sessionId}/force-round-end`); showSnack('Round forced to end', 'info'); navigate('/evaluation?sessionId='+sessionId) }catch(e){ showSnack('Force end failed','error') }
+        }}>Debug: Close and Evaluate</Button>
       </Stack>
 
       {/* Event Notifications */}
@@ -663,7 +725,7 @@ export default function Player() {
                 </Tooltip>
               </Stack>
               {live ? (
-                <Stack spacing={1}>
+                        <Stack spacing={1.5}>
                   <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
                     <Typography variant="body2" color="text.secondary">MCP (Round {live.round})</Typography>
                     <Chip size="small" color="primary" label={`${live.mcp} ZAR/MWh`} />
@@ -680,19 +742,47 @@ export default function Player() {
               )}
             </CardContent>
           </Card>
+
+          {/* My Devices */}
+          {(mode==='shared_market' ? (selectedType && typeDevices.length>0) : (Array.isArray(scenarioDevices)&&scenarioDevices.length>0)) && (
+            <Card sx={{ mt: 2 }}>
+              <CardContent>
+                <Typography variant="h6" gutterBottom>My Devices</Typography>
+                <Stack spacing={1}>
+                  {(mode==='shared_market' ? typeDevices.map(did=> scenarioDevices.find(d=> d.id===did)).filter(Boolean) : scenarioDevices).map((dev)=>{
+                    const t = (dev.type||'').toLowerCase()
+                    const specs = []
+                    if (t.includes('load')){
+                      if (dev.baseline_load_mw!=null) specs.push(`Baseline ${dev.baseline_load_mw} MW`)
+                      if (dev.peak_load_mw!=null) specs.push(`Peak ${dev.peak_load_mw} MW`)
+                    } else if (t==='battery'){
+                      if (dev.power_rating_mw!=null) specs.push(`Power ${dev.power_rating_mw} MW`)
+                      if (dev.capacity_mwh!=null || dev.capacity_mw!=null) specs.push(`Capacity ${dev.capacity_mwh||dev.capacity_mw} MWh`)
+                      if (dev.efficiency_pct!=null) specs.push(`Eff. ${dev.efficiency_pct}%`)
+                    } else {
+                      if (dev.capacity_mw!=null) specs.push(`Capacity ${dev.capacity_mw} MW`)
+                      if (dev.cost_per_mwh_zar!=null) specs.push(`Cost ${dev.cost_per_mwh_zar} ZAR/MWh`)
+                    }
+                            return (
+                              <Stack key={dev.id} direction="row" spacing={1} justifyContent="space-between">
+                                <Typography variant="body2">{dev.name || (dev.type ? (dev.type.charAt(0).toUpperCase()+dev.type.slice(1)) : dev.id)} ({dev.type})</Typography>
+                                <Typography variant="body2" color="text.secondary">{specs.join(' • ')}</Typography>
+                              </Stack>
+                            )
+                  })}
+                </Stack>
+              </CardContent>
+            </Card>
+          )}
         </Grid>
 
         {/* Right: Forecast Editor */}
         <Grid item xs={12} md={8}>
           <Paper sx={{ p: 3 }}>
-            <InfoLabel
-              title="Enter your hourly forecast (MWh)"
-              tooltip="Provide the quantity per simulated hour. Hours ≤ freeze are locked to your Day-Ahead plan. Values are saved as a full horizon and submitted per round."
-            />
 
-            {(timeRemaining === 0) && (
+            {(timeRemaining === 0 || submitted) && (
               <Alert severity="warning" sx={{ mt: 2, mb: 2 }}>
-                Time is up! You can no longer submit this round.
+                {submitted ? 'Forecast submitted. Waiting for round results...' : 'Time is up! You can no longer submit this round.'}
               </Alert>
             )}
             {(mode==='shared_market' && allowedTypes.length>0 && !selectedType) && (
@@ -710,6 +800,17 @@ export default function Player() {
                   const deviceDef = scenarioDevices.find(d=> d.id === did)
                   const deviceType = deviceDef?.type || 'unknown'
                   const deviceParams = deviceDef || {}
+                  const deviceMax = (()=>{
+                    const t = (deviceType||'').toLowerCase()
+                    if (t.includes('load')) return deviceParams.peak_load_mw || (deviceParams.baseline_load_mw ? deviceParams.baseline_load_mw*1.5 : 0)
+                    if (t === 'battery') return deviceParams.power_rating_mw || deviceParams.capacity_mw || 0
+                    return deviceParams.capacity_mw || 0
+                  })()
+                  const fhLocal = Number(cfg.general.forecast_horizon_hours||24)
+                  const series = (Array.isArray(deviceHours[did]) && deviceHours[did].length===fhLocal)
+                    ? deviceHours[did]
+                    : Array.from({length: fhLocal}, ()=> 0)
+                  const view = (deviceView[did] || 'chart')
                   return (
                     <Card key={did} variant="outlined">
                       <CardContent>
@@ -729,32 +830,54 @@ export default function Player() {
                             {deviceType === 'solar' ? '☀' : deviceType === 'wind' ? '🌀' : deviceType === 'gas' ? '🔥' : deviceType === 'storage' ? '🔋' : '⚡'}
                           </Box>
                           <Box sx={{ flex: 1 }}>
-                            <Typography variant="h6">{did}</Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              Type: {deviceType}
-                              {deviceParams.capacity_mw && ` • Capacity: ${deviceParams.capacity_mw} MW`}
-                              {deviceParams.marginal_cost && ` • Cost: ${deviceParams.marginal_cost} ZAR/MWh`}
+                            <Typography variant="h6">{deviceDef?.name || (deviceType ? (deviceType.charAt(0).toUpperCase()+deviceType.slice(1)) : did)}</Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              {(() => {
+                                const t = (deviceType||'').toLowerCase()
+                                if (t.includes('load')) {
+                                  const base = deviceParams.baseline_load_mw != null ? `Baseline: ${deviceParams.baseline_load_mw} MW` : null
+                                  const peak = deviceParams.peak_load_mw != null ? `Peak: ${deviceParams.peak_load_mw} MW` : null
+                                  return [`Type: ${deviceType}`, base, peak].filter(Boolean).join(' • ')
+                                } else {
+                                  const cap = deviceParams.capacity_mw != null ? `Capacity: ${deviceParams.capacity_mw} MW` : null
+                                  const cost = (deviceParams.cost_per_mwh_zar != null ? `Cost: ${deviceParams.cost_per_mwh_zar} ZAR/MWh` : (deviceParams.marginal_cost != null ? `Cost: ${deviceParams.marginal_cost} ZAR/MWh` : null))
+                                  return [`Type: ${deviceType}`, cap, cost].filter(Boolean).join(' • ')
+                                }
+                              })()}
                             </Typography>
                           </Box>
+                          <Stack direction="row" spacing={1}>
+                            {view === 'chart' ? (
+                              <Button size="small" startIcon={<ViewList fontSize="small" />} onClick={()=> setDeviceView(prev=> ({...prev, [did]: 'fields'}))}>Fields</Button>
+                            ) : (
+                              <Button size="small" startIcon={<BarChart fontSize="small" />} onClick={()=> setDeviceView(prev=> ({...prev, [did]: 'chart'}))}>Chart</Button>
+                            )}
+                          </Stack>
                         </Stack>
-                        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
-                          {(deviceHours[did]||[]).map((v,i)=>{
-                            const disabled = i < lockedUntil || timeRemaining === 0
-                            return (
-                              <Tooltip key={`${did}-${i}`} arrow title={`Hour h${i+1} for ${did}`}>
-                                <TextField
-                                  label={`h${i+1}`}
-                                  value={v}
-                                  onChange={(e)=> onDeviceChange(did, i, e.target.value)}
-                                  size="small"
-                                  type="number"
-                                  disabled={disabled}
-                                  sx={{ width: 90, m: 0.5 }}
-                                />
-                              </Tooltip>
-                            )
-                          })}
-                        </Stack>
+                        {view === 'chart' ? (
+                          <Box sx={{ mb: 2 }}>
+                            <ForecastChartEditor hours={series} lockedUntil={effectiveLockedUntil} onChange={(i, val)=> onDeviceChange(did, i, val)} maxValue={deviceMax} smoothRadius={3} />
+                          </Box>
+                        ) : (
+                          <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
+                            {(deviceHours[did]||[]).map((v,i)=>{
+                              const disabled = i < effectiveLockedUntil || timeRemaining === 0
+                              return (
+                                <Tooltip key={`${did}-${i}`} arrow title={`Hour h${i+1} for ${did}`}>
+                                  <TextField
+                                    label={`h${i+1}`}
+                                    value={v}
+                                    onChange={(e)=> onDeviceChange(did, i, e.target.value)}
+                                    size="small"
+                                    type="number"
+                                    disabled={disabled}
+                                    sx={{ width: 90, m: 0.5 }}
+                                  />
+                                </Tooltip>
+                              )
+                            })}
+                          </Stack>
+                        )}
                       </CardContent>
                     </Card>
                   )
@@ -778,7 +901,7 @@ export default function Player() {
                 </Stack>
                 {useChartEditor ? (
                   <Box sx={{ mb: 2 }}>
-                    <ForecastChartEditor hours={hours} lockedUntil={effectiveLockedUntil} onChange={(i, val)=> onChange(i, val)} />
+                    <ForecastChartEditor hours={hours} lockedUntil={effectiveLockedUntil} onChange={(i, val)=> onChange(i, val)} smoothRadius={3} />
                   </Box>
                 ) : (
                   <Box sx={{ mt: 2 }}>
@@ -831,7 +954,7 @@ export default function Player() {
               </Tooltip>
               <Tooltip arrow title={`Submits only the hours of the current round (R${cfg.current_round}).`}>
                 <span>
-                  <Button variant="contained" onClick={submitCurrent} disabled={!isEditable || !isValid || timeRemaining === 0 || (mode==='shared_market' && allowedTypes.length>0 && !selectedType)}>
+                  <Button variant="contained" onClick={submitCurrent} disabled={!isEditable || !isValid || timeRemaining === 0 || submitted || (mode==='shared_market' && allowedTypes.length>0 && !selectedType)}>
                     Submit Current Round
                   </Button>
                 </span>
@@ -852,5 +975,5 @@ export default function Player() {
         </Grid>
       </Grid>
     </Container>
-  )
+  );
 }

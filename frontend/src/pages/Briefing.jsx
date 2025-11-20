@@ -26,10 +26,6 @@ export default function Briefing() {
       try {
         const { data } = await api.get(`/api/sessions/${sessionId}/briefing`)
         setData(data)
-        // Auto-redirect if user already selected a type (avoid repeated timer resets)
-        if (data.selected_type !== undefined && data.selected_type !== null) {
-          navigate(`/player?sessionId=${sessionId}`, { replace: true })
-        }
       } catch (error) {
         console.error('Failed to load briefing:', error)
       } finally {
@@ -37,7 +33,7 @@ export default function Briefing() {
       }
     }
     load()
-  }, [sessionId, navigate])
+  }, [sessionId])
 
   if (loading) {
     return (
@@ -64,9 +60,14 @@ export default function Briefing() {
 
   return (
     <Container maxWidth="md" sx={{ mt: 4, mb: 4 }}>
-      <Button startIcon={<BackIcon />} onClick={() => navigate('/home')} sx={{ mb: 2 }}>
-        Back to My Scenarios
-      </Button>
+      <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
+        <Button startIcon={<BackIcon />} onClick={() => navigate('/home')}>
+          Back to Home
+        </Button>
+        <Button variant="contained" onClick={() => navigate(`/player?sessionId=${sessionId}`)}>
+          Return to Session
+        </Button>
+      </Stack>
 
       <Paper sx={{ p: 4 }}>
         <Typography variant="h4" gutterBottom>

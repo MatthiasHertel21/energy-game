@@ -223,6 +223,42 @@ export COMPOSE_DOCKER_CLI_BUILD=1
 
 ---
 
+## Performance Tuning
+
+### Rate Limiting
+
+**Production** (default in `backend/app/config.py`):
+```python
+RATELIMIT_DEFAULT = "200 per minute"
+RATELIMIT_STORAGE_URL = "redis://redis:6379/1"
+```
+
+**Testing Environment**:
+- Disable rate limiting for load tests: Set `RATELIMIT_ENABLED = False` in config
+- Or adjust limits: `RATELIMIT_DEFAULT = "10000 per minute"`
+
+### Performance Testing with Locust
+
+```bash
+# Install Locust in backend container
+docker-compose exec backend pip install locust
+
+# Run load test (from host)
+cd backend/tests/perf
+locust -f locustfile.py --host=http://localhost:5001 --users=100 --spawn-rate=10 --run-time=10m
+
+# View results at http://localhost:8089
+```
+
+**Sprint 20 Baseline** (100 concurrent users):
+- p50: 4ms, p95: 8ms, p99: 15ms
+- Throughput: ~50 req/s
+- Known issue: 93% error rate (rate limiting + missing auth in locustfile)
+
+See `docs/PERFORMANCE_RESULTS.md` for detailed metrics.
+
+---
+
 ## Security Checklist
 - Strong SECRET_KEY and JWT_SECRET_KEY
 - HTTPS enforced

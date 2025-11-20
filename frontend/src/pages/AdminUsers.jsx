@@ -466,13 +466,11 @@ export default function AdminUsers(){
             <Button variant="text" onClick={()=> { setSessFilters({ status:'', scenario_id:'', date_from:'', date_to:'' }); setSessPage(0) }}>Reset</Button>
             <Box sx={{ flexGrow:1 }} />
             <Button variant="contained" color="error" onClick={async()=>{
-              const older = prompt('Bulk cleanup: delete sessions older than N days (default 90). Enter number or Cancel.')
-              if(older===null) return
-              const olderNum = Number(older||90)
-              if(Number.isNaN(olderNum)) return alert('Invalid number')
+              const confirmText = prompt('Delete ALL sessions. Type DELETE to confirm:')
+              if(confirmText!== 'DELETE') return
               try{
-                await api.post('/api/admin/sessions', { status: sessFilters.status || undefined, older_than_days: olderNum })
-                if(window.__showSnack) window.__showSnack('Bulk cleanup executed', 'success')
+                await api.post('/api/admin/sessions', { delete_all: true })
+                if(window.__showSnack) window.__showSnack('All sessions deleted', 'success')
                 loadSessions()
               }catch(e){ if(window.__showSnack) window.__showSnack('Cleanup failed','error') }
             }}>Bulk Cleanup…</Button>

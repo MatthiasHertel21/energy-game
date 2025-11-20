@@ -42,6 +42,20 @@ class Sessions(Resource):
     @ns.expect(session_in, validate=True)
     def post(self):
         data = request.json
+        # Guard: prevent starting a new session if this cohort already has an active one
+        try:
+            existing = (
+                db.session.query(Session.id)
+                .filter(
+                    Session.cohort_id == int(data["cohort_id"]),
+                    Session.status.in_([SessionStatus.created, SessionStatus.running, SessionStatus.paused]),
+                )
+                .first()
+            )
+            if existing:
+                return {"error": "An active scenario for this cohort already exists."}, HTTPStatus.CONFLICT
+        except Exception:
+            pass
         s = Session(
             cohort_id=data["cohort_id"],
             scenario_id=data["scenario_id"],
@@ -65,6 +79,39 @@ class Sessions(Resource):
         except Exception:
             pass
         return {"id": s.id, "status": s.status.value}, HTTPStatus.CREATED
+
+
+@ns.route("/active")
+class ActiveSession(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def get(self):
+        from flask import request as _rq
+        cid = _rq.args.get("cohort_id", type=int)
+        if not cid:
+            return {"error": "cohort_id required"}, HTTPStatus.BAD_REQUEST
+        row = (
+            db.session.query(Session)
+            .filter(
+                Session.cohort_id == cid,
+                Session.status.in_([SessionStatus.created, SessionStatus.running, SessionStatus.paused]),
+            )
+            .order_by(Session.started_at.desc().nullslast(), Session.id.desc())
+            .first()
+        )
+        if not row:
+            return {"active": None}
+        sc = Scenario.query.get(row.scenario_id) if row.scenario_id else None
+        return {
+            "active": {
+                "id": row.id,
+                "scenario_id": row.scenario_id,
+                "scenario_name": sc.name if sc else None,
+                "status": row.status.value if row.status else None,
+                "mode": row.mode,
+                "started_at": row.started_at.isoformat() + "Z" if row.started_at else None,
+            }
+        }
 
 
 @ns.route("/<int:sid>")

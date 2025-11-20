@@ -31,14 +31,10 @@ export default function CampaignDetail(){
   const activeByScenario = useMemo(()=>{
     const m = new Map()
     sessions.filter(s=> s.status==='running' || s.status==='created').forEach(s=>{
-      const arr = m.get(s.scenario_id) || []
-      arr.push(s)
-      m.set(s.scenario_id, arr)
-    })
-    // Keep only the most recent session per scenario
-    m.forEach((arr, sid)=>{
-      arr.sort((a,b)=> b.id - a.id)
-      m.set(sid, [arr[0]])
+      // Only keep one session per scenario (most recent)
+      if (!m.has(s.scenario_id) || m.get(s.scenario_id).id < s.id) {
+        m.set(s.scenario_id, s)
+      }
     })
     return m
   },[sessions])
@@ -49,7 +45,7 @@ export default function CampaignDetail(){
       const { data:resp } = await api.post('/api/player/solo-sessions', body)
       if(window.__showSnack) window.__showSnack('Solo session started', 'success')
       if (resp && resp.session_id) {
-        navigate(`/player?sessionId=${resp.session_id}`)
+        navigate(`/briefing/${resp.session_id}`)
       } else {
         navigate('/player')
       }
@@ -102,7 +98,7 @@ export default function CampaignDetail(){
           
           <Stack spacing={1.5}>
             {data.scenarios?.map(sc=>{
-              const actives = activeByScenario.get(sc.scenario_id) || []
+              const activeSession = activeByScenario.get(sc.scenario_id)
               return (
                 <Card key={sc.scenario_id} variant="outlined" ref={el => cardRefs.current[sc.scenario_id] = el}>
                   <CardContent>
@@ -110,26 +106,32 @@ export default function CampaignDetail(){
                       <Chip size="small" label={`#${sc.order_index+1}`} />
                       <Typography sx={{ flexGrow:1 }}>{sc.name}</Typography>
                       <Chip size="small" label={sc.status} color={sc.status==='completed'?'success':sc.status==='in_progress'?'warning':'default'} />
+                      {activeSession && (
+                        <Chip size="small" label="Session Active" color="info" variant="outlined" />
+                      )}
                     </Stack>
                     <Stack direction="row" spacing={2} alignItems="center" sx={{ mt:1 }}>
                       <Stack spacing={0.5}>
                         <InfoLabel title="Solo play" tooltip="Start a solo session in isolated market mode if enabled by designer." />
-                        <Button disabled={!sc.solo_enabled} variant="contained" onClick={()=> startSolo(sc.scenario_id)}>Play solo</Button>
+                        <Button disabled={!sc.solo_enabled || !!activeSession} variant="contained" onClick={()=> startSolo(sc.scenario_id)}>Play solo</Button>
                       </Stack>
                       <Stack spacing={0.5}>
                         <InfoLabel title="Reset" tooltip="Reset your progress for this scenario, including solo sessions and forecasts." />
                         <Button variant="outlined" color="error" onClick={()=> resetScenario(sc.scenario_id)}>Reset</Button>
                       </Stack>
-                      <Stack spacing={0.5}>
-                        <InfoLabel title="Trainer cohort" tooltip="Join an active trainer session if available in your cohorts." />
-                        {actives.length>0 ? (
-                          <Button variant="outlined" onClick={()=> navigate(`/briefing/${actives[0].id}`)}>
-                            Join {actives[0].cohort_name || 'Cohort'} Session
+                      {activeSession ? (
+                        <Stack spacing={0.5}>
+                          <InfoLabel title="Active Session" tooltip="Continue your active session for this scenario." />
+                          <Button variant="contained" color="primary" onClick={()=> navigate(`/player?sessionId=${activeSession.id}`)}>
+                            Join Active Session
                           </Button>
-                        ) : (
+                        </Stack>
+                      ) : (
+                        <Stack spacing={0.5}>
+                          <InfoLabel title="Trainer cohort" tooltip="Join an active trainer session if available in your cohorts." />
                           <Typography variant="body2" color="text.secondary">No active session</Typography>
-                        )}
-                      </Stack>
+                        </Stack>
+                      )}
                     </Stack>
                   </CardContent>
                 </Card>

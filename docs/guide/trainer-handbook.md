@@ -1,9 +1,20 @@
 # Trainer Handbook
 ## Energy Market Simulation Game (EMSG)
 
-Version: 1.0  
-Date: 17 Nov 2025  
-Audience: Trainers/Facilitators
+**Version**: 1.1 (Sprint 21)  
+**Date**: 20 Nov 2025  
+**Audience**: Trainers/Facilitators
+
+---
+
+## What's New (Sprint 21)
+
+- **Campaign-First Workflow**: Start session flow now uses Cohort → Campaign → Scenario selection
+- **Active Session Detection**: Automatic detection prevents duplicate sessions for same cohort
+- **Improved Presence Panel**: Player type names shown (not just IDs), connected/playing status colors
+- **Session End Cleanup**: Session state properly cleared on end event
+- **Bulk Session Cleanup**: Admin can delete ALL sessions (with DELETE confirmation)
+- **Performance**: Baseline metrics available (p95=8ms response time, see docs/PERFORMANCE_RESULTS.md)
 
 ---
 
@@ -32,10 +43,24 @@ Audience: Trainers/Facilitators
 - Sessions tab: history list; open evaluation/replay; export.
 
 ### 3) Start & Control a Session
-- Start form: Cohort ID, Scenario ID, Mode (`isolated_per_player` | `shared_market`), Force Navigate.
-- Shared market: select allowed player types and optional caps; PATCH allowed types after start.
-- Controls: Pause/Resume/End; Force Round End with confirmation.
-- Status: timer, round N/M, mode, running/paused/ended chip.
+
+**New Workflow (Sprint 21)**:
+1. Select **Cohort** (auto-checks for active session)
+2. Select **Campaign** (only shows published campaigns visible to cohort)
+3. Select **Scenario** (from campaign, cohort-enabled scenarios only)
+4. Choose **Mode** (`isolated_per_player` for solo | `shared_market` for multiplayer)
+5. Configure **Player Types** (for shared market): Enable types and set max players per type
+6. Click **Start Scenario** (disabled if active session exists for cohort)
+
+**Session Controls** (right side of session info panel):
+- **Pause** (⏸): Freeze timer, prevent submissions
+- **Resume** (▶): Continue from paused state
+- **End** (⏹): Close session, trigger evaluation redirect
+- **Force Round End** (emergency): Skip to next round immediately
+
+**Status Display**:
+- Session ID chip, Status color (green=running, yellow=paused, grey=created, red=ended)
+- Round N/M, Scenario name, Mode, Timer countdown
 
 ### 4) Live Monitoring
 - Broadcast: POST `/api/sessions/:id/broadcast` to all players.

@@ -230,7 +230,17 @@ function ForceNavigateWatcher({ onNavigate }){
       try{
         const { data } = await api.get('/api/me/navigate')
         if(!stopped && data?.url){
-          onNavigate(data.url)
+          const url = String(data.url)
+          // Avoid repeated redirects: only navigate once per URL
+          try{
+            const key = 'emsg_force_nav_seen'
+            const seen = JSON.parse(sessionStorage.getItem(key) || '[]')
+            const cur = window.location.pathname + window.location.search
+            if (cur === url) return
+            if (Array.isArray(seen) && seen.includes(url)) return
+            onNavigate(url)
+            sessionStorage.setItem(key, JSON.stringify([...(Array.isArray(seen)? seen: []), url]))
+          }catch(_){ onNavigate(url) }
         }
       }catch(_){ /* ignore */ }
     }

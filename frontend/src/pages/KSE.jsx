@@ -422,11 +422,57 @@ export default function KSE(){
         return n
       })
     } catch(_) {}
+    // Normalize player type IDs (required by backend)
+    const norm = structuredClone(cfg)
+    // Convert frontend device shape -> backend schema
+    try{
+      if (Array.isArray(norm.devices)){
+        norm.devices = norm.devices.map(d => {
+          const t = (d.type||'').toLowerCase()
+          const out = { ...d, type: t }
+          if ([ 'coal','gas','hydro','nuclear' ].includes(t)){
+            out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
+            out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
+            if (out.min_load_pct == null) out.min_load_pct = 0
+            if (out.ramp_rate_mw_per_min == null) out.ramp_rate_mw_per_min = 60
+          } else if ([ 'solar','wind' ].includes(t)){
+            out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
+            out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
+            if (out.capacity_factor_pct == null) out.capacity_factor_pct = 30
+          } else if (t === 'battery'){
+            out.capacity_mwh = out.capacity_mwh ?? out.capacity_mw ?? 100
+            out.power_mw = out.power_mw ?? out.power_rating_mw ?? 50
+            out.efficiency_pct = out.efficiency_pct ?? 85
+            out.initial_soc_pct = out.initial_soc_pct ?? 50
+          } else if (t.endsWith('_load')){
+            // baseline_load_mw / peak_load_mw already present from UI
+          }
+          return out
+        })
+      }
+    }catch(_){ /* ignore */ }
+    try{
+      const seen = new Set()
+      if (Array.isArray(norm.player_types)){
+        norm.player_types = norm.player_types.map((pt)=>{
+          let id = (pt.id||'').trim()
+          if(!id){
+            id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
+          }
+          // ensure unique
+          while(seen.has(id)){
+            id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
+          }
+          seen.add(id)
+          return { ...pt, id }
+        })
+      }
+    }catch(_){ /* ignore */ }
     if (scenarioId) {
-      await api.put(`/api/kse/scenarios/${scenarioId}`, { name, config: cfg })
+      await api.put(`/api/kse/scenarios/${scenarioId}`, { name, config: norm })
       alert('Saved changes')
     } else {
-      const { data } = await api.post('/api/kse/scenarios', { name, config: cfg })
+      const { data } = await api.post('/api/kse/scenarios', { name, config: norm })
       setScenarioId(data?.id)
       alert(`Saved as #${data?.id || ''}`)
     }
@@ -1466,7 +1512,7 @@ export default function KSE(){
                   </Grid>
                 </Paper>
               ))}
-              <Button ref={refAddPlayerType} variant="outlined" onClick={()=> setCfg(prev=> ({ ...prev, player_types: [...(prev.player_types||[]), { id:'', name:'', devices:[] }] }))}>Add Player Type</Button>
+              <Button ref={refAddPlayerType} variant="outlined" onClick={()=> setCfg(prev=> { const n=structuredClone(prev); const id=`ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`; n.player_types = [...(n.player_types||[]), { id, name:'', devices:[] }]; return n })}>Add Player Type</Button>
             </Stack>
           )}
           {tab===6 && (

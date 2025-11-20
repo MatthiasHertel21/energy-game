@@ -96,6 +96,18 @@ docker-compose up -d --build
 
 ---
 
+## Performance
+
+**Baseline Metrics** (Sprint 20, 100 concurrent users, Locust load test):
+- **Response Time**: p50=4ms, p95=8ms, p99=15ms (excellent)
+- **Throughput**: ~50 req/s sustained
+- **Known Issue**: 93% error rate due to rate limiting (429) and missing auth in test setup
+- **Action**: Sprint 21 will fix Locust auth and adjust rate limits for testing
+
+See `docs/PERFORMANCE_RESULTS.md` for detailed metrics.
+
+---
+
 ## Testing
 
 ### Backend Unit Tests
@@ -120,12 +132,17 @@ npm run cy:open  # Interactive
 npm run cy:run   # Headless
 ```
 
-**Test Suites**:
+**Test Coverage** (Sprint 20): **20 E2E specs** including:
 - `smoke.cy.js` - Core user flows
 - `trainer.cy.js` - Session management
 - `player.cy.js` - Forecast submission
 - `kse-devices.cy.js` - Device editor
 - `a11y.cy.js` - Accessibility audits
+- `campaign-timeline.cy.js` - Campaign navigation
+- `cohorts-import.cy.js` - CSV import
+- `comparison.cy.js` - Leaderboard comparison
+
+All 20 specs passing as of Sprint 20.
 
 ---
 
@@ -139,12 +156,29 @@ See `docs/DEPLOYMENT.md` for details on:
 
 ---
 
+## Known Issues
+
+**Sprint 21 Focus** (14 KSE UI/UX Issues):
+- KSE-1 (P0): Market/Preview tabs broken in KSE editor
+- KSE-2 (P0): Device constraint validation missing
+- KSE-3 through KSE-14: UI/UX refinements for MVP quality
+
+See `docs/backlog.md` (Sprint 21 section) and `docs/open-issues.md` for full details.
+
+**DevOps**:
+- Docker Compose stability: Use `deploy.sh` with retry logic (see `docs/DEPLOYMENT.md`)
+
+---
+
 ## Documentation
 
 - `docs/concept.md` - Architecture & MVP scope
 - `docs/usecases.md` - Functional requirements
-- `docs/SPRINT_*_PLAN.md` - Development roadmap
+- `docs/SPRINT_*_PLAN.md` - Development roadmap (23 sprints: 1-20 complete, 21 active, 22-23 planned)
+- `docs/SPRINT_*_SUMMARY.md` - Sprint retrospectives
 - `docs/QA_CHECKS.md` - Pre-launch checklist
+- `docs/PERFORMANCE_RESULTS.md` - Load test baseline
+- `docs/PLANUNGSSTAND_ANALYSE.md` - Planning analysis (Sprint 20)
 
 Role Handbooks
 - `docs/guide/player-handbook.md` - Player Guide
@@ -154,7 +188,7 @@ Role Handbooks
 
 ---
 
-**Last Updated**: Sprint 21 (2025-11-17)
+**Last Updated**: Sprint 21 (2025-11-20)
 	- flask db migrate -m "init"
 	- flask db upgrade
 - Weitere Änderungen:

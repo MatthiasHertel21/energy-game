@@ -6,7 +6,20 @@ from datetime import datetime, timedelta
 from sqlalchemy import func
 
 from .extensions import db, bcrypt
-from .models import User, Invite, Role, ActivityLog, Session, Forecast, SessionStatus, Scenario, Cohort
+from .models import (
+    User,
+    Invite,
+    Role,
+    ActivityLog,
+    Session,
+    Forecast,
+    SessionStatus,
+    Scenario,
+    Cohort,
+    Result,
+    SessionAllowedType,
+    SessionPlayerType,
+)
 from . import mailer
 from .utils import role_required
 from .config import Config
@@ -423,8 +436,9 @@ class AdminSessions(Resource):
     cleanup_in = ns.model(
         "SessionCleanup",
         {
-            "status": fields.String(description="Filter by status (completed, abandoned, etc.)"),
-            "older_than_days": fields.Integer(description="Delete sessions older than N days", default=90),
+            "delete_all": fields.Boolean(description="If true, delete ALL sessions", default=False),
+            "status": fields.String(description="(Deprecated) Filter by status"),
+            "older_than_days": fields.Integer(description="(Deprecated) Delete sessions older than N days", default=90),
         },
     )
     
@@ -432,29 +446,20 @@ class AdminSessions(Resource):
     @role_required("admin")
     @ns.expect(cleanup_in, validate=True)
     def post(self):
-        """Bulk cleanup of sessions based on criteria."""
-        body = request.json
-        status_filter = body.get("status", "")
-        older_than_days = body.get("older_than_days", 90)
-        
-        cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
-        
-        query = Session.query.filter(Session.started_at < cutoff_date)
-        
-        if status_filter:
-            try:
-                status_enum = SessionStatus(status_filter)
-                query = query.filter(Session.status == status_enum)
-            except ValueError:
-                ns.abort(HTTPStatus.BAD_REQUEST, "Invalid status")
-        
-        # Count before deletion
-        count = query.count()
-        
-        # Delete sessions (cascade will handle PlayerProgress, Forecasts, etc.)
-        query.delete(synchronize_session=False)
+        """Bulk cleanup: delete ALL sessions and their related data. Ignores filters."""
+        # Collect all session ids
+        session_ids = [sid for (sid,) in db.session.query(Session.id).all()]
+        count = len(session_ids)
+        if count == 0:
+            return {"deleted_count": 0}, HTTPStatus.OK
+        # Delete dependent rows explicitly to avoid FK issues
+        Forecast.query.filter(Forecast.session_id.in_(session_ids)).delete(synchronize_session=False)
+        Result.query.filter(Result.session_id.in_(session_ids)).delete(synchronize_session=False)
+        SessionPlayerType.query.filter(SessionPlayerType.session_id.in_(session_ids)).delete(synchronize_session=False)
+        SessionAllowedType.query.filter(SessionAllowedType.session_id.in_(session_ids)).delete(synchronize_session=False)
+        ActivityLog.query.filter(ActivityLog.session_id.in_(session_ids)).delete(synchronize_session=False)
+        Session.query.filter(Session.id.in_(session_ids)).delete(synchronize_session=False)
         db.session.commit()
-        
         return {"deleted_count": count}, HTTPStatus.OK
 
 

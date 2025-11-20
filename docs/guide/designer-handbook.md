@@ -1,9 +1,20 @@
 # Designer Handbook (KSE)
 ## Energy Market Simulation Game (EMSG)
 
-Version: 1.0  
-Date: 17 Nov 2025  
-Audience: Designers/Scenario Editors
+**Version**: 1.1 (Sprint 21)  
+**Date**: 20 Nov 2025  
+**Audience**: Designers/Scenario Editors
+
+---
+
+## What's New (Sprint 21)
+
+- **Device Preset Library**: Quick-create devices from presets (Coal, Gas, Hydro, Nuclear, Solar, Wind, Battery, Loads)
+- **Device Name Field**: All devices now have optional `name` field (shown in player UI)
+- **Player Type ID Auto-Generation**: IDs auto-generated with timestamps to ensure uniqueness
+- **Device ID Collision Fix**: Device IDs now use timestamp + counter to prevent duplicates
+- **Validation Improvements**: Player types validated on save (unique IDs, device references)
+- **Known Issues**: KSE Market tab and Preview tab have accessibility gaps (Sprint 21 will add axe checks)
 
 ---
 
@@ -43,10 +54,25 @@ Events
 - Library defaults + custom events: name, type (systemic/player), trigger (round/probability), duration (rounds/hours), impact (×/±), target (all/zone/type/device), optional pre‑warning; timeline preview; validation.
 
 Devices
-- Define generators/storage/loads with required parameters per class; unique IDs; validate ranges and required fields.
+- **Preset Library** (Sprint 21): Click "Add from Preset" to quick-create devices:
+  - Generators: Coal (600 MW, 35% eff), Gas (400 MW, 50% eff), Hydro (200 MW, 90% eff), Nuclear (1000 MW, 33% eff)
+  - Renewables: Solar (100 MW, 25% CF), Wind (150 MW, 35% CF)
+  - Storage: Battery (100 MWh capacity, 50 MW power, 85% eff)
+  - Loads: Industrial (300 MW baseline, 450 MW peak, DRM-capable), Commercial (100/200 MW), Residential (150/300 MW)
+- **Device Fields**:
+  - `name` (optional, Sprint 21): Friendly name shown in player UI (e.g., "Koeberg Unit 1")
+  - `id` (auto-generated): Unique ID with timestamp to prevent collisions
+  - Type-specific parameters (capacity, cost, efficiency, ramp rate, etc.)
+- **Actions**: Add from Preset, Duplicate, Delete
+- **Validation**: Unique IDs, required fields per type, numeric ranges
 
 Player Types
-- `{ id, name, devices[], zone? }`; required for `shared_market`. Players can edit only assigned devices. Validate unique IDs and device existence.
+- **Structure**: `{ id, name, devices[], zone? }`
+- **Required for**: `shared_market` mode (players can only edit assigned devices)
+- **Auto-Generated IDs** (Sprint 21): Click "Add Player Type" to create with unique timestamp-based ID (`ptype_<timestamp>_<random>`)
+- **Normalization on Save**: All player types validated and ensured unique IDs before save
+- **Validation**: Unique IDs across types, all referenced devices must exist in scenario
+- **Best Practice**: 2-4 types for shared market; assign complementary devices (e.g., Type A = generators, Type B = storage + loads)
 
 Scoring
 - KPIs (Profit, Revenue, Imbalance Cost, Curtailment Cost, optional others). Weights sum to 1.0. Normalization (Z‑score or Min‑Max). Role‑specific or global leaderboard. Optional reference run upload.

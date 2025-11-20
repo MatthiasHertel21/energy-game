@@ -2,7 +2,13 @@
  * Device Presets - Default values for quick device creation
  */
 
-let deviceIdCounter = 1000;
+let deviceIdCounter = Math.floor(Math.random() * 100000);
+
+function nextDeviceId() {
+  const t = Date.now().toString(36);
+  const c = (deviceIdCounter++).toString(36);
+  return `device_${t}_${c}`;
+}
 
 export const DEVICE_PRESETS = {
   coal: {
@@ -86,7 +92,7 @@ export function createDeviceFromPreset(presetName) {
   
   return {
     ...preset,
-    id: `device_${deviceIdCounter++}`,
+    id: nextDeviceId(),
   };
 }
 
@@ -99,7 +105,7 @@ export function duplicateDevice(device) {
   const { id, ...rest } = device;
   return {
     ...rest,
-    id: `device_${deviceIdCounter++}`,
+    id: nextDeviceId(),
   };
 }
 

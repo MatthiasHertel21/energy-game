@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react'
-import { Box, Grid, Card, CardMedia, CardContent, Typography, CardActions, Button, Chip, LinearProgress, Alert, Stack } from '@mui/material'
+import { Box, Grid, Card, CardMedia, CardContent, Typography, CardActions, Button, Chip, LinearProgress } from '@mui/material'
 import { useNavigate } from 'react-router-dom'
-import { MenuBook as BriefingIcon, Login as JoinIcon } from '@mui/icons-material'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
 import DocsFab from '../components/DocsFab'
@@ -9,7 +8,6 @@ import DocsFab from '../components/DocsFab'
 export default function Catalog(){
   const [rows, setRows] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [sessions, setSessions] = useState([])
   const navigate = useNavigate()
 
   useEffect(()=>{
@@ -23,53 +21,12 @@ export default function Catalog(){
     return ()=>{ mounted = false }
   },[])
 
-  // Load active sessions
-  useEffect(()=>{
-    api.get('/api/me/sessions').then(({data})=> {
-      const active = (data || []).filter(s => s.status === 'running' || s.status === 'created')
-      setSessions(active)
-    }).catch(()=> setSessions([]))
-  },[])
-
   if(loading) return <Box sx={{ mt:4 }}><LinearProgress /></Box>
   if(!rows || rows.length===0) return <EmptyState title="No campaigns" message="Published campaigns will appear here." />
 
   return (
     <Box>
       <Typography variant="h4" sx={{ mb:2 }}>Campaign Catalog</Typography>
-      
-      {/* Active Sessions Info */}
-      {sessions.length > 0 && (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          <Typography variant="body2" fontWeight={600}>
-            Active Sessions: {sessions.length}
-          </Typography>
-          <Stack spacing={0.5} sx={{ mt: 1 }}>
-            {sessions.map(s => (
-              <Box key={s.id} sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                <Typography variant="body2">
-                  {s.scenario_name || `Session ${s.id}`} ({s.cohort_name || 'Solo'})
-                </Typography>
-                <Button 
-                  size="small" 
-                  startIcon={<BriefingIcon />}
-                  onClick={() => navigate(`/briefing/${s.id}`)}
-                >
-                  Briefing
-                </Button>
-                <Button 
-                  size="small" 
-                  variant="outlined"
-                  startIcon={<JoinIcon />}
-                  onClick={() => navigate(`/player?sessionId=${s.id}`)}
-                >
-                  Join
-                </Button>
-              </Box>
-            ))}
-          </Stack>
-        </Alert>
-      )}
       
       <Grid container spacing={2}>
         {rows.map(c => {

@@ -1,9 +1,20 @@
 # Player Handbook
 ## Energy Market Simulation Game (EMSG)
 
-Version: 1.0  
-Date: 17 Nov 2025  
-Audience: Players/Students
+**Version**: 1.1 (Sprint 21)  
+**Date**: 20 Nov 2025  
+**Audience**: Players/Students
+
+---
+
+## What's New (Sprint 21)
+
+- **Campaign Catalog**: Browse published campaigns at `/catalog` with progress tracking
+- **Chart Editor**: Improved forecast editor with drag-anywhere editing and smooth radius (3-hour falloff)
+- **Device View Toggle**: Switch between chart and fields view for per-device editing
+- **Briefing Access**: Return to briefing anytime via button in player interface
+- **Timer Persistence**: Session timer now persists across page reloads
+- **Known Issues**: KSE Market/Preview tabs accessibility improvements in progress
 
 ---
 
@@ -25,7 +36,13 @@ Audience: Players/Students
 ### 1) Getting Started
 
 - Register `/register` (may require approval). Login `/login` → `/home`.
-- Home shows assigned scenarios and active sessions. Use Catalog to browse published campaigns and start solo or join a cohort session.
+- **Home** (`/home`) shows your active sessions and assigned scenarios.
+- **Campaign Catalog** (`/catalog`) displays published campaigns with:
+  - Campaign cards showing cover image, description, and completion progress
+  - Scenario timeline with visual progress indicators
+  - Solo play button (if enabled by designer)
+  - Join active cohort sessions (if available)
+  - Reset scenario progress
 
 ### 2) Briefing
 
@@ -50,13 +67,20 @@ Layout
 - MCP (ZAR/MWh) and Volume (MWh) for the last cleared round. Shows “Waiting for market data…” until first clearing.
 
 3.3 Forecast Editor
+- **View Toggle**: Switch between Chart (interactive D3.js editor) and Fields (numeric inputs)
 - Enter an hourly schedule:
   - Solo: one aggregate series for all hours (h1..hH).
   - Shared market: per‑device inputs for assigned devices; an aggregate is auto‑summed.
-- Inputs are numeric with min/max/step rules; hours ≤ freeze or when timeRemaining = 0 are disabled.
-- Save Full Forecast → POST `/api/player/forecast/full` `{ session_id, hours, devices? }`.
-- Submit Current Round → POST `/api/player/forecast` `{ session_id, round_num, hours: slice, devices? }`.
-- Errors show as red fields with tooltips; save does not submit.
+- **Chart Editor** (Sprint 21 improvements):
+  - Drag anywhere on the chart to edit values (not just points)
+  - 3-hour smooth radius: editing one hour adjusts neighboring hours with triangular falloff
+  - Y-axis auto-scales to device capacity (when provided)
+  - Height increased to 320px for better precision
+- **Field Editor**: Numeric inputs with min/max/step rules; hours ≤ freeze or when timeRemaining = 0 are disabled.
+- **Actions**:
+  - Save Full Forecast → POST `/api/player/forecast/full` `{ session_id, hours, devices? }` (persists without submission)
+  - Submit Current Round → POST `/api/player/forecast` `{ session_id, round_num, hours: slice, devices? }` (submits round slice)
+- Errors show as red fields with tooltips; validation runs on submit (device constraints checked).
 
 3.4 Player Type (shared market)
 - If allowed types exist and none is selected, a dialog lists types with remaining capacity. Select to load device inputs.
