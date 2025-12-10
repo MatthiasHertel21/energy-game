@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Container,
   Paper,
@@ -22,6 +22,10 @@ import { IconButton } from '@mui/material'
 import InfoLabel from '../components/InfoLabel'
 import ForecastChartEditor from '../components/ForecastChartEditor'
 import EventNotification from '../components/EventNotification'
+import BriefingScreen from '../components/BriefingScreen'
+import WaitingScreen from '../components/WaitingScreen'
+import RoundResultsScreen from '../components/RoundResultsScreen'
+import ScenarioResultsScreen from '../components/ScenarioResultsScreen'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useSnackbar } from '../components/SnackbarProvider'
 import api from '../services/api'
@@ -29,6 +33,157 @@ import { io } from 'socket.io-client'
 import * as d3 from 'd3'
 import confetti from 'canvas-confetti'
 import { Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material'
+
+const BASELOAD_PATTERN = [0.92, 0.91, 0.9, 0.9, 0.9, 0.92, 0.94, 0.95, 0.96, 0.96, 0.95, 0.94, 0.93, 0.93, 0.94, 0.95, 0.96, 0.96, 0.95, 0.94, 0.93, 0.93, 0.92, 0.92]
+const PEAKING_PATTERN = [0.4, 0.35, 0.32, 0.32, 0.38, 0.5, 0.62, 0.75, 0.85, 0.92, 0.95, 0.96, 0.94, 0.9, 0.88, 0.9, 0.94, 0.95, 0.86, 0.75, 0.65, 0.55, 0.48, 0.42]
+const LOAD_PATTERN = [0.55, 0.5, 0.48, 0.47, 0.5, 0.62, 0.74, 0.86, 0.93, 0.97, 1.0, 1.0, 0.98, 0.95, 0.92, 0.94, 0.97, 0.98, 0.9, 0.82, 0.72, 0.66, 0.6, 0.58]
+const SOLAR_PATTERN = [0, 0, 0, 0, 0.05, 0.15, 0.35, 0.6, 0.78, 0.9, 0.92, 0.9, 0.78, 0.6, 0.35, 0.15, 0.05, 0, 0, 0, 0, 0, 0, 0]
+const WIND_PATTERN = [0.52, 0.5, 0.46, 0.44, 0.48, 0.55, 0.6, 0.66, 0.72, 0.75, 0.7, 0.66, 0.62, 0.58, 0.55, 0.5, 0.52, 0.56, 0.6, 0.6, 0.58, 0.55, 0.54, 0.52]
+const BATTERY_PATTERN = [0.45, 0.4, 0.35, 0.3, 0.2, 0.1, -0.05, -0.2, -0.4, -0.55, -0.6, -0.45, -0.25, 0, 0.2, 0.4, 0.6, 0.65, 0.55, 0.42, 0.3, 0.2, 0.1, 0]
+const DEFAULT_AGG_PATTERN = [0.6, 0.58, 0.55, 0.52, 0.52, 0.62, 0.78, 0.92, 1.02, 1.08, 1.1, 1.05, 0.98, 0.96, 0.98, 1.02, 1.08, 1.1, 1.0, 0.9, 0.82, 0.76, 0.7, 0.65]
+
+const zeroProfile = (len) => Array.from({ length: Math.max(1, len) }, () => 0)
+const toNumber = (value, fallback = 0) => {
+  const num = Number(value)
+  return Number.isFinite(num) ? num : fallback
+}
+const clampValue = (val, min = 0, max = Number.POSITIVE_INFINITY) => {
+  if (!Number.isFinite(max)) return Math.max(min, val)
+  if (max <= min) return Math.max(min, val)
+  return Math.min(max, Math.max(min, val))
+}
+const samplePattern = (pattern, idx) => pattern[idx % pattern.length]
+const roundValue = (val) => Number(val.toFixed(2))
+
+const buildGeneratorProfile = (device, len, pattern) => {
+  const n = Math.max(1, len)
+  const maxPower = toNumber(device?.max_power_mw ?? device?.capacity_mw ?? device?.capacity ?? 0, 0)
+  if (maxPower <= 0) return zeroProfile(n)
+  const minPct = clampValue(toNumber(device?.min_load_pct ?? 0, 0), 0, 100)
+  const minPower = maxPower * (minPct / 100)
+  const safeMin = minPower > 0 ? Math.min(minPower * 1.02, maxPower * 0.9) : 0
+  const safeMax = maxPower * 0.97
+  if (safeMax <= safeMin) {
+    return Array.from({ length: n }, () => roundValue(maxPower * 0.95))
+  }
+  const span = safeMax - safeMin
+  return Array.from({ length: n }, (_, idx) => {
+    const frac = clampValue(samplePattern(pattern, idx), 0, 1)
+    const value = safeMin + frac * span
+    return roundValue(value)
+  })
+}
+
+const buildLoadProfile = (device, len) => {
+  const n = Math.max(1, len)
+  const baseline = Math.max(0, toNumber(device?.baseline_load_mw ?? 0, 0))
+  const peakRaw = toNumber(device?.peak_load_mw ?? baseline, baseline)
+  const peak = Math.max(baseline + 5, peakRaw)
+  const span = Math.max(peak - baseline, 1)
+  return Array.from({ length: n }, (_, idx) => {
+    const frac = clampValue(samplePattern(LOAD_PATTERN, idx), 0, 1)
+    const value = clampValue(baseline + frac * span, baseline, peak * 0.98)
+    return roundValue(value)
+  })
+}
+
+const buildRenewableProfile = (device, len, pattern, cfNormalizer) => {
+  const n = Math.max(1, len)
+  const capacity = toNumber(device?.capacity_mw ?? device?.max_power_mw ?? device?.max_power ?? 0, 0)
+  if (capacity <= 0) return zeroProfile(n)
+  const cf = clampValue(toNumber(device?.capacity_factor_pct ?? 0, 0) / 100, 0, 1)
+  const scale = cf > 0 ? clampValue(cf / cfNormalizer, 0.4, 0.92) : 0.7
+  const peakOutput = capacity * 0.95
+  return Array.from({ length: n }, (_, idx) => {
+    const frac = clampValue(samplePattern(pattern, idx), 0, 1)
+    const value = peakOutput * frac * scale
+    return roundValue(value)
+  })
+}
+
+const buildBatteryProfile = (device, len) => {
+  const n = Math.max(1, len)
+  const power = toNumber(device?.power_rating_mw ?? device?.power_mw ?? device?.capacity_mw ?? 0, 0)
+  if (power <= 0) return zeroProfile(n)
+  const limit = power * 0.9
+  return Array.from({ length: n }, (_, idx) => {
+    const frac = samplePattern(BATTERY_PATTERN, idx)
+    const value = clampValue(frac * limit, -limit, limit)
+    return roundValue(value)
+  })
+}
+
+const buildGenericProfile = (device, len) => {
+  const n = Math.max(1, len)
+  const capacity = Math.max(20, toNumber(device?.capacity_mw ?? device?.max_power_mw ?? 60, 60))
+  return Array.from({ length: n }, (_, idx) => {
+    const value = capacity * 0.6 * samplePattern(DEFAULT_AGG_PATTERN, idx)
+    return roundValue(value)
+  })
+}
+
+const buildDeviceProfile = (device, len) => {
+  const type = (device?.type || '').toLowerCase()
+  if (['coal', 'nuclear'].includes(type)) return buildGeneratorProfile(device, len, BASELOAD_PATTERN)
+  if (['gas', 'hydro'].includes(type)) return buildGeneratorProfile(device, len, PEAKING_PATTERN)
+  if (type === 'solar') return buildRenewableProfile(device, len, SOLAR_PATTERN, 0.3)
+  if (type === 'wind') return buildRenewableProfile(device, len, WIND_PATTERN, 0.4)
+  if (type === 'battery') return buildBatteryProfile(device, len)
+  if (type.includes('load')) return buildLoadProfile(device, len)
+  return buildGenericProfile(device, len)
+}
+
+const buildAggregateFallback = (len, baseMw = 60) => {
+  const n = Math.max(1, len)
+  return Array.from({ length: n }, (_, idx) => roundValue(baseMw * samplePattern(DEFAULT_AGG_PATTERN, idx)))
+}
+
+const toPositiveNumber = (value) => {
+  const num = Number(value)
+  return Number.isFinite(num) && num > 0 ? num : null
+}
+
+const getDeviceMaxCapability = (device = {}) => {
+  if (!device) return 0
+  const type = (device.type || '').toLowerCase()
+
+  if (type.includes('load')) {
+    const peak = toPositiveNumber(device.peak_load_mw)
+    if (peak != null) return peak
+    const baseline = toPositiveNumber(device.baseline_load_mw)
+    if (baseline != null) return baseline * 1.5
+    return 0
+  }
+
+  if (type === 'battery') {
+    const batteryFields = [
+      device.power_rating_mw,
+      device.power_mw,
+      device.capacity_mw,
+      device.max_charge_rate_mw,
+      device.max_discharge_rate_mw
+    ]
+    for (const cand of batteryFields) {
+      const val = toPositiveNumber(cand)
+      if (val != null) return val
+    }
+    return 0
+  }
+
+  const candidates = [
+    device.capacity_mw,
+    device.max_power_mw,
+    device.max_power,
+    device.capacity,
+    device.nameplate_mw,
+    device.rated_power_mw
+  ]
+  for (const cand of candidates) {
+    const val = toPositiveNumber(cand)
+    if (val != null) return val
+  }
+  return 0
+}
 
 function CountdownTimer({ timeRemaining }) {
   const minutes = Math.floor(timeRemaining / 60)
@@ -55,6 +210,64 @@ function CountdownTimer({ timeRemaining }) {
   )
 }
 
+function ScenarioClock({ fakeDate, startTime, currentRound, roundSpan }) {
+  // Calculate current simulation time based on round and start time
+  const simulationTime = useMemo(() => {
+    if (!startTime || !currentRound) return ''
+    try {
+      const [h, m] = startTime.split(':').map(Number)
+      const totalHours = h + (currentRound - 1) * roundSpan
+      const days = Math.floor(totalHours / 24)
+      const hours = totalHours % 24
+      return `${String(hours).padStart(2, '0')}:${String(m).padStart(2, '0')} ${days > 0 ? `(+${days}d)` : ''}`
+    } catch (_) {
+      return startTime
+    }
+  }, [startTime, currentRound, roundSpan])
+
+  const displayDate = useMemo(() => {
+    if (!fakeDate || !currentRound) return fakeDate
+    try {
+      const date = new Date(fakeDate)
+      const daysToAdd = Math.floor(((currentRound - 1) * roundSpan) / 24)
+      date.setDate(date.getDate() + daysToAdd)
+      return date.toLocaleDateString('en-ZA', { year: 'numeric', month: 'short', day: 'numeric' })
+    } catch (_) {
+      return fakeDate
+    }
+  }, [fakeDate, currentRound, roundSpan])
+
+  const [realTime, setRealTime] = useState(new Date())
+
+  useEffect(() => {
+    const interval = setInterval(() => setRealTime(new Date()), 1000)
+    return () => clearInterval(interval)
+  }, [])
+
+  return (
+    <Box
+      sx={{
+        textAlign: 'center',
+        p: 1.5,
+        backgroundColor: '#f5f5f5',
+        borderRadius: 2,
+        mb: 1
+      }}
+    >
+      <Typography variant="h6" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
+        {simulationTime}
+      </Typography>
+      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+        {displayDate || 'Simulation Time'}
+      </Typography>
+      <Divider sx={{ my: 0.5 }} />
+      <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+        Real: {realTime.toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+      </Typography>
+    </Box>
+  )
+}
+
 export default function Player() {
   const [params] = useSearchParams()
   const navigate = useNavigate()
@@ -73,9 +286,10 @@ export default function Player() {
   const [loading, setLoading] = useState(true)
   const [hours, setHours] = useState([])
   const [cfg, setCfg] = useState({
-    general: { round_span_hours: 6, forecast_horizon_hours: 48, freeze_hours: 6, horizon_hours: 24 },
+    general: { round_span_hours: 6, forecast_horizon_hours: 48, freeze_hours: 6, horizon_hours: 24, fake_date: '', start_time: '' },
     current_round: 1,
-    scenario_name: ''
+    scenario_name: '',
+    campaign_name: ''
   })
   const [status, setStatus] = useState('pending')
   const [timeRemaining, setTimeRemaining] = useState(null)
@@ -89,11 +303,97 @@ export default function Player() {
   const [deviceHours, setDeviceHours] = useState({}) // { device_id: number[] }
   const [scenarioDevices, setScenarioDevices] = useState([]) // full device definitions from scenario
   const deviceChartRefs = useRef({})
+  const forecastSeedKeyRef = useRef(null)
   const [activeEvents, setActiveEvents] = useState([])
   const [dismissedEvents, setDismissedEvents] = useState(new Set())
   const [useChartEditor, setUseChartEditor] = useState(true)
   const [deviceView, setDeviceView] = useState({}) // { device_id: 'chart'|'fields' }
   const [submitted, setSubmitted] = useState(false)
+  const [scenario, setScenario] = useState(null)
+  useEffect(() => {
+    forecastSeedKeyRef.current = null
+  }, [sessionId])
+  const aggregateMax = useMemo(() => {
+    const dataMax = Array.isArray(hours) && hours.length > 0
+      ? hours.reduce((max, val) => Math.max(max, Number(val) || 0), 0)
+      : 0
+    if (!Array.isArray(scenarioDevices) || scenarioDevices.length === 0) {
+      return dataMax
+    }
+    const relevantDevices = (allowedTypes.length > 0 && typeDevices.length > 0)
+      ? scenarioDevices.filter((dev) => typeDevices.includes(dev.id))
+      : scenarioDevices
+    const capacitySum = relevantDevices.reduce((sum, dev) => sum + getDeviceMaxCapability(dev), 0)
+    return capacitySum > 0 ? capacitySum : dataMax
+  }, [scenarioDevices, allowedTypes.length, typeDevices, hours])
+
+  const seedForecastData = useCallback(async ({ generalConfig, deviceIds = [], deviceDefs = [] } = {}) => {
+    if (!sessionId) return
+    const general = generalConfig || {}
+    const fhRaw = Number(general.forecast_horizon_hours || general.horizon_hours || 24)
+    const fhHours = Math.max(1, Number.isFinite(fhRaw) ? fhRaw : 24)
+    const aggregateFallback = buildAggregateFallback(fhHours)
+
+    let savedHours = null
+    let savedDevices = null
+    try {
+      const { data } = await api.get('/api/player/forecast/full', { params: { session_id: Number(sessionId) } })
+      savedHours = Array.isArray(data?.hours) ? data.hours : null
+      savedDevices = Array.isArray(data?.devices) ? data.devices : null
+    } catch (error) {
+      console.error('Failed to load full forecast:', error)
+    }
+
+    const normalizedDevices = {}
+    if (Array.isArray(savedDevices)) {
+      savedDevices.forEach((entry) => {
+        const did = entry?.device_id
+        if (!did) return
+        const sourceHours = Array.isArray(entry?.hours) ? entry.hours : []
+        normalizedDevices[did] = Array.from({ length: fhHours }, (_, idx) => Number(sourceHours[idx] || 0))
+      })
+    }
+
+    const hasDeviceNonZero = Object.values(normalizedDevices).some(
+      (series) => Array.isArray(series) && series.some((value) => Number(value) !== 0)
+    )
+
+    let deviceData = normalizedDevices
+    const deviceIdsSafe = Array.isArray(deviceIds) ? deviceIds : []
+
+    if (!hasDeviceNonZero && deviceIdsSafe.length > 0) {
+      const byId = new Map((deviceDefs || []).map((def) => [def.id, def]))
+      const defaults = {}
+      deviceIdsSafe.forEach((id) => {
+        const def = byId.get(id)
+        defaults[id] = buildDeviceProfile(def, fhHours)
+      })
+      deviceData = defaults
+    }
+
+    setDeviceHours(deviceData)
+
+    const normalizedAggregate = Array.isArray(savedHours)
+      ? Array.from({ length: fhHours }, (_, idx) => Number(savedHours[idx] || 0))
+      : null
+
+    const hasAggregate = normalizedAggregate ? normalizedAggregate.some((value) => Number(value) !== 0) : false
+
+    if (hasAggregate && normalizedAggregate) {
+      setHours(normalizedAggregate)
+      return
+    }
+
+    if (deviceIdsSafe.length > 0 && Object.keys(deviceData).length > 0) {
+      const aggregated = Array.from({ length: fhHours }, (_, hourIdx) => {
+        const total = deviceIdsSafe.reduce((sum, id) => sum + (deviceData[id]?.[hourIdx] || 0), 0)
+        return Number(total.toFixed(2))
+      })
+      setHours(aggregated)
+    } else {
+      setHours(aggregateFallback)
+    }
+  }, [sessionId])
 
   // Auto-load active session
   useEffect(() => {
@@ -141,13 +441,27 @@ export default function Player() {
             round_span_hours: round_span,
             forecast_horizon_hours: fh,
             freeze_hours: freeze,
-            horizon_hours: Number(gen.horizon_hours || 24)
+            horizon_hours: Number(gen.horizon_hours || 24),
+            fake_date: gen.fake_date || '',
+            start_time: gen.start_time || '00:00'
           },
           current_round: Number(data.current_round || 1),
-          scenario_name: data.scenario_name || 'Scenario'
+          scenario_name: data.scenario_name || 'Scenario',
+          campaign_name: data.campaign_name || ''
         })
         setStatus(data.status || 'pending')
         setMode(data.mode || 'isolated_per_player')
+        
+        // Load full scenario data for briefing screen
+        if (data.scenario_id) {
+          try {
+            const scenarioRes = await api.get(`/api/catalog/scenarios/${data.scenario_id}`)
+            setScenario(scenarioRes.data)
+          } catch (err) {
+            console.error('Failed to load scenario:', err)
+          }
+        }
+        
         // Initialize duration, but do NOT reset remaining time on reload; wait for server ticks or restore from storage
         try{
           const initial = Number((gen.round_duration_seconds || 300))
@@ -181,6 +495,7 @@ export default function Player() {
           if(sel){
             const t = (pts||[]).find(x=> x.id===sel)
             devs = t?.devices || []
+            console.log('Selected type:', sel, 'Found type:', t, 'Devices:', devs)
             setTypeDevices(devs)
             // initialize deviceHours if empty
             setDeviceHours(prev=>{
@@ -189,38 +504,21 @@ export default function Player() {
               devs.forEach(did=>{ if(!next[did]) next[did] = Array.from({length: fh}, ()=> 0) })
               return next
             })
+          } else if (allowed.length === 0 && devices.length > 0) {
+            // Solo mode (no player types defined): use ALL scenario devices
+            devs = devices.map(d => d.id)
+            setTypeDevices(devs)
+            setDeviceHours(prev=>{
+              const fh = Number(gen.forecast_horizon_hours||24)
+              const next = { ...prev }
+              devs.forEach(did=>{ if(!next[did]) next[did] = Array.from({length: fh}, ()=> 0) })
+              return next
+            })
           }
-          if((data.mode === 'shared_market') && allowed.length>0 && !sel){
+          if(allowed.length>0 && !sel){
             setTypeDialogOpen(true)
           }
 
-          // Load saved full forecast and seed defaults if empty
-          const saved = await api.get(`/api/player/forecast/full`, { params: { session_id: Number(sessionId) } })
-          const savedHours = Array.isArray(saved.data?.hours) ? saved.data.hours : null
-          const hasNonZero = Array.isArray(savedHours) ? savedHours.some(v => Number(v) !== 0) : false
-          const fhHours = Number(gen.forecast_horizon_hours || gen.horizon_hours || 24)
-          const genDefaultProfile = (len)=>{
-            const diurnal = [0.6,0.6,0.6,0.6,0.7,0.85,1.0,1.15,1.25,1.2,1.1,1.0,0.95,1.0,1.05,1.15,1.2,1.25,1.15,1.0,0.9,0.8,0.7,0.65]
-            const base = 50
-            return Array.from({length: len}, (_,i)=> Number((base * diurnal[i%24]).toFixed(2)))
-          }
-          if (hasNonZero) {
-            setHours(savedHours)
-          } else {
-            if (data.mode === 'shared_market' && sel && (devs||[]).length>0){
-              const n = devs.length
-              const perDev = Math.max(1, Math.round(50/n))
-              const devDefaults = {}
-              devs.forEach(did=>{
-                devDefaults[did] = genDefaultProfile(fhHours).map(v=> Number((v * (perDev/50)).toFixed(2)))
-              })
-              setDeviceHours(devDefaults)
-              const agg = Array.from({length: fhHours}, (_,h)=> devs.reduce((sum, id)=> sum + (devDefaults[id]?.[h]||0), 0))
-              setHours(agg)
-            } else {
-              setHours(genDefaultProfile(fhHours))
-            }
-          }
         }catch(_){ /* ignore */ }
         
       } catch (error) {
@@ -229,7 +527,7 @@ export default function Player() {
       }
     }
     load()
-  }, [sessionId, showSnack])
+  }, [sessionId, showSnack, seedForecastData])
 
   // Live market_cleared events and WebSocket
   const [live, setLive] = useState(null)
@@ -256,7 +554,17 @@ export default function Player() {
         setSubmitted(false)
         try{
           const { data } = await api.get(`/api/sessions/${sessionId}`)
-          setCfg(prev=> ({ ...prev, current_round: Number(data.current_round||prev.current_round), scenario_name: data.scenario_name||prev.scenario_name }))
+          setCfg(prev=> ({ 
+            ...prev, 
+            current_round: Number(data.current_round||prev.current_round), 
+            scenario_name: data.scenario_name||prev.scenario_name,
+            campaign_name: data.campaign_name||prev.campaign_name,
+            general: {
+              ...prev.general,
+              fake_date: data.general?.fake_date || prev.general.fake_date,
+              start_time: data.general?.start_time || prev.general.start_time
+            }
+          }))
           setStatus(data.status||prev.status)
         }catch(_){ }
       }
@@ -312,6 +620,51 @@ export default function Player() {
       }
     })
 
+    s.on('briefing', async (p) => {
+      if (Number(p?.session_id) === Number(sessionId)) {
+        setStatus('briefing')
+        try {
+          const { data } = await api.get(`/api/sessions/${sessionId}`)
+          setCfg(prev => ({
+            ...prev,
+            scenario_name: data.scenario_name || prev.scenario_name,
+            campaign_name: data.campaign_name || prev.campaign_name,
+          }))
+          // Load scenario data for briefing screen
+          if (data.scenario_id) {
+            const scenarioRes = await api.get(`/api/catalog/scenarios/${data.scenario_id}`)
+            setScenario(scenarioRes.data)
+          }
+        } catch (_) {}
+      }
+    })
+
+    s.on('round_closing', (p) => {
+      if (Number(p?.session_id) === Number(sessionId)) {
+        setStatus('round_closing')
+      }
+    })
+
+    s.on('calculating', (p) => {
+      if (Number(p?.session_id) === Number(sessionId)) {
+        setStatus('calculating')
+      }
+    })
+
+    s.on('round_results_ready', (p) => {
+      if (Number(p?.session_id) === Number(sessionId)) {
+        setStatus('round_results')
+      }
+    })
+
+    s.on('scenario_complete', (p) => {
+      if (Number(p?.session_id) === Number(sessionId)) {
+        setStatus('scenario_complete')
+        showSnack('Scenario completed! 🎉', 'success')
+        try { triggerConfetti() } catch (_) {}
+      }
+    })
+
     // Mirror the same handlers on legacy socket for safety
     sLegacy.on('round_start', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) { setTimeRemaining(null); try{ sessionStorage.removeItem(`emsg_timer_${sessionId}`) }catch(_){ } } })
     sLegacy.on('tick', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) { const rem = Number(p.remaining); setTimeRemaining(rem); try{ sessionStorage.setItem(`emsg_timer_${sessionId}`, JSON.stringify({ t: Date.now(), rem })) }catch(_){ } } })
@@ -333,7 +686,7 @@ export default function Player() {
 
   // Local fallback countdown (in case server ticks are delayed)
   useEffect(()=>{
-    if (status === 'running' && Number.isFinite(Number(timeRemaining)) && timeRemaining !== null) {
+    if ((status === 'running' || status === 'round_active') && Number.isFinite(Number(timeRemaining)) && timeRemaining !== null) {
       if (localTimerRef.current) clearInterval(localTimerRef.current)
       localTimerRef.current = setInterval(()=>{
         setTimeRemaining(prev=>{
@@ -370,19 +723,61 @@ export default function Player() {
   useEffect(()=>{
     if (!selectedType || !Array.isArray(typeDevices) || typeDevices.length===0) return
     const fh = Number(cfg.general.forecast_horizon_hours||24)
+    if (!Number.isFinite(fh) || fh <= 0) return
+    const scenarioById = new Map((scenarioDevices || []).map((dev) => [dev.id, dev]))
     setDeviceHours(prev => {
       let changed = false
       const next = { ...prev }
       typeDevices.forEach(did => {
-        if (!Array.isArray(next[did]) || next[did].length !== fh) {
-          const existing = Array.isArray(prev[did]) ? prev[did] : []
-          next[did] = Array.from({ length: fh }, (_, i) => Number(existing[i] || 0))
-          changed = true
+        const current = prev[did]
+        const hasFullLength = Array.isArray(current) && current.length === fh
+        if (hasFullLength) return
+        const def = scenarioById.get(did)
+        const fallback = buildDeviceProfile(def, fh)
+        if (Array.isArray(current) && current.length > 0) {
+          next[did] = Array.from({ length: fh }, (_, i) => Number(current[i] || 0))
+        } else {
+          next[did] = fallback
         }
+        changed = true
       })
+      if (changed) {
+        const agg = Array.from({ length: fh }, (_, hourIdx) => {
+          const total = typeDevices.reduce((sum, did) => sum + (next[did]?.[hourIdx] || 0), 0)
+          return Number(total.toFixed(2))
+        })
+        setHours(agg)
+      }
       return changed ? next : prev
     })
-  }, [selectedType, typeDevices, cfg.general.forecast_horizon_hours])
+  }, [selectedType, typeDevices, cfg.general.forecast_horizon_hours, scenarioDevices])
+
+  useEffect(() => {
+    if (!sessionId) return
+    const generalCfg = cfg?.general || {}
+    const fh = Number(generalCfg.forecast_horizon_hours || generalCfg.horizon_hours || 24)
+    if (!Number.isFinite(fh) || fh <= 0) return
+    if (!Array.isArray(scenarioDevices) || scenarioDevices.length === 0) return
+
+    const usingPlayerTypes = allowedTypes.length > 0
+    const deviceIds = usingPlayerTypes
+      ? typeDevices
+      : scenarioDevices.map((dev) => dev.id)
+
+    if (!Array.isArray(deviceIds) || deviceIds.length === 0) return
+
+    const deviceDefs = usingPlayerTypes
+      ? scenarioDevices.filter((dev) => deviceIds.includes(dev.id))
+      : scenarioDevices
+
+    if (deviceDefs.length === 0) return
+
+    const key = `${sessionId}-${selectedType || 'solo'}-${deviceIds.join('|')}-${fh}`
+    if (forecastSeedKeyRef.current === key) return
+    forecastSeedKeyRef.current = key
+
+    seedForecastData({ generalConfig: generalCfg, deviceIds, deviceDefs })
+  }, [sessionId, cfg.general, allowedTypes.length, selectedType, typeDevices, scenarioDevices, seedForecastData])
 
   // D3 Charts
   useEffect(() => {
@@ -517,7 +912,7 @@ export default function Player() {
   const saveFull = async () => {
     try {
       const payload = { session_id: Number(sessionId), hours }
-      if(mode==='shared_market' && selectedType && typeDevices.length>0){
+      if(allowedTypes.length>0 && selectedType && typeDevices.length>0){
         payload.devices = typeDevices.map(did=> ({ device_id: did, hours: deviceHours[did] || [] }))
       }
       await api.post('/api/player/forecast/full', payload)
@@ -534,7 +929,7 @@ export default function Player() {
     const slice = hours.slice(start, start + span)
     try {
       const payload = { session_id: Number(sessionId), round_num: r, hours: slice }
-      if(mode==='shared_market' && selectedType && typeDevices.length>0){
+      if(allowedTypes.length>0 && selectedType && typeDevices.length>0){
         payload.devices = typeDevices.map(did=> ({ device_id: did, hours: (deviceHours[did]||[]).slice(start, start+span) }))
       }
       await api.post('/api/player/forecast', payload)
@@ -555,7 +950,7 @@ export default function Player() {
   // Filter out dismissed events
   const visibleEvents = activeEvents.filter(e => !dismissedEvents.has(e.id))
 
-  const isEditable = status === 'running' && sessionId
+  const isEditable = (status === 'running' || status === 'round_active') && sessionId
   const span = Number(cfg.general.round_span_hours || 6)
   const cur = Number(cfg.current_round || 1)
   const startIdx = (cur - 1) * span
@@ -589,6 +984,61 @@ export default function Player() {
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+      {/* Briefing Screen */}
+      {status === 'briefing' && scenario && (
+        <BriefingScreen 
+          session={{ id: sessionId, mode }}
+          scenario={scenario}
+          onStart={async () => {
+            try {
+              const { data } = await api.get(`/api/sessions/${sessionId}`)
+              setStatus(data.status || 'running')
+            } catch (_) {}
+          }}
+        />
+      )}
+
+      {/* Waiting Screen - during round_closing or calculating */}
+      {(status === 'round_closing' || status === 'calculating') && (
+        <WaitingScreen 
+          sessionId={sessionId}
+          round={cfg.current_round}
+          mode={mode}
+        />
+      )}
+
+      {/* Round Results Screen */}
+      {status === 'round_results' && (
+        <RoundResultsScreen 
+          sessionId={sessionId}
+          round={cfg.current_round}
+          mode={mode}
+          onAdvance={async () => {
+            try {
+              const { data } = await api.get(`/api/sessions/${sessionId}`)
+              setStatus(data.status || 'running')
+              setCfg(prev => ({
+                ...prev,
+                current_round: data.current_round || prev.current_round,
+                scenario_name: data.scenario_name || prev.scenario_name,
+                campaign_name: data.campaign_name || prev.campaign_name,
+              }))
+            } catch (_) {}
+          }}
+        />
+      )}
+
+      {/* Scenario Complete Screen */}
+      {status === 'scenario_complete' && (
+        <ScenarioResultsScreen 
+          sessionId={sessionId}
+          onHome={() => navigate('/home')}
+        />
+      )}
+
+      {/* Main Game Interface - only show when in active round */}
+      {(status === 'running' || status === 'round_active') && (
+      <>
       <Dialog open={typeDialogOpen} onClose={()=> setTypeDialogOpen(false)}>
         <DialogTitle>Select your player type</DialogTitle>
         <DialogContent>
@@ -611,38 +1061,67 @@ export default function Player() {
             try{
               await api.post(`/api/sessions/${sessionId}/select-type`, { type_id: selectedType })
               setTypeDialogOpen(false)
+              // Reload briefing to get updated device list
+              const brief = await api.get(`/api/sessions/${sessionId}/briefing`)
+              const sel = brief.data?.selected_type || null
+              const pts = brief.data?.player_types || []
+              const devices = brief.data?.devices || []
+              setSelectedType(sel)
+              setPlayerTypes(pts)
+              setScenarioDevices(devices)
+              
+              // Load devices for selected type
+              if(sel){
+                const t = (pts||[]).find(x=> x.id===sel)
+                const devs = t?.devices || []
+                setTypeDevices(devs)
+                // initialize deviceHours
+                const gen = brief.data?.general || cfg.general || {}
+                setDeviceHours(prev=>{
+                  const fh = Number(gen.forecast_horizon_hours||24)
+                  const next = { ...prev }
+                  devs.forEach(did=>{ if(!next[did]) next[did] = Array.from({length: fh}, ()=> 0) })
+                  return next
+                })
+              }
+              showSnack('Player type selected successfully', 'success')
             }catch(e){
               showSnack(e?.response?.data?.error || 'Selection failed', 'error')
             }
           }}>Select</Button>
         </DialogActions>
       </Dialog>
-      <Typography variant="h4" gutterBottom>
-        Play Scenario – {cfg.scenario_name} (Round {cfg.current_round})
-      </Typography>
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="h4">
+          {cfg.campaign_name || 'Active Campaign'}
+        </Typography>
+        <Typography variant="subtitle1" color="text.secondary">
+          {cfg.scenario_name ? `Scenario: ${cfg.scenario_name}` : 'Scenario'} • Round {cfg.current_round}
+        </Typography>
+      </Box>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
         <Button size="small" startIcon={<BriefingIcon />} onClick={()=> navigate(`/briefing/${sessionId}`)}>
           Briefing
         </Button>
         <Tooltip arrow title={
-          mode === 'isolated_per_player' 
-            ? 'Solo Mode: You have your own private market. Your decisions only affect your own results.' 
-            : 'Shared Market: All players trade in the same market. Your decisions affect market prices and other players.'
+          (allowedTypes.length > 0)
+            ? 'Shared Market: All players trade in the same market. Your decisions affect market prices and other players.' 
+            : 'Solo Mode: You have your own private market. Your decisions only affect your own results.'
         }>
           <Chip 
-            label={mode === 'isolated_per_player' ? 'Solo' : 'Shared Market'}
+            label={(allowedTypes.length > 0) ? 'Shared Market' : 'Solo'}
             size="small"
-            color={mode === 'isolated_per_player' ? 'default' : 'primary'}
+            color={(allowedTypes.length > 0) ? 'primary' : 'default'}
             variant="outlined"
           />
         </Tooltip>
-        {mode==='shared_market' && selectedType && (
+        {selectedType && (
           <Tooltip arrow title={(() => {
             const typeInfo = playerTypes.find(pt=> pt.id === selectedType)
             if (!typeInfo) return selectedType
             const devices = typeDevices.map(did => {
               const dev = scenarioDevices.find(d => d.id === did)
-              return dev ? `${dev.name || did} (${dev.type})` : did
+              return dev ? `${dev.name || `${dev.id} (no device name)`} (${dev.type})` : did
             }).join(', ')
             return `${typeInfo.name} • Devices: ${devices || 'none'}`
           })()}>
@@ -654,9 +1133,6 @@ export default function Player() {
           </Tooltip>
         )}
         <Box sx={{ flexGrow: 1 }} />
-        <Button size="small" variant="outlined" onClick={async()=>{
-          try{ await api.post(`/api/sessions/${sessionId}/force-round-end`); showSnack('Round forced to end', 'info'); navigate('/evaluation?sessionId='+sessionId) }catch(e){ showSnack('Force end failed','error') }
-        }}>Debug: Close and Evaluate</Button>
       </Stack>
 
       {/* Event Notifications */}
@@ -668,6 +1144,12 @@ export default function Player() {
       <Grid container spacing={3}>
         {/* Left: Timer and KPIs */}
         <Grid item xs={12} md={4}>
+          <ScenarioClock 
+            fakeDate={cfg.general.fake_date} 
+            startTime={cfg.general.start_time} 
+            currentRound={cfg.current_round}
+            roundSpan={cfg.general.round_span_hours}
+          />
           {timeRemaining !== null && <CountdownTimer timeRemaining={timeRemaining} />}
 
           <Card sx={{ mt: 2 }}>
@@ -677,9 +1159,21 @@ export default function Player() {
               </Typography>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                 <Typography variant="body2" color="text.secondary">
+                  Campaign
+                </Typography>
+                <Typography variant="body2">{cfg.campaign_name || '—'}</Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                <Typography variant="body2" color="text.secondary">
+                  Scenario
+                </Typography>
+                <Typography variant="body2">{cfg.scenario_name || '—'}</Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                <Typography variant="body2" color="text.secondary">
                   Status
                 </Typography>
-                <Chip label={status} color={status === 'running' ? 'success' : 'default'} size="small" />
+                <Chip label={status} color={(status === 'running' || status === 'round_active') ? 'success' : 'default'} size="small" />
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                 <Typography variant="body2" color="text.secondary">
@@ -744,12 +1238,12 @@ export default function Player() {
           </Card>
 
           {/* My Devices */}
-          {(mode==='shared_market' ? (selectedType && typeDevices.length>0) : (Array.isArray(scenarioDevices)&&scenarioDevices.length>0)) && (
+          {((selectedType && typeDevices.length>0) || (Array.isArray(scenarioDevices)&&scenarioDevices.length>0)) && (
             <Card sx={{ mt: 2 }}>
               <CardContent>
                 <Typography variant="h6" gutterBottom>My Devices</Typography>
                 <Stack spacing={1}>
-                  {(mode==='shared_market' ? typeDevices.map(did=> scenarioDevices.find(d=> d.id===did)).filter(Boolean) : scenarioDevices).map((dev)=>{
+                  {(selectedType ? typeDevices.map(did=> scenarioDevices.find(d=> d.id===did)).filter(Boolean) : scenarioDevices).map((dev)=>{
                     const t = (dev.type||'').toLowerCase()
                     const specs = []
                     if (t.includes('load')){
@@ -765,7 +1259,7 @@ export default function Player() {
                     }
                             return (
                               <Stack key={dev.id} direction="row" spacing={1} justifyContent="space-between">
-                                <Typography variant="body2">{dev.name || (dev.type ? (dev.type.charAt(0).toUpperCase()+dev.type.slice(1)) : dev.id)} ({dev.type})</Typography>
+                                <Typography variant="body2">{dev.name ? dev.name : `${dev.id} (no device name)`} ({dev.type})</Typography>
                                 <Typography variant="body2" color="text.secondary">{specs.join(' • ')}</Typography>
                               </Stack>
                             )
@@ -785,27 +1279,23 @@ export default function Player() {
                 {submitted ? 'Forecast submitted. Waiting for round results...' : 'Time is up! You can no longer submit this round.'}
               </Alert>
             )}
-            {(mode==='shared_market' && allowedTypes.length>0 && !selectedType) && (
+            {(allowedTypes.length>0 && !selectedType) && (
               <Alert severity="info" sx={{ mt: 2, mb: 2 }}>
                 Please select your player type to continue.
               </Alert>
             )}
 
-            {(mode==='shared_market' && selectedType && typeDevices.length>0) ? (
-              <Stack spacing={3} sx={{ mt:2 }}>
-                <Alert severity="info" sx={{ mb: 1 }}>
-                  Enter your hourly forecast for each device. Locked hours (before freeze) cannot be changed.
-                </Alert>
-                {typeDevices.map(did=> {
+            {(allowedTypes.length === 0 || (selectedType && typeDevices.length>0)) ? (
+              allowedTypes.length > 0 ? (
+                <Stack spacing={3} sx={{ mt:2 }}>
+                  <Alert severity="info" sx={{ mb: 1 }}>
+                    Enter your hourly forecast for each device. Locked hours (before freeze) cannot be changed.
+                  </Alert>
+                  {typeDevices.map(did=> {
                   const deviceDef = scenarioDevices.find(d=> d.id === did)
                   const deviceType = deviceDef?.type || 'unknown'
                   const deviceParams = deviceDef || {}
-                  const deviceMax = (()=>{
-                    const t = (deviceType||'').toLowerCase()
-                    if (t.includes('load')) return deviceParams.peak_load_mw || (deviceParams.baseline_load_mw ? deviceParams.baseline_load_mw*1.5 : 0)
-                    if (t === 'battery') return deviceParams.power_rating_mw || deviceParams.capacity_mw || 0
-                    return deviceParams.capacity_mw || 0
-                  })()
+                  const deviceMax = getDeviceMaxCapability(deviceParams)
                   const fhLocal = Number(cfg.general.forecast_horizon_hours||24)
                   const series = (Array.isArray(deviceHours[did]) && deviceHours[did].length===fhLocal)
                     ? deviceHours[did]
@@ -830,7 +1320,7 @@ export default function Player() {
                             {deviceType === 'solar' ? '☀' : deviceType === 'wind' ? '🌀' : deviceType === 'gas' ? '🔥' : deviceType === 'storage' ? '🔋' : '⚡'}
                           </Box>
                           <Box sx={{ flex: 1 }}>
-                            <Typography variant="h6">{deviceDef?.name || (deviceType ? (deviceType.charAt(0).toUpperCase()+deviceType.slice(1)) : did)}</Typography>
+                            <Typography variant="h6">{deviceDef?.name || `${did} (no device name)`}</Typography>
                             <Typography variant="body2" color="text.secondary">
                               {(() => {
                                 const t = (deviceType||'').toLowerCase()
@@ -856,38 +1346,117 @@ export default function Player() {
                         </Stack>
                         {view === 'chart' ? (
                           <Box sx={{ mb: 2 }}>
-                            <ForecastChartEditor hours={series} lockedUntil={effectiveLockedUntil} onChange={(i, val)=> onDeviceChange(did, i, val)} maxValue={deviceMax} smoothRadius={3} />
+                            <ForecastChartEditor 
+                              hours={series} 
+                              lockedUntil={effectiveLockedUntil} 
+                              onChange={(i, val)=> onDeviceChange(did, i, val)} 
+                              maxValue={deviceMax} 
+                              smoothRadius={3}
+                              currentRound={Number(cfg.current_round || 1)}
+                              roundSpan={Number(cfg.general.round_span_hours || 6)}
+                              freezeHours={Number(cfg.general.freeze_hours || 6)}
+                              startTime={cfg.general.start_time || '00:00'}
+                              deviceType={deviceType}
+                              deviceParams={deviceParams}
+                            />
                           </Box>
                         ) : (
-                          <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
-                            {(deviceHours[did]||[]).map((v,i)=>{
-                              const disabled = i < effectiveLockedUntil || timeRemaining === 0
+                          <Box sx={{ mt: 1 }}>
+                            {(() => {
+                              const series = deviceHours[did] || []
+                              const freeze = Number(cfg.general.freeze_hours || 6)
+                              const lockedEnd = freeze
+                              const todayEnd = 24
+                              
+                              const groups = [
+                                { 
+                                  label: 'Locked Hours', 
+                                  start: 0, 
+                                  end: lockedEnd, 
+                                  color: '#ff9800', 
+                                  hint: 'These hours are locked after Round 1. Simulates the Intraday Market (IDM) gate closure - the point where even short-term Intraday trading closes before delivery.' 
+                                },
+                                { 
+                                  label: 'Today (Editable)', 
+                                  start: lockedEnd, 
+                                  end: todayEnd, 
+                                  color: '#2196f3', 
+                                  hint: 'Hours for today\'s simulation. Always editable. This represents the main trading window.' 
+                                },
+                                { 
+                                  label: 'Tomorrow (Editable)', 
+                                  start: todayEnd, 
+                                  end: series.length, 
+                                  color: '#9c27b0', 
+                                  hint: 'Forward planning for the next day. Always editable.' 
+                                }
+                              ].filter(g => g.start < g.end && g.start < series.length)
+                              
                               return (
-                                <Tooltip key={`${did}-${i}`} arrow title={`Hour h${i+1} for ${did}`}>
-                                  <TextField
-                                    label={`h${i+1}`}
-                                    value={v}
-                                    onChange={(e)=> onDeviceChange(did, i, e.target.value)}
-                                    size="small"
-                                    type="number"
-                                    disabled={disabled}
-                                    sx={{ width: 90, m: 0.5 }}
-                                  />
-                                </Tooltip>
+                                <Stack spacing={3}>
+                                  {groups.map((group) => {
+                                    const groupHours = []
+                                    for (let i = group.start; i < Math.min(group.end, series.length); i++) {
+                                      groupHours.push(i)
+                                    }
+                                    if (groupHours.length === 0) return null
+                                    
+                                    const chunkSize = 4
+                                    const chunks = []
+                                    for (let idx = 0; idx < groupHours.length; idx += chunkSize) {
+                                      chunks.push(groupHours.slice(idx, idx + chunkSize))
+                                    }
+                                    
+                                    return (
+                                      <Box key={group.label}>
+                                        <Tooltip title={group.hint} placement="top-start" arrow>
+                                          <Typography variant="subtitle2" sx={{ mb: 1, color: group.color, fontWeight: 'bold', cursor: 'help' }}>
+                                            {group.label}
+                                          </Typography>
+                                        </Tooltip>
+                                        <Stack spacing={1.5}>
+                                          {chunks.map((chunk, chunkIdx) => (
+                                            <Grid container spacing={1} key={chunkIdx} alignItems="center">
+                                              {chunk.map((i) => {
+                                                const disabled = i < effectiveLockedUntil || timeRemaining === 0
+                                                const v = series[i]
+                                                return (
+                                                  <Grid item xs={6} sm={3} md={3} key={i}>
+                                                    <Tooltip arrow title={`Hour h${i + 1}: ${disabled ? 'Locked (freeze)' : 'Editable'}`}>
+                                                      <TextField
+                                                        label={`h${i + 1}`}
+                                                        value={v}
+                                                        onChange={(e) => onDeviceChange(did, i, e.target.value)}
+                                                        size="small"
+                                                        type="number"
+                                                        disabled={disabled}
+                                                        fullWidth
+                                                      />
+                                                    </Tooltip>
+                                                  </Grid>
+                                                )
+                                              })}
+                                            </Grid>
+                                          ))}
+                                        </Stack>
+                                      </Box>
+                                    )
+                                  })}
+                                </Stack>
                               )
-                            })}
-                          </Stack>
+                            })()}
+                          </Box>
                         )}
                       </CardContent>
                     </Card>
                   )
                 })}
               </Stack>
-            ) : (
-              <>
-                <Alert severity="info" sx={{ mt: 2, mb: 2 }}>
-                  Enter your hourly energy forecast (in MWh). Use the chart editor to drag points or switch to fields for precise values. Locked hours cannot be changed.
-                </Alert>
+              ) : (
+                <>
+                  <Alert severity="info" sx={{ mt: 2, mb: 2 }}>
+                    Enter your hourly energy forecast (in MWh). Use the chart editor to drag points or switch to fields for precise values. Locked hours cannot be changed.
+                  </Alert>
                 {/* Unified editor header with toggle */}
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
                   <Typography variant="subtitle2">
@@ -901,60 +1470,118 @@ export default function Player() {
                 </Stack>
                 {useChartEditor ? (
                   <Box sx={{ mb: 2 }}>
-                    <ForecastChartEditor hours={hours} lockedUntil={effectiveLockedUntil} onChange={(i, val)=> onChange(i, val)} smoothRadius={3} />
+                    <ForecastChartEditor 
+                      hours={hours} 
+                      lockedUntil={effectiveLockedUntil} 
+                      onChange={(i, val)=> onChange(i, val)} 
+                      maxValue={aggregateMax}
+                      smoothRadius={3}
+                      currentRound={Number(cfg.current_round || 1)}
+                      roundSpan={Number(cfg.general.round_span_hours || 6)}
+                      freezeHours={Number(cfg.general.freeze_hours || 6)}
+                      startTime={cfg.general.start_time || '00:00'}
+                    />
                   </Box>
                 ) : (
                   <Box sx={{ mt: 2 }}>
                     {(() => {
-                      const chunkSize = 12
-                      const chunks = []
-                      for (let i = 0; i < hours.length; i += chunkSize) {
-                        chunks.push(i)
-                      }
+                      const freeze = Number(cfg.general.freeze_hours || 6)
+                      const lockedEnd = freeze
+                      const todayEnd = 24
+                      
+                      const groups = [
+                        { 
+                          label: 'Locked Hours', 
+                          start: 0, 
+                          end: lockedEnd, 
+                          color: '#ff9800', 
+                          hint: 'These hours are locked after Round 1. Simulates the Intraday Market (IDM) gate closure - the point where even short-term Intraday trading closes before delivery.' 
+                        },
+                        { 
+                          label: 'Today (Editable)', 
+                          start: lockedEnd, 
+                          end: todayEnd, 
+                          color: '#2196f3', 
+                          hint: 'Hours for today\'s simulation. Always editable. This represents the main trading window.' 
+                        },
+                        { 
+                          label: 'Tomorrow (Editable)', 
+                          start: todayEnd, 
+                          end: hours.length, 
+                          color: '#9c27b0', 
+                          hint: 'Forward planning for the next day. Always editable.' 
+                        }
+                      ].filter(g => g.start < g.end && g.start < hours.length)
+                      
                       return (
-                        <Stack spacing={1.5}>
-                          {chunks.map((start) => (
-                            <Grid container spacing={1} key={start} alignItems="center">
-                              {Array.from({ length: Math.min(chunkSize, hours.length - start) }, (_, k) => start + k).map((i) => {
-                                const disabled = i < effectiveLockedUntil || timeRemaining === 0
-                                return (
-                                  <Grid item xs={2} sm={1} key={i}>
-                                    <Tooltip arrow title={`Hour h${i + 1}: ${disabled ? 'Locked (freeze)' : 'Editable'}`}>
-                                      <TextField
-                                        label={`h${i + 1}`}
-                                        value={hours[i]}
-                                        onChange={(e) => onChange(i, e.target.value)}
-                                        size="small"
-                                        type="number"
-                                        disabled={disabled}
-                                        fullWidth
-                                        sx={{ minWidth: 84 }}
-                                      />
-                                    </Tooltip>
-                                  </Grid>
-                                )
-                              })}
-                            </Grid>
-                          ))}
+                        <Stack spacing={3}>
+                          {groups.map((group) => {
+                            const groupHours = []
+                            for (let i = group.start; i < Math.min(group.end, hours.length); i++) {
+                              groupHours.push(i)
+                            }
+                            if (groupHours.length === 0) return null
+                            
+                            const chunkSize = 4
+                            const chunks = []
+                            for (let idx = 0; idx < groupHours.length; idx += chunkSize) {
+                              chunks.push(groupHours.slice(idx, idx + chunkSize))
+                            }
+                            
+                            return (
+                              <Box key={group.label}>
+                                <Tooltip title={group.hint} placement="top-start" arrow>
+                                  <Typography variant="subtitle2" sx={{ mb: 1, color: group.color, fontWeight: 'bold', cursor: 'help' }}>
+                                    {group.label}
+                                  </Typography>
+                                </Tooltip>
+                                <Stack spacing={1.5}>
+                                  {chunks.map((chunk, chunkIdx) => (
+                                    <Grid container spacing={1} key={chunkIdx} alignItems="center">
+                                      {chunk.map((i) => {
+                                        const disabled = i < effectiveLockedUntil || timeRemaining === 0
+                                        return (
+                                          <Grid item xs={6} sm={3} md={3} key={i}>
+                                            <Tooltip arrow title={`Hour h${i + 1}: ${disabled ? 'Locked (freeze)' : 'Editable'}`}>
+                                              <TextField
+                                                label={`h${i + 1}`}
+                                                value={hours[i]}
+                                                onChange={(e) => onChange(i, e.target.value)}
+                                                size="small"
+                                                type="number"
+                                                disabled={disabled}
+                                                fullWidth
+                                              />
+                                            </Tooltip>
+                                          </Grid>
+                                        )
+                                      })}
+                                    </Grid>
+                                  ))}
+                                </Stack>
+                              </Box>
+                            )
+                          })}
                         </Stack>
                       )
                     })()}
                   </Box>
                 )}
               </>
-            )}
+            )
+          ) : null}
 
             <Stack direction="row" spacing={2} sx={{ mt: 3 }}>
               <Tooltip arrow title="Saves all hourly values for the full forecast horizon without submitting the current round.">
                 <span>
-                  <Button variant="outlined" onClick={saveFull} disabled={!sessionId || (mode==='shared_market' && allowedTypes.length>0 && !selectedType)}>
+                  <Button variant="outlined" onClick={saveFull} disabled={!sessionId || (allowedTypes.length>0 && !selectedType)}>
                     Save Full Forecast
                   </Button>
                 </span>
               </Tooltip>
               <Tooltip arrow title={`Submits only the hours of the current round (R${cfg.current_round}).`}>
                 <span>
-                  <Button variant="contained" onClick={submitCurrent} disabled={!isEditable || !isValid || timeRemaining === 0 || submitted || (mode==='shared_market' && allowedTypes.length>0 && !selectedType)}>
+                  <Button variant="contained" onClick={submitCurrent} disabled={!isEditable || !isValid || timeRemaining === 0 || (allowedTypes.length>0 && !selectedType)}>
                     Submit Current Round
                   </Button>
                 </span>
@@ -974,6 +1601,8 @@ export default function Player() {
           </Paper>
         </Grid>
       </Grid>
+      </>
+      )}
     </Container>
   );
 }

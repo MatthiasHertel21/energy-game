@@ -59,7 +59,26 @@ export default function DesignerCampaigns(){
 
   const deleteCampaign = async ()=>{
     if(!selected) return
-    if(!window.confirm('Delete this campaign? This will remove all its scenario mappings and delete its scenarios. Any sessions using those scenarios will be preserved but unlinked.')) return
+    
+    // Extra warning if campaign is published
+    if(detail.published){
+      const confirmPublished = window.confirm(
+        '⚠️ WARNING: This campaign is PUBLISHED!\n\n' +
+        'Players can see this campaign in the catalog. Deleting it will:\n' +
+        '• Remove it from the catalog immediately\n' +
+        '• Delete all scenario mappings\n' +
+        '• Delete all scenarios in this campaign\n' +
+        '• Preserve existing sessions but unlink them\n\n' +
+        'Are you sure you want to delete this published campaign?'
+      )
+      if(!confirmPublished) return
+      
+      // Second confirmation for published campaigns
+      if(!window.confirm('FINAL CONFIRMATION: Type DELETE in the next prompt to proceed.\n\nThis action cannot be undone!')) return
+    } else {
+      if(!window.confirm('Delete this campaign? This will remove all its scenario mappings and delete its scenarios. Any sessions using those scenarios will be preserved but unlinked.')) return
+    }
+    
     setDeleting(true)
     try{
       await api.delete(`/api/kse/campaigns/${selected}`)
@@ -166,8 +185,8 @@ export default function DesignerCampaigns(){
                 <FormControlLabel control={<Switch checked={!!detail.published} onChange={(e)=> setDetail({...detail, published: e.target.checked})} />} label="Published" />
                 <Stack direction="row" spacing={1}>
                   <Button variant="contained" onClick={saveMeta}>Save</Button>
-                  <Button variant="outlined" color="error" disabled={!!detail.published || deleting} onClick={deleteCampaign}>
-                    Delete Campaign
+                  <Button variant="outlined" color="error" disabled={deleting} onClick={deleteCampaign}>
+                    {detail.published ? 'Delete Published Campaign' : 'Delete Campaign'}
                   </Button>
                 </Stack>
               </Stack>

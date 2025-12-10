@@ -1,3 +1,7 @@
+2025-12-04 Fix: Player Type Selection in isolated_per_player mode - SessionAllowedType entries now automatically created from scenario player_types when solo session starts, enabling proper device-specific forecast editors.
+2025-12-04 Feature: Simulation Time Clock in Player Interface - Shows current simulation date/time and real-world time above countdown timer.
+2025-12-04 Feature: NOW Line in Forecast Chart - Vertical red line marks current simulation hour in player forecast chart editor.
+2025-12-04 Feature: Device-specific Forecast Persistence - Backend now saves and loads per-device forecasts in addition to aggregated values.
 2025-11-17 Market Preview: Non-linear supply/demand curves based on generator mix (PV/Wind/Hydro/Coal/Gas/Nuclear) with adjustable capacity/price jitter; Consumer Mix added (Industrial/Household/Agriculture); Y-axis scales to data max; charts export via click (PNG); tooltips only (over-label texts removed).
 2025-11-17 UI: Rename KSE tab 'Market & Preview' → 'Market' and update Cypress tests.
 2025-11-17 Feature: Add player reset endpoint `/api/player/reset-scenario` and UI button in Campaign Detail to fully reset scenario progress (solo sessions, forecasts/results).

@@ -5,7 +5,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from .extensions import db
 from .models import Campaign, Scenario, Role, ReferenceRun
-from .models import CampaignScenario, Session, SessionStatus
+from .models import CampaignScenario, Session, SessionStatus, PlayerProgress, Forecast, Result
 from .utils import role_required
 from .device_types import DEVICE_SPECS, DeviceType, validate_device
 from .config import Config
@@ -228,25 +228,42 @@ class CampaignItem(Resource):
     @jwt_required()
     @role_required("designer", "admin")
     def delete(self, cid: int):
-        """Delete a campaign if it is not published. Removes mappings and cohort visibility entries."""
+        """Delete a campaign. Removes all dependent data including scenarios, sessions, and progress."""
         c = Campaign.query.get_or_404(cid)
-        if c.published:
-            return {"error": "Cannot delete a published campaign. Unpublish first."}, HTTPStatus.CONFLICT
-        # Remove mappings and cohort visibility
-        from .models import CampaignScenario, CohortCampaign
-        CampaignScenario.query.filter_by(campaign_id=cid).delete(synchronize_session=False)
-        CohortCampaign.query.filter_by(campaign_id=cid).delete(synchronize_session=False)
-        # Unlink sessions and delete scenarios belonging to this campaign
-        # 1) Collect scenario ids
+        
+        # Collect scenario ids belonging to this campaign
         scenario_ids = [s.id for s in Scenario.query.filter_by(campaign_id=cid).all()]
+        
         if scenario_ids:
-            # Set sessions.scenario_id = NULL for affected sessions
-            Session.query.filter(Session.scenario_id.in_(scenario_ids)).update({Session.scenario_id: None}, synchronize_session=False)
+            # Delete player progress entries for these scenarios
+            PlayerProgress.query.filter(PlayerProgress.scenario_id.in_(scenario_ids)).delete(synchronize_session=False)
+            
+            # Delete forecasts and results from sessions using these scenarios
+            session_ids = [s.id for s in Session.query.filter(Session.scenario_id.in_(scenario_ids)).all()]
+            if session_ids:
+                Forecast.query.filter(Forecast.session_id.in_(session_ids)).delete(synchronize_session=False)
+                Result.query.filter(Result.session_id.in_(session_ids)).delete(synchronize_session=False)
+            
+            # Delete sessions using these scenarios
+            Session.query.filter(Session.scenario_id.in_(scenario_ids)).delete(synchronize_session=False)
+            
             # Delete reference runs tied to scenarios
             ReferenceRun.query.filter(ReferenceRun.scenario_id.in_(scenario_ids)).delete(synchronize_session=False)
+            
             # Delete scenarios
             Scenario.query.filter(Scenario.id.in_(scenario_ids)).delete(synchronize_session=False)
-        # Finally delete campaign
+        
+        # Delete player progress entries referencing this campaign directly
+        PlayerProgress.query.filter_by(campaign_id=cid).delete(synchronize_session=False)
+        
+        # Remove campaign-scenario mappings
+        from .models import CohortCampaign
+        CampaignScenario.query.filter_by(campaign_id=cid).delete(synchronize_session=False)
+        
+        # Remove cohort-campaign visibility entries
+        CohortCampaign.query.filter_by(campaign_id=cid).delete(synchronize_session=False)
+        
+        # Finally delete the campaign itself
         db.session.delete(c)
         db.session.commit()
         return {"status": "deleted"}, HTTPStatus.NO_CONTENT
@@ -545,6 +562,27 @@ class ScenarioItem(Resource):
     @role_required("designer", "admin")
     def delete(self, sid: int):
         s = Scenario.query.get_or_404(sid)
+        
+        # Delete dependent records first to avoid foreign key constraint violations
+        # Delete player progress entries
+        PlayerProgress.query.filter_by(scenario_id=sid).delete()
+        
+        # Delete forecasts from sessions using this scenario
+        session_ids = [session.id for session in Session.query.filter_by(scenario_id=sid).all()]
+        if session_ids:
+            Forecast.query.filter(Forecast.session_id.in_(session_ids)).delete(synchronize_session=False)
+            Result.query.filter(Result.session_id.in_(session_ids)).delete(synchronize_session=False)
+        
+        # Delete sessions using this scenario
+        Session.query.filter_by(scenario_id=sid).delete()
+        
+        # Delete campaign-scenario assignments
+        CampaignScenario.query.filter_by(scenario_id=sid).delete()
+        
+        # Delete reference runs
+        ReferenceRun.query.filter_by(scenario_id=sid).delete()
+        
+        # Finally delete the scenario itself
         db.session.delete(s)
         db.session.commit()
         return {"status": "ok"}

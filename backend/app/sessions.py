@@ -1,11 +1,11 @@
 from http import HTTPStatus
-from flask import request
+from flask import request, current_app
 from flask_restx import Namespace, Resource, fields
-from flask_jwt_extended import jwt_required, get_jwt
+from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 
 from .extensions import db, socketio
 from .scheduler import run_rounds
-from .models import Session, SessionStatus, Scenario, SessionAllowedType, SessionPlayerType, ActivityLog, User, CohortMember, Forecast
+from .models import Session, SessionStatus, Scenario, Campaign, SessionAllowedType, SessionPlayerType, ActivityLog, User, CohortMember, Forecast
 from .utils import role_required, log_activity
 import os, json
 from datetime import datetime
@@ -61,13 +61,13 @@ class Sessions(Resource):
             scenario_id=data["scenario_id"],
             status=SessionStatus.running,
             started_at=datetime.utcnow(),
-            mode=data.get("mode") or "isolated_per_player",
+            mode=data.get("mode") or "shared_market",  # Default to shared_market for trainer sessions
         )
         db.session.add(s)
         db.session.commit()
         emit_trainer("session_started", {"session_id": s.id})
         # start background round timer
-        socketio.start_background_task(run_rounds, s.id)
+        socketio.start_background_task(run_rounds, s.id, current_app._get_current_object())
         # Optional: force navigate cohort players to briefing
         try:
             if bool(data.get("force_navigate")) and _redis_client is not None:
@@ -102,11 +102,14 @@ class ActiveSession(Resource):
         if not row:
             return {"active": None}
         sc = Scenario.query.get(row.scenario_id) if row.scenario_id else None
+        campaign = Campaign.query.get(sc.campaign_id) if sc and sc.campaign_id else None
         return {
             "active": {
                 "id": row.id,
                 "scenario_id": row.scenario_id,
                 "scenario_name": sc.name if sc else None,
+                "campaign_id": campaign.id if campaign else None,
+                "campaign_name": campaign.name if campaign else None,
                 "status": row.status.value if row.status else None,
                 "mode": row.mode,
                 "started_at": row.started_at.isoformat() + "Z" if row.started_at else None,
@@ -120,8 +123,19 @@ class SessionItem(Resource):
     def get(self, sid: int):
         s = Session.query.get_or_404(sid)
         sc = Scenario.query.get(s.scenario_id)
+        campaign = Campaign.query.get(sc.campaign_id) if sc and sc.campaign_id else None
         general = (sc.config or {}).get("general", {}) if sc else {}
-        return {"id": s.id, "status": s.status.value, "scenario_id": s.scenario_id, "current_round": s.current_round, "general": general, "mode": s.mode, "scenario_name": (sc.name if sc else None)}
+        return {
+            "id": s.id,
+            "status": s.status.value,
+            "scenario_id": s.scenario_id,
+            "current_round": s.current_round,
+            "general": general,
+            "mode": s.mode,
+            "scenario_name": (sc.name if sc else None),
+            "campaign_id": campaign.id if campaign else None,
+            "campaign_name": campaign.name if campaign else None,
+        }
 
 
 participants_out = ns.model(
@@ -232,6 +246,13 @@ class SessionBriefing(Resource):
                         sel = SessionPlayerType.query.filter_by(session_id=sid, user_id=uid).first()
                         if sel:
                             briefing["selected_type"] = sel.type_id
+                    current_app.logger.info(
+                        "briefing allowed_types (session=%s user=%s rows=%s selected=%s)",
+                        sid,
+                        uid,
+                        len(allowed_rows),
+                        briefing.get("selected_type"),
+                    )
                 else:
                     raise RuntimeError("no DB rows")
             except Exception:
@@ -260,6 +281,13 @@ class SessionBriefing(Resource):
                     if selected:
                         val = selected.decode() if isinstance(selected, (bytes, bytearray)) else str(selected)
                         briefing["selected_type"] = val
+                    current_app.logger.info(
+                        "briefing allowed_types(redis) session=%s user=%s cached=%s selected=%s",
+                        sid,
+                        uid,
+                        len(briefing.get("allowed_player_types", []) or []),
+                        briefing.get("selected_type"),
+                    )
         # Log first-time session join for current user (idempotent)
         try:
             uid = get_jwt().get("sub")
@@ -377,6 +405,424 @@ class ForceRoundEnd(Resource):
         return {"status": "ok"}
 
 
+@ns.route("/<int:sid>/freeze")
+class FreezeSession(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def post(self, sid: int):
+        """Lock/freeze editing for all players in shared mode."""
+        s = Session.query.get_or_404(sid)
+        body = request.json or {}
+        frozen = bool(body.get("frozen", True))
+        s.frozen = frozen
+        db.session.add(s)
+        db.session.commit()
+        socketio.emit("session_frozen", {"session_id": sid, "frozen": frozen}, namespace="/game", to=f"session-{sid}")
+        emit_trainer("session_frozen", {"session_id": sid, "frozen": frozen})
+        return {"status": "ok", "frozen": frozen}
+
+
+@ns.route("/<int:sid>/round-results/<int:round_num>")
+class RoundResults(Resource):
+    @jwt_required()
+    def get(self, sid: int, round_num: int):
+        """Get individual KPIs and ranking for a specific round."""
+        from .models import Result
+        player_id = int(get_jwt_identity())
+        
+        # Get all results for this round
+        results = Result.query.filter_by(session_id=sid, round_num=round_num).all()
+        if not results:
+            return {"error": "No results found for this round"}, HTTPStatus.NOT_FOUND
+        
+        # Get session config for scoring weights
+        session = Session.query.get_or_404(sid)
+        scenario = Scenario.query.get(session.scenario_id)
+        config = scenario.config or {}
+        weights = config.get("scoring", {}).get("weights", {"profit": 0.6, "imbalance": 0.3, "curtailment": 0.1})
+        
+        # Get active events for this round
+        events = config.get("events", [])
+        active_events = []
+        for evt in events:
+            trigger = evt.get("trigger", {})
+            ttype = trigger.get("type", "round")
+            tval = trigger.get("value")
+            duration = evt.get("duration_rounds", 1)
+            
+            # Check if event was active in this round
+            if ttype == "round" and isinstance(tval, (int, float)) and tval <= round_num < tval + duration:
+                active_events.append({
+                    "name": evt.get("name", "Event"),
+                    "description": evt.get("description", ""),
+                    "type": evt.get("type", "unknown")
+                })
+        
+        # Calculate total score for each player (normalized to 0-100)
+        ranking = []
+        my_result = None
+        
+        for r in results:
+            kpis = r.data.get("kpis", {})
+            profit = float(kpis.get("profit_zar", 0) or kpis.get("profit", 0))
+            imbalance = float(kpis.get("imbalance_cost_zar", 0) or kpis.get("imbalance", 0))
+            curtailment = float(kpis.get("curtailment_cost_zar", 0) or kpis.get("curtailment", 0))
+            
+            # Total score (weighted sum, imbalance/curtailment are penalties so negative)
+            raw_score = (
+                profit * weights.get("profit", 0.6) -
+                abs(imbalance) * weights.get("imbalance", 0.3) -
+                abs(curtailment) * weights.get("curtailment", 0.1)
+            )
+            # Normalize to 0-100 scale (assuming typical profit range 0-500k)
+            total_score = max(0, min(100, (raw_score / 5000)))
+            
+            # Get player info
+            user = User.query.get(r.player_id)
+            player_email = user.email if user else f"Player {r.player_id}"
+            
+            # Get player type
+            player_type = None
+            if _redis_client:
+                try:
+                    sel_key = f"session:{sid}:selected:{r.player_id}"
+                    sel_raw = _redis_client.get(sel_key)
+                    if sel_raw:
+                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
+                except Exception:
+                    pass
+            if not player_type:
+                try:
+                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=r.player_id).first()
+                    if sel_db:
+                        player_type = sel_db.type_id
+                except Exception:
+                    pass
+            
+            player_data = {
+                "player_id": r.player_id,
+                "email": player_email,
+                "type": player_type,
+                "kpis": kpis,
+                "profit": profit,
+                "imbalance": imbalance,
+                "curtailment": curtailment,
+                "total_score": round(total_score, 2),
+                "mcp": r.data.get("mcp"),
+                "volume": r.data.get("volume")
+            }
+            
+            ranking.append(player_data)
+            if r.player_id == player_id:
+                my_result = player_data
+        
+        # Sort by total score descending
+        ranking.sort(key=lambda x: x["total_score"], reverse=True)
+        
+        # Add rank to each player
+        for idx, p in enumerate(ranking):
+            p["rank"] = idx + 1
+        
+        return {
+            "round": round_num,
+            "my_result": my_result,
+            "ranking": ranking,
+            "active_events": active_events,
+            "weights": weights
+        }
+
+
+@ns.route("/<int:sid>/final-results")
+class FinalResults(Resource):
+    @jwt_required()
+    def get(self, sid: int):
+        """Get cumulative KPIs and final ranking across all rounds."""
+        from .models import Result
+        player_id = int(get_jwt_identity())
+        
+        # Get session config
+        session = Session.query.get_or_404(sid)
+        scenario = Scenario.query.get(session.scenario_id)
+        config = scenario.config or {}
+        weights = config.get("scoring", {}).get("weights", {"profit": 0.6, "imbalance": 0.3, "curtailment": 0.1})
+        
+        # Get all results for this session
+        results = Result.query.filter_by(session_id=sid).all()
+        
+        # Aggregate by player
+        player_totals = {}
+        for r in results:
+            pid = r.player_id
+            if pid not in player_totals:
+                player_totals[pid] = {
+                    "profit": 0,
+                    "imbalance": 0,
+                    "curtailment": 0,
+                    "dispatched_mwh": 0,
+                    "rounds": 0
+                }
+            
+            kpis = r.data.get("kpis", {})
+            player_totals[pid]["profit"] += float(kpis.get("profit_zar", 0))
+            player_totals[pid]["imbalance"] += float(kpis.get("imbalance_cost_zar", 0))
+            player_totals[pid]["curtailment"] += float(kpis.get("curtailment_cost_zar", 0))
+            player_totals[pid]["dispatched_mwh"] += float(kpis.get("dispatched_mwh", 0))
+            player_totals[pid]["rounds"] += 1
+        
+        # Build final ranking
+        ranking = []
+        my_cumulative = None
+        
+        # Get number of rounds for average calculation
+        num_rounds = session.current_round - 1 if session.current_round else 1
+        
+        for pid, totals in player_totals.items():
+            # Calculate average score per round, normalized to 0-100
+            raw_score = (
+                totals["profit"] * weights.get("profit", 0.6) -
+                abs(totals["imbalance"]) * weights.get("imbalance", 0.3) -
+                abs(totals["curtailment"]) * weights.get("curtailment", 0.1)
+            )
+            avg_score = raw_score / max(1, totals["rounds"])
+            total_score = max(0, min(100, (avg_score / 5000)))
+            
+            # Get player info
+            user = User.query.get(pid)
+            player_email = user.email if user else f"Player {pid}"
+            
+            # Get player type
+            player_type = None
+            if _redis_client:
+                try:
+                    sel_key = f"session:{sid}:selected:{pid}"
+                    sel_raw = _redis_client.get(sel_key)
+                    if sel_raw:
+                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
+                except Exception:
+                    pass
+            if not player_type:
+                try:
+                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=pid).first()
+                    if sel_db:
+                        player_type = sel_db.type_id
+                except Exception:
+                    pass
+            
+            player_data = {
+                "player_id": pid,
+                "email": player_email,
+                "type": player_type,
+                "total_profit": round(totals["profit"], 2),
+                "total_imbalance": round(totals["imbalance"], 2),
+                "total_curtailment": round(totals["curtailment"], 2),
+                "total_dispatched_mwh": round(totals["dispatched_mwh"], 2),
+                "total_score": round(total_score, 2),
+                "rounds_played": totals["rounds"]
+            }
+            
+            ranking.append(player_data)
+            if pid == player_id:
+                my_cumulative = player_data
+        
+        # Sort by total score descending
+        ranking.sort(key=lambda x: x["total_score"], reverse=True)
+        
+        # Add rank
+        for idx, p in enumerate(ranking):
+            p["rank"] = idx + 1
+        
+        # Build round history for the current player
+        round_history = []
+        player_results = Result.query.filter_by(session_id=sid, player_id=player_id).order_by(Result.round_num).all()
+        for r in player_results:
+            kpis = r.data.get("kpis", {})
+            raw_round_score = (
+                float(kpis.get("profit_zar", 0)) * weights.get("profit", 0.6) -
+                abs(float(kpis.get("imbalance_cost_zar", 0))) * weights.get("imbalance", 0.3) -
+                abs(float(kpis.get("curtailment_cost_zar", 0))) * weights.get("curtailment", 0.1)
+            )
+            round_score = max(0, min(100, (raw_round_score / 5000)))
+            round_history.append({
+                "round_num": r.round_num,
+                "profit": round(float(kpis.get("profit_zar", 0)), 2),
+                "imbalance": round(float(kpis.get("imbalance_cost_zar", 0)), 2),
+                "curtailment": round(float(kpis.get("curtailment_cost_zar", 0)), 2),
+                "dispatched_mwh": round(float(kpis.get("dispatched_mwh", 0)), 2),
+                "total_score": round(round_score, 2)
+            })
+        
+        return {
+            "my_cumulative": my_cumulative,
+            "final_ranking": ranking,
+            "round_history": round_history,
+            "weights": weights,
+            "total_rounds": session.current_round - 1 if session.current_round else 0
+        }
+
+
+@ns.route("/<int:sid>/advance-round")
+class AdvanceRound(Resource):
+    @jwt_required()
+    def post(self, sid: int):
+        """Player signals ready to advance to next round (solo & shared mode)."""
+        player_id = int(get_jwt_identity())
+        
+        # Mark player as ready in Redis or DB
+        if _redis_client:
+            ready_key = f"session:{sid}:round_ready:{player_id}"
+            _redis_client.set(ready_key, "1", ex=3600)
+        
+        # Check if all players are ready
+        session = Session.query.get_or_404(sid)
+        members = CohortMember.query.filter_by(cohort_id=session.cohort_id).all()
+        member_ids = [m.user_id for m in members]
+        
+        ready_count = 0
+        if _redis_client:
+            for mid in member_ids:
+                if _redis_client.get(f"session:{sid}:round_ready:{mid}"):
+                    ready_count += 1
+        
+        # Solo mode: 1 player ready = advance immediately
+        # Shared mode: all players ready = advance
+        required_ready = 1 if session.mode == "isolated_per_player" else len(member_ids)
+        
+        if ready_count >= required_ready:
+            # Clear ready flags
+            if _redis_client:
+                for mid in member_ids:
+                    _redis_client.delete(f"session:{sid}:round_ready:{mid}")
+            
+            # Advance to next round or complete scenario
+            scenario = Scenario.query.get(session.scenario_id)
+            total_rounds = int((scenario.config or {}).get("general", {}).get("rounds", 4))
+            current_round = session.current_round or 1
+            
+            if current_round < total_rounds:
+                # Advance to next round
+                session.current_round = current_round + 1
+                session.status = SessionStatus.round_active
+                db.session.add(session)
+                db.session.commit()
+                
+                # Restart scheduler for next round
+                socketio.start_background_task(run_rounds, sid, current_app._get_current_object())
+            else:
+                # All rounds complete - set to scenario_complete
+                session.status = SessionStatus.scenario_complete
+                db.session.add(session)
+                db.session.commit()
+                socketio.emit("scenario_complete", {"session_id": sid}, namespace="/trainer")
+                socketio.emit("scenario_complete", {"session_id": sid}, namespace="/game", to=f"session-{sid}")
+                
+                # Mark player progress completed
+                try:
+                    from datetime import datetime
+                    from .models import PlayerProgress, PlayerProgressStatus
+                    players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=session.cohort_id).all()]
+                    q = db.session.query(PlayerProgress).filter(PlayerProgress.scenario_id == session.scenario_id, PlayerProgress.user_id.in_(players))
+                    for pp in q.all():
+                        pp.status = PlayerProgressStatus.completed
+                        pp.completed_at = datetime.utcnow()
+                        db.session.add(pp)
+                    db.session.commit()
+                except Exception:
+                    pass
+        
+        return {
+            "status": "ok",
+            "ready_count": ready_count,
+            "total_players": len(member_ids)
+        }
+
+
+@ns.route("/<int:sid>/start-briefing")
+class StartBriefing(Resource):
+    @jwt_required()
+    def post(self, sid: int):
+        """Player starts scenario from briefing screen (solo mode)."""
+        session = Session.query.get_or_404(sid)
+        
+        # Only allow starting from briefing status
+        if session.status != SessionStatus.briefing:
+            return {"error": "Session not in briefing state"}, HTTPStatus.BAD_REQUEST
+        
+        # Set to round_active and restart scheduler
+        session.status = SessionStatus.round_active
+        session.current_round = 1
+        db.session.add(session)
+        db.session.commit()
+        
+        # Restart scheduler to begin first round
+        socketio.start_background_task(run_rounds, sid, current_app._get_current_object())
+        
+        return {"status": "ok", "message": "Scenario started"}
+
+
+@ns.route("/<int:sid>/submit-status")
+class SubmitStatus(Resource):
+    @jwt_required()
+    def get(self, sid: int):
+        """Get submit status per player type for waiting screen."""
+        session = Session.query.get_or_404(sid)
+        scenario = Scenario.query.get(session.scenario_id)
+        config = scenario.config or {}
+        player_types = config.get("player_types", [])
+        current_round = session.current_round or 1
+        
+        # Get all cohort members
+        members = CohortMember.query.filter_by(cohort_id=session.cohort_id).all()
+        member_ids = [m.user_id for m in members]
+        
+        # Get player type selections
+        type_map = {}
+        for mid in member_ids:
+            player_type = None
+            if _redis_client:
+                try:
+                    sel_key = f"session:{sid}:selected:{mid}"
+                    sel_raw = _redis_client.get(sel_key)
+                    if sel_raw:
+                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
+                except Exception:
+                    pass
+            if not player_type:
+                try:
+                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=mid).first()
+                    if sel_db:
+                        player_type = sel_db.type_id
+                except Exception:
+                    pass
+            
+            if player_type:
+                type_map[mid] = player_type
+        
+        # Count submits per type
+        type_counts = {}
+        for ptype in player_types:
+            tid = ptype.get("id")
+            type_counts[tid] = {"submitted": 0, "total": 0}
+        
+        for mid, ptype in type_map.items():
+            if ptype in type_counts:
+                type_counts[ptype]["total"] += 1
+                # Check if submitted
+                forecast = Forecast.query.filter_by(
+                    session_id=sid,
+                    player_id=mid,
+                    round_num=current_round
+                ).first()
+                if forecast:
+                    type_counts[ptype]["submitted"] += 1
+        
+        return {
+            "round": current_round,
+            "by_type": type_counts,
+            "total_submitted": sum(t["submitted"] for t in type_counts.values()),
+            "total_players": sum(t["total"] for t in type_counts.values())
+        }
+
+
 @ns.route("/<int:sid>/broadcast")
 class Broadcast(Resource):
     @jwt_required()
@@ -477,22 +923,40 @@ class SelectType(Resource):
         uid = get_jwt()["sub"]
         tid = (request.json or {}).get("type_id") or ""
         if not tid:
+            current_app.logger.warning("select-type missing type_id user=%s session=%s", uid, sid)
             return {"error": "type_id required"}, HTTPStatus.BAD_REQUEST
         # idempotent via DB
         existing = SessionPlayerType.query.filter_by(session_id=sid, user_id=uid).first()
         if existing:
+            current_app.logger.info(
+                "select-type already set user=%s session=%s type=%s", uid, sid, existing.type_id
+            )
             return {"status": "ok", "type_id": existing.type_id}
         # validate allowed + caps
         row = SessionAllowedType.query.filter_by(session_id=sid, type_id=tid).first()
         if not row:
+            current_app.logger.warning(
+                "select-type denied (not allowed) user=%s session=%s requested=%s", uid, sid, tid
+            )
             return {"error": "type not allowed"}, HTTPStatus.FORBIDDEN
         if isinstance(row.max_players, int):
             used = db.session.query(db.func.count(SessionPlayerType.id)).filter_by(session_id=sid, type_id=tid).scalar() or 0
             if used >= row.max_players:
+                current_app.logger.warning(
+                    "select-type denied (capacity) user=%s session=%s requested=%s used=%s cap=%s",
+                    uid,
+                    sid,
+                    tid,
+                    used,
+                    row.max_players,
+                )
                 return {"error": "type capacity reached"}, HTTPStatus.CONFLICT
         try:
             db.session.add(SessionPlayerType(session_id=sid, user_id=uid, type_id=tid))
             db.session.commit()
+            current_app.logger.info(
+                "select-type success user=%s session=%s type=%s", uid, sid, tid
+            )
             # Log type selection activity
             try:
                 s = Session.query.get(sid)
@@ -501,6 +965,9 @@ class SelectType(Resource):
                 pass
         except Exception:
             db.session.rollback()
+            current_app.logger.exception(
+                "select-type failed to store user=%s session=%s type=%s", uid, sid, tid
+            )
             return {"error": "failed to store selection"}, HTTPStatus.INTERNAL_SERVER_ERROR
         return {"status": "ok", "type_id": tid}
 

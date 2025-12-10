@@ -18,25 +18,31 @@ import ValidationPanel from '../components/ValidationPanel'
 import StickyActionBar from '../components/StickyActionBar'
 import { exportPNG, exportSVG } from '../utils/exportSvg'
 
+// Bump this when making breaking/editor-visible changes to KSE
+const KSE_EDITOR_VERSION = '1.1.0'
+
 const defaultConfig = {
   version: '1.0.0',
-  general: { horizon_hours: 24, forecast_horizon_hours: 48, freeze_hours: 6, round_span_hours: 6, rounds: 4, description: '' },
-  market: {
-    base_price: 1000,
-    base_volume_mwh: 20000,
-    price_floor: -500,
-    price_cap: 5000,
-    generator_mix: { pv: 25, wind: 20, hydro: 10, coal: 30, gas: 15, nuclear: 0 },
-    consumer_mix: { industrial: 40, household: 50, agriculture: 10 },
-    random_capacity_pct: 10,
-    random_price_pct: 10,
-  },
+  general: { horizon_hours: 24, forecast_horizon_hours: 48, freeze_hours: 2, day_ahead_gate_hour: 12, round_span_hours: 6, rounds: 4, round_duration_seconds: 300, description: '' },
+    market: {
+      base_price: 1000,
+      base_volume_mwh: 20000,
+      price_floor: -500,
+      price_cap: 5000,
+      // generator_mix / consumer_mix are interpreted as counts (0-1000) per group
+      generator_mix: { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150, nuclear: 0 },
+      consumer_mix: { industrial: 400, household: 500, agriculture: 100 },
+      random_capacity_pct: 10,
+      random_price_pct: 10,
+    },
   grid: { zones: 2, atc: [[0,5000],[5000,0]] },
   environment: { seed: 'preview', actual_noise_pct: 5 },
   events: [],
   devices: [],
   scoring: { weights: { profit: 0.6, imbalance: 0.3, curtailment: 0.1 } },
 }
+
+console.info('[KSE] Editor version', KSE_EDITOR_VERSION)
 
 function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMcp=true, svgRef }){
   // Step supply/demand preview with axes and legend
@@ -51,10 +57,10 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMc
 
     const baseP = Number(cfg.market.base_price || 1000)
     const baseV = Number(cfg.market.base_volume_mwh || 20000)
-    const participants = Math.max(2, Number(cfg?.environment?.participants || 20))
-    const mix = cfg?.market?.generator_mix || groups || { pv: 25, wind: 20, hydro: 10, coal: 30, gas: 15 }
+    const mix = cfg?.market?.generator_mix || groups || { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150 }
     const distArr = Object.entries(mix)
-    const totalShare = distArr.reduce((s, [, v]) => s + Number(v || 0), 0) || 100
+    // Interpret generator_mix values as non-negative block counts per group
+    const totalBlocksSupply = distArr.reduce((s, [, v]) => s + Math.max(0, Number(v) || 0), 0) || 1
 
     // Build block volumes by groups, then split into ~participants blocks
     const seedStr = cfg.environment?.seed || 'step'
@@ -75,11 +81,12 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMc
       gas: [700, 1200],
     }
 
-    // Build SUPPLY blocks per type based on shares and participants
+    // Build SUPPLY blocks per type based on per-type block counts
     let sBlocks = []
     distArr.forEach(([type, pct]) => {
-      const vol = baseV * (Number(pct || 0) / totalShare)
-      const n = Math.max(1, Math.round(participants * (Number(pct || 0) / totalShare)))
+      const n = Math.max(0, Math.round(Number(pct || 0)))
+      if (!n) return
+      const vol = baseV * (Number(pct || 0) / totalBlocksSupply)
       const avg = vol / n
       const [pMin, pMax] = COST[type] || [baseP - 500, baseP + 500]
       for (let i = 0; i < n; i++) {
@@ -99,14 +106,15 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMc
     const supply = sBlocks.sort((a, b) => a.p - b.p)
 
     // Build DEMAND blocks by consumer mix with non-linear decreasing schedule and jitter
-    const cmix = (cfg?.market?.consumer_mix) || { industrial: 40, household: 50, agriculture: 10 }
+    const cmix = (cfg?.market?.consumer_mix) || { industrial: 400, household: 500, agriculture: 100 }
     const cArr = Object.entries(cmix)
-    const cShare = cArr.reduce((s, [, v]) => s + Number(v || 0), 0) || 100
-    const nD = Math.max(2, participants)
+    // Interpret consumer_mix values as non-negative block counts per group
+    const totalBlocksDemand = cArr.reduce((s, [, v]) => s + Math.max(0, Number(v) || 0), 0) || 1
     let dBlocks = []
     cArr.forEach(([ctype, pct]) => {
-      const vol = baseV * (Number(pct || 0) / cShare)
-      const n = Math.max(1, Math.round(nD * (Number(pct || 0) / cShare)))
+      const n = Math.max(0, Math.round(Number(pct || 0)))
+      if (!n) return
+      const vol = baseV * (Number(pct || 0) / totalBlocksDemand)
       for (let i = 0; i < n; i++) {
         const t = n > 1 ? i / (n - 1) : 0
         // WTP base by segment, then apply non-linear shape and jitter
@@ -773,6 +781,18 @@ export default function KSE(){
                         inputRef={refRoundSpan}
                       />
                     </Box>
+                    <Box sx={{ flex: '1 1 240px', minWidth: 240 }}>
+                      <NumberInput
+                        label="Round duration (s)"
+                        value={cfg.general.round_duration_seconds ?? 300}
+                        onChange={(val)=>update(['general','round_duration_seconds'], val)}
+                        min={30}
+                        max={1800}
+                        step={30}
+                        unit="s"
+                        tooltip="Real-world seconds per round (default: 300s = 5min)."
+                      />
+                    </Box>
                     <Box sx={{ flex: '1 1 260px', minWidth: 260 }}>
                       <TextField
                         label="Scenario Horizon (h)"
@@ -815,14 +835,26 @@ export default function KSE(){
                     </Box>
                     <Box sx={{ flex: '1 1 240px', minWidth: 240 }}>
                       <NumberInput
-                        label="Freeze hours (h)"
-                        value={cfg.general.freeze_hours ?? 0}
+                        label="IDM Freeze (h)"
+                        value={cfg.general.freeze_hours ?? 2}
                         onChange={(val)=>update(['general','freeze_hours'], val)}
                         min={0}
                         max={Number(cfg.general.round_span_hours||24)}
                         step={1}
                         unit="h"
-                        tooltip="Hours locked after submission (DA → IDM). Typically ≤ Round span."
+                        tooltip="Intraday Market gate closure: Hours before delivery when IDM closes. Only affects Intraday trading window. Default: 2h."
+                      />
+                    </Box>
+                    <Box sx={{ flex: '1 1 240px', minWidth: 240 }}>
+                      <NumberInput
+                        label="DA Gate Hour"
+                        value={cfg.general.day_ahead_gate_hour ?? 12}
+                        onChange={(val)=>update(['general','day_ahead_gate_hour'], val)}
+                        min={0}
+                        max={23}
+                        step={1}
+                        unit="h"
+                        tooltip="Day-Ahead market gate closure hour (0-23). Default: 12 = 12:00. In real markets, DA trading closes around noon for next-day delivery."
                       />
                     </Box>
                   </Stack>
@@ -995,55 +1027,55 @@ export default function KSE(){
                 <Typography variant="subtitle2">Generator Mix</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="PV share" tooltip="Share of PV in preview supply mix (percent of total)." showTitle={false} />
-                    <NumberInput label="PV (%)" value={cfg.market.generator_mix?.pv||0} onChange={(val)=>update(['market','generator_mix','pv'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                    <InfoLabel title="PV blocks" tooltip="Number of PV supply blocks in preview mix (0–1000)." showTitle={false} />
+                    <NumberInput label="PV (#)" value={cfg.market.generator_mix?.pv||0} onChange={(val)=>update(['market','generator_mix','pv'], Number(val)||0)} min={0} max={1000} step={1} />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Wind share" tooltip="Share of Wind in preview supply mix (percent of total)." showTitle={false} />
-                    <NumberInput label="Wind (%)" value={cfg.market.generator_mix?.wind||0} onChange={(val)=>update(['market','generator_mix','wind'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                    <InfoLabel title="Wind blocks" tooltip="Number of wind supply blocks in preview mix (0–1000)." showTitle={false} />
+                    <NumberInput label="Wind (#)" value={cfg.market.generator_mix?.wind||0} onChange={(val)=>update(['market','generator_mix','wind'], Number(val)||0)} min={0} max={1000} step={1} />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Hydro share" tooltip="Share of Hydro in preview supply mix (percent of total)." showTitle={false} />
-                    <NumberInput label="Hydro (%)" value={cfg.market.generator_mix?.hydro||0} onChange={(val)=>update(['market','generator_mix','hydro'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                    <InfoLabel title="Hydro blocks" tooltip="Number of hydro supply blocks in preview mix (0–1000)." showTitle={false} />
+                    <NumberInput label="Hydro (#)" value={cfg.market.generator_mix?.hydro||0} onChange={(val)=>update(['market','generator_mix','hydro'], Number(val)||0)} min={0} max={1000} step={1} />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Coal share" tooltip="Share of Coal in preview supply mix (percent of total)." showTitle={false} />
-                    <NumberInput label="Coal (%)" value={cfg.market.generator_mix?.coal||0} onChange={(val)=>update(['market','generator_mix','coal'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                    <InfoLabel title="Coal blocks" tooltip="Number of coal supply blocks in preview mix (0–1000)." showTitle={false} />
+                    <NumberInput label="Coal (#)" value={cfg.market.generator_mix?.coal||0} onChange={(val)=>update(['market','generator_mix','coal'], Number(val)||0)} min={0} max={1000} step={1} />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Gas share" tooltip="Share of Gas in preview supply mix (percent of total)." showTitle={false} />
-                    <NumberInput label="Gas (%)" value={cfg.market.generator_mix?.gas||0} onChange={(val)=>update(['market','generator_mix','gas'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                    <InfoLabel title="Gas blocks" tooltip="Number of gas supply blocks in preview mix (0–1000)." showTitle={false} />
+                    <NumberInput label="Gas (#)" value={cfg.market.generator_mix?.gas||0} onChange={(val)=>update(['market','generator_mix','gas'], Number(val)||0)} min={0} max={1000} step={1} />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Nuclear share" tooltip="Share of Nuclear in preview supply mix (percent of total)." showTitle={false} />
-                    <NumberInput label="Nuclear (%)" value={cfg.market.generator_mix?.nuclear||0} onChange={(val)=>update(['market','generator_mix','nuclear'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                    <InfoLabel title="Nuclear blocks" tooltip="Number of nuclear supply blocks in preview mix (0–1000)." showTitle={false} />
+                    <NumberInput label="Nuclear (#)" value={cfg.market.generator_mix?.nuclear||0} onChange={(val)=>update(['market','generator_mix','nuclear'], Number(val)||0)} min={0} max={1000} step={1} />
                   </Stack>
                 </Stack>
                 {(() => {
                   const gm = cfg.market.generator_mix||{}
                   const sum = ['pv','wind','hydro','coal','gas','nuclear'].reduce((s,k)=> s + Number(gm[k]||0), 0)
-                  return <Typography variant="caption" color={Math.abs(sum-100)<1e-6? 'text.secondary':'warning.main'}>Shares total: {sum}% (normalized in preview)</Typography>
+                  return <Typography variant="caption" color={sum>0? 'text.secondary':'warning.main'}>Total generator blocks: {sum} (normalized in preview)</Typography>
                 })()}
 
                 <Typography variant="subtitle2">Consumer Mix</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Industrial share" tooltip="Share of Industrial consumers (percent of demand)." showTitle={false} />
-                    <NumberInput label="Industrial (%)" value={cfg.market.consumer_mix?.industrial||0} onChange={(val)=>update(['market','consumer_mix','industrial'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                    <InfoLabel title="Industrial blocks" tooltip="Number of industrial consumer blocks in preview demand mix (0–1000)." showTitle={false} />
+                    <NumberInput label="Industrial (#)" value={cfg.market.consumer_mix?.industrial||0} onChange={(val)=>update(['market','consumer_mix','industrial'], Number(val)||0)} min={0} max={1000} step={1} />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Household share" tooltip="Share of Household consumers (percent of demand)." showTitle={false} />
-                    <NumberInput label="Household (%)" value={cfg.market.consumer_mix?.household||0} onChange={(val)=>update(['market','consumer_mix','household'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                    <InfoLabel title="Household blocks" tooltip="Number of household consumer blocks in preview demand mix (0–1000)." showTitle={false} />
+                    <NumberInput label="Household (#)" value={cfg.market.consumer_mix?.household||0} onChange={(val)=>update(['market','consumer_mix','household'], Number(val)||0)} min={0} max={1000} step={1} />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                    <InfoLabel title="Agriculture share" tooltip="Share of Agriculture consumers (percent of demand)." showTitle={false} />
-                    <NumberInput label="Agriculture (%)" value={cfg.market.consumer_mix?.agriculture||0} onChange={(val)=>update(['market','consumer_mix','agriculture'], Number(val)||0)} min={0} max={100} step={1} unit="%" />
+                    <InfoLabel title="Agriculture blocks" tooltip="Number of agriculture consumer blocks in preview demand mix (0–1000)." showTitle={false} />
+                    <NumberInput label="Agriculture (#)" value={cfg.market.consumer_mix?.agriculture||0} onChange={(val)=>update(['market','consumer_mix','agriculture'], Number(val)||0)} min={0} max={1000} step={1} />
                   </Stack>
                 </Stack>
                 {(() => {
                   const cm = cfg.market.consumer_mix||{}
                   const sum = ['industrial','household','agriculture'].reduce((s,k)=> s + Number(cm[k]||0), 0)
-                  return <Typography variant="caption" color={Math.abs(sum-100)<1e-6? 'text.secondary':'warning.main'}>Shares total: {sum}% (normalized in preview)</Typography>
+                  return <Typography variant="caption" color={sum>0? 'text.secondary':'warning.main'}>Total consumer blocks: {sum} (normalized in preview)</Typography>
                 })()}
 
                 <Typography variant="subtitle2">Randomness</Typography>
@@ -1067,10 +1099,6 @@ export default function KSE(){
                   <Stack spacing={0.5} sx={{ minWidth: 260 }}>
                     <InfoLabel title="Preview seed" tooltip="Used only for KSE previews. Simulation uses campaign.seed." showTitle={false} />
                     <TextField label="Preview Seed" value={cfg.environment.seed} onChange={e=>update(['environment','seed'], e.target.value)}/>
-                  </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 260 }}>
-                    <InfoLabel title="Participants (preview)" tooltip="Approximate number of aggregated blocks for step preview." showTitle={false} />
-                    <TextField type="number" label="Participants" value={cfg.environment.participants || 20} onChange={e=>update(['environment','participants'], Number(e.target.value))}/>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 260 }}>
                     <InfoLabel title="Profiles" tooltip="Select preset diurnal/seasonal profiles or import JSON with diurnal_profile[24], seasonal_factors[12]." showTitle={false} />

@@ -7,6 +7,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 
 from .extensions import db
+from sqlalchemy import func, case
 from .models import Cohort, CohortMember, User, Role, Invite, Campaign, CohortCampaign, Session, ActivityLog, Forecast, Result, SessionAllowedType, SessionPlayerType
 from .utils import role_required
 from .config import Config
@@ -24,8 +25,33 @@ class Cohorts(Resource):
     @jwt_required()
     @role_required("trainer", "admin")
     def get(self):
-        rows = Cohort.query.order_by(Cohort.id.desc()).all()
-        return [{"id": c.id, "name": c.name, "trainer_id": c.trainer_id} for c in rows]
+        rows = (
+            db.session.query(
+                Cohort.id,
+                Cohort.name,
+                Cohort.trainer_id,
+                User.email.label("trainer_email"),
+                func.count(func.distinct(CohortMember.id)).label("members_count"),
+                func.coalesce(func.sum(case((CohortCampaign.active == True, 1), else_=0)), 0).label("campaigns_count"),
+            )
+            .outerjoin(User, User.id == Cohort.trainer_id)
+            .outerjoin(CohortMember, CohortMember.cohort_id == Cohort.id)
+            .outerjoin(CohortCampaign, CohortCampaign.cohort_id == Cohort.id)
+            .group_by(Cohort.id, Cohort.name, Cohort.trainer_id, User.email)
+            .order_by(Cohort.id.desc())
+            .all()
+        )
+        return [
+            {
+                "id": r.id,
+                "name": r.name,
+                "trainer_id": r.trainer_id,
+                "trainer_email": r.trainer_email,
+                "members_count": int(r.members_count or 0),
+                "campaigns_count": int(r.campaigns_count or 0),
+            }
+            for r in rows
+        ]
 
     @jwt_required()
     @role_required("trainer", "admin")

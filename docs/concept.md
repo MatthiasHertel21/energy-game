@@ -1,14 +1,20 @@
 # **Energy Market Simulation Game (EMSG)**  
-## **Complete, Implementation-Ready Concept Specification – Version 10.0**  
-**Date:** November 09, 2025  
+## **Complete, Implementation-Ready Concept Specification – Version 11.0**  
+**Date:** December 02, 2025  
 **Status:** **100% exhaustive, consistent, and fully implementable**  
-**Scope:** All details from Version 1.0 specification integrated, expanded with refinements from discussions. User roles, KSE options, parameters, player modeling, markets, and events explained in depth. No ambiguities – ready for direct development.
+**Scope:** All details from Version 1.0 specification integrated, expanded with unified solo/shared flow, phase-based session management, and event system enhancements. User roles, KSE options, parameters, player modeling, markets, and events explained in depth. No ambiguities – ready for direct development.
 
 ---
 
 ## **Executive Summary**
 
-**EMSG** is a **web-based, cohort-driven, turn-based simulation platform** for training energy professionals in **South Africa's liberalized electricity market (SAWEM)**. It simulates **one full day (24 simulated hours)** of market operation in **4 rounds**, where each round covers **6 simulated hours** and lasts **300 real seconds** by default. The game supports **single-player (isolated_per_player)** and **multiplayer (shared_market)** modes – **trainer-configurable per scenario** – allowing isolated practice or competitive interaction with scaled capacity.
+**EMSG** is a **web-based, cohort-driven, turn-based simulation platform** for training energy professionals in **South Africa's liberalized electricity market (SAWEM)**. It simulates **one full day (24 simulated hours)** of market operation in **4 rounds**, where each round covers **6 simulated hours** and lasts **300 real seconds** by default. 
+
+**Two Ways to Play (Unified Flow):**
+- **Solo Play** (via Catalog): Players browse published campaigns in the Campaign Catalog (`/catalog`) with scenario descriptions and progress tracking; start individual sessions with private markets; self-paced advancement with player-controlled flow
+- **Shared Market** (via Trainer): Trainers start sessions where all players trade in one shared market, with player types determining device assignments; all players must be ready before advancing
+
+Both modes now follow the same **phase-based flow**: Briefing → Round Active → Round Closing → Calculating → Round Results → Next Round → Scenario Complete
 
 Players act as **Producers**, **Consumers**, or **Hybrid/Storage Operators** in a **zonal grid** with **2 default zones** (configurable up to 5). The **Kampagnien/Szenarieneditor (KSE)** enables **full customization** of every parameter per scenario. All defaults are **explained in detail** below.
 
@@ -35,8 +41,8 @@ The system has **four roles**, each with **specific permissions** to support col
 
 | **Role** | **Description & Perspective** | **Key Permissions** | **Application View** |
 |----------|-------------------------------|---------------------|------------------------|
-| **Player (Student)** | **Focus**: Individual gameplay and learning. Players simulate market decisions in roles, receiving immediate feedback to understand market dynamics. Perspective: Hands-on, role-specific interface with real-time previews and post-scenario analysis. Max 80 per cohort. | Register via email (pending approval), join assigned cohorts, play scenarios, submit forecasts, view own results and cohort benchmarks, replay completed scenarios, export PDF reports. | Game-focused app with dashboard, briefing, round editor, evaluation tabs, replay mode. No editing access. |
-| **Trainer** | **Focus**: Session management and analysis. Trainers orchestrate groups (cohorts), monitor progress, and provide guidance. Perspective: Oversight tool with live monitoring and reporting to facilitate training workshops. | Create/archive cohorts (max 10 concurrent), assign scenarios and players (CSV bulk import), toggle multiplayer mode per scenario, start/pause/end sessions, force round end, send broadcast messages, view all player results and leaderboards, upload reference runs, generate PDF reports. | Management app with cohort overview, live session control, comparison dashboard, player details. |
+| **Player (Student)** | **Focus**: Individual gameplay and learning. Players simulate market decisions in roles, receiving immediate feedback to understand market dynamics. Perspective: Hands-on, role-specific interface with real-time previews and post-scenario analysis. Max 80 per cohort. | Register via email (pending approval), join assigned cohorts, browse published campaigns in catalog with scenario descriptions, play scenarios solo or in cohorts, submit forecasts, view own results and cohort benchmarks, replay completed scenarios, export PDF reports. | Game-focused app with dashboard, catalog browser, briefing, round editor, evaluation tabs, replay mode. No editing access. |
+| **Trainer** | **Focus**: Session management and analysis. Trainers orchestrate groups (cohorts), monitor progress, and provide guidance. Perspective: Oversight tool with live monitoring and reporting to facilitate training workshops. | Create/archive cohorts (max 10 concurrent), assign scenarios and players (CSV bulk import), start/pause/end shared market sessions with player type configuration, force round end, send broadcast messages, view all player results and leaderboards, upload reference runs, generate PDF reports. | Management app with cohort overview, live session control, comparison dashboard, player details. |
 | **Designer** | **Focus**: Content creation. Designers build custom scenarios using KSE, defining all parameters for realistic simulations. Perspective: Creative tool with previews and validation to design educational content. | Create/edit/delete campaigns and scenarios in KSE, configure all parameters (e.g., zones, capacities, events, KPIs), generate market environments, assign devices to roles, validate and preview scenarios, export/import JSON configs. | Editor app (KSE) with tabs for general, market, grid, environment, events, player types (devices incl. storage), scoring, validation. No user management. |
 | **Admin** | **Focus**: System operations. Admins handle platform-wide settings and maintenance. Perspective: Administrative tool for scalability and compliance. | Manage all users and roles (assign via invite links), configure branding (logo, colors), perform backups/restore, delete data, set system limits (e.g., max 1,000 users, 500 WebSocket connections), monitor logs (errors only). | Admin panel with user/role mgmt, branding, settings, logs. No gameplay access. |
 
@@ -72,8 +78,8 @@ The KSE is the **core tool for Designers** to create and customize content. It i
 1. **General Tab** – Basic Setup:
    - **Campaign Name & Description**: Free text for learning path (e.g., "Introduction to SAWEM").
    - **Number of Scenarios**: 3–5 (MVP limit).
-   - **Scenario Name & Objectives**: Role descriptions, goals (e.g., "Maximize profit as Producer").
-   - **Multiplayer Mode**: Dropdown – `isolated_per_player` (default, private markets) or `shared_market` (shared, competitive).
+   - **Scenario Name & Objectives**: Role descriptions, goals (e.g., "Maximize profit as Producer"). **Note**: The first 200 characters of objectives are shown as preview descriptions in the Campaign Catalog to help players understand each scenario.
+   - **Player Types**: Define archetypes with device assignments (required for trainer sessions; solo play uses all devices).
    - **Roles**: Up to 3 (Producer, Consumer, Storage); assign devices to each.
    - **Time Parameters**:
      - Round duration: 300 seconds (5 minutes).
@@ -116,17 +122,41 @@ The KSE is the **core tool for Designers** to create and customize content. It i
    - **Validation**: Shares sum to 100%, capacities >0.
 
 5. **Event Editor Tab** – Event Customization:
-   - **Event Library**: 7 defaults (Fuel Price Spike, Renewable Drought, etc.).
-   - **Parameters**: Trigger (round/random), duration (rounds), impact (multiplier/additive), target (all/zone/player).
-   - **Warning**: No (default, only in-round popup).
-   - **Processing**: Systemic first (multiply), then player-specific (add).
-   - **Validation**: Check trigger overlaps.
+   - **Event Library**: 8 event types:
+     1. Fuel Price Spike (additive cost impact)
+     2. Renewable Drought (multiplier on solar/wind capacity)
+     3. Grid Congestion (reduce ATC on specific grid link)
+     4. Demand Surge (additive load increase)
+     5. Outage (capacity reduction for specific device type)
+     6. Policy Change (market rule modification)
+     7. Weather Pattern (combined solar/wind impact)
+     8. Transmission Maintenance (scheduled ATC reduction)
+   - **Parameters**: 
+     - Trigger: round number or random (with probability)
+     - Duration: number of rounds (1-4)
+     - Impact: multiplier (0.0-2.0) or additive (±value)
+     - Target: all, specific zone, specific player, or grid link (for ATC events)
+   - **Grid Link Events** (NEW):
+     - Target format: `"grid_link": {"from_zone": 1, "to_zone": 2}`
+     - Reduction: percentage (e.g., 0.3 = 30% ATC reduction)
+     - Applied symmetrically to both directions
+     - Example: Transmission Maintenance reduces Z1↔Z2 ATC from 5000 MW to 3500 MW
+   - **Warning**: No (default, only in-round popup)
+   - **Processing Order**: 
+     1. Grid link events (modify ATC matrix)
+     2. Systemic events (multiply capacities/costs)
+     3. Player-specific events (add to individual forecasts)
+   - **Display**: Active events shown in RoundResultsScreen as alerts
+   - **Validation**: Check trigger overlaps, valid zones, ATC reduction ≤ 100%
 
-6. **Player Types & Devices** – Per-device configuration (incl. storage as Battery):
+6. **Player Types & Devices** – Per-device configuration (incl. storage as Battery and flexible loads):
   - Storage wird ausschließlich als Device auf Spielertyp‑Ebene modelliert (z. B. Battery).
   - Battery‑Parameter pro Device: Capacity (MWh), Power Rating (MW), Efficiency (%), Initial SoC (%), Max DoD (%), Degradation (%/cycle).
-  - Keine globalen Storage‑Parameter mehr im Szenario.
-  - Validierung: Parameterbereiche, SoC/DoD‑Plausibilität pro Battery‑Device.
+  - Flexible Lasten (Industrial/Commercial/Residential Load) erhalten zusätzlich ein Feld **Demand Response Capacity (MW)** auf Device‑Ebene.
+    - `demand_response_capacity_mw` beschreibt die maximal abrufbare Reduktionsleistung pro Gerät.
+    - Validierung: falls gesetzt, muss `demand_response_capacity_mw ≥ 0` und `≤ peak_load_mw` des Geräts sein.
+  - Keine globalen Storage‑ oder DR‑Parameter mehr im Szenario; alles ist pro Device definiert.
+  - Validierung: Parameterbereiche, SoC/DoD‑Plausibilität pro Battery‑Device sowie Konsistenz der DR‑Kapazität pro Load‑Device.
 
 7. **Scoring Tab** – KPIs and Evaluation:
    - **KPIs**: Profit, Imbalance Cost, Curtailment (defaults).
@@ -144,13 +174,112 @@ The KSE is the **core tool for Designers** to create and customize content. It i
 3. Configure markets (prices, clearing).
 4. Setup grid (zones, ATC).
 5. Generate environment (capacities, groups).
-6. Add events from library.
+6. Add events from library (including ATC reduction events for grid links).
 7. Add storage devices (Battery) and set per‑device parameters.
 8. Set KPIs/scoring.
 9. Validate (run preview with events).
 10. Save/export JSON.
 
 **Edge Cases**: Invalid params block save; preview shows errors.
+
+---
+
+### **1.3 Unified Session Flow – Phase-Based State Management**
+
+**Version 11.0** introduces a **unified phase-based flow** for both Solo and Shared modes, providing consistent UX and enabling better pedagogical control.
+
+**Session Phases (SessionStatus Enum):**
+
+1. **`briefing`** – Initial scenario introduction
+   - **Display**: BriefingScreen showing scenario description, objectives, game structure, scoring info
+   - **Solo**: Player clicks "Start Scenario" → POST `/start-briefing` → transitions to `round_active`
+   - **Shared**: Trainer starts first round → transitions to `round_active`
+   - **Purpose**: Orient players before time pressure begins
+
+2. **`round_active`** – Main gameplay phase
+   - **Display**: Standard Player interface with timer, forecast editor, live KPIs
+   - **Duration**: 300s default (configurable via `round_duration_seconds`)
+   - **Pause/Freeze**: Trainer can freeze shared sessions (timer stops, no countdown)
+   - **Submit**: Players submit forecasts for current round
+   - **Transition**: When timer reaches 0 → `round_closing`
+
+3. **`round_closing`** – Grace period for final submits
+   - **Display**: WaitingScreen
+     - Solo: "Calculating Your Results..." with spinner
+     - Shared: "Waiting for X/Y players" with progress bar and per-type breakdown
+   - **Duration**: 2s grace period
+   - **Auto-submit**: Missing players get null forecasts (0 MWh for all hours)
+   - **Purpose**: Prevent blocking while allowing last-second submits
+   - **Transition**: After grace period → `calculating`
+
+4. **`calculating`** – Engine processing
+   - **Display**: WaitingScreen (same as round_closing)
+   - **Processing**: 
+     - Collect forecasts (full-horizon or per-round based on config)
+     - For round 1: Save DA snapshot as round_num=-1
+     - For rounds >1: Calculate IDM delta from DA snapshot
+     - Run engine: Market clearing, zone flows, imbalance settlement
+     - Store per-player KPIs (profit, imbalance, curtailment, dispatched_mwh)
+   - **Transition**: After engine completes → `round_results`
+
+5. **`round_results`** – Results display and player advancement
+   - **Display**: RoundResultsScreen
+     - Individual KPIs (Profit, Imbalance, Curtailment, Total Score)
+     - Solo: No ranking (or "Position 1/1")
+     - Shared: Leaderboard sorted by weighted total_score
+     - Active events displayed as alerts
+     - "Continue to Next Round" button (Solo) / "I'm Ready for Next Round" (Shared)
+   - **Advancement**: POST `/advance-round`
+     - Solo: 1 player ready → immediate advance
+     - Shared: All players ready → advance
+   - **Transition**: 
+     - If `current_round < total_rounds`: Increment round, set `round_active`, restart scheduler
+     - If `current_round == total_rounds`: → `scenario_complete`
+
+6. **`scenario_complete`** – Final results and navigation
+   - **Display**: ScenarioResultsScreen
+     - Trophy icon + final ranking
+     - Cumulative KPIs (total_profit, total_imbalance, total_curtailment, total_score)
+     - Final leaderboard (only in Shared mode)
+     - Round history accordion (per-round breakdown)
+     - Navigation: "Back to Home" / "View Detailed Analysis"
+   - **Cleanup**: Mark PlayerProgress as completed with timestamp
+   - **Confetti**: Triggered on transition (respects prefers-reduced-motion)
+
+**State Transitions (Backend Scheduler):**
+```
+briefing → round_active (manual start)
+round_active → round_closing (timer=0)
+round_closing → calculating (after 2s grace + auto-submit)
+calculating → round_results (engine complete)
+round_results → round_active (if rounds remain) OR scenario_complete (if final)
+```
+
+**WebSocket Events:**
+- `briefing`: Session started, show briefing screen
+- `round_start`: Round begins, reset timer
+- `tick`: Timer countdown (emitted every second)
+- `round_closing`: Grace period, show waiting screen
+- `calculating`: Engine running
+- `round_results_ready`: Results available, transition to results screen
+- `scenario_complete`: Final screen, show cumulative results
+
+**API Endpoints:**
+- `POST /sessions/{sid}/start-briefing`: Player starts scenario (Solo mode)
+- `GET /sessions/{sid}/submit-status`: Poll submit count (for WaitingScreen in Shared)
+- `GET /sessions/{sid}/round-results/{round}`: Fetch round KPIs + ranking
+- `GET /sessions/{sid}/final-results`: Fetch cumulative KPIs + final ranking
+- `POST /sessions/{sid}/advance-round`: Signal player ready for next round
+- `POST /sessions/{sid}/freeze`: Trainer pauses/unpauses timer (Shared only)
+
+**Benefits of Unified Flow:**
+- ✅ Consistent UX between Solo and Shared modes
+- ✅ Better pedagogical control (pause between rounds for reflection)
+- ✅ Prevents "round rush" by decoupling submit from advancement
+- ✅ Enables self-paced Solo learning
+- ✅ Supports trainer-guided Shared sessions
+- ✅ Cleaner state management (no race conditions)
+- ✅ Easier to add features (e.g., round-specific briefings, mid-round events)
 
 ### 1.2.8 Player Types (Planned – Sprint 9)
 

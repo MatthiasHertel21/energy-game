@@ -1,45 +1,74 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Stack, Select, MenuItem } from '@mui/material'
+import { useSearchParams, useNavigate } from 'react-router-dom'
+import { Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Stack, Select, MenuItem, FormControl, InputLabel, Alert, Box } from '@mui/material'
+import { EmojiEvents as LeaderboardIcon } from '@mui/icons-material'
 import api from '../services/api'
 import Radar from '../components/Radar'
 import { exportSVG } from '../utils/exportSvg'
 
 export default function Evaluation(){
   const [params] = useSearchParams()
+  const navigate = useNavigate()
   const [rows, setRows] = useState([])
   const [sel, setSel] = useState(null)
-  const sid = params.get('session')
-  const [role, setRole] = useState('')
+  const [sessionId, setSessionId] = useState(params.get('sessionId') || '')
+  const [allSessions, setAllSessions] = useState([])
   const [sessionInfo, setSessionInfo] = useState(null)
-  const [refRuns, setRefRuns] = useState([])
-  const [refSel, setRefSel] = useState('')
-  const [refData, setRefData] = useState(null)
+  const [compareSessionId, setCompareSessionId] = useState('')
+  const [compareData, setCompareData] = useState(null)
   const radarWrap = useRef(null)
+  
+  // Load all user sessions for dropdown
+  useEffect(() => {
+    const loadSessions = async () => {
+      try {
+        const { data } = await api.get('/api/me/sessions')
+        // Filter completed sessions only
+        const completed = data.filter(s => s.status === 'ended' || s.status === 'scenario_complete')
+        setAllSessions(completed)
+        
+        // Auto-select most recent if no sessionId in params
+        if (!sessionId && completed.length > 0) {
+          const mostRecent = completed.sort((a, b) => b.id - a.id)[0]
+          setSessionId(mostRecent.id.toString())
+        }
+      } catch (error) {
+        console.error('Failed to load sessions:', error)
+      }
+    }
+    loadSessions()
+  }, [])
+  
   useEffect(()=>{
     const load = async ()=>{
-      if(!sid) return
-      const info = await api.get(`/api/sessions/${sid}`)
-      setSessionInfo(info.data)
-      const { data } = await api.get(`/api/leaderboard/sessions/${sid}${role?`?role=${role}`:''}`)
-      setRows(data)
-      setSel(data?.[0]?.player_id || null)
-      if(info?.data?.scenario_id){
-        const rlist = await api.get(`/api/kse/scenarios/${info.data.scenario_id}/reference-runs`)
-        setRefRuns(rlist.data||[])
+      if(!sessionId) return
+      try {
+        const info = await api.get(`/api/sessions/${sessionId}`)
+        setSessionInfo(info.data)
+        const { data } = await api.get(`/api/leaderboard/sessions/${sessionId}`)
+        setRows(data)
+        setSel(data?.[0]?.player_id || null)
+      } catch (error) {
+        console.error('Failed to load evaluation data:', error)
       }
     }
     load()
-  },[sid, role])
+  },[sessionId])
 
   useEffect(()=>{
-    const loadRef = async ()=>{
-      if(!refSel || !sessionInfo?.scenario_id){ setRefData(null); return }
-      const rr = await api.get(`/api/kse/scenarios/${sessionInfo.scenario_id}/reference-runs/${refSel}`)
-      setRefData(rr.data?.data || null)
+    const loadCompare = async ()=>{
+      if(!compareSessionId){ setCompareData(null); return }
+      try {
+        const { data } = await api.get(`/api/leaderboard/sessions/${compareSessionId}`)
+        setCompareData(data)
+      } catch (error) {
+        console.error('Failed to load comparison data:', error)
+        setCompareData(null)
+      }
     }
-    loadRef()
-  },[refSel, sessionInfo])
+    loadCompare()
+  },[compareSessionId])
+  
   const selected = useMemo(()=> rows.find(r=> r.player_id===sel) || null, [rows, sel])
   const radarAxes = useMemo(()=>{
     if(!selected){ return [] }
@@ -70,100 +99,149 @@ export default function Evaluation(){
   },[rows])
 
   const radarRefAxes = useMemo(()=>{
-    if(!refData) return null
-    let rProfit=0, rImb=0, rCurt=0, n=0
-    const players = refData.players || refData.results || {}
-    if(players && typeof players === 'object'){
-      Object.values(players).forEach((p)=>{
-        const t = p.kpis_total || p.kpis || {}
-        rProfit += (t.profit_zar||0)
-        rImb += (t.imbalance_cost_zar||0)
-        rCurt += (t.curtailment_cost_zar||0)
-        n += 1
-      })
-    }
-    if(n===0) return null
-    rProfit/=n; rImb/=n; rCurt/=n
-    const maxProfit = Math.max(...rows.map(r=> r.profit_zar||0), rProfit, 1)
-    const maxImb = Math.max(...rows.map(r=> r.imbalance_cost_zar||0), rImb, 1)
-    const maxCurt = Math.max(...rows.map(r=> r.curtailment_cost_zar||0), rCurt, 1)
+    if(!compareData || !sel) return null
+    // Find the same player in the comparison session
+    const comparePlayer = compareData.find(r => r.player_id === sel)
+    if(!comparePlayer) return null
+    
+    const maxProfit = Math.max(...rows.map(r=> r.profit_zar||0), comparePlayer.profit_zar||0, 1)
+    const maxImb = Math.max(...rows.map(r=> r.imbalance_cost_zar||0), comparePlayer.imbalance_cost_zar||0, 1)
+    const maxCurt = Math.max(...rows.map(r=> r.curtailment_cost_zar||0), comparePlayer.curtailment_cost_zar||0, 1)
     return [
-      { label: 'Profit', value: (rProfit||0)/maxProfit },
-      { label: 'Imbalance(−)', value: 1 - (rImb||0)/maxImb },
-      { label: 'Curtail(−)', value: 1 - (rCurt||0)/maxCurt },
+      { label: 'Profit', value: (comparePlayer.profit_zar||0)/maxProfit },
+      { label: 'Imbalance(−)', value: 1 - (comparePlayer.imbalance_cost_zar||0)/maxImb },
+      { label: 'Curtail(−)', value: 1 - (comparePlayer.curtailment_cost_zar||0)/maxCurt },
     ]
-  },[refData, rows])
-  const pdf = ()=> window.open(`/api/export/sessions/${sid}/pdf`, '_blank')
-  const json = ()=> window.open(`/api/export/sessions/${sid}/json`, '_blank')
+  },[compareData, rows, sel])
+  const pdf = ()=> window.open(`/api/export/sessions/${sessionId}/pdf`, '_blank')
+  const json = ()=> window.open(`/api/export/sessions/${sessionId}/json`, '_blank')
+  
+  if (allSessions.length === 0 && !sessionId) {
+    return (
+      <Paper sx={{ p: 4, textAlign: 'center' }}>
+        <Alert severity="info">
+          No completed sessions found. Complete a session first to view evaluation reports.
+        </Alert>
+        <Button variant="contained" onClick={() => navigate('/catalog')} sx={{ mt: 2 }}>
+          Browse Campaigns
+        </Button>
+      </Paper>
+    )
+  }
+  
   return (
     <Paper sx={{ p:2 }}>
-      <Typography variant="h5" gutterBottom>Evaluation</Typography>
-      <Stack direction="row" spacing={2} alignItems="center">
-        <Button onClick={json}>Export JSON</Button>
-        <Button variant="contained" onClick={pdf}>Export PDF</Button>
-        <Select size="small" value={sel||''} onChange={e=>setSel(Number(e.target.value))} displayEmpty>
-          {rows.map(r=> <MenuItem key={r.player_id} value={r.player_id}>Player {r.player_id}</MenuItem>)}
-        </Select>
-        <Select size="small" value={role} onChange={e=>setRole(e.target.value)} displayEmpty>
-          <MenuItem value="">All Roles</MenuItem>
-          <MenuItem value="player">player</MenuItem>
-          <MenuItem value="trainer">trainer</MenuItem>
-          <MenuItem value="designer">designer</MenuItem>
-          <MenuItem value="admin">admin</MenuItem>
-        </Select>
-        <Select size="small" value={refSel} onChange={e=>setRefSel(e.target.value)} displayEmpty>
-          <MenuItem value="">No Reference</MenuItem>
-          {refRuns.map(r=> <MenuItem key={r.id} value={r.id}>{r.name}</MenuItem>)}
-        </Select>
-        <Button size="small" onClick={()=> radarWrap.current && exportSVG(radarWrap.current, 'evaluation_radar.svg')}>Export Radar</Button>
-      </Stack>
-      {selected && (
-        <Stack direction="row" spacing={2} alignItems="center" sx={{ mt:2 }}>
-          <div ref={radarWrap}><Radar axes={radarAxes} axes2={radarRefAxes || radarAvg} /></div>
-          <Typography variant="body2">Spider (Radar) – normalized KPIs für Player {selected.player_id}</Typography>
+      <Typography variant="h5" gutterBottom>Evaluation & Reports</Typography>
+      
+      {/* Session Selection */}
+      <Box sx={{ mb: 3, p: 2, bgcolor: 'background.default', borderRadius: 1 }}>
+        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
+          <FormControl sx={{ minWidth: 250 }}>
+            <InputLabel size="small">Select Session</InputLabel>
+            <Select 
+              size="small" 
+              value={sessionId} 
+              onChange={e => setSessionId(e.target.value)}
+              label="Select Session"
+            >
+              {allSessions.map(s => (
+                <MenuItem key={s.id} value={s.id.toString()}>
+                  {s.scenario_name} (#{s.id}) - {new Date(s.started_at).toLocaleDateString()}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          
+          {sessionId && (
+            <Button 
+              variant="outlined" 
+              startIcon={<LeaderboardIcon />}
+              onClick={() => navigate(`/leaderboard?sessionId=${sessionId}`)}
+            >
+              View Leaderboard
+            </Button>
+          )}
         </Stack>
+      </Box>
+      
+      {!sessionId ? (
+        <Alert severity="info">Please select a session to view evaluation data.</Alert>
+      ) : (
+        <>
+          <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" sx={{ mb: 2 }}>
+            <Button onClick={json}>Export JSON</Button>
+            <Button variant="contained" onClick={pdf}>Export PDF</Button>
+            <Select size="small" value={sel||''} onChange={e=>setSel(Number(e.target.value))} displayEmpty>
+              {rows.map(r=> <MenuItem key={r.player_id} value={r.player_id}>{r.email || `Player ${r.player_id}`}</MenuItem>)}
+            </Select>
+            <Select size="small" value={compareSessionId} onChange={e=>setCompareSessionId(e.target.value)} displayEmpty>
+              <MenuItem value="">No Comparison</MenuItem>
+              {allSessions.filter(s => s.id.toString() !== sessionId).map(s => (
+                <MenuItem key={s.id} value={s.id.toString()}>
+                  Compare: {s.scenario_name} (#{s.id})
+                </MenuItem>
+              ))}
+            </Select>
+            <Button size="small" onClick={()=> radarWrap.current && exportSVG(radarWrap.current, 'evaluation_radar.svg')}>Export Radar</Button>
+          </Stack>
+          {selected && (
+            <Stack direction="row" spacing={2} alignItems="center" sx={{ mt:2 }}>
+              <div ref={radarWrap}><Radar axes={radarAxes} axes2={radarRefAxes || radarAvg} /></div>
+              <Typography variant="body2">Spider (Radar) – normalized KPIs für {selected.email || `Player ${selected.player_id}`}</Typography>
+            </Stack>
+          )}
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Player</TableCell>
+                <TableCell align="right">Profit (ZAR)</TableCell>
+                <TableCell align="right">Revenue</TableCell>
+                <TableCell align="right">Imbalance Cost</TableCell>
+                <TableCell align="right">Curtailment Cost</TableCell>
+                <TableCell align="right">Rounds</TableCell>
+                {compareData && (
+                  <>
+                    <TableCell align="right">Δ Profit vs Compare</TableCell>
+                    <TableCell align="right">Δ Imbalance vs Compare</TableCell>
+                    <TableCell align="right">Δ Curtail vs Compare</TableCell>
+                  </>
+                )}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rows.map(r => {
+                let delta = ''
+                let deltaImb = ''
+                let deltaCurt = ''
+                if(compareData){
+                  const comparePlayer = compareData.find(cp => cp.player_id === r.player_id)
+                  if(comparePlayer){
+                    delta = (r.profit_zar - comparePlayer.profit_zar).toFixed(2)
+                    deltaImb = (r.imbalance_cost_zar - comparePlayer.imbalance_cost_zar).toFixed(2)
+                    deltaCurt = (r.curtailment_cost_zar - comparePlayer.curtailment_cost_zar).toFixed(2)
+                  }
+                }
+                return (
+                <TableRow key={r.player_id}>
+                  <TableCell>{r.email || `Player ${r.player_id}`}</TableCell>
+                  <TableCell align="right">{r.profit_zar}</TableCell>
+                  <TableCell align="right">{r.revenue_zar}</TableCell>
+                  <TableCell align="right">{r.imbalance_cost_zar}</TableCell>
+                  <TableCell align="right">{r.curtailment_cost_zar}</TableCell>
+                  <TableCell align="right">{r.rounds}</TableCell>
+                  {compareData && (
+                    <>
+                      <TableCell align="right">{delta!=='' ? delta : '—'}</TableCell>
+                      <TableCell align="right">{deltaImb!=='' ? deltaImb : '—'}</TableCell>
+                      <TableCell align="right">{deltaCurt!=='' ? deltaCurt : '—'}</TableCell>
+                    </>
+                  )}
+                </TableRow>
+              )})}
+            </TableBody>
+          </Table>
+        </>
       )}
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Player</TableCell>
-            <TableCell align="right">Profit (ZAR)</TableCell>
-            <TableCell align="right">Revenue</TableCell>
-            <TableCell align="right">Imbalance Cost</TableCell>
-            <TableCell align="right">Curtailment Cost</TableCell>
-            <TableCell align="right">Rounds</TableCell>
-            <TableCell align="right">Δ Profit vs Ref</TableCell>
-            <TableCell align="right">Δ Imbalance vs Ref</TableCell>
-            <TableCell align="right">Δ Curtail vs Ref</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {rows.map(r => {
-            let delta = ''
-            let deltaImb = ''
-            let deltaCurt = ''
-            if(refData && refData.players){
-              const pr = refData.players[String(r.player_id)] || refData.players[r.player_id]
-              const t = pr?.kpis_total || pr?.kpis
-              if(t && typeof t.profit_zar !== 'undefined') delta = (r.profit_zar - t.profit_zar)
-              if(t && typeof t.imbalance_cost_zar !== 'undefined') deltaImb = (r.imbalance_cost_zar - t.imbalance_cost_zar)
-              if(t && typeof t.curtailment_cost_zar !== 'undefined') deltaCurt = (r.curtailment_cost_zar - t.curtailment_cost_zar)
-            }
-            return (
-            <TableRow key={r.player_id}>
-              <TableCell>{r.player_id}</TableCell>
-              <TableCell align="right">{r.profit_zar}</TableCell>
-              <TableCell align="right">{r.revenue_zar}</TableCell>
-              <TableCell align="right">{r.imbalance_cost_zar}</TableCell>
-              <TableCell align="right">{r.curtailment_cost_zar}</TableCell>
-              <TableCell align="right">{r.rounds}</TableCell>
-              <TableCell align="right">{delta!=='' ? delta : '—'}</TableCell>
-              <TableCell align="right">{deltaImb!=='' ? deltaImb : '—'}</TableCell>
-              <TableCell align="right">{deltaCurt!=='' ? deltaCurt : '—'}</TableCell>
-            </TableRow>
-          )})}
-        </TableBody>
-      </Table>
     </Paper>
   )
 }

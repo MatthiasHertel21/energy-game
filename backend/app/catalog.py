@@ -71,9 +71,12 @@ class CampaignDetail(Resource):
         scenarios = []
         for cs, sc in mappings:
             pp = PlayerProgress.query.filter_by(user_id=uid, campaign_id=cid, scenario_id=sc.id).first()
+            cfg = sc.config or {}
+            objectives = cfg.get("general", {}).get("objectives", "")
             scenarios.append({
                 "scenario_id": sc.id,
                 "name": sc.name,
+                "description": objectives[:200] if objectives else "",  # First 200 chars
                 "order_index": cs.order_index,
                 "solo_enabled": cs.solo_enabled,
                 "cohort_enabled": cs.cohort_enabled,
@@ -85,4 +88,22 @@ class CampaignDetail(Resource):
             "description": c.description,
             "cover_image_url": c.cover_image_url,
             "scenarios": scenarios,
+        }, HTTPStatus.OK
+
+
+@ns.route("/scenarios/<int:sid>")
+class ScenarioDetail(Resource):
+    @jwt_required()
+    def get(self, sid: int):
+        """Get scenario details for briefing screen."""
+        sc = Scenario.query.get_or_404(sid)
+        cfg = sc.config or {}
+        campaign = Campaign.query.get(sc.campaign_id) if sc.campaign_id else None
+        return {
+            "id": sc.id,
+            "name": sc.name,
+            "description": cfg.get("general", {}).get("description", ""),
+            "campaign_id": campaign.id if campaign else None,
+            "campaign_name": campaign.name if campaign else None,
+            "config": cfg,
         }, HTTPStatus.OK

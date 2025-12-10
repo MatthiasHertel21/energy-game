@@ -1,6 +1,6 @@
-# Use Cases – Campaigns, Catalog, Solo/Cohort
+# Use Cases – Campaigns, Catalog, Solo/Cohort, Unified Flow
 
-Date: 2025-11-11
+Date: 2025-12-02
 
 This document captures core use cases and maps them to UI, API, and acceptance criteria.
 
@@ -35,6 +35,48 @@ This document captures core use cases and maps them to UI, API, and acceptance c
    - Ungültige Caps werden abgelehnt (`/api/sessions/:id/allowed-types`).
    - Restkapazität in Briefing; volle/unerlaubte Typen nicht wählbar (`/api/sessions/:id/briefing`).
 
+## UC-FLOW1: Player spielt Solo-Session mit Unified Flow (IMPLEMENTIERT)
+
+- Actor: Player
+- Goal: Solo-Session mit eigener Marktsimulation durchspielen, selbst-gesteuert durch alle Phasen
+- Preconditions: Player startet Session aus Catalog (solo_enabled=true)
+- Hauptablauf:
+   1) **Briefing-Phase**: BriefingScreen zeigt Szenario-Info, Objectives, Struktur
+      - Player klickt "Start Scenario" → POST `/sessions/:id/start-briefing`
+      - Backend: Status → `round_active`, current_round=1, startet Scheduler
+   2) **Round Active**: Timer startet (300s default)
+      - Player sieht Standard-Interface mit Forecast-Editor
+      - Player submitted Forecast → Backend speichert
+      - Timer läuft ab → Status `round_closing`
+   3) **Round Closing**: WaitingScreen mit "Calculating Your Results..."
+      - 2s Grace Period, Auto-Submit für fehlende Forecasts
+      - Status → `calculating`
+   4) **Calculating**: Engine läuft (Market Clearing, KPI-Berechnung)
+      - Status → `round_results`
+   5) **Round Results**: RoundResultsScreen
+      - KPI-Karten, keine Ranking-Tabelle (Solo)
+      - Player klickt "Continue to Next Round" → POST `/sessions/:id/advance-round`
+      - Backend: 1 Player ready → sofort weiter
+   6) Wiederhole 2-5 für alle Runden
+   7) **Scenario Complete**: ScenarioResultsScreen mit kumulativen KPIs
+- UI: `BriefingScreen`, `WaitingScreen`, `RoundResultsScreen`, `ScenarioResultsScreen`
+- API: `/start-briefing`, `/advance-round`, `/round-results/:round`, `/final-results`
+
+## UC-FLOW2: Players spielen Shared-Session mit Unified Flow (IMPLEMENTIERT)
+
+- Actor: Trainer + Players
+- Goal: Gemeinsame Session mit einheitlichem Markt, synchrones Voranschreiten
+- Preconditions: Trainer startet Session mit player_types
+- Hauptablauf:
+   1) Trainer startet → Status `briefing`, alle Players sehen BriefingScreen
+   2) Trainer startet Round 1 → Status `round_active`
+   3) Players submiten → WaitingScreen zeigt "X/Y players" mit Progress
+   4) Alle submitted → Status `calculating` → `round_results`
+   5) RoundResultsScreen mit Leaderboard, alle klicken "Ready"
+   6) Wenn alle ready → nächste Runde oder `scenario_complete`
+- UI: Gleiche Komponenten wie Solo mit Shared-Logik
+- API: `/freeze`, `/submit-status`, `/round-results/:round` (mit Ranking)
+
 ## UC-1 Player selects and plays a Scenario (Catalog) – IMPLEMENTIERT
 
 - Actor: Player
@@ -45,9 +87,9 @@ This document captures core use cases and maps them to UI, API, and acceptance c
   - Für Cohort‑Beitritt: Player ist Mitglied in mindestens einer Cohorte; Trainer hat eine aktive Session gestartet.
 
 User Flow
-1) Player öffnet „Catalog“ (`/catalog`).
+1) Player öffnet „Catalog" (`/catalog`).
    - Sieht Karten mit Cover, Name, Beschreibung, Fortschritt (completed/total), Published‑Badge.
-2) Klick auf eine Kampagne → „Campaign Detail“ (`/catalog/:id`).
+2) Klick auf eine Kampagne → „Campaign Detail" (`/catalog/:id`).
    - Sieht eine geordnete Liste der Szenarien (Designer‑Reihenfolge, `order_index`).
    - Pro Szenario sieht der Player den eigenen Status (not_started | in_progress | completed).
 3) Auswahl einer Spielform:

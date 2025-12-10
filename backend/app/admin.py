@@ -19,6 +19,10 @@ from .models import (
     Result,
     SessionAllowedType,
     SessionPlayerType,
+    CohortMember,
+    Campaign,
+    CampaignScenario,
+    CohortCampaign,
 )
 from . import mailer
 from .utils import role_required
@@ -157,6 +161,39 @@ class UserItem(Resource):
         if user.id == current_user_id:
             ns.abort(HTTPStatus.BAD_REQUEST, "Cannot delete yourself")
 
+        # Delete related records to prevent foreign key constraint violations
+        
+        # Remove user from all cohorts
+        CohortMember.query.filter_by(user_id=user_id).delete()
+        
+        # Delete activity logs for this user
+        ActivityLog.query.filter_by(user_id=user_id).delete()
+        
+        # Delete forecasts and sessions created by this user
+        Forecast.query.filter_by(user_id=user_id).delete()
+        
+        # Delete sessions owned by this user
+        Session.query.filter_by(player_id=user_id).delete()
+        
+        # Delete cohorts where user is trainer
+        for cohort in Cohort.query.filter_by(trainer_id=user_id).all():
+            # First delete all members of this cohort
+            CohortMember.query.filter_by(cohort_id=cohort.id).delete()
+            # Then delete cohort campaigns
+            CohortCampaign.query.filter_by(cohort_id=cohort.id).delete()
+            # Finally delete the cohort itself
+            db.session.delete(cohort)
+        
+        # Delete campaigns created by this user (if designer)
+        for campaign in Campaign.query.filter_by(designer_id=user_id).all():
+            # Delete campaign scenarios first
+            CampaignScenario.query.filter_by(campaign_id=campaign.id).delete()
+            # Delete cohort campaigns
+            CohortCampaign.query.filter_by(campaign_id=campaign.id).delete()
+            # Delete the campaign
+            db.session.delete(campaign)
+
+        # Finally delete the user
         db.session.delete(user)
         db.session.commit()
         return {"status": "ok", "message": f"User {user.email} deleted"}

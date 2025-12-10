@@ -1,20 +1,21 @@
 # Designer Handbook (KSE)
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.1 (Sprint 21)  
-**Date**: 20 Nov 2025  
+**Version**: 1.2 (Sprint 22)  
+**Date**: 26 Nov 2025  
 **Audience**: Designers/Scenario Editors
 
 ---
 
-## What's New (Sprint 21)
+## What's New (Sprint 22)
 
+- **Enhanced Player Experience**: Device names now prominently displayed in per-device forecast editors
+- **Device Information Display**: Players see detailed device specs (capacity, efficiency, zone) in UI
+- **Per-Device Charts**: Each device gets individual forecast chart in player interface (when in shared market mode)
 - **Device Preset Library**: Quick-create devices from presets (Coal, Gas, Hydro, Nuclear, Solar, Wind, Battery, Loads)
-- **Device Name Field**: All devices now have optional `name` field (shown in player UI)
+- **Device Name Field**: Optional `name` field shown in player UI (e.g., "Koeberg Unit 1" instead of just "nuclear_1")
 - **Player Type ID Auto-Generation**: IDs auto-generated with timestamps to ensure uniqueness
-- **Device ID Collision Fix**: Device IDs now use timestamp + counter to prevent duplicates
 - **Validation Improvements**: Player types validated on save (unique IDs, device references)
-- **Known Issues**: KSE Market tab and Preview tab have accessibility gaps (Sprint 21 will add axe checks)
 
 ---
 
@@ -40,6 +41,7 @@
 
 General
 - Scenario name, objectives (markdown), fake date and start time, rounds and round duration, simulated hours per round, forecast horizon (≥ horizon), scenario horizon (= rounds × span), freeze hours (≤ span).
+- **Note**: The first 200 characters of the objectives field are displayed as a description preview in the Campaign Catalog to help players understand each scenario before starting.
 
 Market Rules
 - Enable DA/IDM/Balancing; price floor/cap (allow negative pricing), uniform-price clearing, pro‑rata ties, imbalance prices (up/down), transmission losses.
@@ -60,7 +62,9 @@ Devices
   - Storage: Battery (100 MWh capacity, 50 MW power, 85% eff)
   - Loads: Industrial (300 MW baseline, 450 MW peak, DRM-capable), Commercial (100/200 MW), Residential (150/300 MW)
 - **Device Fields**:
-  - `name` (optional, Sprint 21): Friendly name shown in player UI (e.g., "Koeberg Unit 1")
+  - `name` (optional, **recommended** Sprint 22): Friendly name prominently displayed in player UI (e.g., "Koeberg Unit 1")
+    - Players see device name in forecast editor headers for easy identification
+    - Helpful for distinguishing similar devices (e.g., "Wind Farm North" vs "Wind Farm South")
   - `id` (auto-generated): Unique ID with timestamp to prevent collisions
   - Type-specific parameters (capacity, cost, efficiency, ramp rate, etc.)
 - **Actions**: Add from Preset, Duplicate, Delete
@@ -68,7 +72,7 @@ Devices
 
 Player Types
 - **Structure**: `{ id, name, devices[], zone? }`
-- **Required for**: `shared_market` mode (players can only edit assigned devices)
+- **Required for**: Trainer-led sessions where players select roles and control specific devices
 - **Auto-Generated IDs** (Sprint 21): Click "Add Player Type" to create with unique timestamp-based ID (`ptype_<timestamp>_<random>`)
 - **Normalization on Save**: All player types validated and ensured unique IDs before save
 - **Validation**: Unique IDs across types, all referenced devices must exist in scenario
@@ -82,7 +86,7 @@ Scoring
 
 ### 5) Validation & Best Practices
 - Frontend checks: ranges, formats, uniqueness, sums. Backend checks: horizon=rounds×span, references, ATC bounds, event overlaps.
-- Design tips: clear objectives, layered complexity across a campaign, ≤3 events per scenario, realistic SA mixes, 2–4 player types for shared market, dry‑run before publish.
+- Design tips: clear objectives, layered complexity across a campaign, ≤3 events per scenario, realistic SA mixes, 2–4 player types for trainer sessions, dry‑run before publish.
 
 ---
 

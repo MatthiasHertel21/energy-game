@@ -208,6 +208,7 @@ export default function DeviceCard({
                   max={10000}
                   step={10}
                   unit="MW"
+                  tooltip="Installed generation capacity of this device in MW. Upper bound for hourly dispatch."
                 />
                 <NumberInput
                   label="Cost per MWh"
@@ -217,6 +218,7 @@ export default function DeviceCard({
                   max={5000}
                   step={10}
                   unit="ZAR/MWh"
+                  tooltip="Variable cost for each MWh produced by this device. Used as bid price in market clearing."
                 />
               </>
             ) : (
@@ -229,6 +231,7 @@ export default function DeviceCard({
                   max={2000}
                   step={10}
                   unit="MW"
+                  tooltip="Typical continuous consumption level of this load in MW during non-peak hours."
                 />
                 <NumberInput
                   label="Peak Load"
@@ -238,6 +241,17 @@ export default function DeviceCard({
                   max={3000}
                   step={10}
                   unit="MW"
+                  tooltip="Maximum expected consumption of this load in MW during peak hours. Must be ≥ baseline."
+                />
+                <NumberInput
+                  label="Demand Response Capacity"
+                  value={device.demand_response_capacity_mw || 0}
+                  onChange={(val) => handleFieldChange('demand_response_capacity_mw', val)}
+                  min={0}
+                  max={500}
+                  step={5}
+                  unit="MW"
+                  tooltip="Maximum MW this load can reliably reduce on request (flexible demand). Must not exceed peak load."
                 />
               </>
             )}

@@ -1,6 +1,6 @@
 # Energy Market Simulation Game (EMSG)
 
-**MVP Version** | Sprint 21 (November 2025)
+**MVP Version** | Sprint 23 (December 2025)
 
 A web-based energy market simulation platform for educational and training purposes. Players manage virtual power plants, forecast market conditions, and compete in realistic energy markets with dynamic pricing.
 
@@ -9,29 +9,36 @@ A web-based energy market simulation platform for educational and training purpo
 ## Features
 
 ### 🎮 Core Gameplay
-- **Solo & Multiplayer Sessions**: Individual learning or competitive cohort-based play
+- **Unified Solo & Shared Flow**: Consistent phase-based experience for individual and cohort play
+- **Briefing Phase**: Scenario introduction with objectives before time pressure begins
 - **Real-time Market Simulation**: Double-auction market clearing with supply/demand dynamics
 - **Device Management**: Solar, Wind, Gas, Battery, Hydro with realistic constraints
-- **Multi-round Scenarios**: Progress through time-based energy market challenges
+- **Multi-round Scenarios**: Progress through time-based energy market challenges with structured pacing
+- **Round Results & Advancement**: Players control pacing with "Continue" buttons between rounds
+- **Weighted Scoring System**: Configurable KPI weights (profit, imbalance, curtailment)
 - **Leaderboard & Comparisons**: Track performance and learn from strategies
 
 ### 🛠️ Scenario Designer (KSE)
 - **Visual Editor**: Drag-and-drop device configuration
 - **Market Parameters**: Price floors/caps, volumes, variability
 - **Grid Simulation**: Multi-zone grids with transmission constraints (ATC matrices)
-- **Events System**: Scheduled or probabilistic market shocks
+- **Enhanced Events System**: 8 event types including grid link ATC reduction
 - **Preview & Validation**: Real-time supply/demand curve visualization
 - **Import/Export**: JSON-based scenario sharing
+- **Player Types**: Define role-specific device assignments for shared sessions
 
 ### 👥 Trainer Tools
 - **Campaign Management**: Sequential scenario progressions
-- **Cohort Administration**: Group management, CSV import
-- **Live Monitoring**: Real-time participant tracking
-- **Force Navigation**: Synchronized cohort progression
-- **Session Controls**: Start/stop rounds, view aggregate results
+- **Cohort Administration**: Group management, CSV import, player type configuration
+- **Live Monitoring**: Real-time participant tracking with per-type submit status
+- **Session Controls**: Start/pause/freeze rounds, force round end
+- **Shared Market Sessions**: All players trade in unified market with balanced roles
+- **Performance Analytics**: Weighted scoring, final rankings, round history
 
 ### 📊 Analytics
 - **Player Dashboard**: Balance tracking, device portfolios, forecast accuracy
+- **Round-by-Round Results**: Individual KPIs with active event displays
+- **Cumulative Performance**: Final scenario results with round history accordion
 - **Comparison View**: Side-by-side player strategy analysis
 - **Activity Logs**: Comprehensive audit trail
 - **Performance Metrics**: Profit, imbalance penalties, curtailment costs

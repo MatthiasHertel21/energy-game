@@ -17,11 +17,19 @@ class LeaderboardSession(Resource):
         args = parser.parse_args()
         role_filter = args.get('role')
         subq = db.session.query(Result.player_id, Result.data).filter(Result.session_id == sid).subquery()
-        rows = db.session.query(subq.c.player_id, subq.c.data, User.role).join(User, User.id == subq.c.player_id).all()
+        rows = db.session.query(subq.c.player_id, subq.c.data, User.role, User.email).join(User, User.id == subq.c.player_id).all()
         agg = {}
-        for pid, data, role in rows:
+        for pid, data, role, email in rows:
             k = data.get("kpis") or {}
-            entry = agg.setdefault(pid, {"profit_zar": 0, "imbalance_cost_zar": 0, "curtailment_cost_zar": 0, "revenue_zar": 0, "rounds": 0, "role": role.value if hasattr(role, 'value') else str(role)})
+            entry = agg.setdefault(pid, {
+                "profit_zar": 0, 
+                "imbalance_cost_zar": 0, 
+                "curtailment_cost_zar": 0, 
+                "revenue_zar": 0, 
+                "rounds": 0, 
+                "role": role.value if hasattr(role, 'value') else str(role),
+                "email": email
+            })
             entry["profit_zar"] += k.get("profit_zar", 0)
             entry["imbalance_cost_zar"] += k.get("imbalance_cost_zar", 0)
             entry["curtailment_cost_zar"] += k.get("curtailment_cost_zar", 0)

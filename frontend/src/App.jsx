@@ -7,10 +7,10 @@ import {
   Groups as GroupsIcon,
   BarChart as ComparisonIcon,
   Home as HomeIcon,
-  SportsEsports as PlayerIcon,
   LibraryBooks as CatalogIcon,
   Collections as CollectionsIcon,
   List as ListIcon,
+  Assessment as EvaluationIcon,
 } from '@mui/icons-material'
 const Login = React.lazy(()=> import('./pages/Login'))
 const Register = React.lazy(()=> import('./pages/Register'))
@@ -28,6 +28,8 @@ const Catalog = React.lazy(()=> import('./pages/Catalog'))
 const CampaignDetail = React.lazy(()=> import('./pages/CampaignDetail'))
 const DesignerCampaigns = React.lazy(()=> import('./pages/DesignerCampaigns'))
 const DesignerScenarios = React.lazy(()=> import('./pages/DesignerScenarios'))
+const Profile = React.lazy(()=> import('./pages/Profile'))
+const Settings = React.lazy(()=> import('./pages/Settings'))
 const DocsPlayer = React.lazy(()=> import('./pages/DocsPlayer'))
 const DocsTrainer = React.lazy(()=> import('./pages/DocsTrainer'))
 const DocsDesigner = React.lazy(()=> import('./pages/DocsDesigner'))
@@ -151,13 +153,13 @@ export default function App({ themeMode, onToggleTheme }) {
                   </Button>
                   <Button 
                     size="small"
-                    color={isActive('/player') ? 'secondary' : 'inherit'} 
+                    color={isActive('/evaluation') ? 'secondary' : 'inherit'} 
                     component={Link} 
-                    to="/player"
-                    startIcon={<PlayerIcon />}
-                    aria-label="Game interface"
+                    to="/evaluation"
+                    startIcon={<EvaluationIcon />}
+                    aria-label="Session evaluation"
                   >
-                    Player
+                    Evaluation
                   </Button>
                 </>
               )}
@@ -209,6 +211,8 @@ export default function App({ themeMode, onToggleTheme }) {
             <Route path="/player" element={<Player />} />
             <Route path="/evaluation" element={<Evaluation />} />
             <Route path="/replay" element={<Replay />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/settings" element={<Settings />} />
           </Route>
           <Route element={<ProtectedRoute roles={["trainer","admin"]} /> }>
             <Route path="/cohorts" element={<Cohorts />} />
@@ -227,6 +231,10 @@ function ForceNavigateWatcher({ onNavigate }){
   useEffect(()=>{
     let stopped = false
     const tick = async ()=>{
+      const token = localStorage.getItem('access_token')
+      if (!token) {
+        return
+      }
       try{
         const { data } = await api.get('/api/me/navigate')
         if(!stopped && data?.url){

@@ -1,5 +1,5 @@
 from http import HTTPStatus
-from flask import request
+from flask import request, current_app
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, timezone
@@ -107,6 +107,12 @@ class ForecastAPI(Resource):
             pass  # Don't fail forecast if logging fails
         
         socketio.emit("player_submit", {"session_id": f.session_id, "player_id": player_id}, namespace="/trainer")
+        
+        # In solo mode, immediately end the round when player submits
+        if session and session.mode == 'isolated_per_player':
+            # Emit event to force timer to 0
+            socketio.emit("tick", {"session_id": session.id, "remaining": 0}, namespace="/game", to=f"session-{session.id}")
+        
         return {"status": "ok", "id": f.id}, HTTPStatus.CREATED
 
 
@@ -158,10 +164,16 @@ class ForecastFull(Resource):
         
         # upsert by (session_id, player_id, round_num=0)
         f = Forecast.query.filter_by(session_id=data["session_id"], player_id=player_id, round_num=0).first()
+        
+        # Store both aggregate hours and per-device hours if provided
+        forecast_data = {"hours": data["hours"]}
+        if isinstance(per_device, list) and per_device:
+            forecast_data["devices"] = per_device
+        
         if not f:
-            f = Forecast(session_id=data["session_id"], player_id=player_id, round_num=0, data={"hours": data["hours"]})
+            f = Forecast(session_id=data["session_id"], player_id=player_id, round_num=0, data=forecast_data)
         else:
-            f.data = {"hours": data["hours"]}
+            f.data = forecast_data
         db.session.add(f)
         db.session.commit()
         return {"status": "ok", "id": f.id}
@@ -173,7 +185,12 @@ class ForecastFull(Resource):
             return {"error": "session_id required"}, HTTPStatus.BAD_REQUEST
         player_id = int(get_jwt_identity())
         f = Forecast.query.filter_by(session_id=session_id, player_id=player_id, round_num=0).first()
-        return {"hours": (f.data.get("hours") if f else None)}
+        if not f:
+            return {"hours": None, "devices": None}
+        return {
+            "hours": f.data.get("hours") if f else None,
+            "devices": f.data.get("devices") if f else None
+        }
 
 
 # --- Helpers for player type selection / device filtering ---
@@ -258,26 +275,51 @@ class SoloSessions(Resource):
             return {"error": "Solo not allowed for this scenario"}, HTTPStatus.FORBIDDEN
         cs, camp = mapping
 
-        # Ensure a minimal cohort exists for the player (trainer_id can be self)
-        c = Cohort(name=f"Solo {uid}", trainer_id=uid)
-        db.session.add(c)
-        db.session.flush()  # get id
+        # Find or create a cohort for this user's solo sessions
+        # Reuse existing solo cohort instead of creating new ones
+        c = Cohort.query.filter_by(trainer_id=uid, name=f"Solo {uid}").first()
+        if not c:
+            c = Cohort(name=f"Solo {uid}", trainer_id=uid)
+            db.session.add(c)
+            db.session.flush()  # get id
+            
+            # Add player as cohort member
+            cm = CohortMember(cohort_id=c.id, user_id=uid)
+            db.session.add(cm)
+        else:
+            # Ensure player is member of their solo cohort
+            existing_member = CohortMember.query.filter_by(cohort_id=c.id, user_id=uid).first()
+            if not existing_member:
+                cm = CohortMember(cohort_id=c.id, user_id=uid)
+                db.session.add(cm)
 
-        # Add player as cohort member
-        cm = CohortMember(cohort_id=c.id, user_id=uid)
-        db.session.add(cm)
-
-        # Create session (start immediately; scheduler will run rounds)
+        # Create session (start in briefing phase; scheduler waits for player start)
         from datetime import datetime
         s = Session(
             cohort_id=c.id,
             scenario_id=scenario_id,
             mode="isolated_per_player",
-            status=SessionStatus.running,
+            status=SessionStatus.briefing,
             started_at=datetime.utcnow(),
+            current_round=1,
         )
         db.session.add(s)
         db.session.flush()
+
+        # Populate allowed_types from scenario config for isolated_per_player mode
+        try:
+            scen = Scenario.query.get(scenario_id)
+            player_types = scen.config.get("player_types", []) if scen and scen.config else []
+            for pt in player_types:
+                type_id = pt.get("id")
+                if type_id:
+                    # max_players = 1 in isolated mode (each player picks their own type)
+                    db.session.add(SessionAllowedType(session_id=s.id, type_id=type_id, max_players=1))
+        except Exception:
+            current_app.logger.exception(
+                "failed to seed allowed types for solo session", extra={"session_id": s.id, "scenario_id": scenario_id}
+            )
+            pass  # Continue even if allowed_types setup fails
 
         # Progress → in_progress
         try:
@@ -294,11 +336,11 @@ class SoloSessions(Resource):
             pass
 
         db.session.commit()
-        # Start rounds in background
+        # Start scheduler in background (will wait in briefing phase until player starts)
         from .scheduler import run_rounds
         from .extensions import socketio
-        socketio.start_background_task(run_rounds, s.id)
-        return {"session_id": s.id, "status": "running"}, HTTPStatus.CREATED
+        socketio.start_background_task(run_rounds, s.id, current_app._get_current_object())
+        return {"session_id": s.id, "status": "briefing"}, HTTPStatus.CREATED
 
 
 @ns.route("/active-session")

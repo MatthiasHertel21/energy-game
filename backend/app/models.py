@@ -125,9 +125,15 @@ class CampaignScenario(db.Model):
 
 class SessionStatus(enum.Enum):
     created = "created"
+    briefing = "briefing"
     running = "running"
+    round_active = "round_active"
+    round_closing = "round_closing"
+    calculating = "calculating"
+    round_results = "round_results"
     paused = "paused"
     ended = "ended"
+    scenario_complete = "scenario_complete"
 
 
 class Session(db.Model):
@@ -141,6 +147,7 @@ class Session(db.Model):
     started_at = db.Column(db.DateTime)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     mode = db.Column(db.String(32), default="isolated_per_player", nullable=False)
+    frozen = db.Column(db.Boolean, default=False, nullable=False)
     
     scenario = db.relationship("Scenario", backref="sessions", lazy="joined")
 

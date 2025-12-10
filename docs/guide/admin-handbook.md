@@ -1,19 +1,20 @@
 # Admin Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.1 (Sprint 21)  
-**Date**: 20 Nov 2025  
+**Version**: 1.2 (Sprint 22)  
+**Date**: 26 Nov 2025  
 **Audience**: System Administrators
 
 ---
 
-## What's New (Sprint 21)
+## What's New (Sprint 22)
 
+- **UI Enhancements**: Improved player and trainer interfaces with better status visualization
+- **Cohort Management**: Enhanced cohort list API with aggregated member/campaign counts
+- **Per-Device Editing**: Player forecast interface supports individual device charts
 - **Bulk Session Cleanup**: Delete ALL sessions with DELETE confirmation (ignores filters)
 - **Performance Baseline**: 20 Cypress E2E specs passing, p95=8ms response time (100 users)
-- **Known Issues**: 93% error rate in load tests (rate limiting + auth), Sprint 21 fixes in progress
 - **Test Coverage**: 20 Cypress specs, Locust performance testing, axe accessibility checks
-- **DevOps**: Docker Compose stability workaround documented in DEPLOYMENT.md
 
 ---
 

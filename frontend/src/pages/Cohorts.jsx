@@ -28,7 +28,29 @@ export default function Cohorts(){
     setLoading(true)
     try {
       const { data } = await api.get('/api/cohorts')
-      setList(data)
+      let rows = Array.isArray(data) ? data : []
+      // Fallback enrichment if backend doesn't provide counts/emails
+      const enriched = await Promise.all(rows.map(async (c)=>{
+        const out = { ...c }
+        // Members count
+        if (typeof out.members_count !== 'number'){
+          try{
+            const res = await api.get(`/api/cohorts/${c.id}/players`)
+            out.members_count = Array.isArray(res.data) ? res.data.length : 0
+          }catch(_){ out.members_count = 0 }
+        }
+        // Campaigns count (active only if field missing)
+        if (typeof out.campaigns_count !== 'number'){
+          try{
+            const res = await api.get(`/api/cohorts/${c.id}/campaigns`)
+            const arr = Array.isArray(res.data) ? res.data : []
+            out.campaigns_count = arr.filter(x=> x.active === true).length
+          }catch(_){ out.campaigns_count = 0 }
+        }
+        // Trainer email fallback not available without admin; leave as provided
+        return out
+      }))
+      setList(enriched)
     } finally {
       setLoading(false)
     }
@@ -182,17 +204,21 @@ export default function Cohorts(){
       <Table size="small" sx={{ mt:2 }}>
         <TableHead>
           <TableRow>
-            <TableCell>ID</TableCell><TableCell>Name</TableCell><TableCell>Trainer</TableCell><TableCell>Actions</TableCell>
+            <TableCell>Name</TableCell>
+            <TableCell>Trainer</TableCell>
+            <TableCell align="right">Members</TableCell>
+            <TableCell align="right">Campaigns</TableCell>
+            <TableCell>Actions</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
           {list.map(c=> (
-            <TableRow key={c.id}>
-              <TableCell>{c.id}</TableCell>
+            <TableRow key={c.id} hover onClick={()=> setSelected(c.id)} sx={{ cursor:'pointer' }}>
               <TableCell>{c.name}</TableCell>
-              <TableCell>{c.trainer_id}</TableCell>
-              <TableCell>
-                <Button size="small" onClick={()=> setSelected(c.id)}>Select</Button>
+              <TableCell>{c.trainer_email || '—'}</TableCell>
+              <TableCell align="right">{c.members_count ?? '—'}</TableCell>
+              <TableCell align="right">{c.campaigns_count ?? '—'}</TableCell>
+              <TableCell onClick={(e)=> e.stopPropagation()}>
                 <IconButton size="small" onClick={()=> openEdit(c)} title="Edit name" aria-label="Edit cohort name">
                   <EditIcon fontSize="small" />
                 </IconButton>

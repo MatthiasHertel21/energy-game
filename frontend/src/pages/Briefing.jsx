@@ -19,13 +19,18 @@ export default function Briefing() {
   const { sessionId } = useParams()
   const navigate = useNavigate()
   const [data, setData] = useState(null)
+  const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const load = async () => {
       try {
-        const { data } = await api.get(`/api/sessions/${sessionId}/briefing`)
-        setData(data)
+        const { data: briefingData } = await api.get(`/api/sessions/${sessionId}/briefing`)
+        setData(briefingData)
+        
+        // Also load session details to check mode
+        const { data: sessionData } = await api.get(`/api/sessions/${sessionId}`)
+        setSession(sessionData)
       } catch (error) {
         console.error('Failed to load briefing:', error)
       } finally {
@@ -57,16 +62,20 @@ export default function Briefing() {
   const g = data.general || {}
   const m = data.markets || {}
   const grid = data.grid || {}
+  const isSolo = session?.mode === 'isolated_per_player'
+  const hasSelectedType = data.selected_type !== undefined && data.selected_type !== null
 
   return (
     <Container maxWidth="md" sx={{ mt: 4, mb: 4 }}>
       <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
-        <Button startIcon={<BackIcon />} onClick={() => navigate('/home')}>
-          Back to Home
+        <Button startIcon={<BackIcon />} onClick={() => navigate(isSolo ? '/catalog' : '/home')}>
+          {isSolo ? 'Back to Catalog' : 'Back to Home'}
         </Button>
-        <Button variant="contained" onClick={() => navigate(`/player?sessionId=${sessionId}`)}>
-          Return to Session
-        </Button>
+        {hasSelectedType && (
+          <Button variant="contained" onClick={() => navigate(`/player?sessionId=${sessionId}`)}>
+            Return to Session
+          </Button>
+        )}
       </Stack>
 
       <Paper sx={{ p: 4 }}>
@@ -281,10 +290,10 @@ export default function Briefing() {
             startIcon={<PlayIcon />}
             onClick={() => navigate(`/player?sessionId=${sessionId}`)}
           >
-            {data.selected_type !== undefined && data.selected_type !== null ? 'Continue Playing' : 'Select Player Type & Start'}
+            {hasSelectedType ? 'Continue Playing' : 'Select Player Type & Start'}
           </Button>
-          <Button variant="outlined" size="large" onClick={() => navigate('/home')}>
-            Back to Home
+          <Button variant="outlined" size="large" onClick={() => navigate(isSolo ? '/catalog' : '/home')}>
+            {isSolo ? 'Back to Catalog' : 'Back to Home'}
           </Button>
         </Box>
       </Paper>

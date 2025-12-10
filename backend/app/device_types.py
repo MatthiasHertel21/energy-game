@@ -141,9 +141,10 @@ DEVICE_SPECS = {
             "baseline_load_mw": 300.0,
             "peak_load_mw": 450.0,
             "drm_capable": True,
+            "demand_response_capacity_mw": 50.0,
         },
         "required_params": ["baseline_load_mw", "peak_load_mw"],
-        "optional_params": ["drm_capable"],
+        "optional_params": ["drm_capable", "demand_response_capacity_mw"],
     },
     DeviceType.COMMERCIAL_LOAD: {
         "name": "Commercial Load",
@@ -153,9 +154,10 @@ DEVICE_SPECS = {
             "baseline_load_mw": 100.0,
             "peak_load_mw": 200.0,
             "drm_capable": False,
+            "demand_response_capacity_mw": 20.0,
         },
         "required_params": ["baseline_load_mw", "peak_load_mw"],
-        "optional_params": ["drm_capable"],
+        "optional_params": ["drm_capable", "demand_response_capacity_mw"],
     },
     DeviceType.RESIDENTIAL_LOAD: {
         "name": "Residential Load",
@@ -165,9 +167,10 @@ DEVICE_SPECS = {
             "baseline_load_mw": 150.0,
             "peak_load_mw": 300.0,
             "drm_capable": False,
+            "demand_response_capacity_mw": 10.0,
         },
         "required_params": ["baseline_load_mw", "peak_load_mw"],
-        "optional_params": ["drm_capable"],
+        "optional_params": ["drm_capable", "demand_response_capacity_mw"],
     },
 }
 
@@ -325,6 +328,14 @@ def validate_device(device: Dict[str, Any]) -> List[str]:
         if "baseline_load_mw" in dnorm and "peak_load_mw" in dnorm:
             if dnorm["peak_load_mw"] < dnorm["baseline_load_mw"]:
                 errors.append(f"Device {dnorm.get('id', '?')}: peak_load_mw must be >= baseline_load_mw")
+        
+        # Demand response capacity (optional, but if set must be within [0, peak_load_mw])
+        if "demand_response_capacity_mw" in dnorm:
+            drc = dnorm["demand_response_capacity_mw"]
+            if drc < 0:
+                errors.append(f"Device {dnorm.get('id', '?')}: demand_response_capacity_mw must be >= 0")
+            if "peak_load_mw" in dnorm and drc > dnorm["peak_load_mw"]:
+                errors.append(f"Device {dnorm.get('id', '?')}: demand_response_capacity_mw must be <= peak_load_mw")
     
     return errors
 

@@ -20,7 +20,6 @@ export default function Trainer(){
   const [message, setMessage] = useState('')
   const [tick, setTick] = useState(null)
   const [status, setStatus] = useState({ rounds: 0, players: [] })
-  const [mode, setMode] = useState('shared_market')
   const [forceNavigate, setForceNavigate] = useState(false)
   const [typesCfg, setTypesCfg] = useState([]) // from scenario config
   const [allowedTypes, setAllowedTypes] = useState([]) // [{type_id, enabled, max_players}]
@@ -158,10 +157,10 @@ export default function Trainer(){
 
   const start = async ()=>{
     try{
-      const { data } = await api.post('/api/sessions', { cohort_id: Number(cohortId), scenario_id: Number(scenarioId), mode, force_navigate: !!forceNavigate })
+      const { data } = await api.post('/api/sessions', { cohort_id: Number(cohortId), scenario_id: Number(scenarioId), mode: 'shared_market', force_navigate: !!forceNavigate })
       setSessionId(data.id)
       // apply allowed types after start if any selected
-      if(mode==='shared_market' && allowedTypes?.some(t=> t.enabled)){
+      if(allowedTypes?.some(t=> t.enabled)){
         try{
           await api.patch(`/api/sessions/${data.id}/allowed-types`, { allowed: allowedTypes.filter(t=> t.enabled).map(t=> ({ type_id: t.type_id, max_players: t.max_players ?? null })) })
         }catch(_){ /* ignore for now */ }
@@ -323,18 +322,11 @@ export default function Trainer(){
                 </Select>
               )}
             </Stack>
-            <Stack spacing={0.5} sx={{ minWidth: 140 }}>
-              <InfoLabel title="Mode" tooltip="Solo: private markets; Shared: one market for all" />
-              <Select size="small" value={mode} onChange={e=>setMode(e.target.value)} disabled={!!sessionId}>
-                <MenuItem value="isolated_per_player">Solo</MenuItem>
-                <MenuItem value="shared_market">Shared</MenuItem>
-              </Select>
-            </Stack>
             {/* Player type inputs moved to next row */}
           </Stack>
           {/* Second row: Player types on their own line; Start behind them */}
           <Stack direction="row" spacing={2} alignItems="flex-end" flexWrap="wrap" useFlexGap>
-            {!sessionId && mode==='shared_market' && allowedTypes.map((row, idx)=> (
+            {!sessionId && allowedTypes.map((row, idx)=> (
               <Stack key={row.type_id} spacing={0.5} sx={{ minWidth: 160 }}>
                 <InfoLabel title={row.name || row.type_id} tooltip={`Max players for ${row.name || row.type_id}`} />
                 <Stack direction="row" spacing={1} alignItems="center">
