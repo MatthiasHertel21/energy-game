@@ -10,9 +10,9 @@
 - [ ] Root/Sudo-Zugriff vorhanden
 
 ### Domain & DNS
-- [ ] Subdomain registriert (z.B. `staging.emsg.example.com`)
+- [ ] Domain `energy.fastbreak.one` bereit
 - [ ] DNS A-Record konfiguriert und propagiert
-- [ ] DNS-Propagation überprüft: `dig staging.emsg.example.com`
+- [ ] DNS-Propagation überprüft: `dig energy.fastbreak.one`
 
 ### Lokal
 - [ ] Repository auf `feature/catalog-campaigns` Branch
@@ -60,7 +60,7 @@
 
 ### SSL
 - [ ] Certbot installiert
-- [ ] SSL-Zertifikat generiert: `sudo certbot --nginx -d staging.emsg.example.com`
+- [ ] SSL-Zertifikat generiert: `sudo certbot --nginx -d energy.fastbreak.one`
 - [ ] Auto-Renewal funktioniert: `sudo certbot renew --dry-run`
 - [ ] HTTPS funktioniert: Browser-Test
 
@@ -74,9 +74,9 @@
 - [ ] Test-Scenario erstellt
 
 ### Smoke Tests
-- [ ] Frontend lädt: `https://staging.emsg.example.com`
-- [ ] Backend erreichbar: `https://staging.emsg.example.com/api/health`
-- [ ] API Docs erreichbar: `https://staging.emsg.example.com/api/doc`
+- [ ] Frontend lädt: `https://energy.fastbreak.one`
+- [ ] Backend erreichbar: `https://energy.fastbreak.one/api/health`
+- [ ] API Docs erreichbar: `https://energy.fastbreak.one/api/doc`
 - [ ] Login funktioniert (Admin)
 - [ ] WebSocket verbindet (Trainer Dashboard)
 - [ ] Designer: Scenario erstellen

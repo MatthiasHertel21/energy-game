@@ -18,7 +18,7 @@ Diese Anleitung beschreibt das Deployment der EMSG-Anwendung auf einem Staging-S
 - Docker & Docker Compose (lokal zum Testen)
 
 ### Domain & DNS
-- Subdomain konfiguriert (z.B. `staging.emsg.example.com`)
+- Domain: `energy.fastbreak.one`
 - DNS A-Record zeigt auf Server-IP
 
 ## Setup-Schritte
@@ -97,10 +97,10 @@ SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=
 SMTP_PASSWORD=
-SMTP_FROM=noreply@staging.emsg.example.com
+SMTP_FROM=noreply@energy.fastbreak.one
 
 # Cors Origins (Frontend-URL)
-CORS_ORIGINS=https://staging.emsg.example.com
+CORS_ORIGINS=https://energy.fastbreak.one
 EOF
 
 # Passwörter und Keys generieren
@@ -210,7 +210,7 @@ sudo apt install nginx certbot python3-certbot-nginx -y
 sudo cat > /etc/nginx/sites-available/emsg-staging << 'EOF'
 server {
     listen 80;
-    server_name staging.emsg.example.com;
+    server_name energy.fastbreak.one;
 
     # Certbot Challenge
     location /.well-known/acme-challenge/ {
@@ -225,11 +225,11 @@ server {
 
 server {
     listen 443 ssl http2;
-    server_name staging.emsg.example.com;
+    server_name energy.fastbreak.one;
 
     # SSL Certificates (werden von Certbot generiert)
-    ssl_certificate /etc/letsencrypt/live/staging.emsg.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/staging.emsg.example.com/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/energy.fastbreak.one/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/energy.fastbreak.one/privkey.pem;
 
     # SSL Settings
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -301,7 +301,7 @@ sudo systemctl restart nginx
 
 ```bash
 # Certbot ausführen
-sudo certbot --nginx -d staging.emsg.example.com
+sudo certbot --nginx -d energy.fastbreak.one
 
 # Automatische Erneuerung testen
 sudo certbot renew --dry-run
@@ -439,8 +439,8 @@ docker compose -f docker-compose.staging.yml exec backend flask db upgrade
 
 Nach dem Deployment sollten folgende Tests durchgeführt werden:
 
-1. **Frontend erreichbar:** https://staging.emsg.example.com
-2. **Backend Health:** https://staging.emsg.example.com/api/health
+1. **Frontend erreichbar:** https://energy.fastbreak.one
+2. **Backend Health:** https://energy.fastbreak.one/api/health
 3. **Login funktioniert:** Mit Admin-Account einloggen
 4. **WebSocket verbindet:** Trainer-Dashboard öffnen
 5. **Campaign erstellen:** Designer-Tools testen

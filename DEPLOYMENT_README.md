@@ -87,7 +87,7 @@ git checkout feature/catalog-campaigns
 
 **Vorbereitung:**
 1. Server mit Ubuntu 22.04+ bereitstellen
-2. Domain konfigurieren (z.B. `staging.emsg.example.com`)
+2. Domain `energy.fastbreak.one` konfigurieren
 3. SSH-Zugriff sicherstellen
 
 **Deployment:**
@@ -249,8 +249,8 @@ tar -xzf uploads-backup.tar.gz
 - **SSL:** SSL Labs
 
 ### Health Endpoints
-- Backend: `https://staging.emsg.example.com/api/health`
-- API Docs: `https://staging.emsg.example.com/api/doc`
+- Backend: `https://energy.fastbreak.one/api/health`
+- API Docs: `https://energy.fastbreak.one/api/doc`
 
 ---
 
