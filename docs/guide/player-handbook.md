@@ -1,21 +1,28 @@
 # Player Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.2 (Sprint 22)  
-**Date**: 26 Nov 2025  
+**Version**: 1.4 (Sprint 23)  
+**Date**: 17 Dec 2025  
 **Audience**: Players/Students
 
 ---
 
-## What's New (Sprint 22)
+## What's New (Sprint 23)
 
-- **Per-Device Forecast Charts**: Separate interactive chart for each device with drag-and-drop editing
-- **Enhanced Chart Editor**: Drag anywhere on chart to edit, auto-scaling Y-axis to device capacity
-- **Chart/Field Toggle**: Switch between visual chart and numeric field view per device
-- **Timer Persistence**: Session timer persists across page reloads (no reset to 5:00)
-- **Briefing Access**: View briefing anytime during session via header button with return-to-session
-- **Device Information**: Clear display of device names, types, capacity, and specifications
-- **Campaign Catalog**: Browse published campaigns at `/catalog` with progress tracking
+- **Multi-Bid Pricing (Optional)**: When enabled by scenario designer, submit up to 3 price-quantity bids per device
+  - Strategic pricing: choose tranches (A/B/C) with different prices to maximize revenue
+  - Market competition: lowest-priced bids dispatched first (merit order)
+  - Uniform clearing: all dispatched MWh receive same Market Clearing Price (MCP)
+  - Historical MCP data and demand hints help inform pricing decisions
+- **Campaign/Scenario Context**: Player UI shows campaign and scenario names during gameplay
+- **ZAR Currency Formatting**: All financial displays use South African Rand with proper thousands separators
+
+**Previous (Sprint 22)**:
+- Per-Device Forecast Charts with drag-and-drop editing
+- Enhanced Chart Editor with auto-scaling Y-axis
+- Chart/Field Toggle per device
+- Timer Persistence across page reloads
+- Campaign Catalog with progress tracking
 
 ---
 
@@ -96,8 +103,75 @@ Layout
 - Each type controls specific devices (e.g., "Generator Operator" manages coal and nuclear plants)
 - If allowed types exist and none is selected, a dialog lists types with remaining capacity. Select to load device inputs.
 
-3.5 Charts
+3.5 Multi-Bid Pricing (Optional Feature)
+
+**When enabled** (`config.market.enable_player_bidding = true`):
+
+Instead of submitting only quantities, you submit **price-quantity bids** per device.
+
+**How It Works:**
+- Each device can have up to **3 bids (A/B/C)**
+- Each bid = **1 fixed price + 24 hourly quantities**
+- Example (Coal 500MW device):
+  ```
+  Bid A: 200 MW @ 350 ZAR/MWh  (baseload, always offered)
+  Bid B: 150 MW @ 400 ZAR/MWh  (mid-merit)
+  Bid C: 150 MW @ 480 ZAR/MWh  (peak, expensive)
+  ```
+
+**UI Components:**
+- **Three price input fields** per device (Bid A, B, C prices)
+  - Default suggestions based on device variable costs:
+    - Bid A: `variable_cost × 1.0` (at-cost)
+    - Bid B: `variable_cost × 1.25` (moderate markup)
+    - Bid C: `variable_cost × 1.5` (premium)
+- **Stacked area chart** showing cumulative capacity across all 3 bids
+- **Drag-and-drop editing**: System detects which bid curve you're editing based on nearest point
+
+**Market Clearing (Merit Order):**
+1. All player bids merged with synthetic supply curve
+2. Sorted by price (lowest first)
+3. Market clears where supply meets demand
+4. **MCP** = price of most expensive dispatched bid
+5. **All dispatched MWh receive the same MCP** (uniform pricing)
+
+**Strategic Considerations:**
+- **Bid too high**: Your capacity won't be dispatched → zero revenue
+- **Bid too low**: Dispatched but miss potential revenue (MCP might be higher)
+- **Optimal strategy**: Estimate market MCP and bid just below
+- **Devices with low costs** (Solar/Wind at 0 ZAR/MWh) have competitive advantage
+
+**Information Available:**
+- **Historical MCP**: Chart showing MCP from previous rounds
+- **Demand Range**: Expected min-max demand (not exact curve)
+- **Your Past Dispatch**: % of offered capacity that was accepted in previous rounds
+
+**Revenue Calculation:**
+```
+Revenue = Total_Dispatched_MW × MCP
+```
+Even if you bid at 350 ZAR/MWh and MCP clears at 450 ZAR/MWh, you receive 450 ZAR/MWh for all dispatched energy.
+
+**Costs:**
+```
+Fuel_Cost = Total_Dispatched_MW × device.variable_cost_zar_per_mwh
+Imbalance_Cost = |Actual - Dispatched| × balancing_price
+```
+
+**Profit:**
+```
+Profit = Revenue - Fuel_Cost - Imbalance_Cost - Curtailment_Cost + Congestion_Revenue
+```
+
+**Tips:**
+- Start conservatively: Bid A near variable cost, Bid B/C with moderate markups
+- Watch historical MCP trends: If MCP consistently above 500 ZAR/MWh, increase bids
+- Balance risk vs reward: More aggressive pricing = higher profit if dispatched, but higher rejection risk
+- Consider your portfolio: Low-cost devices (Solar/Wind) can afford aggressive low pricing
+
+3.6 Charts
 - MCP (green) and Volume (blue) lines across rounds with tooltips; update after each clearing via WebSocket.
+- **With Multi-Bid enabled**: Additional MCP history chart in Player UI to inform bidding decisions
 
 ### 4) After Playing
 

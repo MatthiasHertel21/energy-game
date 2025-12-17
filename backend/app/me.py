@@ -40,7 +40,9 @@ class MySessions(Resource):
         )
         out = []
         for s, sc, ch in q.all():
-            general = (sc.config or {}).get("general", {})
+            config = sc.config or {}
+            general = config.get("general", {})
+            market = config.get("market", {})
             max_rounds = general.get("rounds", 10)
             # next_round_at: estimate based on round_span_hours
             round_span_hours = general.get("round_span_hours", 6)
@@ -62,6 +64,7 @@ class MySessions(Resource):
                 "next_round_at": next_round_at,
                 "started_at": s.started_at.isoformat() if s.started_at else None,
                 "general": general,
+                "market": market,
             })
         return out
 

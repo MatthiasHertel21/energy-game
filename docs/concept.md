@@ -41,10 +41,10 @@ The system has **four roles**, each with **specific permissions** to support col
 
 | **Role** | **Description & Perspective** | **Key Permissions** | **Application View** |
 |----------|-------------------------------|---------------------|------------------------|
-| **Player (Student)** | **Focus**: Individual gameplay and learning. Players simulate market decisions in roles, receiving immediate feedback to understand market dynamics. Perspective: Hands-on, role-specific interface with real-time previews and post-scenario analysis. Max 80 per cohort. | Register via email (pending approval), join assigned cohorts, browse published campaigns in catalog with scenario descriptions, play scenarios solo or in cohorts, submit forecasts, view own results and cohort benchmarks, replay completed scenarios, export PDF reports. | Game-focused app with dashboard, catalog browser, briefing, round editor, evaluation tabs, replay mode. No editing access. |
+| **Player (Student)** | **Focus**: Individual gameplay and learning. Players simulate market decisions in roles, receiving immediate feedback to understand market dynamics. Perspective: Hands-on, role-specific interface with real-time previews and post-scenario analysis. Max 80 per cohort. | Register via email (pending approval), join assigned cohorts, browse published campaigns in catalog with scenario descriptions and progress tracking (completed/total scenarios per campaign), play scenarios solo or in cohorts, view campaign and scenario names in player UI (header + session info card), submit forecasts with currency displayed in ZAR with locale-aware thousands separators, view own results and cohort benchmarks, replay completed scenarios, export PDF reports. | Game-focused app with dashboard, catalog browser with progress indicators, briefing, round editor with campaign/scenario context, evaluation tabs showing ZAR-formatted KPIs, replay mode. No editing access. |
 | **Trainer** | **Focus**: Session management and analysis. Trainers orchestrate groups (cohorts), monitor progress, and provide guidance. Perspective: Oversight tool with live monitoring and reporting to facilitate training workshops. | Create/archive cohorts (max 10 concurrent), assign scenarios and players (CSV bulk import), start/pause/end shared market sessions with player type configuration, force round end, send broadcast messages, view all player results and leaderboards, upload reference runs, generate PDF reports. | Management app with cohort overview, live session control, comparison dashboard, player details. |
 | **Designer** | **Focus**: Content creation. Designers build custom scenarios using KSE, defining all parameters for realistic simulations. Perspective: Creative tool with previews and validation to design educational content. | Create/edit/delete campaigns and scenarios in KSE, configure all parameters (e.g., zones, capacities, events, KPIs), generate market environments, assign devices to roles, validate and preview scenarios, export/import JSON configs. | Editor app (KSE) with tabs for general, market, grid, environment, events, player types (devices incl. storage), scoring, validation. No user management. |
-| **Admin** | **Focus**: System operations. Admins handle platform-wide settings and maintenance. Perspective: Administrative tool for scalability and compliance. | Manage all users and roles (assign via invite links), configure branding (logo, colors), perform backups/restore, delete data, set system limits (e.g., max 1,000 users, 500 WebSocket connections), monitor logs (errors only). | Admin panel with user/role mgmt, branding, settings, logs. No gameplay access. |
+| **Admin** | **Focus**: System operations. Admins handle platform-wide settings and maintenance. Perspective: Administrative tool for scalability and compliance. | Manage all users and roles (assign via invite links), reset user passwords with auto-generated secure passwords (min 12 chars) or custom passwords, send password reset emails via SMTP if configured, configure branding (logo, colors), perform backups/restore, delete users with proper cascade handling of all dependencies (forecasts, results, sessions, cohorts, campaigns), set system limits (e.g., max 1,000 users, 500 WebSocket connections), monitor logs (errors only). | Admin panel with user/role mgmt including password reset, branding, settings, logs. No gameplay access. |
 
 **Role Assignment Workflow**:
 1. Admin generates invite link for Trainer/Designer (REG2).
@@ -159,13 +159,15 @@ The KSE is the **core tool for Designers** to create and customize content. It i
   - Validierung: Parameterbereiche, SoC/DoD‑Plausibilität pro Battery‑Device sowie Konsistenz der DR‑Kapazität pro Load‑Device.
 
 7. **Scoring Tab** – KPIs and Evaluation:
-   - **KPIs**: Profit, Imbalance Cost, Curtailment (defaults).
+   - **KPIs**: Profit (ZAR), Imbalance Cost (MWh), Curtailment (MWh) (defaults).
+   - **Currency Display**: All profit/cost values shown in ZAR with locale-aware formatting (en-ZA) including thousands separators (e.g., "ZAR 1,234.56").
+   - **Number Formatting**: Imbalance and Curtailment use thousands separators for readability (e.g., "1,234.56 MWh").
    - **Weights**: Profit 0.6, Imbalance 0.3, Curtailment 0.1.
    - **Normalization**: Z-score vs. cohort.
    - **Final Formula**: Sum (weight × normalized KPI).
-   - **Leaderboards**: Role-specific, with avg ± std dev.
+   - **Leaderboards**: Role-specific, with avg ± std dev, all values formatted with locale-aware separators.
    - **Reference Runs**: JSON format, no default (trainer upload).
-   - **Export**: PDF report.
+   - **Export**: PDF report with properly formatted currency and numbers.
    - **Validation**: Weights sum to 1.0.
 
 **KSE Workflow** (Step-by-Step):
@@ -197,7 +199,12 @@ The KSE is the **core tool for Designers** to create and customize content. It i
    - **Purpose**: Orient players before time pressure begins
 
 2. **`round_active`** – Main gameplay phase
-   - **Display**: Standard Player interface with timer, forecast editor, live KPIs
+   - **Display**: Standard Player interface with:
+     - **Header**: Campaign name (prominent) + Scenario name with round number
+     - **Session Info Card**: Campaign and Scenario names as separate rows
+     - **Timer**: Countdown with progress bar
+     - **Forecast Editor**: Device-specific or aggregate depending on mode
+     - **Live KPIs**: Market Clearing Price (MCP in ZAR/MWh), Volume (MWh), all formatted with thousands separators
    - **Duration**: 300s default (configurable via `round_duration_seconds`)
    - **Pause/Freeze**: Trainer can freeze shared sessions (timer stops, no countdown)
    - **Submit**: Players submit forecasts for current round
@@ -224,9 +231,15 @@ The KSE is the **core tool for Designers** to create and customize content. It i
 
 5. **`round_results`** – Results display and player advancement
    - **Display**: RoundResultsScreen
-     - Individual KPIs (Profit, Imbalance, Curtailment, Total Score)
+     - Individual KPIs:
+       - Profit: Displayed as "ZAR X,XXX.XX" with locale-aware formatting (en-ZA)
+       - Imbalance: Displayed as "X,XXX.XX MWh" with thousands separators
+       - Curtailment: Displayed as "X,XXX.XX MWh" with thousands separators
+       - Total Score: Displayed with 2 decimal places
      - Solo: No ranking (or "Position 1/1")
-     - Shared: Leaderboard sorted by weighted total_score
+     - Shared: Leaderboard sorted by weighted total_score, all columns formatted:
+       - Profit column header: "Profit (ZAR)"
+       - All numeric values with appropriate separators
      - Active events displayed as alerts
      - "Continue to Next Round" button (Solo) / "I'm Ready for Next Round" (Shared)
    - **Advancement**: POST `/advance-round`
@@ -327,6 +340,67 @@ Cleared Volume = min(Supply at MCP, Demand at MCP)
 **Precision**: Price 1 decimal, Volume 3 decimals, Financial 0 decimals.  
 **Negative Prices**: Allowed if configured (default YES).
 
+### **2.1.1 Multi-Bid Pricing (Optional Feature)**
+
+**Toggle**: `config.market.enable_player_bidding` (default: false)
+
+When enabled, players submit **price-quantity bids** per device instead of quantity-only forecasts.
+
+**Bid Structure**:  
+- Up to **3 bids (A/B/C)** per device  
+- Each bid: **1 fixed price (ZAR/MWh)** + **24 hourly quantities (MW)**  
+- Bids represent **tranches** of available capacity at different price points  
+
+**Example** (Coal 500MW device):  
+```
+Bid A: 200 MW @ 350 ZAR/MWh (baseload, always offered)
+Bid B: 150 MW @ 400 ZAR/MWh (mid-merit)
+Bid C: 150 MW @ 480 ZAR/MWh (peak, expensive)
+```
+
+**Supply Curve Construction**:  
+1. Collect all player device bids for the hour  
+2. Merge with synthetic supply curve from config  
+3. Sort combined curve ascending by price (merit order)  
+4. Clear market against synthetic demand curve  
+
+**Dispatch Logic** (Merit Order):  
+- Lowest-priced bids dispatched first until demand satisfied  
+- Partial dispatch possible (e.g., only 80 of 150 MW from Bid B)  
+- Dispatched quantity per device = Σ(dispatched from each bid)  
+
+**Revenue** (Uniform Pricing):  
+```
+Revenue = Total_Dispatched_MW × MCP
+```
+All dispatched MWh receive the same MCP regardless of bid price.
+
+**Costs**:  
+```
+Fuel_Cost = Total_Dispatched_MW × device.variable_cost_zar_per_mwh
+Imbalance_Cost = |Actual - Dispatched| × balancing_price
+```
+
+**Profit**:  
+```
+Profit = Revenue - Fuel_Cost - Imbalance_Cost - Curtailment_Cost + Congestion_Revenue
+```
+
+**Default Bid Prices**:  
+- Bid A: `variable_cost × 1.0` (at-cost)  
+- Bid B: `variable_cost × 1.25` (moderate markup)  
+- Bid C: `variable_cost × 1.5` (premium)  
+
+**Player Information**:  
+- Historical MCP from previous rounds (chart)  
+- Expected demand range (min-max, not exact curve)  
+- Own dispatch rates from previous rounds  
+
+**Validation**:  
+- No strict max/min enforcement (penalties via balancing costs)  
+- No ramp-rate constraints between bids  
+- Bids can exceed device capacity (market decides dispatch)
+
 ---
 
 ## **2.2 Day-Ahead vs. Intraday**
@@ -400,6 +474,12 @@ Devices are **instances** of **12 classes**, assigned to roles in KSE. Each has 
 - Initial SoC: 50% for Battery devices  
 - Degradation: -0.1% per full cycle (battery)  
 - Must-Run: Wind/Solar (curtailed last)  
+
+**Bidding Strategy** (if `enable_player_bidding` active):  
+- Player decides **price tranches** per device (up to 3)  
+- Strategic choice: bid too high → no dispatch; bid too low → revenue loss  
+- Must balance market intelligence vs. risk  
+- Devices with low variable costs (Solar/Wind: 0 ZAR/MWh) have competitive advantage  
 
 ---
 

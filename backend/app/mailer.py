@@ -56,3 +56,16 @@ def send_account_created_email(to: str, email: str, temp_password: str):
     <p>Login: <a href=\"https://{os.getenv('TRAEFIK_DOMAIN', 'localhost')}/login\">https://{os.getenv('TRAEFIK_DOMAIN', 'localhost')}/login</a></p>
     """
     return send_mail(to, subject, html)
+
+
+def send_password_reset_email(to: str, email: str, new_password: str):
+    subject = "Your EMSG password has been reset"
+    html = f"""
+    <p>Hello,</p>
+    <p>An administrator has reset your password on EMSG.</p>
+    <p><b>Login email:</b> {email}<br/>
+    <b>New password:</b> {new_password}</p>
+    <p>Please sign in with your new password and consider changing it.</p>
+    <p>Login: <a href=\"https://{os.getenv('TRAEFIK_DOMAIN', 'localhost')}/login\">https://{os.getenv('TRAEFIK_DOMAIN', 'localhost')}/login</a></p>
+    """
+    return send_mail(to, subject, html)

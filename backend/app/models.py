@@ -187,6 +187,14 @@ class Forecast(db.Model):
     player_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     round_num = db.Column(db.Integer, nullable=False, index=True)
     data = db.Column(db.JSON, nullable=False)
+    bids = db.Column(db.JSON, nullable=True)  # NEW: Multi-bid pricing data
+    # Structure: {
+    #   'device_id_1': {
+    #     'A': {'price': 350.0, 'hours': [200, 200, ...]},
+    #     'B': {'price': 400.0, 'hours': [150, 150, ...]},
+    #     'C': {'price': 480.0, 'hours': [100, 100, ...]}
+    #   }
+    # }
     submitted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -198,6 +206,14 @@ class Result(db.Model):
     player_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     round_num = db.Column(db.Integer, nullable=False, index=True)
     data = db.Column(db.JSON, nullable=False)
+    bid_dispatch = db.Column(db.JSON, nullable=True)  # NEW: Per-bid dispatch tracking
+    # Structure: {
+    #   'device_id_1': {
+    #     'A': {'mw_offered': 200, 'mw_dispatched': 200, 'price_bid': 350, 'mcp': 450},
+    #     'B': {'mw_offered': 150, 'mw_dispatched': 80, 'price_bid': 400, 'mcp': 450},
+    #     'C': {'mw_offered': 100, 'mw_dispatched': 0, 'price_bid': 480, 'mcp': 450}
+    #   }
+    # }
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 

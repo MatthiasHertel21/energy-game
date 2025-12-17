@@ -1,21 +1,27 @@
 # Trainer Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.2 (Sprint 22)  
-**Date**: 26 Nov 2025  
+**Version**: 1.3 (Sprint 23)  
+**Date**: 17 Dec 2025  
 **Audience**: Trainers/Facilitators
 
 ---
 
-## What's New (Sprint 22)
+## What's New (Sprint 23)
 
-- **Enhanced Presence Panel**: Color-coded player status (green=playing, yellow=connected), player type names displayed
-- **Improved Session Controls**: Resume button disabled when session already running (prevents errors)
-- **Better UI Layout**: Player type inputs on separate row for clearer session configuration
-- **Cohort Management**: Enhanced cohort list with trainer email, member counts, campaign counts
-- **Row Selection**: Click cohort rows to select/expand for easier navigation
-- **Campaign-First Workflow**: Cohort → Campaign → Scenario selection prevents duplicate sessions
-- **Performance**: Baseline metrics available (p95=8ms response time, see docs/PERFORMANCE_RESULTS.md)
+- **Campaign Catalog Integration**: Published campaigns visible to all cohorts in catalog
+- **Solo Session Support**: Players can start solo sessions directly from catalog
+- **Player Progress Tracking**: Automatic scenario completion tracking with reset functionality
+- **Enhanced Session Info**: Campaign and scenario names displayed during gameplay
+- **Multi-Bid Pricing Support**: When enabled by designer, players submit strategic price-quantity bids
+- **Improved Evaluation**: Better cross-player comparison with device-level metrics
+- **Currency Formatting**: All ZAR values properly formatted with thousands separators
+
+**Previous (Sprint 22)**:
+- Enhanced Presence Panel with color-coded status
+- Campaign-First Workflow preventing duplicate sessions
+- Improved Session Controls and UI Layout
+- Performance baseline metrics (p95=8ms)
 
 ---
 

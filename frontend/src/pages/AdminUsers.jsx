@@ -169,6 +169,29 @@ export default function AdminUsers(){
     }
   }
 
+  const resetPassword = async (id, email) => {
+    if (!window.confirm(`Reset password for ${email}?\n\nA new password will be generated and shown to you.`)) return
+    try {
+      const { data } = await api.post(`/api/admin/users/${id}/password`, {})
+      const newPassword = data.new_password
+      const emailSent = data.email_sent
+      
+      // Show password in alert
+      alert(
+        `Password reset successful!\n\n` +
+        `Email: ${email}\n` +
+        `New Password: ${newPassword}\n\n` +
+        (emailSent 
+          ? `✓ Password has been sent via email to the user.` 
+          : `⚠ Email not sent (SMTP not configured). Please copy this password and send it to the user manually.`)
+      )
+      
+      setSnack(emailSent ? 'Password reset and email sent' : 'Password reset (copy from alert)')
+    } catch (e) {
+      setSnack(e?.response?.data?.message || 'Failed to reset password')
+    }
+  }
+
   const deleteUser = async (id, email) => {
     if (!window.confirm(`Delete user ${email}?`)) return
     try {
@@ -256,6 +279,7 @@ export default function AdminUsers(){
               </TableCell>
               <TableCell>{u.created_at}</TableCell>
               <TableCell align="right">
+                <Button size="small" onClick={() => resetPassword(u.id, u.email)} sx={{ mr: 1 }}>Reset Password</Button>
                 <Button size="small" color="error" onClick={() => deleteUser(u.id, u.email)}>Delete</Button>
               </TableCell>
             </TableRow>

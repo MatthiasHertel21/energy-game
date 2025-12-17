@@ -1,21 +1,29 @@
 # Designer Handbook (KSE)
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.2 (Sprint 22)  
-**Date**: 26 Nov 2025  
+**Version**: 1.3 (Sprint 23)  
+**Date**: 17 Dec 2025  
 **Audience**: Designers/Scenario Editors
 
 ---
 
-## What's New (Sprint 22)
+## What's New (Sprint 23)
 
-- **Enhanced Player Experience**: Device names now prominently displayed in per-device forecast editors
-- **Device Information Display**: Players see detailed device specs (capacity, efficiency, zone) in UI
-- **Per-Device Charts**: Each device gets individual forecast chart in player interface (when in shared market mode)
-- **Device Preset Library**: Quick-create devices from presets (Coal, Gas, Hydro, Nuclear, Solar, Wind, Battery, Loads)
-- **Device Name Field**: Optional `name` field shown in player UI (e.g., "Koeberg Unit 1" instead of just "nuclear_1")
-- **Player Type ID Auto-Generation**: IDs auto-generated with timestamps to ensure uniqueness
-- **Validation Improvements**: Player types validated on save (unique IDs, device references)
+- **Campaign Publishing**: Publish campaigns to make them visible in player catalog
+- **Scenario Ordering**: Drag-and-drop scenario ordering within campaigns
+- **Solo/Cohort Toggles**: Control whether scenarios can be played solo or in cohort sessions
+- **Multi-Bid Pricing Configuration**: Optional feature for strategic pricing gameplay
+  - Enable per-scenario with bid tranches (A/B/C)
+  - Players submit price-quantity bids per device
+  - Market clears in merit order (lowest price first)
+- **Enhanced Scenario Editor**: Better UX with tabbed navigation and validation
+- **Campaign Catalog Preview**: First 200 characters of scenario objectives shown as preview
+
+**Previous (Sprint 22)**:
+- Device Preset Library with quick-create templates
+- Per-Device Charts in player interface
+- Player Type ID Auto-Generation
+- Enhanced device information display
 
 ---
 

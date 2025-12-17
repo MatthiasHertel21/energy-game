@@ -28,6 +28,8 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
     i = j = 0
     cum_s = cum_d = 0.0
     mcp = 0.0
+    marginal_supply_price = 0.0  # Track the last supply price that was dispatched
+    
     while i < len(s) and j < len(d):
         p_s, v_s = s[i]
         p_d, v_d = d[j]
@@ -38,7 +40,8 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
             cum_d += take
             v_s -= take
             v_d -= take
-            mcp = max(p_s, min(p_d, p_s))
+            # Set MCP to the supply price of the marginal unit (uniform pricing)
+            marginal_supply_price = p_s
             if abs(v_s) < 1e-9:
                 i += 1
             else:
@@ -51,6 +54,7 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
             # no overlap at this step; advance the cheaper side
             i += 1
 
+    mcp = marginal_supply_price
     price = max(price_floor, min(price_cap, mcp))
     vol = round(min(cum_s, cum_d), 3)
     return round(price, 1), vol
@@ -115,6 +119,132 @@ def generate_curves_from_config(cfg: dict, seed: Optional[str] = None) -> Tuple[
     demand = sorted(demand, key=lambda x: x[0], reverse=True)
     
     return supply, demand
+
+
+def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int, 
+                           synthetic_supply: List[Tuple[float, float]], 
+                           config: dict) -> Tuple[List[Tuple[float, float]], List[dict]]:
+    """
+    Merge player bids with synthetic supply curve for market clearing.
+    
+    Args:
+        player_forecasts: Dict of {player_id: forecast_data_with_bids}
+        hour_idx: Hour index within the round (0-based)
+        synthetic_supply: Base supply curve from config
+        config: Scenario configuration
+    
+    Returns:
+        Tuple of (combined_supply_curve, bid_metadata_list)
+    """
+    # Check if bidding is enabled
+    if not config.get("market", {}).get("enable_player_bidding", False):
+        return synthetic_supply, []
+    
+    supply_bids = []
+    
+    # Collect all player device bids for this hour
+    for player_id, forecast_data in player_forecasts.items():
+        bids_data = forecast_data.get('bids')
+        if not bids_data:
+            continue
+        
+        for device_id, device_bids in bids_data.items():
+            for bid_label in ['A', 'B', 'C']:
+                if bid_label not in device_bids:
+                    continue
+                
+                bid = device_bids[bid_label]
+                hours = bid.get('hours', [])
+                if hour_idx >= len(hours):
+                    continue
+                
+                quantity = float(hours[hour_idx])
+                price = float(bid.get('price', 0))
+                
+                if quantity > 0:
+                    supply_bids.append({
+                        'price': price,
+                        'quantity': quantity,
+                        'player_id': player_id,
+                        'device_id': device_id,
+                        'bid_label': bid_label
+                    })
+    
+    # Sort supply_bids by price (merit order - ascending)
+    supply_bids = sorted(supply_bids, key=lambda x: x['price'])
+    
+    # Merge player bids with synthetic supply
+    combined_supply = []
+    
+    # Add synthetic supply steps
+    for price, quantity in synthetic_supply:
+        combined_supply.append((price, quantity))
+    
+    # Add sorted player bids
+    for bid in supply_bids:
+        combined_supply.append((bid['price'], bid['quantity']))
+    
+    # Sort combined supply by price (merit order - ascending)
+    combined_supply = sorted(combined_supply, key=lambda x: x[0])
+    
+    return combined_supply, supply_bids
+
+
+def track_bid_dispatch(supply_bids: List[dict], mcp: float, volume: float, 
+                       synthetic_supply: List[Tuple[float, float]]) -> Dict[int, Dict[str, Dict[str, dict]]]:
+    """
+    Track which player bids were dispatched during market clearing.
+    
+    Args:
+        supply_bids: List of bid metadata from build_supply_from_bids
+        mcp: Market clearing price
+        volume: Total cleared volume
+        synthetic_supply: Synthetic supply curve
+    
+    Returns:
+        Dict of {player_id: {device_id: {bid_label: dispatch_info}}}
+    """
+    # Sort all supply (synthetic + bids) by price
+    all_supply = [(p, q, None, None, None) for p, q in synthetic_supply]  # (price, qty, player, device, label)
+    for bid in supply_bids:
+        all_supply.append((bid['price'], bid['quantity'], bid['player_id'], bid['device_id'], bid['bid_label']))
+    
+    all_supply = sorted(all_supply, key=lambda x: x[0])
+    
+    # Simulate dispatch
+    remaining_demand = volume
+    dispatch_tracking = {}
+    
+    for price, quantity, player_id, device_id, bid_label in all_supply:
+        if remaining_demand <= 0:
+            break
+        
+        if price > mcp:
+            break  # Too expensive
+        
+        if player_id is None:
+            # Synthetic supply, skip tracking
+            dispatched = min(quantity, remaining_demand)
+            remaining_demand -= dispatched
+            continue
+        
+        # Player bid
+        dispatched = min(quantity, remaining_demand)
+        remaining_demand -= dispatched
+        
+        if player_id not in dispatch_tracking:
+            dispatch_tracking[player_id] = {}
+        if device_id not in dispatch_tracking[player_id]:
+            dispatch_tracking[player_id][device_id] = {}
+        
+        dispatch_tracking[player_id][device_id][bid_label] = {
+            'mw_offered': quantity,
+            'mw_dispatched': round(dispatched, 3),
+            'price_bid': price,
+            'mcp': mcp
+        }
+    
+    return dispatch_tracking
 
 
 def apply_events(price: float, volume: float, events: list[dict]) -> Tuple[float, float]:
@@ -265,20 +395,61 @@ def compute_zone_flows(atc: List[List[float]], net_pos: List[float], losses: flo
     return curtailed, signal
 
 
-def run_round(session_id: int, round_num: int, players: List[int], forecasts: Dict[int, List[float]], config: dict, mode: str = "isolated_per_player", seed: Optional[str] = None) -> dict:
+def run_round(session_id: int, round_num: int, players: List[int], forecasts: Dict[int, dict], config: dict, mode: str = "isolated_per_player", seed: Optional[str] = None) -> dict:
     """
-    Compute basic market results for a round. Simplified rules:
-    - Build synthetic S/D curves from config.
-    - Compute MCP & volume for the round window (round_span_hours).
-    - For each player: revenue = sum(hours_round) * MCP; fuel/imbalance approximated; profit.
-    - Return per-player KPIs and aggregate.
+    Compute basic market results for a round. Supports both legacy (quantity-only) and multi-bid pricing.
+    
+    Args:
+        forecasts: Dict of {player_id: forecast_data}
+                  forecast_data can be:
+                    - List[float] (legacy: quantity-only)
+                    - Dict with 'hours' and optional 'bids' keys
+    
+    Returns:
+        Dict with mcp, volume, round_kpis, and optionally bid_dispatch
     """
     span = int(config.get("general", {}).get("round_span_hours", 6))
     base_idx = (round_num - 1) * span
-    supply, demand = generate_curves_from_config(config, seed=seed)
+    
+    # Normalize forecasts to dict format
+    normalized_forecasts = {}
+    for pid, forecast in forecasts.items():
+        if isinstance(forecast, list):
+            # Legacy format: just quantities
+            normalized_forecasts[pid] = {'hours': forecast, 'bids': None}
+        elif isinstance(forecast, dict):
+            normalized_forecasts[pid] = forecast
+        else:
+            normalized_forecasts[pid] = {'hours': [], 'bids': None}
+    
+    # Generate synthetic supply/demand
+    synthetic_supply, demand = generate_curves_from_config(config, seed=seed)
+    
+    # Check if multi-bid pricing is enabled
+    enable_bidding = config.get("market", {}).get("enable_player_bidding", False)
+    bid_dispatch_tracking = {}
+    
+    if enable_bidding:
+        # Build supply from player bids (merged with synthetic)
+        # For round-based clearing, we use the first hour of the round
+        supply, supply_bids = build_supply_from_bids(normalized_forecasts, base_idx, synthetic_supply, config)
+    else:
+        supply = synthetic_supply
+        supply_bids = []
+    
+    # Market clearing
     price, vol = clear_market(supply, demand,
                               price_floor=config.get("market", {}).get("price_floor", -500),
                               price_cap=config.get("market", {}).get("price_cap", 5000))
+    
+    # Track bid dispatch if bidding enabled
+    if enable_bidding and supply_bids:
+        bid_dispatch_tracking = track_bid_dispatch(supply_bids, price, vol, synthetic_supply)
+        try:
+            current_app.logger.info(f"[ENGINE] Bid dispatch tracking: {len(bid_dispatch_tracking)} players, {sum(len(v) for v in bid_dispatch_tracking.values())} devices")
+        except:
+            print(f"[ENGINE] Bid dispatch tracking: {len(bid_dispatch_tracking)} players, {sum(len(v) for v in bid_dispatch_tracking.values())} devices")
+    
     # Apply only events active for this round
     round_events = select_events_for_round(config.get("events", []), round_num)
     price, vol = apply_events(price, vol, round_events)
@@ -286,10 +457,26 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     per_player = {}
     plans = {}
     total_planned = 0.0
+    
+    # Calculate planned quantities
     for pid in players:
-        h = forecasts.get(pid, [])
-        window = h[base_idx: base_idx + span] if h else [0.0] * span
-        planned = sum(window)
+        forecast_data = normalized_forecasts.get(pid, {})
+        h = forecast_data.get('hours', [])
+        
+        if enable_bidding and forecast_data.get('bids'):
+            # Sum all bids for this player
+            planned = 0.0
+            for device_id, device_bids in forecast_data['bids'].items():
+                for bid_label in ['A', 'B', 'C']:
+                    if bid_label in device_bids:
+                        bid_hours = device_bids[bid_label].get('hours', [])
+                        window = bid_hours[base_idx: base_idx + span] if bid_hours else [0.0] * span
+                        planned += sum(window)
+        else:
+            # Legacy: use hours array
+            window = h[base_idx: base_idx + span] if h else [0.0] * span
+            planned = sum(window)
+        
         plans[pid] = planned
         total_planned += planned
     dispatch_factor = 1.0
@@ -302,20 +489,38 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     except Exception:
         noise_pct = 5.0
     frac = max(0.0, min(1.0, noise_pct / 100.0))
+    # Calculate per-player KPIs
     for pid in players:
         planned = plans.get(pid, 0.0)
-        dispatched = planned * dispatch_factor
+        
+        # For bid-based dispatch, use tracked dispatch quantity
+        if enable_bidding and pid in bid_dispatch_tracking:
+            dispatched = 0.0
+            for device_id, device_dispatch in bid_dispatch_tracking[pid].items():
+                for bid_label, bid_info in device_dispatch.items():
+                    dispatched += bid_info['mw_dispatched']
+        else:
+            dispatched = planned * dispatch_factor
+        
         noise = random.uniform(-frac, frac) * max(1.0, dispatched)
         actual = max(0.0, dispatched + noise)
         imbalance_cost = settle_balancing(dispatched, actual)
+        
+        # Revenue: Uniform MCP for all dispatched MWh
         revenue = round(dispatched * price, 0)
-        fuel = 0  # skipped in MVP
+        
+        # Fuel cost: Based on dispatched quantity and device variable costs
+        fuel = 0  # TODO: Calculate from device.variable_cost_zar_per_mwh
+        
         curtailment_amount = max(0.0, planned - dispatched)
         devices = config.get("devices", [])
         curtailed, cong_signal = apply_grid(dispatched, config.get("grid", {}).get("atc", []), devices=devices)
         curtailment_cost = round((curtailment_amount + curtailed) * price, 0)
         congestion_revenue = round(dispatched * price * cong_signal, 0)
-        profit = revenue - fuel - imbalance_cost - curtailment_cost
+        
+        # Profit calculation
+        profit = revenue - fuel - imbalance_cost - curtailment_cost + congestion_revenue
+        
         per_player[pid] = {
             "planned_mwh": round(planned, 3),
             "dispatched_mwh": round(dispatched, 3),
@@ -327,8 +532,23 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             "profit_zar": profit,
         }
 
-    return {
+    result = {
         "mcp": round(price, 1),
         "volume": round(vol, 3),
         "round_kpis": per_player,
     }
+    
+    # Include bid dispatch tracking if bidding was enabled
+    if enable_bidding and bid_dispatch_tracking:
+        result["bid_dispatch"] = bid_dispatch_tracking
+        try:
+            current_app.logger.info(f"[ENGINE] Added bid_dispatch to result: {list(bid_dispatch_tracking.keys())}")
+        except:
+            print(f"[ENGINE] Added bid_dispatch to result: {list(bid_dispatch_tracking.keys())}")
+    else:
+        try:
+            current_app.logger.warning(f"[ENGINE] No bid_dispatch: enable_bidding={enable_bidding}, tracking_empty={not bid_dispatch_tracking}")
+        except:
+            print(f"[ENGINE] No bid_dispatch: enable_bidding={enable_bidding}, tracking_empty={not bid_dispatch_tracking}")
+    
+    return result

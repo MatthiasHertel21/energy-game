@@ -18,8 +18,13 @@ def _auto_submit_missing(session_id: int, round_num: int, hours_per_round: int):
     for pid in player_ids:
         exists = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=round_num).first()
         if not exists:
-            f = Forecast(session_id=session_id, player_id=pid, round_num=round_num,
-                         data={"hours": [0.0] * hours_per_round})
+            f = Forecast(
+                session_id=session_id,
+                player_id=pid,
+                round_num=round_num,
+                data={"hours": [0.0] * hours_per_round},
+                bids=None,
+            )
             db.session.add(f)
             socketio.emit("player_submit", {"session_id": session_id, "player_id": pid}, namespace="/trainer")
     db.session.commit()
@@ -124,31 +129,55 @@ def run_rounds(session_id: int, app=None):
                 socketio.emit("calculating", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
                 
                 # collect forecasts per player (full horizon if exists + this round slice fallback)
+                # Support both legacy (quantity-only) and new (multi-bid) formats
                 players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
+                print(f"[SCHEDULER] Session {s.id} Round {current}: {len(players)} players")
                 forecasts = {}
                 for pid in players:
                     full = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=0).first()
-                    if full:
-                        forecasts[pid] = list(full.data.get("hours", []))
+                    # Get bids from current round (not from full forecast)
+                    current_round_forecast = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=current).first()
+                    current_bids = current_round_forecast.bids if current_round_forecast and current_round_forecast.bids else None
+                    print(f"[SCHEDULER] Player {pid}: has_full={full is not None}, has_current={current_round_forecast is not None}, has_bids={current_bids is not None}")
+                    
+                    if full and isinstance(full.data, dict):
+                        forecast_data = {
+                            'hours': list(full.data.get("hours", [])),
+                            'bids': current_bids  # Use bids from current round, not from full forecast
+                        }
+                        forecasts[pid] = forecast_data
+                        print(f"[SCHEDULER] Player {pid}: loaded forecast with bids={current_bids is not None}")
                     else:
                         # Build full horizon from all round-specific forecasts
                         total_hours = rounds * hours_span
                         full_horizon = [0.0] * total_hours
-                        # Get all forecasts for this player in this session
-                        all_forecasts = Forecast.query.filter_by(session_id=s.id, player_id=pid).filter(Forecast.round_num > 0).order_by(Forecast.round_num).all()
+                        all_forecasts = (
+                            Forecast.query.filter_by(session_id=s.id, player_id=pid)
+                            .filter(Forecast.round_num > 0)
+                            .order_by(Forecast.round_num)
+                            .all()
+                        )
                         for fc in all_forecasts:
-                            fc_hours = fc.data.get("hours", [])
+                            fc_hours = (fc.data or {}).get("hours", [])
                             start_idx = (fc.round_num - 1) * hours_span
                             for i, val in enumerate(fc_hours):
                                 if start_idx + i < total_hours:
                                     full_horizon[start_idx + i] = val
-                        forecasts[pid] = full_horizon
+                        forecasts[pid] = {'hours': full_horizon, 'bids': current_bids}  # Use bids from current round
+                        print(f"[SCHEDULER] Player {pid}: built horizon from round forecasts, bids={current_bids is not None}")
                 # DA snapshot (round_num = -1): set on first round if not present, else use for IDM delta
                 if current == 1:
                     for pid in players:
                         snap = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=-1).first()
                         if not snap:
-                            snap = Forecast(session_id=s.id, player_id=pid, round_num=-1, data={"hours": forecasts.get(pid, [])})
+                            forecast_entry = forecasts.get(pid, {})
+                            snap = Forecast(
+                                session_id=s.id,
+                                player_id=pid,
+                                round_num=-1,
+                                data={"hours": list(forecast_entry.get('hours', []))},
+                                bids=forecast_entry.get('bids')
+                            )
                             db.session.add(snap)
                     db.session.commit()
                 else:
@@ -159,15 +188,21 @@ def run_rounds(session_id: int, app=None):
                             da_hours = snap.data.get("hours")
                             start = (current-1)*hours_span
                             end = start + hours_span
-                            # replace current window with delta = current - DA
-                            cur = forecasts.get(pid, [])
-                            window = [(cur[i] if i < len(cur) else 0.0) - (da_hours[i] if i < len(da_hours) else 0.0) for i in range(start, end)]
-                            # keep rest as is
-                            merged = list(cur)
+                            cur_entry = forecasts.get(pid)
+                            if not cur_entry:
+                                cur_entry = {'hours': [0.0] * len(da_hours), 'bids': None}
+                            cur_hours = cur_entry.get('hours', [])
+                            window = [
+                                (cur_hours[i] if i < len(cur_hours) else 0.0)
+                                - (da_hours[i] if i < len(da_hours) else 0.0)
+                                for i in range(start, end)
+                            ]
+                            merged = list(cur_hours)
                             for off, i in enumerate(range(start, end)):
                                 if i < len(merged):
                                     merged[i] = window[off]
-                            forecasts[pid] = merged
+                            cur_entry['hours'] = merged
+                            forecasts[pid] = cur_entry
                 # Determine campaign seed if available (derive from player progress entries for this scenario)
                 camp_seed = None
                 try:
@@ -218,13 +253,24 @@ def run_rounds(session_id: int, app=None):
                     current_app.logger.warning(f"Failed to emit events: {e}")
                 
                 # persist per-player results
+                bid_dispatch = res.get("bid_dispatch", {})
+                print(f"[SCHEDULER] Got bid_dispatch from engine: {type(bid_dispatch)}, empty={not bid_dispatch}, keys={list(bid_dispatch.keys()) if bid_dispatch else 'N/A'}")
                 for pid, kp in (res.get("round_kpis") or {}).items():
                     data = {
                         "kpis": kp,
                         "mcp": res["mcp"],
                         "volume": res["volume"],
                     }
-                    r = Result(session_id=s.id, player_id=pid, round_num=current, data=data)
+                    # Include bid dispatch info if available
+                    player_bid_dispatch = bid_dispatch.get(pid) if bid_dispatch else None
+                    print(f"[SCHEDULER] Player {pid}: bid_dispatch={type(player_bid_dispatch)}, has_data={player_bid_dispatch is not None}")
+                    r = Result(
+                        session_id=s.id, 
+                        player_id=pid, 
+                        round_num=current, 
+                        data=data,
+                        bid_dispatch=player_bid_dispatch
+                    )
                     db.session.add(r)
                 db.session.commit()
                 # zone flows: assign all players to one zone per config.general.player_zone (default 1)

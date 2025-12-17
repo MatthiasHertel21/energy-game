@@ -29,6 +29,7 @@ const defaultConfig = {
       base_volume_mwh: 20000,
       price_floor: -500,
       price_cap: 5000,
+      enable_player_bidding: false,
       // generator_mix / consumer_mix are interpreted as counts (0-1000) per group
       generator_mix: { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150, nuclear: 0 },
       consumer_mix: { industrial: 400, household: 500, agriculture: 100 },
@@ -1372,6 +1373,22 @@ export default function KSE(){
                 />
                 <Typography variant="subtitle2">Player Types</Typography>
               </Stack>
+              <Paper sx={{ p: 2 }}>
+                <Stack spacing={1}>
+                  <FormControlLabel
+                    control={<Switch checked={Boolean(cfg.market.enable_player_bidding)} onChange={(e)=>update(['market','enable_player_bidding'], e.target.checked)} />}
+                    label={
+                      <InfoLabel 
+                        title="Enable Multi-Bid Pricing" 
+                        tooltip="Allow players to submit 3 price bids (A/B/C) per device with 24h quantity profiles. The engine merges player bids into the merit order and tracks dispatch per bid. Default: false (classic forecast-only mode)."
+                      />
+                    }
+                  />
+                  <Typography variant="caption" color="text.secondary">
+                    When enabled, players can submit multiple price-quantity bid pairs for each device, enabling strategic bidding behavior.
+                  </Typography>
+                </Stack>
+              </Paper>
               {(cfg.player_types||[]).map((pt, idx)=> (
                 <Paper key={idx} sx={{ p:1.5, border:'1px solid #ddd' }}>
                   <Grid container spacing={2}>

@@ -124,13 +124,16 @@ class SessionItem(Resource):
         s = Session.query.get_or_404(sid)
         sc = Scenario.query.get(s.scenario_id)
         campaign = Campaign.query.get(sc.campaign_id) if sc and sc.campaign_id else None
-        general = (sc.config or {}).get("general", {}) if sc else {}
+        config = (sc.config or {}) if sc else {}
+        general = config.get("general", {})
+        market = config.get("market", {})
         return {
             "id": s.id,
             "status": s.status.value,
             "scenario_id": s.scenario_id,
             "current_round": s.current_round,
             "general": general,
+            "market": market,
             "mode": s.mode,
             "scenario_name": (sc.name if sc else None),
             "campaign_id": campaign.id if campaign else None,
@@ -509,7 +512,8 @@ class RoundResults(Resource):
                 "curtailment": curtailment,
                 "total_score": round(total_score, 2),
                 "mcp": r.data.get("mcp"),
-                "volume": r.data.get("volume")
+                "volume": r.data.get("volume"),
+                "bid_dispatch": r.bid_dispatch  # Include lot dispatch tracking
             }
             
             ranking.append(player_data)
@@ -551,6 +555,7 @@ class FinalResults(Resource):
         
         # Aggregate by player
         player_totals = {}
+        player_bid_aggregates = {}  # Aggregate bid dispatch across all rounds
         for r in results:
             pid = r.player_id
             if pid not in player_totals:
@@ -568,6 +573,31 @@ class FinalResults(Resource):
             player_totals[pid]["curtailment"] += float(kpis.get("curtailment_cost_zar", 0))
             player_totals[pid]["dispatched_mwh"] += float(kpis.get("dispatched_mwh", 0))
             player_totals[pid]["rounds"] += 1
+            
+            # Aggregate bid dispatch data across rounds
+            if r.bid_dispatch:
+                if pid not in player_bid_aggregates:
+                    player_bid_aggregates[pid] = {}
+                
+                for device_id, device_lots in r.bid_dispatch.items():
+                    if device_id not in player_bid_aggregates[pid]:
+                        player_bid_aggregates[pid][device_id] = {}
+                    
+                    for lot_label, lot_data in device_lots.items():
+                        if lot_label not in player_bid_aggregates[pid][device_id]:
+                            player_bid_aggregates[pid][device_id][lot_label] = {
+                                "mw_offered": 0,
+                                "mw_dispatched": 0,
+                                "total_revenue": 0,
+                                "rounds_offered": 0
+                            }
+                        
+                        agg = player_bid_aggregates[pid][device_id][lot_label]
+                        agg["mw_offered"] += lot_data.get("mw_offered", 0)
+                        agg["mw_dispatched"] += lot_data.get("mw_dispatched", 0)
+                        agg["total_revenue"] += lot_data.get("mw_dispatched", 0) * lot_data.get("mcp", 0)
+                        if lot_data.get("mw_offered", 0) > 0:
+                            agg["rounds_offered"] += 1
         
         # Build final ranking
         ranking = []
@@ -651,9 +681,13 @@ class FinalResults(Resource):
                 "total_score": round(round_score, 2)
             })
         
+        # Add aggregated bid dispatch to my_cumulative
+        my_bid_aggregate = player_bid_aggregates.get(player_id) if player_id in player_bid_aggregates else None
+        
         return {
             "my_cumulative": my_cumulative,
             "final_ranking": ranking,
+            "bid_dispatch_aggregate": my_bid_aggregate,
             "round_history": round_history,
             "weights": weights,
             "total_rounds": session.current_round - 1 if session.current_round else 0

@@ -74,7 +74,13 @@ def create_app() -> Flask:
     try:
         from sqlalchemy import inspect
         from sqlalchemy import text
-        from .models import SessionAllowedType, SessionPlayerType, CohortCampaign
+        from .models import (
+            SessionAllowedType,
+            SessionPlayerType,
+            CohortCampaign,
+            Scenario,
+            CampaignScenario,
+        )
         with app.app_context():
             insp = inspect(db.engine)
             if not insp.has_table(SessionAllowedType.__tablename__):
@@ -83,6 +89,10 @@ def create_app() -> Flask:
                 SessionPlayerType.__table__.create(bind=db.engine, checkfirst=True)
             if not insp.has_table(CohortCampaign.__tablename__):
                 CohortCampaign.__table__.create(bind=db.engine, checkfirst=True)
+            if not insp.has_table(Scenario.__tablename__):
+                Scenario.__table__.create(bind=db.engine, checkfirst=True)
+            if not insp.has_table(CampaignScenario.__tablename__):
+                CampaignScenario.__table__.create(bind=db.engine, checkfirst=True)
 
             # Lightweight column backfill for campaigns to avoid 500s when migrations weren't run
             try:

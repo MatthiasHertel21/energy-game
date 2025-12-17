@@ -1,20 +1,23 @@
 # Admin Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.2 (Sprint 22)  
-**Date**: 26 Nov 2025  
+**Version**: 1.4 (Sprint 23)  
+**Date**: 17 Dec 2025  
 **Audience**: System Administrators
 
 ---
 
-## What's New (Sprint 22)
+## What's New (Sprint 23)
 
-- **UI Enhancements**: Improved player and trainer interfaces with better status visualization
-- **Cohort Management**: Enhanced cohort list API with aggregated member/campaign counts
-- **Per-Device Editing**: Player forecast interface supports individual device charts
-- **Bulk Session Cleanup**: Delete ALL sessions with DELETE confirmation (ignores filters)
-- **Performance Baseline**: 20 Cypress E2E specs passing, p95=8ms response time (100 users)
-- **Test Coverage**: 20 Cypress specs, Locust performance testing, axe accessibility checks
+- **Campaign Catalog System**: Published campaigns visible to all players in catalog
+- **Solo Session Management**: Players can start and track solo sessions independently
+- **Player Progress Tracking**: Automatic scenario completion with reset functionality
+- **Campaign/Scenario Display**: Player UI shows campaign and scenario names throughout
+- **Currency Formatting**: All ZAR values with locale-aware formatting (en-ZA)
+- **Password Reset**: Admins can reset passwords with auto-generation or custom passwords
+- **Improved User Deletion**: Complete cascade deletion including solo cohorts
+- **Email Notifications**: Password reset emails via SMTP when configured
+- **Database Recovery**: Auto-create tables on startup if missing (prevents 500 errors)
 
 ---
 
@@ -29,9 +32,25 @@
 ## Detailed Guide
 
 ### 1) Users
-- List users; change role (player/trainer/designer/admin); delete with confirmation.
-- Invite: email + role → invite link (send via SMTP or copy link).
-- Create: email + role (+ optional password). Backend enforces password policy.
+- **List users**: View all users with ID, email, role, and creation date
+- **Change role**: Select dropdown (player/trainer/designer/admin); changes apply immediately
+- **Reset Password** (NEW in Sprint 23):
+  - Click "Reset Password" button next to any user
+  - System generates secure 16-character password (or provide custom password ≥12 chars)
+  - New password displayed in alert dialog (copy before closing!)
+  - If SMTP configured: Password automatically sent to user's email
+  - If SMTP not configured: Admin must manually share password with user
+  - Password requirements: Min 12 characters (letters, digits, punctuation)
+- **Delete user**: Delete with confirmation; properly cascades to:
+  - All forecasts and results by this user
+  - Session player type selections
+  - Player progress records
+  - Cohort memberships
+  - Cohorts where user is trainer (including all sessions in those cohorts)
+  - Campaigns created by user (if designer)
+  - Activity logs related to user
+- **Invite**: email + role → invite link (send via SMTP or copy link)
+- **Create**: email + role (+ optional password); Backend enforces password policy (min 12 chars)
 
 ### 2) Activity Dashboard
 - Period filter (e.g., 30d) for summary tiles and time series (logins, registrations, sessions).
@@ -82,6 +101,27 @@
 **RBAC**: Enforce least privilege; keep admin count minimal (current: manual user role changes only)
 
 **Privacy**: Limit PII in logs; honour delete/anonymise requests; email only for platform needs (POPIA compliance)
+
+### 5) API Endpoints (Admin)
+
+**User Management**:
+- `GET /api/admin/users` - List all users
+- `POST /api/admin/users` - Create user with optional password
+- `DELETE /api/admin/users/<id>` - Delete user (with cascade)
+- `POST /api/admin/users/<id>/role` - Change user role
+- `POST /api/admin/users/<id>/password` - Reset user password (NEW)
+  - Request body: `{ "password": "optional", "send_email": true }`
+  - Response: `{ "status": "ok", "new_password": "...", "email_sent": true }`
+
+**Session Data Display**:
+- `GET /api/sessions/<id>` - Now includes `campaign_name` and `scenario_name` fields
+- `GET /api/catalog/scenarios/<id>` - Includes campaign metadata for briefing screens
+
+**Formatting Standards**:
+- All currency values returned in base units (e.g., cents) but displayed as ZAR with formatting
+- Frontend applies locale-aware formatting (en-ZA) with thousands separators
+- Profit: "ZAR 1,234.56" format
+- Imbalance/Curtailment: "1,234.56 MWh" format
 
 ---
 

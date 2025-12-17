@@ -1,8 +1,17 @@
 # Use Cases – Campaigns, Catalog, Solo/Cohort, Unified Flow
 
-Date: 2025-12-02
+Date: 2025-12-12 (Updated Sprint 23)
 
 This document captures core use cases and maps them to UI, API, and acceptance criteria.
+
+---
+
+## What's New (Sprint 23)
+
+- **UC-ADMIN1**: Admin kann User-Passwörter zurücksetzen (mit Auto-Generierung und Email-Versand)
+- **UC-ADMIN2**: Admin kann User löschen (mit korrekter Cascade-Behandlung aller Dependencies)
+- **UC-UI1**: Campaign und Scenario Namen werden im Player-UI angezeigt (Header + Session Info Card)
+- **UC-UI2**: Alle Währungs- und Zahlenwerte mit lokalisierter Formatierung (ZAR mit Tausendertrennzeichen)
 
 ---
 
@@ -165,6 +174,93 @@ Acceptance Criteria (erfüllt)
 Security/RBAC
 - Catalog Endpoints: player+ (alle eingeloggten Nutzer).
 - Campaign Management & Upload: designer/admin.
+
+---
+
+## UC-ADMIN1: Admin setzt User-Passwort zurück – IMPLEMENTIERT (Sprint 23)
+
+- Actor: Admin
+- Goal: Passwort eines Benutzers zurücksetzen mit auto-generiertem oder benutzerdefiniertem Passwort
+- Preconditions: Admin ist eingeloggt; Benutzer existiert
+- Hauptablauf:
+   1) Admin öffnet User Management (`/admin/users`)
+   2) Admin klickt "Reset Password" neben gewünschtem Benutzer
+   3) System generiert sicheres 16-Zeichen-Passwort (oder Admin gibt eigenes ein, min 12 Zeichen)
+   4) Backend speichert neues Passwort-Hash
+   5) Wenn SMTP konfiguriert: Email mit neuem Passwort an Benutzer
+   6) Alert zeigt Admin das neue Passwort
+   7) Bestätigungsnachricht mit Email-Status
+
+Alternative/Fehlerfälle:
+- SMTP nicht konfiguriert → Admin muss Passwort manuell weitergeben
+- Custom Passwort <12 Zeichen → Fehler
+- Netzwerkfehler → Fehlermeldung
+
+UI/API Mapping:
+- `frontend/src/pages/AdminUsers.jsx` (Reset Password Button)
+- POST `/api/admin/users/<id>/password`
+
+Acceptance Criteria (erfüllt):
+- ✅ Reset Password Button, Auto-Generierung, Email-Versand, Alert-Display
+
+---
+
+## UC-ADMIN2: Admin löscht Benutzer – IMPLEMENTIERT (Sprint 23)
+
+- Actor: Admin
+- Goal: Benutzer mit allen Daten entfernen
+- Preconditions: Admin eingeloggt; Benutzer existiert; nicht sich selbst
+- Hauptablauf:
+   1) Admin klickt "Delete" neben Benutzer
+   2) Bestätigungsdialog
+   3) Backend löscht Cascade: Forecasts, Results, SessionPlayerType, PlayerProgress, CohortMember, Cohorts (als Trainer), Campaigns (als Designer), ActivityLog, User
+   4) Erfolgsbestätigung
+
+UI/API Mapping:
+- `frontend/src/pages/AdminUsers.jsx`
+- DELETE `/api/admin/users/<id>`
+
+Acceptance Criteria (erfüllt):
+- ✅ Korrekte Cascade-Deletion, keine FK-Violations, Selbst-Löschung verhindert
+
+---
+
+## UC-UI1: Campaign/Scenario Namen im Player UI – IMPLEMENTIERT (Sprint 23)
+
+- Actor: Player
+- Goal: Kontext sehen während des Spiels
+- Hauptablauf:
+   1) Player sieht Header mit Campaign Name (H4) und Scenario Name + Round (Subtitle)
+   2) Session Info Card zeigt Campaign und Scenario als separate Zeilen
+   3) Namen aktualisieren bei Round-Advance
+
+Backend/UI Changes:
+- GET `/api/sessions/<id>` liefert `campaign_id`, `campaign_name`
+- `frontend/src/pages/Player.jsx` Header + Session Info Card
+
+Acceptance Criteria (erfüllt):
+- ✅ Campaign Name prominent, Scenario Name mit Round, Session Info Card, Updates bei Transitions
+
+---
+
+## UC-UI2: Lokalisierte Währungs-/Zahlenformatierung – IMPLEMENTIERT (Sprint 23)
+
+- Actor: Player (alle Rollen)
+- Goal: ZAR mit Tausendertrennzeichen, lesbare Zahlenformate
+- Hauptablauf:
+   1) Round Results: Profit "ZAR 1,234.56", Imbalance/Curtailment "1,234.56 MWh"
+   2) Leaderboard: "Profit (ZAR)" Spalte, alle Werte formatiert
+   3) Live KPIs: MCP/Volume mit Separatoren
+
+Formatierungs-Standards:
+- Locale: en-ZA, Currency: ZAR, Thousands: `,`, Decimal: `.`
+- Implementation: `toLocaleString('en-ZA', {minimumFractionDigits:2, maximumFractionDigits:2})`
+
+UI Mapping:
+- `frontend/src/components/RoundResultsScreen.jsx`
+
+Acceptance Criteria (erfüllt):
+- ✅ ZAR statt €, Tausendertrennzeichen, Leaderboard-Spalte "Profit (ZAR)", konsistent
 
 ---
 

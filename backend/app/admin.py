@@ -23,6 +23,7 @@ from .models import (
     Campaign,
     CampaignScenario,
     CohortCampaign,
+    PlayerProgress,
 )
 from . import mailer
 from .utils import role_required
@@ -147,6 +148,59 @@ class UserRole(Resource):
         return {"status": "ok", "user": user.to_dict()}
 
 
+@ns.route("/users/<int:user_id>/password")
+class UserPassword(Resource):
+    password_reset_in = ns.model(
+        "PasswordReset",
+        {
+            "password": fields.String(required=False, description="New password (min 12 chars). If omitted, a strong password is generated."),
+            "send_email": fields.Boolean(required=False, description="If true, send new password via email (if SMTP configured).", default=True),
+        },
+    )
+
+    @jwt_required()
+    @role_required("admin")
+    @ns.expect(password_reset_in, validate=True)
+    def post(self, user_id: int):
+        """Reset a user's password. Optionally send new password via email."""
+        user = User.query.get_or_404(user_id)
+        body = request.json
+
+        password = body.get("password")
+        if password and len(password) < 12:
+            ns.abort(HTTPStatus.BAD_REQUEST, "Password too short (min 12 characters)")
+
+        # Generate strong password if not provided
+        if not password:
+            import secrets, string
+            alphabet = string.ascii_letters + string.digits + string.punctuation
+            # Exclude characters that sometimes break copying
+            alphabet = alphabet.replace("`", "").replace("\\", "")
+            password = ''.join(secrets.choice(alphabet) for _ in range(16))
+
+        # Update password
+        pw_hash = bcrypt.generate_password_hash(password).decode("utf-8")
+        user.password_hash = pw_hash
+        db.session.commit()
+
+        email_sent = False
+        email_error = None
+        if body.get("send_email", True):
+            try:
+                email_sent, email_error = mailer.send_password_reset_email(user.email, user.email, password)
+            except Exception as e:
+                email_sent = False
+                email_error = str(e)
+
+        return {
+            "status": "ok",
+            "message": f"Password reset for {user.email}",
+            "new_password": password,
+            "email_sent": bool(email_sent),
+            "email_error": (None if email_sent else email_error),
+        }, HTTPStatus.OK
+
+
 @ns.route("/users/<int:user_id>")
 class UserItem(Resource):
     @jwt_required()
@@ -163,29 +217,48 @@ class UserItem(Resource):
 
         # Delete related records to prevent foreign key constraint violations
         
+        # Delete forecasts by this user
+        Forecast.query.filter_by(player_id=user_id).delete()
+        
+        # Delete results by this user
+        Result.query.filter_by(player_id=user_id).delete()
+        
+        # Delete session player type selections
+        SessionPlayerType.query.filter_by(user_id=user_id).delete()
+        
+        # Delete player progress
+        PlayerProgress.query.filter_by(user_id=user_id).delete()
+        
         # Remove user from all cohorts
         CohortMember.query.filter_by(user_id=user_id).delete()
         
-        # Delete activity logs for this user
+        # Delete activity logs for this user (CASCADE should handle this, but explicit is better)
         ActivityLog.query.filter_by(user_id=user_id).delete()
-        
-        # Delete forecasts and sessions created by this user
-        Forecast.query.filter_by(user_id=user_id).delete()
-        
-        # Delete sessions owned by this user
-        Session.query.filter_by(player_id=user_id).delete()
         
         # Delete cohorts where user is trainer
         for cohort in Cohort.query.filter_by(trainer_id=user_id).all():
             # First delete all members of this cohort
             CohortMember.query.filter_by(cohort_id=cohort.id).delete()
+            # Delete sessions in this cohort
+            for session in Session.query.filter_by(cohort_id=cohort.id).all():
+                # Delete session-related data
+                Forecast.query.filter_by(session_id=session.id).delete()
+                Result.query.filter_by(session_id=session.id).delete()
+                SessionPlayerType.query.filter_by(session_id=session.id).delete()
+                SessionAllowedType.query.filter_by(session_id=session.id).delete()
+                ActivityLog.query.filter_by(session_id=session.id).delete()
+                db.session.delete(session)
             # Then delete cohort campaigns
             CohortCampaign.query.filter_by(cohort_id=cohort.id).delete()
+            # Delete activity logs for this cohort
+            ActivityLog.query.filter_by(cohort_id=cohort.id).delete()
             # Finally delete the cohort itself
             db.session.delete(cohort)
         
         # Delete campaigns created by this user (if designer)
         for campaign in Campaign.query.filter_by(designer_id=user_id).all():
+            # Delete player progress for this campaign
+            PlayerProgress.query.filter_by(campaign_id=campaign.id).delete()
             # Delete campaign scenarios first
             CampaignScenario.query.filter_by(campaign_id=campaign.id).delete()
             # Delete cohort campaigns

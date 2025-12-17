@@ -161,6 +161,151 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
           </Grid>
         </Box>
 
+        {/* Lot Dispatch Breakdown - Only show if bid_dispatch exists */}
+        {my_result?.bid_dispatch && Object.keys(my_result.bid_dispatch).length > 0 ? (
+          <Box>
+            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <EnergyIcon color="primary" />
+              Lot Dispatch Breakdown
+            </Typography>
+            <Stack spacing={2}>
+              {Object.entries(my_result.bid_dispatch).map(([deviceId, lots]) => {
+                // Calculate aggregate metrics for this device
+                let totalOffered = 0;
+                let totalDispatched = 0;
+                let totalRevenue = 0;
+                
+                Object.entries(lots).forEach(([lotLabel, lotData]) => {
+                  totalOffered += lotData.mw_offered || 0;
+                  totalDispatched += lotData.mw_dispatched || 0;
+                  totalRevenue += (lotData.mw_dispatched || 0) * (lotData.mcp || 0);
+                });
+                
+                const dispatchRate = totalOffered > 0 ? (totalDispatched / totalOffered * 100) : 0;
+                
+                return (
+                  <Card key={deviceId}>
+                    <CardContent>
+                      <Stack spacing={2}>
+                        {/* Device Header */}
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Typography variant="subtitle1" fontWeight={600}>
+                            Device {deviceId}
+                          </Typography>
+                          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                            <Typography variant="body2" color="text.secondary">
+                              Dispatch Rate: <strong>{dispatchRate.toFixed(1)}%</strong>
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Revenue: <strong>{formatCurrency(totalRevenue)}</strong>
+                            </Typography>
+                          </Box>
+                        </Box>
+                        
+                        {/* Lots Table */}
+                        <TableContainer>
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell sx={{ fontWeight: 600 }}>Lot</TableCell>
+                                <TableCell align="right" sx={{ fontWeight: 600 }}>Price Bid (ZAR/MWh)</TableCell>
+                                <TableCell align="right" sx={{ fontWeight: 600 }}>Realized Price (ZAR/MWh)</TableCell>
+                                <TableCell align="right" sx={{ fontWeight: 600 }}>Offered (MWh)</TableCell>
+                                <TableCell align="right" sx={{ fontWeight: 600 }}>Dispatched (MWh)</TableCell>
+                                <TableCell align="right" sx={{ fontWeight: 600 }}>Dispatch %</TableCell>
+                                <TableCell align="right" sx={{ fontWeight: 600 }}>Status</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {Object.entries(lots).map(([lotLabel, lotData]) => {
+                                const offered = lotData.mw_offered || 0;
+                                const dispatched = lotData.mw_dispatched || 0;
+                                const dispatchPct = offered > 0 ? (dispatched / offered * 100) : 0;
+                                const mcp = lotData.mcp || 0;
+                                const bidPrice = lotData.price_bid || 0;
+                                
+                                // Determine status
+                                let statusColor = 'default';
+                                let statusLabel = '-';
+                                if (dispatchPct >= 99) {
+                                  statusColor = 'success';
+                                  statusLabel = '✓ Full';
+                                } else if (dispatchPct > 0) {
+                                  statusColor = 'warning';
+                                  statusLabel = `${dispatchPct.toFixed(0)}% Part`;
+                                } else if (bidPrice > mcp) {
+                                  statusColor = 'error';
+                                  statusLabel = '✗ Too expensive';
+                                } else {
+                                  statusColor = 'default';
+                                  statusLabel = '✗ Not needed';
+                                }
+                                
+                                // Color codes based on lot
+                                const lotColors = {
+                                  'A': '#64b5f6',
+                                  'B': '#2196f3',
+                                  'C': '#1565c0'
+                                };
+                                
+                                return (
+                                  <TableRow key={lotLabel}>
+                                    <TableCell>
+                                      <Chip 
+                                        label={`Lot ${lotLabel}`} 
+                                        size="small"
+                                        sx={{ 
+                                          bgcolor: lotColors[lotLabel] || '#64b5f6',
+                                          color: 'white',
+                                          fontWeight: 600
+                                        }}
+                                      />
+                                    </TableCell>
+                                    <TableCell align="right">{formatNumber(bidPrice, 0)}</TableCell>
+                                    <TableCell align="right" sx={{ fontWeight: 600, color: dispatched > 0 ? 'success.main' : 'text.disabled' }}>
+                                      {dispatched > 0 ? formatNumber(mcp, 0) : '-'}
+                                    </TableCell>
+                                    <TableCell align="right">{formatNumber(offered, 1)}</TableCell>
+                                    <TableCell align="right" sx={{ fontWeight: 600 }}>
+                                      {formatNumber(dispatched, 1)}
+                                    </TableCell>
+                                    <TableCell align="right">
+                                      {dispatchPct.toFixed(1)}%
+                                    </TableCell>
+                                    <TableCell align="right">
+                                      <Chip 
+                                        label={statusLabel} 
+                                        size="small" 
+                                        color={statusColor}
+                                      />
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                        
+                        {/* MCP Reference */}
+                        <Typography variant="caption" color="text.secondary" textAlign="right">
+                          Market Clearing Price (MCP): <strong>{formatCurrency(my_result.mcp)}</strong>
+                        </Typography>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </Stack>
+          </Box>
+        ) : (
+          <Alert severity="info" icon={<EnergyIcon />}>
+            <Typography variant="body2">
+              <strong>Multi-Bid Dispatch Details</strong> are not available. 
+              This feature requires Multi-Bid Pricing to be enabled in the scenario configuration and bids to be submitted.
+            </Typography>
+          </Alert>
+        )}
+
         {/* Ranking Table - Only show in shared mode */}
         {!isSolo && (
           <Box>

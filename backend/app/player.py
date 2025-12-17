@@ -27,6 +27,7 @@ forecast_in = ns.model(
         "session_id": fields.Integer(required=True),
         "round_num": fields.Integer(required=True),
         "hours": fields.List(fields.Float, required=True, description="Array of MWh values"),
+        "bids": fields.Raw(required=False, description="Multi-bid pricing structure (optional)"),
     },
 )
 
@@ -35,8 +36,88 @@ forecast_full_in = ns.model(
     {
         "session_id": fields.Integer(required=True),
         "hours": fields.List(fields.Float, required=True, description="Full horizon forecast values (MWh)"),
+        "bids": fields.Raw(required=False, description="Multi-bid pricing structure (optional)"),
     },
 )
+
+
+def _validate_bids_structure(bids_data: dict, config: dict) -> list:
+    """
+    Validate multi-bid pricing structure.
+    
+    Args:
+        bids_data: Dict of {device_id: {bid_label: {price, hours}}}
+        config: Scenario config
+    
+    Returns:
+        List of error messages (empty if valid)
+    """
+    errors = []
+    market_cfg = (config or {}).get("market", {})
+    price_floor = float(market_cfg.get("price_floor", -500))
+    price_cap = float(market_cfg.get("price_cap", 5000))
+    general_cfg = (config or {}).get("general", {})
+    horizon_hours = int(general_cfg.get("forecast_horizon_hours", general_cfg.get("horizon_hours", 24)))
+    
+    if not isinstance(bids_data, dict):
+        errors.append("Bids must be a dictionary")
+        return errors
+    
+    for device_id, device_bids in bids_data.items():
+        if not isinstance(device_bids, dict):
+            errors.append(f"Device {device_id}: bids must be a dictionary")
+            continue
+        
+        for bid_label in ['A', 'B', 'C']:
+            if bid_label not in device_bids:
+                continue
+            
+            bid = device_bids[bid_label]
+            if not isinstance(bid, dict):
+                errors.append(f"Device {device_id}, Bid {bid_label}: must be a dictionary")
+                continue
+            
+            # Validate price
+            if 'price' not in bid:
+                errors.append(f"Device {device_id}, Bid {bid_label}: missing 'price' field")
+                continue
+            
+            try:
+                price = float(bid['price'])
+                if price < price_floor or price > price_cap:
+                    errors.append(
+                        f"Device {device_id}, Bid {bid_label}: price {price} outside bounds [{price_floor}, {price_cap}]"
+                    )
+            except (ValueError, TypeError):
+                errors.append(f"Device {device_id}, Bid {bid_label}: price must be a number")
+            
+            # Validate hours
+            if 'hours' not in bid:
+                errors.append(f"Device {device_id}, Bid {bid_label}: missing 'hours' field")
+                continue
+            
+            hours = bid['hours']
+            if not isinstance(hours, list):
+                errors.append(f"Device {device_id}, Bid {bid_label}: hours must be a list")
+                continue
+            
+            if len(hours) == 0:
+                errors.append(f"Device {device_id}, Bid {bid_label}: hours cannot be empty")
+                continue
+            if horizon_hours > 0 and len(hours) != horizon_hours:
+                errors.append(
+                    f"Device {device_id}, Bid {bid_label}: hours length {len(hours)} must equal horizon {horizon_hours}"
+                )
+            
+            # Validate each hour value
+            for i, val in enumerate(hours):
+                try:
+                    float(val)
+                except (ValueError, TypeError):
+                    errors.append(f"Device {device_id}, Bid {bid_label}, hour {i}: must be a number")
+                    break
+    
+    return errors
 
 
 @ns.route("/forecast")
@@ -46,15 +127,23 @@ class ForecastAPI(Resource):
     def post(self):
         data = request.json
         player_id = int(get_jwt_identity())
+        per_device = data.get("devices") if isinstance(data, dict) else None
         
         # Validate forecast against device constraints if devices are defined
         session = Session.query.get(data["session_id"])
         if session and session.scenario:
             config = session.scenario.config or {}
+            
+            # Validate bids structure if provided
+            bids_data = data.get("bids")
+            if bids_data:
+                bid_errors = _validate_bids_structure(bids_data, config)
+                if bid_errors:
+                    return {"error": "Bid validation failed", "details": bid_errors}, HTTPStatus.BAD_REQUEST
+            
             devices_cfg = config.get("devices", [])
             devices_cfg = _filter_devices_by_selected_type(session.id, player_id, config, devices_cfg)
             # If payload includes per-device hours, validate each; also compute aggregate
-            per_device = data.get("devices") if isinstance(data, dict) else None
             if isinstance(per_device, list) and per_device:
                 # map config by id
                 cfg_by_id = {d.get("id"): d for d in devices_cfg if isinstance(d, dict)}
@@ -89,7 +178,19 @@ class ForecastAPI(Resource):
                         "details": validation_errors
                     }, HTTPStatus.BAD_REQUEST
         
-        f = Forecast(session_id=data["session_id"], player_id=player_id, round_num=data["round_num"], data={"hours": data["hours"]})
+        # Store forecast with optional bids
+        forecast_data = {"hours": data["hours"]}
+        if isinstance(per_device, list) and per_device:
+            forecast_data["devices"] = per_device
+        bids_data = data.get("bids")
+        
+        f = Forecast(
+            session_id=data["session_id"], 
+            player_id=player_id, 
+            round_num=data["round_num"], 
+            data=forecast_data,
+            bids=bids_data  # New: store bids separately
+        )
         db.session.add(f)
         db.session.commit()
         
@@ -123,14 +224,22 @@ class ForecastFull(Resource):
     def post(self):
         data = request.json
         player_id = int(get_jwt_identity())
+        per_device = data.get("devices") if isinstance(data, dict) else None
         
         # Validate forecast against device constraints if devices are defined
         session = Session.query.get(data["session_id"])
         if session and session.scenario:
             config = session.scenario.config or {}
+            
+            # Validate bids structure if provided
+            bids_data = data.get("bids")
+            if bids_data:
+                bid_errors = _validate_bids_structure(bids_data, config)
+                if bid_errors:
+                    return {"error": "Bid validation failed", "details": bid_errors}, HTTPStatus.BAD_REQUEST
+            
             devices_cfg = config.get("devices", [])
             devices_cfg = _filter_devices_by_selected_type(session.id, player_id, config, devices_cfg)
-            per_device = data.get("devices") if isinstance(data, dict) else None
             if isinstance(per_device, list) and per_device:
                 cfg_by_id = {d.get("id"): d for d in devices_cfg if isinstance(d, dict)}
                 agg = None
@@ -170,10 +279,20 @@ class ForecastFull(Resource):
         if isinstance(per_device, list) and per_device:
             forecast_data["devices"] = per_device
         
+        # Store bids if provided
+        bids_data = data.get("bids")
+        
         if not f:
-            f = Forecast(session_id=data["session_id"], player_id=player_id, round_num=0, data=forecast_data)
+            f = Forecast(
+                session_id=data["session_id"], 
+                player_id=player_id, 
+                round_num=0, 
+                data=forecast_data,
+                bids=bids_data
+            )
         else:
             f.data = forecast_data
+            f.bids = bids_data
         db.session.add(f)
         db.session.commit()
         return {"status": "ok", "id": f.id}
@@ -186,10 +305,11 @@ class ForecastFull(Resource):
         player_id = int(get_jwt_identity())
         f = Forecast.query.filter_by(session_id=session_id, player_id=player_id, round_num=0).first()
         if not f:
-            return {"hours": None, "devices": None}
+            return {"hours": None, "devices": None, "bids": None}
         return {
             "hours": f.data.get("hours") if f else None,
-            "devices": f.data.get("devices") if f else None
+            "devices": f.data.get("devices") if f else None,
+            "bids": f.bids if f else None
         }
 
 
