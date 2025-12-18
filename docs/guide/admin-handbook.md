@@ -1,14 +1,19 @@
 # Admin Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.4 (Sprint 23)  
-**Date**: 17 Dec 2025  
+**Version**: 1.5 (Sprint 23)  
+**Date**: 18 Dec 2025  
 **Audience**: System Administrators
 
 ---
 
-## What's New (Sprint 23)
+## What's New (Sprint 23 - Updated)
 
+- **Hourly Market Clearing**: Calculation engine performs market clearing for each hour within a round
+  - More accurate energy market simulation with hourly price discovery
+  - Performance impact: ~linear with round_span_hours (8h round takes ~8x longer than 1h)
+  - Scalability: Tested with 1h, 3h, 4h, 6h, 8h round configurations
+  - Database: `hourly_results` field added to result records
 - **Campaign Catalog System**: Published campaigns visible to all players in catalog
 - **Solo Session Management**: Players can start and track solo sessions independently
 - **Player Progress Tracking**: Automatic scenario completion with reset functionality

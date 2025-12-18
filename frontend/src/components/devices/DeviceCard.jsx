@@ -12,6 +12,8 @@ import {
   Box,
   Tooltip,
   TextField,
+  FormControlLabel,
+  Switch,
 } from '@mui/material';
 import {
   ExpandMore as ExpandMoreIcon,
@@ -220,6 +222,24 @@ export default function DeviceCard({
                   unit="ZAR/MWh"
                   tooltip="Variable cost for each MWh produced by this device. Used as bid price in market clearing."
                 />
+                
+                {/* Multi-Bid Setting */}
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={device.enable_multi_bid === true}
+                      onChange={(e) => handleFieldChange('enable_multi_bid', e.target.checked)}
+                    />
+                  }
+                  label={
+                    <Stack spacing={0.5}>
+                      <Typography variant="body2">Enable Multi-Bid for this device</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        When enabled, players can submit 3 price bids (A/B/C) with separate quantity profiles for this specific device. If disabled, uses classic forecast-only mode.
+                      </Typography>
+                    </Stack>
+                  }
+                />
               </>
             ) : (
               <>
@@ -252,6 +272,35 @@ export default function DeviceCard({
                   step={5}
                   unit="MW"
                   tooltip="Maximum MW this load can reliably reduce on request (flexible demand). Must not exceed peak load."
+                />
+                
+                <NumberInput
+                  label="Value of Lost Load"
+                  value={device.value_of_lost_load || 5000}
+                  onChange={(val) => handleFieldChange('value_of_lost_load', val)}
+                  min={0}
+                  max={50000}
+                  step={100}
+                  unit="ZAR/MWh"
+                  tooltip="Willingness-to-pay for electricity. Used as implicit bid price when multi-bid is disabled. Higher values = inelastic demand (must be served). Default: 5000 ZAR/MWh."
+                />
+                
+                {/* Multi-Bid Setting for Consumers */}
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={device.enable_multi_bid === true}
+                      onChange={(e) => handleFieldChange('enable_multi_bid', e.target.checked)}
+                    />
+                  }
+                  label={
+                    <Stack spacing={0.5}>
+                      <Typography variant="body2">Enable Multi-Bid for this consumer</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        When enabled, players can submit 3 demand bids (A/B/C) with different willingness-to-pay prices. If disabled, uses forecast with value_of_lost_load as implicit WTP.
+                      </Typography>
+                    </Stack>
+                  }
                 />
               </>
             )}

@@ -214,14 +214,15 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                                 const lotColors = {
                                   'A': '#64b5f6',
                                   'B': '#2196f3',
-                                  'C': '#1565c0'
+                                  'C': '#1565c0',
+                                  'CLASSIC': '#757575'  // Gray for classic devices
                                 };
                                 
                                 return (
                                   <TableRow key={lotLabel}>
                                     <TableCell>
                                       <Chip 
-                                        label={`Lot ${lotLabel}`} 
+                                        label={lotLabel === 'CLASSIC' ? 'Classic' : `Lot ${lotLabel}`} 
                                         size="small"
                                         sx={{ 
                                           bgcolor: lotColors[lotLabel] || '#64b5f6',

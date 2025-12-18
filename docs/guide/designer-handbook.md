@@ -1,14 +1,19 @@
 # Designer Handbook (KSE)
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.3 (Sprint 23)  
-**Date**: 17 Dec 2025  
+**Version**: 1.4 (Sprint 23)  
+**Date**: 18 Dec 2025  
 **Audience**: Designers/Scenario Editors
 
 ---
 
-## What's New (Sprint 23)
+## What's New (Sprint 23 - Updated)
 
+- **Hourly Market Clearing**: Engine automatically performs market clearing for each hour within a round
+  - Works with any `round_span_hours` setting (1, 3, 4, 6, 8, 12, 24, etc.)
+  - Provides more realistic price discovery based on hourly conditions
+  - Round MCP displayed as average across all hours
+  - **Design Impact**: Consider shorter rounds (2-4 hours) for more granular market signals
 - **Campaign Publishing**: Publish campaigns to make them visible in player catalog
 - **Scenario Ordering**: Drag-and-drop scenario ordering within campaigns
 - **Solo/Cohort Toggles**: Control whether scenarios can be played solo or in cohort sessions

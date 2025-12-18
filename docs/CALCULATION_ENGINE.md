@@ -4,8 +4,8 @@
 
 This document describes the exact calculations performed when a player submits forecast data for a round in the Energy Market Simulation Game (EMSG). The engine computes market clearing price, dispatch, revenues, costs, and profits based on energy market principles.
 
-**Version:** 1.2  
-**Last Updated:** December 17, 2025
+**Version:** 1.3  
+**Last Updated:** December 18, 2025
 
 ---
 
@@ -13,9 +13,10 @@ This document describes the exact calculations performed when a player submits f
 
 1. [Input Data](#input-data)
 2. [Market Clearing Process](#market-clearing-process)
-   - 2.1 [Synthetic Supply/Demand Generation](#synthetic-supply-demand-generation)
-   - 2.2 [Multi-Bid Player Supply (Optional)](#multi-bid-player-supply)
-   - 2.3 [Market Clearing Algorithm](#market-clearing-algorithm)
+   - 2.1 [Hourly Market Clearing Overview](#hourly-market-clearing-overview)
+   - 2.2 [Synthetic Supply/Demand Generation](#synthetic-supply-demand-generation)
+   - 2.3 [Multi-Bid Player Supply (Optional)](#multi-bid-player-supply)
+   - 2.4 [Market Clearing Algorithm](#market-clearing-algorithm)
 3. [Event Application](#event-application)
 4. [Player Dispatch Calculation](#player-dispatch-calculation)
 5. [Revenue Calculation](#revenue-calculation)
@@ -75,6 +76,62 @@ From the scenario's `config` object:
 ---
 
 ## Market Clearing Process
+
+### Hourly Market Clearing Overview
+
+**Important:** As of version 1.3, the engine performs **hourly market clearing** for each hour within a round.
+
+#### Process Flow
+
+1. **For each hour** in the round (determined by `round_span_hours`):
+   - Generate or collect supply/demand curves for that specific hour
+   - Execute market clearing algorithm → produces hourly MCP and volume
+   - Track dispatch quantities per player per hour
+   - Calculate hourly costs and revenues
+
+2. **Aggregate results** across all hours:
+   - Sum planned, dispatched, and actual MWh across hours
+   - Sum revenues, costs, and profits across hours
+   - Calculate average MCP across all hours
+   - Store hourly results for detailed analysis
+
+#### Example: Round with 4 Hours
+
+```python
+round_span_hours = 4  # Config setting
+round_num = 2         # Second round
+base_idx = (round_num - 1) * round_span_hours  # = 4 (hours 4-7)
+
+# Hour-by-hour processing:
+for hour_offset in range(4):
+    hour_idx = base_idx + hour_offset  # 4, 5, 6, 7
+    
+    # Get supply/demand for this specific hour
+    supply_hour = extract_hour_data(forecasts, hour_idx)
+    demand_hour = extract_hour_data(forecasts, hour_idx)
+    
+    # Clear market for this hour
+    mcp_hour, volume_hour = clear_market(supply_hour, demand_hour)
+    
+    # Store hourly result
+    hourly_results.append({
+        'hour_idx': hour_idx,
+        'mcp': mcp_hour,
+        'volume': volume_hour
+    })
+
+# Final round results
+avg_mcp = mean([h['mcp'] for h in hourly_results])
+total_volume = sum([h['volume'] for h in hourly_results])
+```
+
+**Key Benefits:**
+- Realistic hourly price discovery
+- Accurate tracking of time-varying supply/demand
+- Better representation of renewable intermittency
+- Works with any `round_span_hours` setting (1, 3, 4, 6, 8, 12, 24, etc.)
+
+---
 
 ### Step 1: Generate Supply and Demand Curves
 

@@ -709,62 +709,89 @@ export default function Player() {
             const t = (pts||[]).find(x=> x.id===sel)
             devs = t?.devices || []
             console.log('Selected type:', sel, 'Found type:', t, 'Devices:', devs)
+            
+            // Prepare all state updates before calling setters (so React batches them)
+            const fh = Number(gen.forecast_horizon_hours||24)
+            const globalBidding = data.market?.enable_player_bidding || false
+            
+            // Call all setters together without interruption
             setTypeDevices(devs)
-            // initialize deviceHours if empty
             setDeviceHours(prev=>{
-              const fh = Number(gen.forecast_horizon_hours||24)
               const next = { ...prev }
               devs.forEach(did=>{ if(!next[did]) next[did] = Array.from({length: fh}, ()=> 0) })
               return next
             })
-            // initialize deviceBids if bidding enabled
-            if (s.data?.market?.enable_player_bidding) {
-              setDeviceBids(prev => {
-                const next = { ...prev }
-                devs.forEach(did => {
-                  if (!next[did]) {
-                    const deviceDef = devices.find(d => d.id === did)
-                    const defaultPrices = getDefaultBidPrices(deviceDef)
-                    const fh = Number(gen.forecast_horizon_hours||24)
-                    next[did] = {
-                      A: { price: defaultPrices.A, hours: Array.from({length: fh}, () => 0) },
-                      B: { price: defaultPrices.B, hours: Array.from({length: fh}, () => 0) },
-                      C: { price: defaultPrices.C, hours: Array.from({length: fh}, () => 0) }
-                    }
+            setDeviceBids(prev => {
+              const next = { ...prev }
+              devs.forEach(did => {
+                const deviceDef = devices.find(d => d.id === did)
+                const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
+                  ? deviceDef.enable_multi_bid 
+                  : globalBidding
+                
+                if (deviceBidding && !next[did]) {
+                  const defaultPrices = getDefaultBidPrices(deviceDef)
+                  const baseProfile = buildDeviceProfile(deviceDef, fh)
+                  
+                  // Split capacity across three lots: A=40%, B=35%, C=25%
+                  const hoursA = baseProfile.map(v => Math.round(v * 0.40 * 100) / 100)
+                  const hoursB = baseProfile.map(v => Math.round(v * 0.35 * 100) / 100)
+                  const hoursC = baseProfile.map(v => Math.round(v * 0.25 * 100) / 100)
+                  
+                  next[did] = {
+                    A: { price: defaultPrices.A, hours: hoursA },
+                    B: { price: defaultPrices.B, hours: hoursB },
+                    C: { price: defaultPrices.C, hours: hoursC }
                   }
-                })
-                return next
+                }
               })
-            }
+              return next
+            })
+            console.log('[Player] Initialized type devices:', devs.length, 'with bidding for devices:', 
+              devs.filter(did => {
+                const deviceDef = devices.find(d => d.id === did)
+                return deviceDef?.enable_multi_bid !== undefined ? deviceDef.enable_multi_bid : globalBidding
+              })
+            )
           } else if (allowed.length === 0 && devices.length > 0) {
             // Solo mode (no player types defined): use ALL scenario devices
             devs = devices.map(d => d.id)
+            
+            const fh = Number(gen.forecast_horizon_hours||24)
+            const globalBidding = data.market?.enable_player_bidding || false
+            
             setTypeDevices(devs)
             setDeviceHours(prev=>{
-              const fh = Number(gen.forecast_horizon_hours||24)
               const next = { ...prev }
               devs.forEach(did=>{ if(!next[did]) next[did] = Array.from({length: fh}, ()=> 0) })
               return next
             })
-            // initialize deviceBids if bidding enabled
-            if (s.data?.market?.enable_player_bidding) {
-              setDeviceBids(prev => {
-                const next = { ...prev }
-                devs.forEach(did => {
-                  if (!next[did]) {
-                    const deviceDef = devices.find(d => d.id === did)
-                    const defaultPrices = getDefaultBidPrices(deviceDef)
-                    const fh = Number(gen.forecast_horizon_hours||24)
-                    next[did] = {
-                      A: { price: defaultPrices.A, hours: Array.from({length: fh}, () => 0) },
-                      B: { price: defaultPrices.B, hours: Array.from({length: fh}, () => 0) },
-                      C: { price: defaultPrices.C, hours: Array.from({length: fh}, () => 0) }
-                    }
+            setDeviceBids(prev => {
+              const next = { ...prev }
+              devs.forEach(did => {
+                const deviceDef = devices.find(d => d.id === did)
+                const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
+                  ? deviceDef.enable_multi_bid 
+                  : globalBidding
+                
+                if (deviceBidding && !next[did]) {
+                  const defaultPrices = getDefaultBidPrices(deviceDef)
+                  const baseProfile = buildDeviceProfile(deviceDef, fh)
+                  
+                  // Split capacity across three lots: A=40%, B=35%, C=25%
+                  const hoursA = baseProfile.map(v => Math.round(v * 0.40 * 100) / 100)
+                  const hoursB = baseProfile.map(v => Math.round(v * 0.35 * 100) / 100)
+                  const hoursC = baseProfile.map(v => Math.round(v * 0.25 * 100) / 100)
+                  
+                  next[did] = {
+                    A: { price: defaultPrices.A, hours: hoursA },
+                    B: { price: defaultPrices.B, hours: hoursB },
+                    C: { price: defaultPrices.C, hours: hoursC }
                   }
-                })
-                return next
+                }
               })
-            }
+              return next
+            })
           }
           if(allowed.length>0 && !sel){
             setTypeDialogOpen(true)
@@ -1769,14 +1796,26 @@ export default function Player() {
                         
                         {/* Multi-Bid Price Inputs */}
                         {(() => {
+                          const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
+                            ? deviceDef.enable_multi_bid 
+                            : biddingEnabled
                           console.log(`[Player] Render check for device ${did}:`, {
-                            biddingEnabled,
+                            deviceBidding,
+                            globalBidding: biddingEnabled,
                             deviceBidsExists: !!deviceBids[did],
-                            deviceBids: deviceBids[did]
+                            deviceBids: deviceBids[did],
+                            deviceDef_enable_multi_bid: deviceDef?.enable_multi_bid,
+                            deviceDef_name: deviceDef?.name,
+                            deviceDef_type: deviceDef?.type
                           });
                           return null;
                         })()}
-                        {biddingEnabled && deviceBids[did] && (
+                        {(() => {
+                          const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
+                            ? deviceDef.enable_multi_bid 
+                            : biddingEnabled
+                          return deviceBidding && deviceBids[did]
+                        })() && (
                           <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
                             <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1.5 }}>
                               Multi-Bid Pricing
@@ -1877,7 +1916,13 @@ export default function Player() {
                         
                         {view === 'chart' && (
                           <Box sx={{ mb: 2 }}>
-                            {biddingEnabled && deviceBids[did] && (
+                            {(() => {
+                              // Check device-level bidding setting (fallback to global)
+                              const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
+                                ? deviceDef.enable_multi_bid 
+                                : biddingEnabled
+                              return deviceBidding && deviceBids[did]
+                            })() && (
                               <>
                                 <Box sx={{ mb: 3 }}>
                                   <StackedLotsChart
@@ -1939,7 +1984,13 @@ export default function Player() {
                                 </Box>
                               </>
                             )}
-                            {!biddingEnabled && (
+                            {(() => {
+                              // Check device-level bidding setting (fallback to global)
+                              const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
+                                ? deviceDef.enable_multi_bid 
+                                : biddingEnabled
+                              return !deviceBidding
+                            })() && (
                               <Box>
                                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
                                   Device Forecast
@@ -1963,13 +2014,23 @@ export default function Player() {
                         )}
                         {view === 'fields' && (
                           <Box sx={{ mt: 1 }}>
-                            {biddingEnabled && deviceBids[did] && (
-                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: '#e3f2fd', borderRadius: 1 }}>
-                                Currently editing: <strong>Lot {activeLot}</strong> (Click a price field above to switch lots)
-                              </Typography>
-                            )}
                             {(() => {
-                              const series = biddingEnabled && deviceBids[did] ? (deviceBids[did][activeLot]?.hours || []) : (deviceHours[did] || [])
+                              // Check device-level bidding setting (fallback to global)
+                              const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
+                                ? deviceDef.enable_multi_bid 
+                                : biddingEnabled
+                              return deviceBidding && deviceBids[did] ? (
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: '#e3f2fd', borderRadius: 1 }}>
+                                  Currently editing: <strong>Lot {activeLot}</strong> (Click a price field above to switch lots)
+                                </Typography>
+                              ) : null
+                            })()}
+                            {(() => {
+                              // Check device-level bidding setting (fallback to global)
+                              const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
+                                ? deviceDef.enable_multi_bid 
+                                : biddingEnabled
+                              const series = deviceBidding && deviceBids[did] ? (deviceBids[did][activeLot]?.hours || []) : (deviceHours[did] || [])
                               const freeze = Number(cfg.general.freeze_hours || 6)
                               const lockedEnd = freeze
                               const todayEnd = 24
@@ -2033,7 +2094,11 @@ export default function Player() {
                                                         label={`h${i + 1}`}
                                                         value={v}
                                                         onChange={(e) => {
-                                                          if (biddingEnabled && deviceBids[did]) {
+                                                          // Check device-level bidding setting (fallback to global)
+                                                          const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
+                                                            ? deviceDef.enable_multi_bid 
+                                                            : biddingEnabled
+                                                          if (deviceBidding && deviceBids[did]) {
                                                             onBidQuantityChange(did, activeLot, i, e.target.value)
                                                           } else {
                                                             onDeviceChange(did, i, e.target.value)

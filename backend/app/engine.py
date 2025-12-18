@@ -126,6 +126,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                            config: dict) -> Tuple[List[Tuple[float, float]], List[dict]]:
     """
     Merge player bids with synthetic supply curve for market clearing.
+    Includes both multi-bid devices (3 lots) and classic devices (implicit single bid at marginal cost).
     
     Args:
         player_forecasts: Dict of {player_id: forecast_data_with_bids}
@@ -136,30 +137,81 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
     Returns:
         Tuple of (combined_supply_curve, bid_metadata_list)
     """
-    # Check if bidding is enabled
-    if not config.get("market", {}).get("enable_player_bidding", False):
-        return synthetic_supply, []
+    # Check if global bidding setting is enabled
+    global_bidding_enabled = config.get("market", {}).get("enable_player_bidding", False)
+    
+    # Build device map for quick lookup
+    devices = {d['id']: d for d in config.get('devices', [])}
     
     supply_bids = []
     
     # Collect all player device bids for this hour
     for player_id, forecast_data in player_forecasts.items():
-        bids_data = forecast_data.get('bids')
-        if not bids_data:
-            continue
+        bids_data = forecast_data.get('bids', {})
+        devices_data = forecast_data.get('devices', [])
         
-        for device_id, device_bids in bids_data.items():
-            for bid_label in ['A', 'B', 'C']:
-                if bid_label not in device_bids:
+        # Build a set of device IDs from all sources
+        device_ids_from_bids = set(bids_data.keys()) if bids_data else set()
+        
+        # Get device IDs from forecast devices data
+        if isinstance(devices_data, list):
+            device_ids_from_forecast = {d.get('device_id') for d in devices_data if d.get('device_id')}
+        elif isinstance(devices_data, dict):
+            device_ids_from_forecast = set(devices_data.keys())
+        else:
+            device_ids_from_forecast = set()
+        
+        # Process all devices (from either bids or forecasts)
+        all_device_ids = device_ids_from_bids | device_ids_from_forecast
+        
+        for device_id in all_device_ids:
+            device = devices.get(device_id, {})
+            device_bidding_enabled = device.get('enable_multi_bid')
+            
+            # Use device-level setting if specified, otherwise fall back to global
+            if device_bidding_enabled is None:
+                device_bidding_enabled = global_bidding_enabled
+            
+            # Multi-bid enabled: use 3 lots (A/B/C)
+            if device_bidding_enabled and device_id in device_ids_from_bids:
+                device_bids = bids_data.get(device_id, {})
+                for bid_label in ['A', 'B', 'C']:
+                    if bid_label not in device_bids:
+                        continue
+                    
+                    bid = device_bids[bid_label]
+                    hours = bid.get('hours', [])
+                    if hour_idx >= len(hours):
+                        continue
+                    
+                    quantity = float(hours[hour_idx])
+                    price = float(bid.get('price', 0))
+                    
+                    if quantity > 0:
+                        supply_bids.append({
+                            'price': price,
+                            'quantity': quantity,
+                            'player_id': player_id,
+                            'device_id': device_id,
+                            'bid_label': bid_label
+                        })
+            else:
+                # Classic device: use forecast quantity at marginal cost
+                # Get device-level forecast from the devices array
+                if isinstance(devices_data, dict):
+                    device_forecast = devices_data.get(device_id, [])
+                elif isinstance(devices_data, list):
+                    # List format: [{"device_id": "...", "hours": [...]}]
+                    device_entry = next((d for d in devices_data if d.get('device_id') == device_id), None)
+                    device_forecast = device_entry.get('hours', []) if device_entry else []
+                else:
+                    device_forecast = []
+                
+                if not device_forecast or hour_idx >= len(device_forecast):
                     continue
                 
-                bid = device_bids[bid_label]
-                hours = bid.get('hours', [])
-                if hour_idx >= len(hours):
-                    continue
-                
-                quantity = float(hours[hour_idx])
-                price = float(bid.get('price', 0))
+                quantity = float(device_forecast[hour_idx])
+                price = float(device.get('cost_per_mwh_zar', 0))
                 
                 if quantity > 0:
                     supply_bids.append({
@@ -167,7 +219,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                         'quantity': quantity,
                         'player_id': player_id,
                         'device_id': device_id,
-                        'bid_label': bid_label
+                        'bid_label': 'CLASSIC'  # Marker for implicit bids
                     })
     
     # Sort supply_bids by price (merit order - ascending)
@@ -188,6 +240,133 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
     combined_supply = sorted(combined_supply, key=lambda x: x[0])
     
     return combined_supply, supply_bids
+
+
+def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
+                           synthetic_demand: List[Tuple[float, float]],
+                           config: dict) -> Tuple[List[Tuple[float, float]], List[dict]]:
+    """
+    Merge player demand bids with synthetic demand curve for market clearing.
+    Includes both multi-bid consumer devices (3 lots with WTP) and classic consumer devices (implicit WTP).
+    
+    Args:
+        player_forecasts: Dict of {player_id: forecast_data_with_bids}
+        hour_idx: Hour index within the round (0-based)
+        synthetic_demand: Base demand curve from config
+        config: Scenario configuration
+    
+    Returns:
+        Tuple of (combined_demand_curve, bid_metadata_list)
+    """
+    # Check if global bidding setting is enabled
+    global_bidding_enabled = config.get("market", {}).get("enable_player_bidding", False)
+    
+    # Build device map for quick lookup
+    devices = {d['id']: d for d in config.get('devices', [])}
+    
+    demand_bids = []
+    
+    # Collect all player consumer device bids for this hour
+    for player_id, forecast_data in player_forecasts.items():
+        bids_data = forecast_data.get('bids', {})
+        devices_data = forecast_data.get('devices', [])
+        
+        # Build a set of device IDs from all sources
+        device_ids_from_bids = set(bids_data.keys()) if bids_data else set()
+        
+        # Get device IDs from forecast devices data
+        if isinstance(devices_data, list):
+            device_ids_from_forecast = {d.get('device_id') for d in devices_data if d.get('device_id')}
+        elif isinstance(devices_data, dict):
+            device_ids_from_forecast = set(devices_data.keys())
+        else:
+            device_ids_from_forecast = set()
+        
+        # Process all devices (from either bids or forecasts)
+        all_device_ids = device_ids_from_bids | device_ids_from_forecast
+        
+        for device_id in all_device_ids:
+            device = devices.get(device_id, {})
+            device_type = device.get('type', '').lower()
+            
+            # Skip non-consumer devices
+            if 'load' not in device_type:
+                continue
+            
+            device_bidding_enabled = device.get('enable_multi_bid')
+            
+            # Use device-level setting if specified, otherwise fall back to global
+            if device_bidding_enabled is None:
+                device_bidding_enabled = global_bidding_enabled
+            
+            # Multi-bid enabled: use 3 lots (A/B/C) with willingness-to-pay
+            if device_bidding_enabled and device_id in device_ids_from_bids:
+                device_bids = bids_data.get(device_id, {})
+                for bid_label in ['A', 'B', 'C']:
+                    if bid_label not in device_bids:
+                        continue
+                    
+                    bid = device_bids[bid_label]
+                    hours = bid.get('hours', [])
+                    if hour_idx >= len(hours):
+                        continue
+                    
+                    quantity = float(hours[hour_idx])
+                    price = float(bid.get('price', 0))  # Willingness-to-pay
+                    
+                    if quantity > 0:
+                        demand_bids.append({
+                            'price': price,
+                            'quantity': quantity,
+                            'player_id': player_id,
+                            'device_id': device_id,
+                            'bid_label': bid_label
+                        })
+            else:
+                # Classic consumer device: use forecast quantity at implicit WTP
+                if isinstance(devices_data, dict):
+                    device_forecast = devices_data.get(device_id, [])
+                elif isinstance(devices_data, list):
+                    # List format: [{"device_id": "...", "hours": [...]}]
+                    device_entry = next((d for d in devices_data if d.get('device_id') == device_id), None)
+                    device_forecast = device_entry.get('hours', []) if device_entry else []
+                else:
+                    device_forecast = []
+                
+                if not device_forecast or hour_idx >= len(device_forecast):
+                    continue
+                
+                quantity = float(device_forecast[hour_idx])
+                # Use value_of_lost_load or a high default WTP for inelastic demand
+                price = float(device.get('value_of_lost_load', device.get('willingness_to_pay', 5000)))
+                
+                if quantity > 0:
+                    demand_bids.append({
+                        'price': price,
+                        'quantity': quantity,
+                        'player_id': player_id,
+                        'device_id': device_id,
+                        'bid_label': 'CLASSIC'  # Marker for implicit bids
+                    })
+    
+    # Sort demand_bids by price (descending - highest WTP first)
+    demand_bids = sorted(demand_bids, key=lambda x: x['price'], reverse=True)
+    
+    # Merge player bids with synthetic demand
+    combined_demand = []
+    
+    # Add synthetic demand steps
+    for price, quantity in synthetic_demand:
+        combined_demand.append((price, quantity))
+    
+    # Add sorted player demand bids
+    for bid in demand_bids:
+        combined_demand.append((bid['price'], bid['quantity']))
+    
+    # Sort combined demand by price (descending - highest WTP first)
+    combined_demand = sorted(combined_demand, key=lambda x: x[0], reverse=True)
+    
+    return combined_demand, demand_bids
 
 
 def track_bid_dispatch(supply_bids: List[dict], mcp: float, volume: float, 
@@ -240,6 +419,63 @@ def track_bid_dispatch(supply_bids: List[dict], mcp: float, volume: float,
         dispatch_tracking[player_id][device_id][bid_label] = {
             'mw_offered': quantity,
             'mw_dispatched': round(dispatched, 3),
+            'price_bid': price,
+            'mcp': mcp
+        }
+    
+    return dispatch_tracking
+
+
+def track_demand_dispatch(demand_bids: List[dict], mcp: float, volume: float,
+                          synthetic_demand: List[Tuple[float, float]]) -> Dict[int, Dict[str, Dict[str, dict]]]:
+    """
+    Track which consumer bids were served during market clearing.
+    
+    Args:
+        demand_bids: List of demand bid metadata from build_demand_from_bids
+        mcp: Market clearing price
+        volume: Total cleared volume
+        synthetic_demand: Synthetic demand curve
+    
+    Returns:
+        Dict of {player_id: {device_id: {bid_label: dispatch_info}}}
+    """
+    # Sort all demand (synthetic + bids) by price (descending - highest WTP first)
+    all_demand = [(p, q, None, None, None) for p, q in synthetic_demand]  # (price, qty, player, device, label)
+    for bid in demand_bids:
+        all_demand.append((bid['price'], bid['quantity'], bid['player_id'], bid['device_id'], bid['bid_label']))
+    
+    all_demand = sorted(all_demand, key=lambda x: x[0], reverse=True)
+    
+    # Simulate demand satisfaction (consumers with highest WTP are served first)
+    remaining_supply = volume
+    dispatch_tracking = {}
+    
+    for price, quantity, player_id, device_id, bid_label in all_demand:
+        if remaining_supply <= 0:
+            break
+        
+        if price < mcp:
+            break  # WTP too low, not served
+        
+        if player_id is None:
+            # Synthetic demand, skip tracking
+            served = min(quantity, remaining_supply)
+            remaining_supply -= served
+            continue
+        
+        # Player consumer bid
+        served = min(quantity, remaining_supply)
+        remaining_supply -= served
+        
+        if player_id not in dispatch_tracking:
+            dispatch_tracking[player_id] = {}
+        if device_id not in dispatch_tracking[player_id]:
+            dispatch_tracking[player_id][device_id] = {}
+        
+        dispatch_tracking[player_id][device_id][bid_label] = {
+            'mw_offered': quantity,
+            'mw_dispatched': round(served, 3),
             'price_bid': price,
             'mcp': mcp
         }
@@ -397,7 +633,7 @@ def compute_zone_flows(atc: List[List[float]], net_pos: List[float], losses: flo
 
 def run_round(session_id: int, round_num: int, players: List[int], forecasts: Dict[int, dict], config: dict, mode: str = "isolated_per_player", seed: Optional[str] = None) -> dict:
     """
-    Compute basic market results for a round. Supports both legacy (quantity-only) and multi-bid pricing.
+    Compute basic market results for a round with hourly market clearing.
     
     Args:
         forecasts: Dict of {player_id: forecast_data}
@@ -406,7 +642,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     - Dict with 'hours' and optional 'bids' keys
     
     Returns:
-        Dict with mcp, volume, round_kpis, and optionally bid_dispatch
+        Dict with mcp, volume, round_kpis, hourly_results, and optionally bid_dispatch
     """
     span = int(config.get("general", {}).get("round_span_hours", 6))
     base_idx = (round_num - 1) * span
@@ -423,119 +659,216 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             normalized_forecasts[pid] = {'hours': [], 'bids': None}
     
     # Generate synthetic supply/demand
-    synthetic_supply, demand = generate_curves_from_config(config, seed=seed)
+    synthetic_supply, synthetic_demand = generate_curves_from_config(config, seed=seed)
     
     # Check if multi-bid pricing is enabled
     enable_bidding = config.get("market", {}).get("enable_player_bidding", False)
-    bid_dispatch_tracking = {}
-    
-    if enable_bidding:
-        # Build supply from player bids (merged with synthetic)
-        # For round-based clearing, we use the first hour of the round
-        supply, supply_bids = build_supply_from_bids(normalized_forecasts, base_idx, synthetic_supply, config)
-    else:
-        supply = synthetic_supply
-        supply_bids = []
-    
-    # Market clearing
-    price, vol = clear_market(supply, demand,
-                              price_floor=config.get("market", {}).get("price_floor", -500),
-                              price_cap=config.get("market", {}).get("price_cap", 5000))
-    
-    # Track bid dispatch if bidding enabled
-    if enable_bidding and supply_bids:
-        bid_dispatch_tracking = track_bid_dispatch(supply_bids, price, vol, synthetic_supply)
-        try:
-            current_app.logger.info(f"[ENGINE] Bid dispatch tracking: {len(bid_dispatch_tracking)} players, {sum(len(v) for v in bid_dispatch_tracking.values())} devices")
-        except:
-            print(f"[ENGINE] Bid dispatch tracking: {len(bid_dispatch_tracking)} players, {sum(len(v) for v in bid_dispatch_tracking.values())} devices")
     
     # Apply only events active for this round
     round_events = select_events_for_round(config.get("events", []), round_num)
-    price, vol = apply_events(price, vol, round_events)
-
-    per_player = {}
-    plans = {}
-    total_planned = 0.0
     
-    # Calculate planned quantities
-    for pid in players:
-        forecast_data = normalized_forecasts.get(pid, {})
-        h = forecast_data.get('hours', [])
-        
-        if enable_bidding and forecast_data.get('bids'):
-            # Sum all bids for this player
-            planned = 0.0
-            for device_id, device_bids in forecast_data['bids'].items():
-                for bid_label in ['A', 'B', 'C']:
-                    if bid_label in device_bids:
-                        bid_hours = device_bids[bid_label].get('hours', [])
-                        window = bid_hours[base_idx: base_idx + span] if bid_hours else [0.0] * span
-                        planned += sum(window)
-        else:
-            # Legacy: use hours array
-            window = h[base_idx: base_idx + span] if h else [0.0] * span
-            planned = sum(window)
-        
-        plans[pid] = planned
-        total_planned += planned
-    dispatch_factor = 1.0
-    if mode == "shared_market" and total_planned > 0:
-        # pro‑rata dispatch if planned exceeds market volume
-        dispatch_factor = min(1.0, vol / total_planned)
-    # configurable actual vs forecast deviation (pct) from config.environment.actual_noise_pct, default 5%
+    # Initialize aggregators for round-level results
+    hourly_results = []
+    bid_dispatch_tracking = {}
+    
+    # Per-player aggregators
+    per_player_planned = {pid: 0.0 for pid in players}
+    per_player_dispatched = {pid: 0.0 for pid in players}
+    per_player_actual = {pid: 0.0 for pid in players}
+    per_player_revenue = {pid: 0.0 for pid in players}
+    per_player_imbalance_cost = {pid: 0.0 for pid in players}
+    per_player_curtailment_cost = {pid: 0.0 for pid in players}
+    per_player_congestion_revenue = {pid: 0.0 for pid in players}
+    
+    # Configurable actual vs forecast deviation (pct)
     try:
         noise_pct = float((config.get("environment", {}) or {}).get("actual_noise_pct", 5))
     except Exception:
         noise_pct = 5.0
     frac = max(0.0, min(1.0, noise_pct / 100.0))
-    # Calculate per-player KPIs
-    for pid in players:
-        planned = plans.get(pid, 0.0)
+    
+    # HOURLY MARKET CLEARING: Loop over each hour in the round
+    for hour_offset in range(span):
+        hour_idx = base_idx + hour_offset
         
-        # For bid-based dispatch, use tracked dispatch quantity
-        if enable_bidding and pid in bid_dispatch_tracking:
-            dispatched = 0.0
-            for device_id, device_dispatch in bid_dispatch_tracking[pid].items():
-                for bid_label, bid_info in device_dispatch.items():
-                    dispatched += bid_info['mw_dispatched']
+        # Build supply and demand curves for this specific hour
+        if enable_bidding:
+            supply, supply_bids = build_supply_from_bids(normalized_forecasts, hour_idx, synthetic_supply, config)
+            demand, demand_bids = build_demand_from_bids(normalized_forecasts, hour_idx, synthetic_demand, config)
         else:
-            dispatched = planned * dispatch_factor
+            supply = synthetic_supply
+            supply_bids = []
+            demand = synthetic_demand
+            demand_bids = []
         
-        noise = random.uniform(-frac, frac) * max(1.0, dispatched)
-        actual = max(0.0, dispatched + noise)
-        imbalance_cost = settle_balancing(dispatched, actual)
+        # Market clearing for this hour
+        price, vol = clear_market(supply, demand,
+                                  price_floor=config.get("market", {}).get("price_floor", -500),
+                                  price_cap=config.get("market", {}).get("price_cap", 5000))
         
-        # Revenue: Uniform MCP for all dispatched MWh
-        revenue = round(dispatched * price, 0)
+        # Apply events to this hour's price and volume
+        price, vol = apply_events(price, vol, round_events)
         
-        # Fuel cost: Based on dispatched quantity and device variable costs
-        fuel = 0  # TODO: Calculate from device.variable_cost_zar_per_mwh
+        # Track bid dispatch for this hour
+        hour_bid_dispatch = {}
+        if enable_bidding and (supply_bids or demand_bids):
+            hour_bid_dispatch = track_bid_dispatch(supply_bids, price, vol, synthetic_supply)
+            demand_dispatch = track_demand_dispatch(demand_bids, price, vol, synthetic_demand)
+            
+            # Merge demand dispatch
+            for player_id, devices in demand_dispatch.items():
+                if player_id not in hour_bid_dispatch:
+                    hour_bid_dispatch[player_id] = {}
+                for device_id, lots in devices.items():
+                    if device_id not in hour_bid_dispatch[player_id]:
+                        hour_bid_dispatch[player_id][device_id] = {}
+                    hour_bid_dispatch[player_id][device_id].update(lots)
         
-        curtailment_amount = max(0.0, planned - dispatched)
-        devices = config.get("devices", [])
-        curtailed, cong_signal = apply_grid(dispatched, config.get("grid", {}).get("atc", []), devices=devices)
-        curtailment_cost = round((curtailment_amount + curtailed) * price, 0)
-        congestion_revenue = round(dispatched * price * cong_signal, 0)
+        # Calculate per-player quantities for this hour
+        hour_plans = {}
+        total_planned = 0.0
         
-        # Profit calculation
-        profit = revenue - fuel - imbalance_cost - curtailment_cost + congestion_revenue
+        for pid in players:
+            forecast_data = normalized_forecasts.get(pid, {})
+            h = forecast_data.get('hours', [])
+            
+            if enable_bidding and forecast_data.get('bids'):
+                # Sum all bids for this player for this hour
+                planned = 0.0
+                for device_id, device_bids in forecast_data['bids'].items():
+                    for bid_label in ['A', 'B', 'C']:
+                        if bid_label in device_bids:
+                            bid_hours = device_bids[bid_label].get('hours', [])
+                            if hour_idx < len(bid_hours):
+                                planned += float(bid_hours[hour_idx])
+            else:
+                # Legacy: use hours array
+                if hour_idx < len(h):
+                    planned = float(h[hour_idx])
+                else:
+                    planned = 0.0
+            
+            hour_plans[pid] = planned
+            total_planned += planned
+        
+        dispatch_factor = 1.0
+        if mode == "shared_market" and total_planned > 0:
+            # pro-rata dispatch if planned exceeds market volume
+            dispatch_factor = min(1.0, vol / total_planned)
+        
+        # Calculate per-player KPIs for this hour
+        for pid in players:
+            planned = hour_plans.get(pid, 0.0)
+            
+            # For bid-based dispatch, use tracked dispatch quantity
+            if enable_bidding and pid in hour_bid_dispatch:
+                dispatched = 0.0
+                for device_id, device_dispatch in hour_bid_dispatch[pid].items():
+                    for bid_label, bid_info in device_dispatch.items():
+                        dispatched += bid_info['mw_dispatched']
+            else:
+                dispatched = planned * dispatch_factor
+            
+            noise = random.uniform(-frac, frac) * max(1.0, dispatched)
+            actual = max(0.0, dispatched + noise)
+            
+            # Determine if player is consumer or generator by checking dispatch tracking
+            is_consumer = False
+            if enable_bidding and pid in hour_bid_dispatch:
+                # Check if any dispatched device is a consumer (from demand_bids)
+                for device_id in hour_bid_dispatch[pid].keys():
+                    device = next((d for d in config.get("devices", []) if d.get("id") == device_id), None)
+                    if device and 'load' in device.get('type', '').lower():
+                        is_consumer = True
+                        break
+            
+            # Imbalance settlement: Different logic for consumers vs generators
+            # Generators: actual > planned → paid up_price, actual < planned → paid down_price
+            # Consumers: actual > planned → pay up_price (need more), actual < planned → get down_price (use less)
+            if is_consumer:
+                # For consumers, imbalance logic is reversed
+                imbalance_cost = settle_balancing(actual, dispatched)  # Swapped arguments
+            else:
+                # For generators, standard logic
+                imbalance_cost = settle_balancing(dispatched, actual)
+            
+            # Revenue/Expense: Uniform MCP for all dispatched MWh
+            # Generators earn revenue (positive), Consumers pay expenses (negative)
+            if is_consumer:
+                revenue = -round(dispatched * price, 0)  # Negative = expense
+            else:
+                revenue = round(dispatched * price, 0)  # Positive = revenue
+            
+            # Fuel cost: Based on dispatched quantity and device variable costs
+            fuel = 0  # TODO: Calculate from device.variable_cost_zar_per_mwh
+            
+            curtailment_amount = max(0.0, planned - dispatched)
+            devices = config.get("devices", [])
+            curtailed, cong_signal = apply_grid(dispatched, config.get("grid", {}).get("atc", []), devices=devices)
+            curtailment_cost = round((curtailment_amount + curtailed) * price, 0)
+            congestion_revenue = round(dispatched * price * cong_signal, 0)
+            
+            # Accumulate hour results to player totals
+            per_player_planned[pid] += planned
+            per_player_dispatched[pid] += dispatched
+            per_player_actual[pid] += actual
+            per_player_revenue[pid] += revenue
+            per_player_imbalance_cost[pid] += imbalance_cost
+            per_player_curtailment_cost[pid] += curtailment_cost
+            per_player_congestion_revenue[pid] += congestion_revenue
+        
+        # Store hourly result
+        hourly_results.append({
+            "hour_idx": hour_idx,
+            "hour_offset": hour_offset,
+            "mcp": round(price, 1),
+            "volume": round(vol, 3),
+        })
+        
+        # Merge hour bid dispatch into overall tracking
+        for player_id, devices in hour_bid_dispatch.items():
+            if player_id not in bid_dispatch_tracking:
+                bid_dispatch_tracking[player_id] = {}
+            for device_id, lots in devices.items():
+                if device_id not in bid_dispatch_tracking[player_id]:
+                    bid_dispatch_tracking[player_id][device_id] = {}
+                # For hourly tracking, we need to aggregate or keep separate lots per hour
+                # Here we'll merge by summing dispatch quantities
+                for bid_label, bid_info in lots.items():
+                    if bid_label not in bid_dispatch_tracking[player_id][device_id]:
+                        bid_dispatch_tracking[player_id][device_id][bid_label] = {
+                            'mw_dispatched': 0.0,
+                            'mw_bid': bid_info.get('mw_bid', 0.0),
+                            'price': bid_info.get('price', 0.0),
+                        }
+                    bid_dispatch_tracking[player_id][device_id][bid_label]['mw_dispatched'] += bid_info.get('mw_dispatched', 0.0)
+    
+    # Calculate average MCP and total volume across all hours
+    avg_mcp = sum(h['mcp'] for h in hourly_results) / len(hourly_results) if hourly_results else 0.0
+    total_volume = sum(h['volume'] for h in hourly_results)
+    
+    # Build per-player round KPIs
+    per_player = {}
+    for pid in players:
+        profit = (per_player_revenue[pid] - per_player_imbalance_cost[pid] - 
+                  per_player_curtailment_cost[pid] + per_player_congestion_revenue[pid])
         
         per_player[pid] = {
-            "planned_mwh": round(planned, 3),
-            "dispatched_mwh": round(dispatched, 3),
-            "actual_mwh": round(actual, 3),
-            "revenue_zar": revenue,
-            "imbalance_cost_zar": imbalance_cost,
-            "curtailment_cost_zar": curtailment_cost,
-            "congestion_revenue_zar": congestion_revenue,
-            "profit_zar": profit,
+            "planned_mwh": round(per_player_planned[pid], 3),
+            "dispatched_mwh": round(per_player_dispatched[pid], 3),
+            "actual_mwh": round(per_player_actual[pid], 3),
+            "revenue_zar": round(per_player_revenue[pid], 0),
+            "imbalance_cost_zar": round(per_player_imbalance_cost[pid], 0),
+            "curtailment_cost_zar": round(per_player_curtailment_cost[pid], 0),
+            "congestion_revenue_zar": round(per_player_congestion_revenue[pid], 0),
+            "profit_zar": round(profit, 0),
         }
 
     result = {
-        "mcp": round(price, 1),
-        "volume": round(vol, 3),
+        "mcp": round(avg_mcp, 1),
+        "volume": round(total_volume, 3),
         "round_kpis": per_player,
+        "hourly_results": hourly_results,
     }
     
     # Include bid dispatch tracking if bidding was enabled

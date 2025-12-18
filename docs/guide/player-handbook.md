@@ -1,14 +1,20 @@
 # Player Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.4 (Sprint 23)  
-**Date**: 17 Dec 2025  
+**Version**: 1.5 (Sprint 23)  
+**Date**: 18 Dec 2025  
 **Audience**: Players/Students
 
 ---
 
-## What's New (Sprint 23)
+## What's New (Sprint 23 - Updated)
 
+- **Hourly Market Clearing**: Market now clears every hour within a round (not just once per round)
+  - More realistic price discovery reflecting time-varying supply and demand
+  - Each hour gets its own Market Clearing Price (MCP) based on actual hourly conditions
+  - Round results show average MCP across all hours
+  - Better rewards for accurate hourly forecasting (especially important for renewables)
+  - Works with any round duration: 1h, 3h, 4h, 6h, 8h, or custom
 - **Multi-Bid Pricing (Optional)**: When enabled by scenario designer, submit up to 3 price-quantity bids per device
   - Strategic pricing: choose tranches (A/B/C) with different prices to maximize revenue
   - Market competition: lowest-priced bids dispatched first (merit order)
