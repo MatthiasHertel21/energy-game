@@ -30,8 +30,11 @@ import api from '../services/api';
 /**
  * RoundResultsScreen - Shows individual KPIs, ranking (shared), and active events
  * Displayed after round calculation completes
+ * 
+ * Note: Campaign-wide enable_player_bidding controls market clearing mechanism.
+ * Device-level enable_multi_bid controls UI display of lot breakdown per device.
  */
-export default function RoundResultsScreen({ sessionId, round, mode = 'shared_market', onAdvance }) {
+export default function RoundResultsScreen({ sessionId, round, mode = 'shared_market', scenario, onAdvance }) {
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(true);
   const [advancing, setAdvancing] = useState(false);
@@ -121,9 +124,11 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
             <Grid item xs={12} sm={6} md={3}>
               <Card>
                 <CardContent>
-                  <Typography variant="caption" color="text.secondary">Profit</Typography>
-                  <Typography variant="h5" color="success.main">
-                    {formatCurrency(my_result.profit)}
+                  <Typography variant="caption" color="text.secondary">
+                    {my_result.profit < 0 ? 'Expenses' : 'Profit'}
+                  </Typography>
+                  <Typography variant="h5" color={my_result.profit >= 0 ? 'success.main' : 'error.main'}>
+                    {formatCurrency(Math.abs(my_result.profit))}
                   </Typography>
                 </CardContent>
               </Card>
@@ -131,9 +136,14 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
             <Grid item xs={12} sm={6} md={3}>
               <Card>
                 <CardContent>
-                  <Typography variant="caption" color="text.secondary">Imbalance</Typography>
-                  <Typography variant="h5" color={Math.abs(my_result.imbalance) > 1 ? 'error.main' : 'text.primary'}>
-                    {formatNumber(my_result.imbalance)} MWh
+                  <Typography variant="caption" color="text.secondary">
+                    {my_result.profit < 0 ? 'Cost per kWh' : 'Variable Costs'}
+                  </Typography>
+                  <Typography variant="h5" color="text.primary">
+                    {my_result.profit < 0 && my_result.dispatched > 0 
+                      ? `${((my_result.variable_cost || 0) / (my_result.dispatched * 1000)).toFixed(2)} ZAR/kWh`
+                      : formatCurrency(my_result.variable_cost || 0)
+                    }
                   </Typography>
                 </CardContent>
               </Card>
@@ -141,13 +151,25 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
             <Grid item xs={12} sm={6} md={3}>
               <Card>
                 <CardContent>
-                  <Typography variant="caption" color="text.secondary">Curtailment</Typography>
-                  <Typography variant="h5" color={Math.abs(my_result.curtailment) > 1 ? 'warning.main' : 'text.primary'}>
-                    {formatNumber(my_result.curtailment)} MWh
+                  <Typography variant="caption" color="text.secondary">Imbalance Cost</Typography>
+                  <Typography variant="h5" color={Math.abs(my_result.imbalance) > 10000 ? 'error.main' : 'text.primary'}>
+                    {formatCurrency(my_result.imbalance)}
                   </Typography>
                 </CardContent>
               </Card>
             </Grid>
+            {my_result.profit >= 0 && (
+              <Grid item xs={12} sm={6} md={3}>
+                <Card>
+                  <CardContent>
+                    <Typography variant="caption" color="text.secondary">Curtailment (Info)</Typography>
+                    <Typography variant="h5" color={Math.abs(my_result.curtailment) > 100000 ? 'warning.main' : 'text.primary'}>
+                      {formatCurrency(my_result.curtailment)}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            )}
             <Grid item xs={12} sm={6} md={3}>
               <Card>
                 <CardContent>
@@ -161,7 +183,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
           </Grid>
         </Box>
 
-        {/* Lot Dispatch Breakdown - Only show if bid_dispatch exists */}
+        {/* Lot Dispatch Breakdown - Show per device if device has enable_multi_bid */}
         {my_result?.bid_dispatch && Object.keys(my_result.bid_dispatch).length > 0 ? (
           <Box>
             <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -170,6 +192,10 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
             </Typography>
             <Stack spacing={2}>
               {Object.entries(my_result.bid_dispatch).map(([deviceId, lots]) => {
+                // Check if this device has multi-bid enabled
+                const deviceConfig = scenario?.config?.devices?.find(d => d.id === deviceId);
+                const showLotBreakdown = deviceConfig?.enable_multi_bid === true;
+                
                 // Calculate aggregate metrics for this device
                 let totalOffered = 0;
                 let totalDispatched = 0;
@@ -202,22 +228,23 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                           </Box>
                         </Box>
                         
-                        {/* Lots Table */}
-                        <TableContainer>
-                          <Table size="small">
-                            <TableHead>
-                              <TableRow>
-                                <TableCell sx={{ fontWeight: 600 }}>Lot</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Price Bid (ZAR/MWh)</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Realized Price (ZAR/MWh)</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Offered (MWh)</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Dispatched (MWh)</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Dispatch %</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Status</TableCell>
-                              </TableRow>
-                            </TableHead>
-                            <TableBody>
-                              {Object.entries(lots).map(([lotLabel, lotData]) => {
+                        {/* Lots Table - Show breakdown only if device multi-bid enabled */}
+                        {showLotBreakdown ? (
+                          <TableContainer>
+                            <Table size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell sx={{ fontWeight: 600 }}>Lot</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600 }}>Price Bid (ZAR/MWh)</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600 }}>Realized Price (ZAR/MWh)</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600 }}>Offered (MWh)</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600 }}>Dispatched (MWh)</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600 }}>Dispatch %</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600 }}>Status</TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                              {Object.entries(lots).sort(([a], [b]) => a.localeCompare(b)).map(([lotLabel, lotData]) => {
                                 const offered = lotData.mw_offered || 0;
                                 const dispatched = lotData.mw_dispatched || 0;
                                 const dispatchPct = offered > 0 ? (dispatched / offered * 100) : 0;
@@ -286,6 +313,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                             </TableBody>
                           </Table>
                         </TableContainer>
+                        ) : null}
                         
                         {/* MCP Reference */}
                         <Typography variant="caption" color="text.secondary" textAlign="right">
@@ -307,6 +335,129 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
           </Alert>
         )}
 
+        {/* Hourly Breakdown - Detailed calculation breakdown */}
+        {(() => {
+          // Debug logging
+          if (my_result?.hourly_breakdown) {
+            console.log('[HOURLY_DEBUG] Hourly breakdown data:', my_result.hourly_breakdown);
+            const totalPlanned = my_result.hourly_breakdown.reduce((sum, h) => sum + (h.planned_mw || 0), 0);
+            const totalDispatched = my_result.hourly_breakdown.reduce((sum, h) => sum + (h.dispatched_mw || 0), 0);
+            console.log(`[HOURLY_DEBUG] Frontend totals: planned=${totalPlanned.toFixed(2)}, dispatched=${totalDispatched.toFixed(2)}`);
+          } else {
+            console.log('[HOURLY_DEBUG] No hourly breakdown data');
+          }
+          return null;
+        })()}
+        {my_result?.hourly_breakdown && my_result.hourly_breakdown.length > 0 ? (() => {
+          // Determine if consumer based on negative profit
+          const isConsumer = my_result.profit < 0;
+          
+          // Calculate weighted average MCP
+          const totalDispatchedMW = my_result.hourly_breakdown.reduce((sum, h) => sum + h.dispatched_mw, 0);
+          const weightedMCP = totalDispatchedMW > 0 
+            ? my_result.hourly_breakdown.reduce((sum, h) => sum + (h.mcp * h.dispatched_mw), 0) / totalDispatchedMW
+            : 0;
+          
+          return (
+            <Box sx={{ mt: 4 }}>
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <WarningIcon color="primary" />
+                Detailed Hourly Breakdown
+              </Typography>
+              <TableContainer component={Paper}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Hour</TableCell>
+                      <TableCell align="right">MCP (ZAR/MWh)</TableCell>
+                      <TableCell align="right">Planned (MWh)</TableCell>
+                      <TableCell align="right">Dispatched (MWh)</TableCell>
+                      {!isConsumer && <TableCell align="right">Actual (MWh)</TableCell>}
+                      <TableCell align="right">{isConsumer ? 'Expenses' : 'Revenue'} (ZAR)</TableCell>
+                      <TableCell align="right">Imbalance (MWh)</TableCell>
+                      <TableCell align="right">Imbalance Cost (ZAR)</TableCell>
+                      {!isConsumer && <TableCell align="right">Curtailment (MWh)</TableCell>}
+                      {!isConsumer && <TableCell align="right">Curtailment Cost (ZAR)</TableCell>}
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {my_result.hourly_breakdown.map((hour, idx) => (
+                      <TableRow key={idx} sx={{ '&:nth-of-type(odd)': { backgroundColor: 'action.hover' } }}>
+                        <TableCell>{hour.hour}</TableCell>
+                        <TableCell align="right">{formatNumber(hour.mcp, 1)}</TableCell>
+                        <TableCell align="right">{formatNumber(hour.planned_mw, 1)}</TableCell>
+                        <TableCell align="right">{formatNumber(hour.dispatched_mw, 1)}</TableCell>
+                        {!isConsumer && <TableCell align="right">{formatNumber(hour.actual_mw, 1)}</TableCell>}
+                        <TableCell align="right">{isConsumer ? formatNumber(Math.abs(hour.revenue_zar), 0) : formatCurrency(hour.revenue_zar)}</TableCell>
+                        <TableCell align="right">{formatNumber(hour.imbalance_mwh, 1)}</TableCell>
+                        <TableCell align="right" sx={{ color: hour.imbalance_cost_zar > 0 ? 'error.main' : 'text.primary' }}>
+                          {formatCurrency(hour.imbalance_cost_zar)}
+                        </TableCell>
+                        {!isConsumer && <TableCell align="right">{formatNumber(hour.curtailment_mwh, 1)}</TableCell>}
+                        {!isConsumer && (
+                          <TableCell align="right" sx={{ color: hour.curtailment_cost_zar > 0 ? 'warning.main' : 'text.primary' }}>
+                            {formatCurrency(hour.curtailment_cost_zar)}
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    ))}
+                    <TableRow sx={{ backgroundColor: 'action.selected', fontWeight: 'bold' }}>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Total</TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                        {formatNumber(weightedMCP, 1)}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                        {formatNumber(my_result.hourly_breakdown.reduce((sum, h) => sum + h.planned_mw, 0), 1)}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                        {formatNumber(my_result.hourly_breakdown.reduce((sum, h) => sum + h.dispatched_mw, 0), 1)}
+                      </TableCell>
+                      {!isConsumer && (
+                        <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                          {formatNumber(my_result.hourly_breakdown.reduce((sum, h) => sum + h.actual_mw, 0), 1)}
+                        </TableCell>
+                      )}
+                      <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                        {isConsumer 
+                          ? formatNumber(Math.abs(my_result.hourly_breakdown.reduce((sum, h) => sum + h.revenue_zar, 0)), 0)
+                          : formatCurrency(my_result.hourly_breakdown.reduce((sum, h) => sum + h.revenue_zar, 0))
+                        }
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                        {formatNumber(my_result.hourly_breakdown.reduce((sum, h) => sum + h.imbalance_mwh, 0), 1)}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 'bold', color: 'error.main' }}>
+                        {formatCurrency(my_result.hourly_breakdown.reduce((sum, h) => sum + h.imbalance_cost_zar, 0))}
+                      </TableCell>
+                      {!isConsumer && (
+                        <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                          {formatNumber(my_result.hourly_breakdown.reduce((sum, h) => sum + h.curtailment_mwh, 0), 1)}
+                        </TableCell>
+                      )}
+                      {!isConsumer && (
+                        <TableCell align="right" sx={{ fontWeight: 'bold', color: 'warning.main' }}>
+                          {formatCurrency(my_result.hourly_breakdown.reduce((sum, h) => sum + h.curtailment_cost_zar, 0))}
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </TableContainer>
+              <Alert severity="info" sx={{ mt: 2 }}>
+                <Typography variant="caption">
+                  {isConsumer ? (
+                    <><strong>Explanation:</strong> Planned = your demand forecast, Dispatched = energy you purchased at MCP. 
+                    Imbalance = |Dispatched - Actual consumption| (deviation penalty for over/under consumption).</>
+                  ) : (
+                    <><strong>Explanation:</strong> Planned = your offered energy, Dispatched = accepted by market, Actual = what you delivered. 
+                    Imbalance = |Dispatched - Actual| (deviation penalty). Curtailment = Planned - Dispatched (unsold energy opportunity cost).</>
+                  )}
+                </Typography>
+              </Alert>
+            </Box>
+          );
+        })() : null}
+
         {/* Ranking Table - Only show in shared mode */}
         {!isSolo && (
           <Box>
@@ -322,8 +473,8 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                     <TableCell sx={{ fontWeight: 600 }}>Player</TableCell>
                     <TableCell sx={{ fontWeight: 600 }}>Type</TableCell>
                     <TableCell align="right" sx={{ fontWeight: 600 }}>Profit (ZAR)</TableCell>
-                    <TableCell align="right" sx={{ fontWeight: 600 }}>Imbalance (MWh)</TableCell>
-                    <TableCell align="right" sx={{ fontWeight: 600 }}>Curtailment (MWh)</TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 600 }}>Imbalance Cost (ZAR)</TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 600 }}>Curtailment Cost (ZAR)</TableCell>
                     <TableCell align="right" sx={{ fontWeight: 600 }}>Total Score</TableCell>
                   </TableRow>
                 </TableHead>

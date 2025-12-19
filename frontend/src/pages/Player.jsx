@@ -135,8 +135,16 @@ const buildDeviceProfile = (device, len) => {
 
 const getDefaultBidPrices = (device) => {
   const variableCost = toNumber(device?.variable_cost_zar_per_mwh ?? device?.cost_per_mwh_zar ?? 0, 0)
+  const deviceType = (device?.type || '').toLowerCase()
+  
   if (variableCost <= 0) {
     // Fallback defaults for devices without cost data
+    // For consumers (loads): use willingness-to-pay around expected MCP (~1000)
+    // Strategy: A=high (always get), B=medium (usually get), C=low (marginal)
+    if (deviceType.includes('load')) {
+      return { A: 1200, B: 1000, C: 800 }  // Consumer WTP: high/medium/low around MCP
+    }
+    // For generators: conservative bid prices
     return { A: 300, B: 400, C: 500 }
   }
   return {
@@ -1431,6 +1439,7 @@ export default function Player() {
           sessionId={sessionId}
           round={cfg.current_round}
           mode={mode}
+          scenario={scenario}
           onAdvance={async () => {
             try {
               const { data } = await api.get(`/api/sessions/${sessionId}`)
@@ -1821,7 +1830,7 @@ export default function Player() {
                               Multi-Bid Pricing
                             </Typography>
                             <Typography variant="caption" color="text.secondary" sx={{ mb: 2, display: 'block' }}>
-                              Set three different price levels and quantity curves. Lower prices dispatch first. All dispatched MWh receive the Market Clearing Price (MCP).
+                              Set three different price levels and quantity curves (in MW). Lower prices dispatch first. All dispatched energy receives the Market Clearing Price (MCP). Enter power per hour - e.g., 600 MW for 6 hours means 600 in each hour.
                             </Typography>
                             
                             {/* Price Inputs */}
@@ -2021,7 +2030,7 @@ export default function Player() {
                                 : biddingEnabled
                               return deviceBidding && deviceBids[did] ? (
                                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: '#e3f2fd', borderRadius: 1 }}>
-                                  Currently editing: <strong>Lot {activeLot}</strong> (Click a price field above to switch lots)
+                                  Currently editing: <strong>Lot {activeLot}</strong> (Click a price field above to switch lots). Enter MW for each hour.
                                 </Typography>
                               ) : null
                             })()}
@@ -2132,7 +2141,7 @@ export default function Player() {
               ) : (
                 <>
                   <Alert severity="info" sx={{ mt: 2, mb: 2 }}>
-                    Enter your hourly energy forecast (in MWh). Use the chart editor to drag points or switch to fields for precise values. Locked hours cannot be changed.
+                    Enter your power per hour in MW. Each hour's value represents your power output for that hour (100 MW × 1 hour = 100 MWh energy). Use the chart editor to drag points or switch to fields for precise values. Locked hours cannot be changed.
                   </Alert>
                 {/* Unified editor header with toggle */}
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>

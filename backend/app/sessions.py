@@ -477,8 +477,9 @@ class RoundResults(Resource):
                 abs(imbalance) * weights.get("imbalance", 0.3) -
                 abs(curtailment) * weights.get("curtailment", 0.1)
             )
-            # Normalize to 0-100 scale (assuming typical profit range 0-500k)
-            total_score = max(0, min(100, (raw_score / 5000)))
+            # Normalize to 0-100 scale (typical profit range: -5M to +5M ZAR)
+            # Map -5M → 0, 0 → 50, +5M → 100
+            total_score = max(0, min(100, (raw_score + 5000000) / 100000))
             
             # Get player info
             user = User.query.get(r.player_id)
@@ -508,12 +509,14 @@ class RoundResults(Resource):
                 "type": player_type,
                 "kpis": kpis,
                 "profit": profit,
+                "variable_cost": float(kpis.get("variable_cost_zar", 0)),
                 "imbalance": imbalance,
                 "curtailment": curtailment,
                 "total_score": round(total_score, 2),
                 "mcp": r.data.get("mcp"),
                 "volume": r.data.get("volume"),
-                "bid_dispatch": r.bid_dispatch  # Include lot dispatch tracking
+                "bid_dispatch": r.bid_dispatch,  # Include lot dispatch tracking
+                "hourly_breakdown": kpis.get("hourly_breakdown", [])  # Include detailed hourly breakdown
             }
             
             ranking.append(player_data)

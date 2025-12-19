@@ -4,7 +4,7 @@
 
 This document describes the exact calculations performed when a player submits forecast data for a round in the Energy Market Simulation Game (EMSG). The engine computes market clearing price, dispatch, revenues, costs, and profits based on energy market principles.
 
-**Version:** 1.3  
+**Version:** 1.5  
 **Last Updated:** December 18, 2025
 
 ---
@@ -19,12 +19,14 @@ This document describes the exact calculations performed when a player submits f
    - 2.4 [Market Clearing Algorithm](#market-clearing-algorithm)
 3. [Event Application](#event-application)
 4. [Player Dispatch Calculation](#player-dispatch-calculation)
-5. [Revenue Calculation](#revenue-calculation)
-6. [Cost Components](#cost-components)
-7. [Profit Calculation](#profit-calculation)
-8. [Device Constraints Validation](#device-constraints-validation)
-9. [Mathematical Formulas](#mathematical-formulas)
-10. [Example Calculation](#example-calculation)
+5. [Realistic Availability Constraints](#realistic-availability-constraints)
+6. [Revenue Calculation](#revenue-calculation)
+7. [Cost Components](#cost-components)
+8. [Profit Calculation](#profit-calculation)
+9. [Detailed Hourly Breakdown](#detailed-hourly-breakdown)
+10. [Device Constraints Validation](#device-constraints-validation)
+11. [Mathematical Formulas](#mathematical-formulas)
+12. [Example Calculation](#example-calculation)
 
 ---
 
@@ -539,6 +541,110 @@ dispatch_factor = 10500 / 13000 = 0.808
 
 ---
 
+## Realistic Availability Constraints
+
+**New in v1.4:** The engine enforces **physics-based availability constraints** for renewable energy sources.
+
+### Availability Envelopes
+
+Each device type has a realistic availability profile based on time of day:
+
+#### Solar Availability (24-hour pattern)
+```python
+# Solar is unavailable at night, peaks at midday
+SOLAR_AVAILABILITY = [
+    0.0, 0.0, 0.0, 0.0, 0.0,  # Night: 00:00-04:00
+    0.05, 0.15, 0.35, 0.6,     # Dawn: 05:00-08:00
+    0.78, 0.9, 0.92, 0.9,      # Morning/Midday: 09:00-12:00
+    0.78, 0.6, 0.35, 0.15,     # Afternoon: 13:00-16:00
+    0.05, 0.0, 0.0, 0.0,       # Dusk/Night: 17:00-20:00
+    0.0, 0.0, 0.0              # Night: 21:00-23:00
+]
+```
+
+#### Wind Availability (24-hour pattern)
+```python
+# Wind is more stable but still variable (typically higher at night)
+WIND_AVAILABILITY = [
+    0.70-0.76,  # Night hours: higher availability
+    0.47-0.55,  # Daytime: lower availability
+    0.55-0.76   # Evening: increasing availability
+]
+# Average: ~63% across 24 hours
+```
+
+#### Dispatchable Sources (Coal, Gas, Hydro, Nuclear)
+```python
+# Always fully available (controllable generation)
+AVAILABILITY = 1.0  # 100% at all hours
+```
+
+### Actual Delivery Calculation
+
+The **actual** energy delivered is constrained by the availability envelope:
+
+```python
+def calculate_actual(device, dispatched, hour_of_day):
+    # Get availability factor for this hour
+    availability = get_availability_factor(device.type, hour_of_day)
+    
+    # Maximum deliverable energy
+    max_available = dispatched * availability
+    
+    # Actual is constrained by envelope
+    actual_constrained = min(dispatched, max_available)
+    
+    # Add noise on top of constrained value
+    noise = random.uniform(-noise_pct, noise_pct) * actual_constrained
+    actual = max(0.0, actual_constrained + noise)
+    
+    return actual
+```
+
+### Imbalance from Over-Forecasting
+
+When players forecast more than physically deliverable:
+
+```python
+# Example: Solar plant at 02:00 (night)
+dispatched = 100 MWh      # Player's forecast
+availability = 0.0        # Solar unavailable at night
+actual = 0 MWh            # Cannot deliver
+
+# Imbalance calculation
+imbalance = actual - dispatched = 0 - 100 = -100 MWh
+imbalance_cost = abs(-100) × down_price = 100 × 800 = 80,000 ZAR
+```
+
+### Benefits
+
+1. **Realistic Physics**: Solar delivers zero at night, regardless of forecast
+2. **Automatic Penalties**: Over-forecasting renewables generates imbalance costs
+3. **Strategic Gameplay**: Players must forecast realistically or pay penalties
+4. **Educational Value**: Teaches renewable intermittency and forecasting challenges
+
+### Example Scenario
+
+**Setup:**
+- Solar plant: 100 MW capacity
+- Player forecasts: 100 MW for all 24 hours
+- Hour 02:00 (night): availability = 0.0
+- Hour 12:00 (midday): availability = 0.92
+
+**Results:**
+
+| Hour | Forecast | Dispatched | Availability | Actual | Imbalance Cost |
+|------|----------|------------|--------------|--------|----------------|
+| 02:00 | 100 MW | 100 MW | 0.0 | 0 MW | 80,000 ZAR |
+| 12:00 | 100 MW | 100 MW | 0.92 | 92 MW | 6,400 ZAR |
+
+**Round Total (24h):**
+- Planned: 2,400 MWh
+- Actual: ~1,530 MWh (64% average availability)
+- Imbalance Cost: ~695,000 ZAR
+
+---
+
 ## Revenue Calculation
 
 Revenue is calculated from dispatched energy at the market clearing price.
@@ -761,6 +867,78 @@ Profit = Revenue - Imbalance_Cost - Curtailment_Cost + Congestion_Revenue
 ```
 
 *(Fuel cost = 0 in current implementation)*
+
+---
+
+## Detailed Hourly Breakdown
+
+**New in v1.5:** Each player's `round_kpis` now includes a `hourly_breakdown` array with per-hour financial details for full transparency.
+
+### Structure
+
+```json
+{
+  "round_kpis": {
+    "1": {
+      "planned_mwh": 600.0,
+      "dispatched_mwh": 600.0,
+      "actual_mwh": 540.0,
+      "revenue_zar": 608400,
+      "imbalance_cost_zar": 48000,
+      "curtailment_cost_zar": 0,
+      "profit_zar": 560400,
+      "hourly_breakdown": [
+        {
+          "hour": 12,
+          "mcp": 1063.2,
+          "planned_mw": 100.0,
+          "dispatched_mw": 100.0,
+          "actual_mw": 92.0,
+          "revenue_zar": 106320.0,
+          "imbalance_mwh": 8.0,
+          "imbalance_cost_zar": 6400.0,
+          "curtailment_mwh": 0.0,
+          "curtailment_cost_zar": 0.0
+        },
+        // ... 5 more hours
+      ]
+    }
+  }
+}
+```
+
+### Fields Explained
+
+| Field | Unit | Description |
+|-------|------|-------------|
+| `hour` | 0-23 | Hour of day |
+| `mcp` | ZAR/MWh | Market clearing price for this hour |
+| `planned_mw` | MW | Sum of device forecasts |
+| `dispatched_mw` | MW | Market-accepted dispatch |
+| `actual_mw` | MW | Delivered (with availability constraints) |
+| `revenue_zar` | ZAR | `dispatched_mw × mcp` |
+| `imbalance_mwh` | MWh | `dispatched_mw - actual_mw` (if > 0) |
+| `imbalance_cost_zar` | ZAR | `imbalance_mwh × 800` (down_price) |
+| `curtailment_mwh` | MWh | `planned_mw - dispatched_mw` (if > 0) |
+| `curtailment_cost_zar` | ZAR | `curtailment_mwh × mcp` |
+
+### Verification
+
+The sum of hourly values matches the round totals:
+
+```python
+assert sum(h['revenue_zar'] for h in hourly_breakdown) == round_kpis['revenue_zar']
+assert sum(h['imbalance_cost_zar'] for h in hourly_breakdown) == round_kpis['imbalance_cost_zar']
+```
+
+### Use Cases
+
+1. **Debugging:** Verify calculations per hour
+2. **Strategy:** Identify which hours are profitable/costly
+3. **Education:** Understand how MCP variation affects revenue
+4. **Analytics:** Export hourly data for external analysis
+
+**See:** [Round Results Transparency Guide](./ROUND_RESULTS_TRANSPARENCY.md) for detailed examples
 
 ---
 

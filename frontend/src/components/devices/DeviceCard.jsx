@@ -275,14 +275,14 @@ export default function DeviceCard({
                 />
                 
                 <NumberInput
-                  label="Value of Lost Load"
-                  value={device.value_of_lost_load || 5000}
+                  label="Max Price (Willingness-to-Pay)"
+                  value={device.value_of_lost_load || 1500}
                   onChange={(val) => handleFieldChange('value_of_lost_load', val)}
                   min={0}
                   max={50000}
                   step={100}
                   unit="ZAR/MWh"
-                  tooltip="Willingness-to-pay for electricity. Used as implicit bid price when multi-bid is disabled. Higher values = inelastic demand (must be served). Default: 5000 ZAR/MWh."
+                  tooltip="Maximum price this consumer is willing to pay for electricity. Consumer will NOT buy if market price exceeds this value. Used as implicit bid when multi-bid is disabled. Default: 1500 ZAR/MWh."
                 />
                 
                 {/* Multi-Bid Setting for Consumers */}

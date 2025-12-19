@@ -498,7 +498,7 @@ export default function ForecastChartEditor({
 
     // labels
     g.append('text').attr('x', iw / 2).attr('y', ih + 28).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Hour')
-    g.append('text').attr('transform', 'rotate(-90)').attr('x', -ih / 2).attr('y', -36).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Forecast (MWh)')
+    g.append('text').attr('transform', 'rotate(-90)').attr('x', -ih / 2).attr('y', -36).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Power (MW) per hour')
   }, [hours, lockedUntil, onChange, maxValue, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, startTime])
 
   return (
