@@ -1,7 +1,7 @@
 # Round Results Transparency Guide
 
-**Version:** 1.0  
-**Date:** December 18, 2025  
+**Version:** 1.1  
+**Date:** December 19, 2025  
 **Status:** Complete
 
 ## Overview
@@ -27,18 +27,21 @@ Multi-Player Scenario (Midday):
 ### Consumer vs Generator Logic
 
 **Consumers** (devices with `type` containing "load"):
-- ✅ Pay for energy (negative revenue)
-- ✅ Exempt from imbalance costs
-- ✅ Exempt from curtailment costs
-- ✅ `actual_mwh` = `dispatched_mwh` (no availability envelope)
+- ✅ Pay for energy (negative revenue = expenses)
+- ✅ Subject to imbalance costs (consumption varies with noise)
+- ✅ Exempt from curtailment costs (less demand met = no penalty)
+- ✅ `actual_mwh` = `dispatched_mwh` with consumption noise applied
+- ✅ Bids processed in demand curve (dispatched if price >= MCP)
+- ✅ Default willingness-to-pay: Lot A: 1200, Lot B: 1000, Lot C: 800 ZAR/MWh
 
 **Generators** (all other device types):
 - ✅ Earn revenue (positive revenue)
 - ✅ Subject to imbalance costs (dispatched ≠ actual)
 - ✅ Subject to curtailment costs (planned > dispatched)
 - ✅ `actual_mwh` constrained by availability envelope
+- ✅ Bids processed in supply curve (dispatched if price <= MCP)
 
-**Code Reference:** [engine.py](../backend/app/engine.py#L918-L927)
+**Code Reference:** [engine.py](../backend/app/engine.py#L930-L980)
 
 ---
 
@@ -88,11 +91,11 @@ Each player's `round_kpis` now includes a `hourly_breakdown` array with per-hour
 | `planned_mw` | Planned generation | Sum of device forecasts |
 | `dispatched_mw` | Market-accepted | From bid dispatch |
 | `actual_mw` | Delivered | `dispatched × availability` |
-| `revenue_zar` | Revenue/Expense | `dispatched × mcp` |
-| `imbalance_mwh` | Under-delivery | `dispatched - actual` |
-| `imbalance_cost_zar` | Imbalance penalty | `imbalance × 800 ZAR/MWh` |
-| `curtailment_mwh` | Not dispatched | `planned - dispatched` |
-| `curtailment_cost_zar` | Opportunity cost | `curtailment × mcp` |
+| `revenue_zar` | Revenue/Expense | `dispatched × mcp` (negative for consumers) |
+| `imbalance_mwh` | Deviation from dispatch | `abs(actual - dispatched)` |
+| `imbalance_cost_zar` | Imbalance penalty | Over: `imbalance × 1200`, Under: `imbalance × 800` |
+| `curtailment_mwh` | Not dispatched | `planned - dispatched` (generators only) |
+| `curtailment_cost_zar` | Opportunity cost | `curtailment × mcp` (informational) |
 
 ### Verification
 
@@ -233,25 +236,40 @@ TOTAL          600.0    600.0     5.0     595.0     587,340    476,000
 - Apply realistic temporal profiles (see section 3)
 - Verify in scenario config: `environment.diurnal_profile`
 
-### Issue 3: Consumer Paying Imbalance Costs
+### Issue 3: Consumer Bid Below MCP Still Gets Dispatched
 
 **Check:**
-1. Is device type exactly "load" (lowercase)?
-2. Check [engine.py#L880](../backend/app/engine.py#L880): `'load' in dev.get('type', '').lower()`
+1. Was consumer bid processed in **supply** curve instead of **demand** curve?
+2. Check [engine.py#L232-L235](../backend/app/engine.py#L232-L235): Load devices skipped in supply
 
 **Solution:**
-- Ensure load devices use `"type": "load"` (case-insensitive)
-- Consumer logic exempts imbalance/curtailment automatically
+- ✅ **FIXED (v1.1):** Consumers now correctly filtered from supply curve
+- Consumers with bid price >= MCP get 100% dispatch
+- Consumers with bid price < MCP get 0% dispatch
 
-### Issue 4: Hourly Breakdown Doesn't Match Totals
+### Issue 4: Consumer Showing Zero Imbalance in Hourly Breakdown
+
+**Check:**
+1. Are consumer `actual` values tracked per device?
+2. Check [engine.py#L956-L975](../backend/app/engine.py#L956-L975): Consumer actual tracking
+
+**Solution:**
+- ✅ **FIXED (v1.1):** Consumer actual values now stored in `per_device_hourly_actual`
+- Consumption noise applied: `actual = dispatched + random noise`
+- Hourly breakdown now shows correct imbalance for consumers
+
+### Issue 5: Hourly Breakdown Doesn't Match Totals
 
 **Check:**
 1. Sum of `hourly_breakdown[*].revenue_zar` vs `round_kpis.revenue_zar`
 2. Sum of `hourly_breakdown[*].imbalance_cost_zar` vs `round_kpis.imbalance_cost_zar`
+3. Is imbalance calculation consistent? (both should use `actual - dispatched`)
 
 **Solution:**
-- This is a bug if sums don't match
-- Report with scenario config and round number
+- ✅ **FIXED (v1.1):** Hourly imbalance now uses same logic as total KPIs
+- Over-delivery/consumption: `imbalance × 1200 ZAR/MWh` (up_price)
+- Under-delivery/consumption: `imbalance × 800 ZAR/MWh` (down_price)
+- Totals should now match exactly
 
 ---
 
@@ -330,6 +348,14 @@ POST /api/sessions/{session_id}/play-round
 ---
 
 ## Changelog
+
+**v1.1 (2025-12-19)**
+- 🐛 **CRITICAL FIX:** Consumers now correctly filtered from supply curve (dispatched only if bid >= MCP)
+- 🐛 **FIX:** Consumer actual values now tracked per device in hourly breakdown
+- 🐛 **FIX:** Hourly imbalance calculation now matches total KPI logic (up_price=1200, down_price=800)
+- ✨ Updated consumer logic: Now subject to imbalance costs with consumption noise
+- ✨ Added consumer default bid prices: A:1200, B:1000, C:800 ZAR/MWh
+- 📝 Updated troubleshooting with consumer-specific issues
 
 **v1.0 (2025-12-18)**
 - Initial documentation

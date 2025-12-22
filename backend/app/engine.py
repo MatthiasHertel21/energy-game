@@ -881,6 +881,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         for pid in players:
             planned = hour_plans.get(pid, 0.0)
             
+            # Get device config early (needed for capacity capping)
+            devices_cfg = config.get("devices", [])
+            
             # Track per-device planned/dispatched/actual for detailed breakdown
             # For bid-based dispatch, calculate planned and dispatched per device
             if enable_bidding:
@@ -913,6 +916,16 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                 bid_hours = device_bids[bid_label].get('hours', [])
                                 if hour_idx < len(bid_hours):
                                     device_planned_h += float(bid_hours[hour_idx])
+                        
+                        # Cap planned at device max_power (over-bidding allowed but capped)
+                        device_cfg = next((d for d in devices_cfg if d.get('id') == device_id), None)
+                        if device_cfg:
+                            max_power = device_cfg.get('max_power_mw') or device_cfg.get('capacity_mw') or float('inf')
+                            if device_planned_h > max_power:
+                                if hour_offset == 0:  # Log once
+                                    print(f"[CAPACITY_CAP] Device {device_id}: planned {device_planned_h:.1f} MW capped to max_power {max_power:.1f} MW")
+                                device_planned_h = max_power
+                        
                         per_device_hourly_planned[device_id][hour_offset] = device_planned_h
                         if hour_offset == 0:  # Log first hour
                             print(f"[HOURLY_DEBUG] Device {device_id}, hour {hour_offset}: planned={device_planned_h}")
@@ -928,8 +941,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 dispatched = planned * dispatch_factor
             
             # Determine if player is consumer or generator
-            # Check devices from bid dispatch (since config devices don't have player_id set)
-            devices_cfg = config.get("devices", [])
+            # Check devices from bid dispatch (devices_cfg already loaded above)
             is_consumer = False
             
             # Get player's device IDs from bid dispatch or forecasts
@@ -984,10 +996,6 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         max_available = device_dispatched * availability
                         device_actual = min(device_dispatched, max_available)
                         
-                        # Track device actual
-                        if device_id in per_device_hourly_actual:
-                            per_device_hourly_actual[device_id][hour_offset] = device_actual
-                        
                         actual_constrained += device_actual
                 actual = actual_constrained
             else:
@@ -1005,6 +1013,20 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             if not is_consumer:
                 noise = random.uniform(-frac, frac) * max(1.0, actual)
                 actual = max(0.0, actual + noise)
+                
+                # Update per-device actual with noise applied (proportionally)
+                if enable_bidding and pid in hour_bid_dispatch:
+                    for device_id, device_dispatch in hour_bid_dispatch[pid].items():
+                        device_dispatched = sum(bid_info.get('mw_dispatched', 0.0) for bid_info in device_dispatch.values())
+                        if actual_constrained > 0:
+                            # Proportionally distribute actual (with noise) to each device
+                            device_actual_with_noise = actual * (device_dispatched / dispatched) if dispatched > 0 else 0.0
+                        else:
+                            device_actual_with_noise = 0.0
+                        
+                        # Track device actual with noise applied
+                        if device_id in per_device_hourly_actual:
+                            per_device_hourly_actual[device_id][hour_offset] = device_actual_with_noise
             
             # Revenue/Expense: Uniform MCP for all dispatched MWh
             # Generators earn revenue (positive), Consumers pay expenses (negative)

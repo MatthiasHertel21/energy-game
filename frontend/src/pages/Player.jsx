@@ -15,7 +15,11 @@ import {
   CircularProgress,
   Chip,
   LinearProgress,
-  Divider
+  Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material'
 import { BarChart, ViewList, InfoOutlined, MenuBook as BriefingIcon } from '@mui/icons-material'
 import { IconButton } from '@mui/material'
@@ -32,7 +36,6 @@ import api from '../services/api'
 import { io } from 'socket.io-client'
 import * as d3 from 'd3'
 import confetti from 'canvas-confetti'
-import { Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material'
 
 const BASELOAD_PATTERN = [0.92, 0.91, 0.9, 0.9, 0.9, 0.92, 0.94, 0.95, 0.96, 0.96, 0.95, 0.94, 0.93, 0.93, 0.94, 0.95, 0.96, 0.96, 0.95, 0.94, 0.93, 0.93, 0.92, 0.92]
 const PEAKING_PATTERN = [0.4, 0.35, 0.32, 0.32, 0.38, 0.5, 0.62, 0.75, 0.85, 0.92, 0.95, 0.96, 0.94, 0.9, 0.88, 0.9, 0.94, 0.95, 0.86, 0.75, 0.65, 0.55, 0.48, 0.42]
@@ -518,6 +521,8 @@ export default function Player() {
   const [deviceBids, setDeviceBids] = useState({}) // { device_id: { A: {price, hours}, B: {price, hours}, C: {price, hours} } }
   const [biddingEnabled, setBiddingEnabled] = useState(false)
   const [activeLot, setActiveLot] = useState('A') // Active lot for editing (A, B, or C)
+  const [confirmOvercapacityOpen, setConfirmOvercapacityOpen] = useState(false)
+  const [overcapacityWarnings, setOvercapacityWarnings] = useState([])
   useEffect(() => {
     forecastSeedKeyRef.current = null
   }, [sessionId])
@@ -1349,9 +1354,48 @@ export default function Player() {
     const span = Number(cfg.general.round_span_hours || 6)
     const start = (r - 1) * span
     const slice = hours.slice(start, start + span)
+    
+    // Check for overcapacity bids
+    const warnings = []
+    if (biddingEnabled && typeDevices.length > 0) {
+      typeDevices.forEach(deviceId => {
+        const device = scenarioDevices.find(d => d.id === deviceId)
+        if (!device) return
+        
+        const maxPower = device.max_power_mw || device.capacity_mw || 0
+        const deviceHoursData = deviceHours[deviceId] || []
+        
+        for (let i = start; i < start + span && i < deviceHoursData.length; i++) {
+          const offered = deviceHoursData[i] || 0
+          if (offered > maxPower) {
+            warnings.push({
+              device: device.type || device.id,
+              hour: i - start + 1,
+              offered: offered.toFixed(1),
+              maxPower: maxPower.toFixed(1)
+            })
+          }
+        }
+      })
+    }
+    
+    // Show confirmation dialog if overcapacity detected
+    if (warnings.length > 0) {
+      setOvercapacityWarnings(warnings)
+      setConfirmOvercapacityOpen(true)
+      return
+    }
+    
+    // Proceed with submission
+    await doSubmit(slice, r)
+  }
+  
+  const doSubmit = async (slice, r) => {
     try {
       const payload = { session_id: Number(sessionId), round_num: r, hours: slice }
       if(allowedTypes.length>0 && selectedType && typeDevices.length>0){
+        const span = Number(cfg.general.round_span_hours || 6)
+        const start = (r - 1) * span
         payload.devices = typeDevices.map(did=> ({ device_id: did, hours: (deviceHours[did]||[]).slice(start, start+span) }))
       }
       // Add bids if bidding is enabled (send full bid hours, not sliced)
@@ -1362,6 +1406,7 @@ export default function Player() {
       showSnack(`Round ${r} submitted successfully!`, 'success')
       triggerConfetti()
       setSubmitted(true)
+      setConfirmOvercapacityOpen(false)
     } catch (e) {
       const msg = e?.response?.data?.error || e?.response?.data?.message || 'Submit failed'
       const details = e?.response?.data?.details
@@ -1836,10 +1881,9 @@ export default function Player() {
                             {/* Price Inputs */}
                             <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
                               <Box sx={{ flex: 1, opacity: activeLot === 'A' ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot('A')}>
-                                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-                                  <Chip label="A" size="small" sx={{ bgcolor: activeLot === 'A' ? '#ffd54f' : '#64b5f6', color: activeLot === 'A' ? '#000' : 'white', fontWeight: 'bold', minWidth: 32, boxShadow: activeLot === 'A' ? '0 0 10px #ffd54f' : 'none' }} />
-                                  <Typography variant="caption" color="text.secondary">Baseload</Typography>
-                                </Stack>
+                                <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'A' ? 'bold' : 'normal', color: activeLot === 'A' ? '#000' : 'text.secondary' }}>
+                                  Baseload {activeLot === 'A' && '✓'}
+                                </Typography>
                                 <TextField
                                   label="Price"
                                   type="number"
@@ -1864,10 +1908,9 @@ export default function Player() {
                                 />
                               </Box>
                               <Box sx={{ flex: 1, opacity: activeLot === 'B' ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot('B')}>
-                                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-                                  <Chip label="B" size="small" sx={{ bgcolor: activeLot === 'B' ? '#ffd54f' : '#2196f3', color: activeLot === 'B' ? '#000' : 'white', fontWeight: 'bold', minWidth: 32, boxShadow: activeLot === 'B' ? '0 0 10px #ffd54f' : 'none' }} />
-                                  <Typography variant="caption" color="text.secondary">Mid-merit</Typography>
-                                </Stack>
+                                <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'B' ? 'bold' : 'normal', color: activeLot === 'B' ? '#000' : 'text.secondary' }}>
+                                  Mid-Merit {activeLot === 'B' && '✓'}
+                                </Typography>
                                 <TextField
                                   label="Price"
                                   type="number"
@@ -1892,10 +1935,9 @@ export default function Player() {
                                 />
                               </Box>
                               <Box sx={{ flex: 1, opacity: activeLot === 'C' ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot('C')}>
-                                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-                                  <Chip label="C" size="small" sx={{ bgcolor: activeLot === 'C' ? '#ffd54f' : '#1565c0', color: activeLot === 'C' ? '#000' : 'white', fontWeight: 'bold', minWidth: 32, boxShadow: activeLot === 'C' ? '0 0 10px #ffd54f' : 'none' }} />
-                                  <Typography variant="caption" color="text.secondary">Peak</Typography>
-                                </Stack>
+                                <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'C' ? 'bold' : 'normal', color: activeLot === 'C' ? '#000' : 'text.secondary' }}>
+                                  Peak {activeLot === 'C' && '✓'}
+                                </Typography>
                                 <TextField
                                   label="Price"
                                   type="number"
@@ -1971,7 +2013,7 @@ export default function Player() {
                                       onClick={() => setActiveLot('A')}
                                       sx={{ bgcolor: activeLot === 'A' ? '#ffd54f' : 'transparent', color: activeLot === 'A' ? '#000' : '#64b5f6', '&:hover': { bgcolor: activeLot === 'A' ? '#ffca28' : '#e3f2fd' } }}
                                     >
-                                      Lot A
+                                      Baseload
                                     </Button>
                                     <Button
                                       size="small"
@@ -1979,7 +2021,7 @@ export default function Player() {
                                       onClick={() => setActiveLot('B')}
                                       sx={{ bgcolor: activeLot === 'B' ? '#ffd54f' : 'transparent', color: activeLot === 'B' ? '#000' : '#2196f3', '&:hover': { bgcolor: activeLot === 'B' ? '#ffca28' : '#e3f2fd' } }}
                                     >
-                                      Lot B
+                                      Mid-Merit
                                     </Button>
                                     <Button
                                       size="small"
@@ -1987,7 +2029,7 @@ export default function Player() {
                                       onClick={() => setActiveLot('C')}
                                       sx={{ bgcolor: activeLot === 'C' ? '#ffd54f' : 'transparent', color: activeLot === 'C' ? '#000' : '#1565c0', '&:hover': { bgcolor: activeLot === 'C' ? '#ffca28' : '#e3f2fd' } }}
                                     >
-                                      Lot C
+                                      Peak
                                     </Button>
                                   </Stack>
                                 </Box>
@@ -2030,7 +2072,7 @@ export default function Player() {
                                 : biddingEnabled
                               return deviceBidding && deviceBids[did] ? (
                                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: '#e3f2fd', borderRadius: 1 }}>
-                                  Currently editing: <strong>Lot {activeLot}</strong> (Click a price field above to switch lots). Enter MW for each hour.
+                                  Currently editing: <strong>{activeLot === 'A' ? 'Baseload' : activeLot === 'B' ? 'Mid-Merit' : 'Peak'}</strong> (Click a price field above to switch). Enter MW for each hour.
                                 </Typography>
                               ) : null
                             })()}
@@ -2289,6 +2331,56 @@ export default function Player() {
       </Grid>
       </>
       )}
+      
+      {/* Overcapacity Warning Dialog */}
+      <Dialog 
+        open={confirmOvercapacityOpen} 
+        onClose={() => setConfirmOvercapacityOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>⚠️ Overcapacity Bid Detected</DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            You are bidding more than your device capacity. The system will automatically cap your bid to the maximum capacity, 
+            and you may incur imbalance costs if the actual output differs from what was accepted.
+          </Alert>
+          
+          <Typography variant="body2" sx={{ mb: 2 }}>
+            <strong>Overcapacity bids detected:</strong>
+          </Typography>
+          
+          <Box sx={{ maxHeight: 200, overflow: 'auto', mb: 2 }}>
+            {overcapacityWarnings.map((w, idx) => (
+              <Alert severity="info" key={idx} sx={{ mb: 1 }}>
+                <strong>{w.device}</strong> Hour {w.hour}: Offered {w.offered} MW exceeds max capacity {w.maxPower} MW
+              </Alert>
+            ))}
+          </Box>
+          
+          <Typography variant="body2" color="text.secondary">
+            Do you want to proceed with this submission?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmOvercapacityOpen(false)}>
+            Cancel
+          </Button>
+          <Button 
+            variant="contained" 
+            onClick={async () => {
+              const r = Number(cfg.current_round || 1)
+              const span = Number(cfg.general.round_span_hours || 6)
+              const start = (r - 1) * span
+              const slice = hours.slice(start, start + span)
+              await doSubmit(slice, r)
+            }}
+            color="warning"
+          >
+            Submit Anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 }

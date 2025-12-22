@@ -4,8 +4,8 @@
 
 This document describes the exact calculations performed when a player submits forecast data for a round in the Energy Market Simulation Game (EMSG). The engine computes market clearing price, dispatch, revenues, costs, and profits based on energy market principles.
 
-**Version:** 1.5  
-**Last Updated:** December 18, 2025
+**Version:** 1.6  
+**Last Updated:** December 19, 2025
 
 ---
 
@@ -16,7 +16,8 @@ This document describes the exact calculations performed when a player submits f
    - 2.1 [Hourly Market Clearing Overview](#hourly-market-clearing-overview)
    - 2.2 [Synthetic Supply/Demand Generation](#synthetic-supply-demand-generation)
    - 2.3 [Multi-Bid Player Supply (Optional)](#multi-bid-player-supply)
-   - 2.4 [Market Clearing Algorithm](#market-clearing-algorithm)
+   - 2.4 [Consumer Demand Bids (Optional)](#consumer-demand-bids)
+   - 2.5 [Market Clearing Algorithm](#market-clearing-algorithm)
 3. [Event Application](#event-application)
 4. [Player Dispatch Calculation](#player-dispatch-calculation)
 5. [Realistic Availability Constraints](#realistic-availability-constraints)
@@ -331,7 +332,37 @@ for dispatch in dispatched_bids:
 
 ---
 
-### Step 3: Market Clearing Algorithm
+### Step 3: Consumer Demand Bids (Optional)
+
+**Enabled when:** `config.market.enable_player_bidding = true` **AND** player has load devices
+
+Consumers (devices with `type` containing "load") submit bids representing their **willingness to pay** for electricity.
+
+#### Consumer vs Generator Bidding
+
+| Aspect | Generators (Supply) | Consumers (Demand) |
+|--------|-------------------|-------------------|
+| **Bid Meaning** | Minimum price to sell | Maximum price to buy |
+| **Curve** | Added to supply curve | Added to demand curve |
+| **Dispatch Rule** | Dispatched if `bid_price <= MCP` | Dispatched if `bid_price >= MCP` |
+| **Revenue** | Positive (earn money) | Negative (pay money) |
+| **Default Prices** | Low (e.g., 50-400 ZAR/MWh) | High (e.g., 800-1200 ZAR/MWh) |
+
+**Key Filter (Critical):** Consumer devices are **excluded from supply curve** to prevent incorrect dispatch. Only generator devices (`type` not containing "load") are added to supply.
+
+**Code Reference:** [engine.py#L232-L235](../backend/app/engine.py#L232-L235) (supply filter), [engine.py#L360-L420](../backend/app/engine.py#L360-L420) (demand curve building)
+
+#### Consumer Dispatch Logic
+
+After MCP is determined:
+- Consumer bids with `price >= MCP` → **100% dispatched** (willing to pay)
+- Consumer bids with `price < MCP` → **0% dispatched** (not willing to pay)
+
+**No merit order:** All consumers willing to pay MCP get fully satisfied, independent of supply availability.
+
+---
+
+### Step 4: Market Clearing Algorithm
 
 The engine finds the Market Clearing Price (MCP) where supply meets demand.
 
@@ -1227,11 +1258,13 @@ Curtailment Cost ← Grid Limits   Congestion Revenue
    - Part-load efficiency curves
    - Storage state-of-charge
 
-5. **Imbalance Settlement:** Uses fixed up/down prices. Real markets have dynamic balancing prices based on system frequency.
+5. **Imbalance Settlement:** Uses fixed up/down prices (1200/800 ZAR/MWh). Real markets have dynamic balancing prices based on system frequency.
 
-6. **Fuel Costs:** Currently zero. Will be device-specific (coal ~ZAR 200/MWh, gas ~ZAR 800/MWh, renewables ~ZAR 0/MWh).
+6. **Fuel Costs:** Implemented as `variable_cost_zar_per_mwh` per device. Applied only to generators based on dispatched volume.
 
 7. **Transmission Losses:** Simplified as a percentage. Real losses depend on power flow magnitude and distance.
+
+8. **Consumer Bidding:** Simplified willingness-to-pay model. Real demand response includes time-of-use tariffs and interruptible contracts.
 
 ---
 
@@ -1240,15 +1273,19 @@ Curtailment Cost ← Grid Limits   Congestion Revenue
 When reviewing calculations, verify:
 
 - ✅ Supply/demand curves are monotonic (supply ascending, demand descending)
+- ✅ Consumer devices excluded from supply curve (only in demand curve)
+- ✅ Generator bids dispatched if price <= MCP, consumer bids if price >= MCP
 - ✅ MCP is within [price_floor, price_cap]
 - ✅ Dispatch factor ≤ 1.0
-- ✅ Actual generation ≥ 0
-- ✅ Curtailment ≥ 0
+- ✅ Actual generation/consumption ≥ 0
+- ✅ Curtailment ≥ 0 (generators only)
+- ✅ Imbalance costs calculated for both generators and consumers
 - ✅ Congestion ratio ∈ [0, 1]
 - ✅ All monetary values rounded to nearest ZAR
 - ✅ All energy values rounded to 3 decimal places (MWh)
 - ✅ Device constraints satisfied before acceptance
 - ✅ Events applied only for active rounds
+- ✅ Hourly breakdown totals match round KPIs
 
 ---
 

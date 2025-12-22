@@ -370,6 +370,9 @@ def validate_forecast_constraints(device: Dict[str, Any], forecast_mw: List[floa
     """
     Validate forecast against device constraints (min_load, ramp_rate)
     Returns list of error messages
+    
+    Note: Over-capacity bids are allowed (will be capped by engine) to enable
+    strategic overbidding. This only returns hard constraint violations.
     """
     errors = []
     dev_type, dnorm = _normalize_device(device)
@@ -390,10 +393,7 @@ def validate_forecast_constraints(device: Dict[str, Any], forecast_mw: List[floa
             errors.append(
                 f"Device {dnorm.get('id', '?')} hour {i+1}: forecast {power:.1f} MW < min_load {min_power:.1f} MW ({min_load_pct}%)"
             )
-        if power > max_power:
-            errors.append(
-                f"Device {dnorm.get('id', '?')} hour {i+1}: forecast {power:.1f} MW > max power {max_power:.1f} MW"
-            )
+        # NOTE: Over-capacity is allowed (engine will cap), no error here
     
     # Check ramp rate (assume 60 min between hours)
     for i in range(1, len(forecast_mw)):

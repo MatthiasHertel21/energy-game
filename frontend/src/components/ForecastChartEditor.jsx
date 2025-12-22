@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import * as d3 from 'd3'
 
 /**
@@ -216,8 +216,15 @@ export default function ForecastChartEditor({
         .attr('stroke', '#ff9800')
         .attr('stroke-width', 2)
         .attr('stroke-dasharray', '5,5')
+      
       const leftLabel = currentSimHour >= lockedLineHour ? 'Past' : 'Locked'
+      const leftShort = currentSimHour >= lockedLineHour ? 'P' : 'L'
+      const leftTooltip = currentSimHour >= lockedLineHour ? 'Past (Already delivered)' : 'Locked (IDM gate closed)'
+      
       const rightLabel = currentSimHour >= lockedLineHour ? 'Intraday' : 'Next Market'
+      const rightShort = currentSimHour >= lockedLineHour ? 'IDM' : 'NM'
+      const rightTooltip = currentSimHour >= lockedLineHour ? 'Intraday Market' : 'Next Market (Editable)'
+      
       g.append('text')
         .attr('x', gateX - 6)
         .attr('y', 14)
@@ -225,7 +232,10 @@ export default function ForecastChartEditor({
         .attr('fill', '#ff9800')
         .attr('font-size', 10)
         .attr('font-weight', 'bold')
-        .text(leftLabel)
+        .style('cursor', 'help')
+        .text(leftShort)
+        .append('title').text(leftTooltip)
+      
       g.append('text')
         .attr('x', gateX + 6)
         .attr('y', 14)
@@ -233,7 +243,9 @@ export default function ForecastChartEditor({
         .attr('fill', '#2196f3')
         .attr('font-size', 10)
         .attr('font-weight', 'bold')
-        .text(rightLabel)
+        .style('cursor', 'help')
+        .text(rightShort)
+        .append('title').text(rightTooltip)
     }
     
     if (nextDayBoundaryHour > 0 && nextDayBoundaryHour < n) {
@@ -241,6 +253,11 @@ export default function ForecastChartEditor({
       const dayDeltaRight = nextDayRightIndex - currentDayIndex
       const leftLabel = describeDayDelta(0)
       const rightLabel = describeDayDelta(dayDeltaRight)
+      
+      // Shorten labels for space efficiency
+      const leftShort = leftLabel === 'Today' ? 'TD' : leftLabel === 'Tomorrow' ? 'TM' : leftLabel.substring(0, 2)
+      const rightShort = rightLabel === 'Today' ? 'TD' : rightLabel === 'Tomorrow' ? 'TM+' : rightLabel.substring(0, 3)
+      
       g.append('line')
         .attr('x1', dayX)
         .attr('x2', dayX)
@@ -249,6 +266,7 @@ export default function ForecastChartEditor({
         .attr('stroke', '#9c27b0')
         .attr('stroke-width', 2)
         .attr('stroke-dasharray', '5,5')
+      
       g.append('text')
         .attr('x', dayX - 6)
         .attr('y', 14)
@@ -256,7 +274,10 @@ export default function ForecastChartEditor({
         .attr('fill', '#2196f3')
         .attr('font-size', 10)
         .attr('font-weight', 'bold')
-        .text(leftLabel)
+        .style('cursor', 'help')
+        .text(leftShort)
+        .append('title').text(leftLabel)
+      
       g.append('text')
         .attr('x', dayX + 6)
         .attr('y', 14)
@@ -264,7 +285,9 @@ export default function ForecastChartEditor({
         .attr('fill', '#9c27b0')
         .attr('font-size', 10)
         .attr('font-weight', 'bold')
-        .text(rightLabel)
+        .style('cursor', 'help')
+        .text(rightShort)
+        .append('title').text(rightLabel)
     }
     
     // Draw device-specific reference lines
@@ -280,6 +303,7 @@ export default function ForecastChartEditor({
           .attr('stroke-width', 2)
           .attr('stroke-dasharray', ref.dash)
           .attr('opacity', 0.7)
+        
         g.append('text')
           .attr('x', iw - 4)
           .attr('y', yPos - 4)
@@ -287,7 +311,10 @@ export default function ForecastChartEditor({
           .attr('fill', ref.color)
           .attr('font-size', '10px')
           .attr('font-weight', 'bold')
+          .style('cursor', 'help')
           .text(ref.label)
+          .append('title').text(`${ref.label}: ${ref.value.toFixed(0)} MW`)
+        
         g.append('text')
           .attr('x', 4)
           .attr('y', yPos - 4)
