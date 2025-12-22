@@ -14,6 +14,8 @@ import * as d3 from 'd3'
  * - roundSpan: number (hours per round)
  * - freezeHours: number (hours locked after DAM)
  * - startTime: string (HH:MM) used to annotate the current clock time
+ * - daBaseline: number[] (optional: Day-Ahead baseline for comparison)
+ * - hourStatus: string[] (optional: per-hour status: "locked", "da", "id", "future")
  */
 export default function ForecastChartEditor({
   hours = [],
@@ -26,7 +28,9 @@ export default function ForecastChartEditor({
   currentRound = 1,
   roundSpan = 6,
   freezeHours = 6,
-  startTime = '00:00'
+  startTime = '00:00',
+  daBaseline = null,
+  hourStatus = []
 }){
   const ref = useRef(null)
   const dragStateRef = useRef({ index: null, engaged: false })
@@ -290,6 +294,304 @@ export default function ForecastChartEditor({
         .append('title').text(rightLabel)
     }
     
+    // Draw locked zone (striped pattern for hours already executed)
+    if (lockedLineHour > 0) {
+      const lockedX = hourToX(lockedLineHour)
+      
+      // Create striped pattern for locked zone
+      const defs = svg.append('defs')
+      const pattern = defs.append('pattern')
+        .attr('id', 'locked-stripes')
+        .attr('patternUnits', 'userSpaceOnUse')
+        .attr('width', 8)
+        .attr('height', 8)
+        .attr('patternTransform', 'rotate(45)')
+      pattern.append('rect')
+        .attr('width', 4)
+        .attr('height', 8)
+        .attr('fill', '#ff5722')
+        .attr('opacity', 0.2)
+      
+      g.append('rect')
+        .attr('x', 0)
+        .attr('y', 0)
+        .attr('width', lockedX)
+        .attr('height', ih)
+        .attr('fill', 'url(#locked-stripes)')
+        .style('pointer-events', 'none')
+      
+      // Add "LOCKED" label at the top of locked zone
+      if (lockedX > 30) {
+        g.append('text')
+          .attr('x', lockedX / 2)
+          .attr('y', 28)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#ff5722')
+          .attr('font-size', 9)
+          .attr('opacity', 0.8)
+          .text('🔒 LOCKED')
+      }
+    }
+    
+    // Draw ID (Intraday) zone marker - the tradeable window
+    if (Array.isArray(hourStatus)) {
+      const idStartIdx = hourStatus.findIndex(s => s === 'id')
+      const idEndIdx = hourStatus.lastIndexOf('id')
+      
+      if (idStartIdx >= 0 && idStartIdx < n) {
+        const idStartX = hourToX(idStartIdx)
+        const idEndX = hourToX(idEndIdx + 1)
+        const idWidth = idEndX - idStartX
+        
+        // Light green background for ID zone (tradeable)
+        g.append('rect')
+          .attr('x', idStartX)
+          .attr('y', 0)
+          .attr('width', idWidth)
+          .attr('height', ih)
+          .attr('fill', '#4caf50')
+          .attr('opacity', 0.08)
+          .style('pointer-events', 'none')
+        
+        // Add "INTRADAY" label
+        if (idWidth > 50) {
+          g.append('text')
+            .attr('x', idStartX + idWidth / 2)
+            .attr('y', 28)
+            .attr('text-anchor', 'middle')
+            .attr('fill', '#4caf50')
+            .attr('font-size', 9)
+            .attr('opacity', 0.8)
+            .text('⚡ INTRADAY')
+        }
+        
+        // Draw vertical lines at ID zone boundaries
+        g.append('line')
+          .attr('x1', idStartX)
+          .attr('x2', idStartX)
+          .attr('y1', 0)
+          .attr('y2', ih)
+          .attr('stroke', '#4caf50')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '5,3')
+        
+        g.append('line')
+          .attr('x1', idEndX)
+          .attr('x2', idEndX)
+          .attr('y1', 0)
+          .attr('y2', ih)
+          .attr('stroke', '#4caf50')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '5,3')
+      }
+      
+      // Draw DA zone marker (between locked and ID, or after ID and before future)
+      const daStartIdx = hourStatus.findIndex(s => s === 'da')
+      const daEndIdx = hourStatus.lastIndexOf('da')
+      
+      if (daStartIdx >= 0 && daStartIdx < n) {
+        const daStartX = hourToX(daStartIdx)
+        const daEndX = hourToX(daEndIdx + 1)
+        const daWidth = daEndX - daStartX
+        
+        // Light grey overlay for DA zone (committed, not editable)
+        g.append('rect')
+          .attr('x', daStartX)
+          .attr('y', 0)
+          .attr('width', daWidth)
+          .attr('height', ih)
+          .attr('fill', '#9e9e9e')
+          .attr('opacity', 0.1)
+          .style('pointer-events', 'none')
+        
+        // Add "DAY-AHEAD" label
+        if (daWidth > 60) {
+          g.append('text')
+            .attr('x', daStartX + daWidth / 2)
+            .attr('y', 28)
+            .attr('text-anchor', 'middle')
+            .attr('fill', '#757575')
+            .attr('font-size', 9)
+            .attr('opacity', 0.8)
+            .text('📊 DAY-AHEAD')
+        }
+      }
+    }
+    
+    // Draw future zone (not yet tradeable) based on hourStatus
+    const futureStartIdx = Array.isArray(hourStatus) ? hourStatus.findIndex(s => s === 'future') : -1
+    if (futureStartIdx >= 0 && futureStartIdx < n) {
+      const futureX = hourToX(futureStartIdx)
+      
+      // Create dotted pattern for future zone
+      const defs2 = svg.select('defs').empty() ? svg.append('defs') : svg.select('defs')
+      const pattern2 = defs2.append('pattern')
+        .attr('id', 'future-dots')
+        .attr('patternUnits', 'userSpaceOnUse')
+        .attr('width', 10)
+        .attr('height', 10)
+      pattern2.append('circle')
+        .attr('cx', 5)
+        .attr('cy', 5)
+        .attr('r', 1.5)
+        .attr('fill', '#2196f3')
+        .attr('opacity', 0.4)
+      
+      g.append('rect')
+        .attr('x', futureX)
+        .attr('y', 0)
+        .attr('width', iw - futureX)
+        .attr('height', ih)
+        .attr('fill', 'url(#future-dots)')
+        .style('pointer-events', 'none')
+      
+      // Add "FUTURE" label
+      const futureWidth = iw - futureX
+      if (futureWidth > 40) {
+        g.append('text')
+          .attr('x', futureX + futureWidth / 2)
+          .attr('y', 28)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#2196f3')
+          .attr('font-size', 9)
+          .attr('opacity', 0.8)
+          .text('🔮 FUTURE')
+      }
+      
+      // Draw vertical line at future boundary
+      g.append('line')
+        .attr('x1', futureX)
+        .attr('x2', futureX)
+        .attr('y1', 0)
+        .attr('y2', ih)
+        .attr('stroke', '#2196f3')
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '3,3')
+    }
+    
+    // Draw DA Baseline and market area fills if provided
+    if (daBaseline && Array.isArray(daBaseline) && daBaseline.length > 0) {
+      const baselineData = daBaseline.map((val, i) => ({ i, v: val }))
+      
+      // 1. Fill area from X-axis to DA baseline (grey) - DA Position
+      const daAreaPath = d3.area()
+        .x(d => x(d.i + 1))
+        .y0(ih) // Bottom (X-axis)
+        .y1(d => y(d.v))
+        .curve(d3.curveMonotoneX)
+      
+      g.append('path')
+        .datum(baselineData)
+        .attr('fill', '#9e9e9e')
+        .attr('opacity', 0.15)
+        .attr('d', daAreaPath)
+      
+      // 2. Fill area between DA baseline and current forecast
+      // Green = ID buy (current > DA), Red = ID sell (current < DA)
+      if (hours && hours.length > 0) {
+        const minLen = Math.min(hours.length, daBaseline.length)
+        
+        // Create combined data for area between lines
+        const combinedData = []
+        for (let i = 0; i < minLen; i++) {
+          combinedData.push({
+            i,
+            current: Number(hours[i]) || 0,
+            da: Number(daBaseline[i]) || 0
+          })
+        }
+        
+        // ID Buy area (current > DA) - Green
+        const idBuyArea = d3.area()
+          .x(d => x(d.i + 1))
+          .y0(d => y(d.da))
+          .y1(d => y(Math.max(d.current, d.da)))
+          .curve(d3.curveMonotoneX)
+        
+        g.append('path')
+          .datum(combinedData)
+          .attr('fill', '#4caf50')
+          .attr('opacity', 0.25)
+          .attr('d', idBuyArea)
+        
+        // ID Sell area (current < DA) - Red
+        const idSellArea = d3.area()
+          .x(d => x(d.i + 1))
+          .y0(d => y(d.da))
+          .y1(d => y(Math.min(d.current, d.da)))
+          .curve(d3.curveMonotoneX)
+        
+        g.append('path')
+          .datum(combinedData)
+          .attr('fill', '#f44336')
+          .attr('opacity', 0.25)
+          .attr('d', idSellArea)
+      }
+      
+      // Draw DA baseline line (dotted grey)
+      const baselinePath = d3.line()
+        .x(d => x(d.i + 1))
+        .y(d => y(d.v))
+        .curve(d3.curveMonotoneX)
+      
+      g.append('path')
+        .datum(baselineData)
+        .attr('fill', 'none')
+        .attr('stroke', '#666')
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '4,4')
+        .attr('d', baselinePath)
+        .attr('opacity', 0.8)
+      
+      // Add legend for market areas
+      const legendY = ih - 8
+      
+      // DA legend
+      g.append('rect')
+        .attr('x', iw - 180)
+        .attr('y', legendY - 8)
+        .attr('width', 12)
+        .attr('height', 12)
+        .attr('fill', '#9e9e9e')
+        .attr('opacity', 0.4)
+      g.append('text')
+        .attr('x', iw - 165)
+        .attr('y', legendY + 2)
+        .attr('fill', '#666')
+        .attr('font-size', '9px')
+        .text('DA')
+      
+      // ID Buy legend
+      g.append('rect')
+        .attr('x', iw - 130)
+        .attr('y', legendY - 8)
+        .attr('width', 12)
+        .attr('height', 12)
+        .attr('fill', '#4caf50')
+        .attr('opacity', 0.5)
+      g.append('text')
+        .attr('x', iw - 115)
+        .attr('y', legendY + 2)
+        .attr('fill', '#4caf50')
+        .attr('font-size', '9px')
+        .text('ID+')
+      
+      // ID Sell legend
+      g.append('rect')
+        .attr('x', iw - 80)
+        .attr('y', legendY - 8)
+        .attr('width', 12)
+        .attr('height', 12)
+        .attr('fill', '#f44336')
+        .attr('opacity', 0.5)
+      g.append('text')
+        .attr('x', iw - 65)
+        .attr('y', legendY + 2)
+        .attr('fill', '#f44336')
+        .attr('font-size', '9px')
+        .text('ID−')
+    }
+    
     // Draw device-specific reference lines
     refLines.forEach(ref => {
       const yPos = y(ref.value)
@@ -358,18 +660,23 @@ export default function ForecastChartEditor({
     pathSelection = path
 
     const lockedColor = '#9e9e9e'
+    const futureColor = '#90caf9'  // Light blue for future hours
     const unlockedColor = '#1976d2'
     const activeColor = '#d32f2f'
     let pts = null
 
     const pointColor = (d) => {
-      if (d.i < lockedUntil) return lockedColor
+      if (!isHourEditable(d.i)) {
+        // Check if it's future or locked
+        if (Array.isArray(hourStatus) && hourStatus[d.i] === 'future') return futureColor
+        return lockedColor
+      }
       if (activePointIndex !== null && d.i === activePointIndex) return activeColor
       return unlockedColor
     }
 
     const updateActivePoint = (idx, engaged) => {
-      const canHighlight = engaged && Number.isInteger(idx) && idx >= lockedUntil && idx < n
+      const canHighlight = engaged && Number.isInteger(idx) && isHourEditable(idx) && idx < n
       if (canHighlight) {
         activePointIndex = idx
         dragStateRef.current.index = idx
@@ -386,12 +693,25 @@ export default function ForecastChartEditor({
 
     const highlightPoint = (idx) => updateActivePoint(idx, true)
     const clearActivePoint = () => updateActivePoint(null, false)
+    
+    // Check if an hour index is editable
+    // "locked" = past (executed), "future" = beyond horizon - NOT editable
+    // "da" = DA bidding (Round 1), "id" = ID trading (Round 2+) - BOTH editable
+    const isHourEditable = (idx) => {
+      if (idx < lockedUntil) return false
+      if (Array.isArray(hourStatus)) {
+        const status = hourStatus[idx]
+        // Only locked and future are NOT editable
+        if (status === 'locked' || status === 'future') return false
+      }
+      return true
+    }
 
     // overlay for drag anywhere
     const applySoft = (centerIdx, newCenterVal) => {
       if (!Array.isArray(hours) || typeof onChange !== 'function') return
       if (!Number.isInteger(centerIdx)) return
-      if (centerIdx < lockedUntil || centerIdx < 0 || centerIdx >= workingHours.length) return
+      if (!isHourEditable(centerIdx) || centerIdx < 0 || centerIdx >= workingHours.length) return
       const R = Math.max(0, Math.min(6, Number(smoothRadius) || 0))
       const clampedCenter = clampY(newCenterVal)
       const base = workingHours[centerIdx] ?? 0
@@ -404,11 +724,11 @@ export default function ForecastChartEditor({
         const w = (R - d + 1) / (R + 1) // linear falloff
         const left = centerIdx - d
         const right = centerIdx + d
-        if (left >= lockedUntil && left >= 0){
+        if (isHourEditable(left) && left >= 0){
           const targetLeft = clampY((workingHours[left] ?? 0) + delta * w)
           commitValue(left, targetLeft)
         }
-        if (right >= lockedUntil && right < workingHours.length){
+        if (isHourEditable(right) && right < workingHours.length){
           const targetRight = clampY((workingHours[right] ?? 0) + delta * w)
           commitValue(right, targetRight)
         }
@@ -423,7 +743,7 @@ export default function ForecastChartEditor({
         const idx = Math.max(0, Math.min(n - 1, Math.round(x.invert(x0)) - 1))
         const rawValue = y.invert(y0)
         const value = clampY(rawValue)
-        if (idx < lockedUntil) {
+        if (!isHourEditable(idx)) {
           clearActivePoint()
           return
         }
@@ -434,7 +754,7 @@ export default function ForecastChartEditor({
         const x0 = Math.max(0, Math.min(iw, x0Raw))  // Clamp X to chart area
         let idx = Math.round(x.invert(x0)) - 1
         idx = Math.max(0, Math.min(n - 1, idx))
-        if (idx < lockedUntil) {
+        if (!isHourEditable(idx)) {
           clearActivePoint()
           return
         }
@@ -465,7 +785,7 @@ export default function ForecastChartEditor({
         const [, y0] = d3.pointer(event, g.node())
         const rawValue = y.invert(y0)
         const value = clampY(rawValue)
-        if (d.i < lockedUntil) {
+        if (!isHourEditable(d.i)) {
           clearActivePoint()
           return
         }
@@ -473,7 +793,7 @@ export default function ForecastChartEditor({
       })
       .on('drag', function(event, d) {
         const i = d.i
-        if (i < lockedUntil) {
+        if (!isHourEditable(i)) {
           clearActivePoint()
           return
         }
@@ -504,11 +824,11 @@ export default function ForecastChartEditor({
       .attr('cy', (d) => y(d.v))
       .attr('r', 12)
       .attr('fill', 'transparent')
-      .style('cursor', (d) => (d.i < lockedUntil ? 'not-allowed' : 'ns-resize'))
+      .style('cursor', (d) => (isHourEditable(d.i) ? 'ns-resize' : 'not-allowed'))
       .style('pointer-events', 'all')
     hitAreas = pointHitSelection
     pointHitSelection
-      .filter((d) => d.i >= lockedUntil)
+      .filter((d) => isHourEditable(d.i))
       .call(drag)
 
     // Keep visible points on top of hit-areas
@@ -526,7 +846,7 @@ export default function ForecastChartEditor({
     // labels
     g.append('text').attr('x', iw / 2).attr('y', ih + 28).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Hour')
     g.append('text').attr('transform', 'rotate(-90)').attr('x', -ih / 2).attr('y', -36).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Power (MW) per hour')
-  }, [hours, lockedUntil, onChange, maxValue, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, startTime])
+  }, [hours, lockedUntil, onChange, maxValue, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, startTime, daBaseline, hourStatus])
 
   return (
     <svg ref={ref} role="img" aria-label="Forecast editor chart" style={{ border: '1px solid #eee', borderRadius: 4 }} />

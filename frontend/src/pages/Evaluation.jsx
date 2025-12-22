@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Stack, Select, MenuItem, FormControl, InputLabel, Alert, Box } from '@mui/material'
-import { EmojiEvents as LeaderboardIcon } from '@mui/icons-material'
+import { Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Stack, Select, MenuItem, FormControl, InputLabel, Alert, Box, Divider, Chip } from '@mui/material'
+import { EmojiEvents as LeaderboardIcon, TrendingUp as DAIcon, SwapHoriz as IDIcon } from '@mui/icons-material'
 import api from '../services/api'
 import Radar from '../components/Radar'
 import { exportSVG } from '../utils/exportSvg'
@@ -16,6 +16,7 @@ export default function Evaluation(){
   const [sessionInfo, setSessionInfo] = useState(null)
   const [compareSessionId, setCompareSessionId] = useState('')
   const [compareData, setCompareData] = useState(null)
+  const [marketBreakdown, setMarketBreakdown] = useState([])
   const radarWrap = useRef(null)
   
   // Load all user sessions for dropdown
@@ -48,6 +49,15 @@ export default function Evaluation(){
         const { data } = await api.get(`/api/leaderboard/sessions/${sessionId}`)
         setRows(data)
         setSel(data?.[0]?.player_id || null)
+        
+        // Load market breakdown
+        try {
+          const breakdown = await api.get(`/api/leaderboard/sessions/${sessionId}/market-breakdown`)
+          setMarketBreakdown(breakdown.data)
+        } catch (breakdownErr) {
+          console.warn('Market breakdown not available:', breakdownErr)
+          setMarketBreakdown([])
+        }
       } catch (error) {
         console.error('Failed to load evaluation data:', error)
       }
@@ -240,6 +250,95 @@ export default function Evaluation(){
               )})}
             </TableBody>
           </Table>
+          
+          {/* Market Breakdown Section */}
+          {marketBreakdown.length > 0 && (
+            <Box sx={{ mt: 4 }}>
+              <Divider sx={{ mb: 2 }} />
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <DAIcon color="action" />
+                Market Breakdown: Day-Ahead vs Intraday
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Zeigt die Aufteilung der Handelsvolumen zwischen Day-Ahead (Runde 1) und Intraday (Anpassungen in späteren Runden).
+              </Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow sx={{ bgcolor: 'action.hover' }}>
+                    <TableCell>Player</TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
+                        <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.7rem', height: 18 }} />
+                        Volume (MWh)
+                      </Stack>
+                    </TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
+                        <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.7rem', height: 18 }} />
+                        Revenue (ZAR)
+                      </Stack>
+                    </TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
+                        <Chip label="ID" size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.7rem', height: 18 }} />
+                        Delta (MWh)
+                      </Stack>
+                    </TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
+                        <Chip label="ID" size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.7rem', height: 18 }} />
+                        Revenue (ZAR)
+                      </Stack>
+                    </TableCell>
+                    <TableCell align="right">Total (MWh)</TableCell>
+                    <TableCell align="right">Total Revenue</TableCell>
+                    <TableCell align="right">Avg MCP</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {marketBreakdown.map(mb => (
+                    <TableRow key={mb.player_id}>
+                      <TableCell>{mb.email}</TableCell>
+                      <TableCell align="right" sx={{ bgcolor: 'rgba(158, 158, 158, 0.1)' }}>
+                        {mb.da_volume_mwh?.toLocaleString()}
+                      </TableCell>
+                      <TableCell align="right" sx={{ bgcolor: 'rgba(158, 158, 158, 0.1)' }}>
+                        {mb.da_revenue_zar?.toLocaleString()} ZAR
+                      </TableCell>
+                      <TableCell align="right" sx={{ 
+                        bgcolor: mb.id_delta_mwh >= 0 ? 'rgba(76, 175, 80, 0.1)' : 'rgba(244, 67, 54, 0.1)',
+                        color: mb.id_delta_mwh >= 0 ? 'success.main' : 'error.main'
+                      }}>
+                        {mb.id_delta_mwh >= 0 ? '+' : ''}{mb.id_delta_mwh?.toLocaleString()}
+                      </TableCell>
+                      <TableCell align="right" sx={{ 
+                        bgcolor: mb.id_revenue_zar >= 0 ? 'rgba(76, 175, 80, 0.1)' : 'rgba(244, 67, 54, 0.1)',
+                        color: mb.id_revenue_zar >= 0 ? 'success.main' : 'error.main'
+                      }}>
+                        {mb.id_revenue_zar >= 0 ? '+' : ''}{mb.id_revenue_zar?.toLocaleString()} ZAR
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                        {mb.final_volume_mwh?.toLocaleString()}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                        {mb.total_revenue_zar?.toLocaleString()} ZAR
+                      </TableCell>
+                      <TableCell align="right">
+                        {mb.avg_mcp?.toLocaleString()} ZAR/MWh
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <Box sx={{ mt: 2, p: 1, bgcolor: 'background.default', borderRadius: 1 }}>
+                <Typography variant="caption" color="text.secondary">
+                  <strong>Legende:</strong>{' '}
+                  <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = Day-Ahead (Runde 1 Position){' '}
+                  <Chip label="ID" size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = Intraday (Anpassungen in Runde 2+)
+                </Typography>
+              </Box>
+            </Box>
+          )}
         </>
       )}
     </Paper>

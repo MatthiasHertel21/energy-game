@@ -184,13 +184,84 @@ class ForecastAPI(Resource):
             forecast_data["devices"] = per_device
         bids_data = data.get("bids")
         
+        # Get session and scenario config for DA gate logic
+        session = Session.query.get(data["session_id"])
+        scenario = Scenario.query.get(session.scenario_id) if session else None
+        
+        # Calculate which hours are newly DA-committed based on gate logic
+        is_da_baseline = False
+        da_baseline_hours = None  # Which hours of this forecast become DA baseline
+        
+        if session and scenario:
+            general_cfg = scenario.config.get("general", {})
+            round_span = int(general_cfg.get("round_span_hours", 6))
+            # Use forecast_horizon_hours for DA calculation (visible in chart)
+            horizon_hours = int(general_cfg.get("forecast_horizon_hours", general_cfg.get("horizon_hours", 24)))
+            day_ahead_gate_hour = int(general_cfg.get("day_ahead_gate_hour", 12))
+            start_time_str = general_cfg.get("start_time") or "00:00"
+            
+            try:
+                start_hour = int(start_time_str.split(":")[0])
+            except:
+                start_hour = 0
+            
+            current_round = data["round_num"]
+            current_sim_hour = (current_round - 1) * round_span
+            prev_sim_hour = (current_round - 2) * round_span if current_round > 1 else -1
+            
+            # Calculate first gate sim hour
+            first_gate_sim_hour = (day_ahead_gate_hour - start_hour) % 24
+            if first_gate_sim_hour <= 0:
+                first_gate_sim_hour += 24
+            
+            # Hours until first midnight
+            hours_until_first_midnight = (24 - start_hour) % 24
+            if hours_until_first_midnight == 0:
+                hours_until_first_midnight = 24
+            
+            # Check if we just passed a gate (between prev_sim_hour and current_sim_hour)
+            def get_gate_count(sim_hour):
+                if sim_hour < first_gate_sim_hour:
+                    return 0
+                return 1 + (sim_hour - first_gate_sim_hour) // 24
+            
+            prev_gate_count = get_gate_count(prev_sim_hour) if prev_sim_hour >= 0 else 0
+            current_gate_count = get_gate_count(current_sim_hour)
+            
+            # Round 1 ALWAYS creates DA baseline for Day 1 (hours 0 to first_midnight)
+            # This represents the initial DA position before any gate closure
+            if current_round == 1:
+                is_da_baseline = True
+                # Day 1 = from scenario start to first midnight
+                new_da_start = 0
+                new_da_end = min(hours_until_first_midnight, horizon_hours)
+                da_baseline_hours = {"start": new_da_start, "end": new_da_end}
+            elif current_gate_count > prev_gate_count:
+                # A new gate was just passed! Mark this forecast as DA baseline
+                is_da_baseline = True
+                # Calculate which hours are newly committed
+                # Gate N commits day N+1 (hours from midnight N to midnight N+1)
+                new_da_start = hours_until_first_midnight + (current_gate_count - 1) * 24
+                new_da_end = min(hours_until_first_midnight + current_gate_count * 24, horizon_hours)
+                if new_da_start < new_da_end:  # Only if there are hours to commit
+                    da_baseline_hours = {"start": new_da_start, "end": new_da_end}
+                else:
+                    is_da_baseline = False  # No hours to commit
+        
+        # Save forecast
         f = Forecast(
             session_id=data["session_id"], 
             player_id=player_id, 
             round_num=data["round_num"], 
             data=forecast_data,
-            bids=bids_data  # New: store bids separately
+            bids=bids_data,
+            is_da_baseline=is_da_baseline
         )
+        
+        # If this is a new DA baseline, store which hours it covers
+        if is_da_baseline and da_baseline_hours:
+            f.data["da_baseline_hours"] = da_baseline_hours
+        
         db.session.add(f)
         db.session.commit()
         
@@ -282,17 +353,79 @@ class ForecastFull(Resource):
         # Store bids if provided
         bids_data = data.get("bids")
         
+        # Calculate DA baseline based on gate logic (same as /submit)
+        session = Session.query.get(data["session_id"])
+        scenario = Scenario.query.get(session.scenario_id) if session else None
+        
+        is_da_baseline = False
+        da_baseline_hours = None
+        
+        if session and scenario:
+            general_cfg = scenario.config.get("general", {})
+            round_span = int(general_cfg.get("round_span_hours", 6))
+            # Use forecast_horizon_hours for DA calculation (visible in chart)
+            horizon_hours = int(general_cfg.get("forecast_horizon_hours", general_cfg.get("horizon_hours", 24)))
+            day_ahead_gate_hour = int(general_cfg.get("day_ahead_gate_hour", 12))
+            start_time_str = general_cfg.get("start_time") or "00:00"
+            
+            try:
+                start_hour = int(start_time_str.split(":")[0])
+            except:
+                start_hour = 0
+            
+            current_round = session.current_round or 1
+            current_sim_hour = (current_round - 1) * round_span
+            prev_sim_hour = (current_round - 2) * round_span if current_round > 1 else -1
+            
+            first_gate_sim_hour = (day_ahead_gate_hour - start_hour) % 24
+            if first_gate_sim_hour <= 0:
+                first_gate_sim_hour += 24
+            
+            hours_until_first_midnight = (24 - start_hour) % 24
+            if hours_until_first_midnight == 0:
+                hours_until_first_midnight = 24
+            
+            def get_gate_count(sim_hour):
+                if sim_hour < first_gate_sim_hour:
+                    return 0
+                return 1 + (sim_hour - first_gate_sim_hour) // 24
+            
+            prev_gate_count = get_gate_count(prev_sim_hour) if prev_sim_hour >= 0 else 0
+            current_gate_count = get_gate_count(current_sim_hour)
+            
+            # Round 1 ALWAYS creates DA baseline for Day 1
+            if current_round == 1:
+                is_da_baseline = True
+                new_da_start = 0
+                new_da_end = min(hours_until_first_midnight, horizon_hours)
+                da_baseline_hours = {"start": new_da_start, "end": new_da_end}
+            elif current_gate_count > prev_gate_count:
+                is_da_baseline = True
+                new_da_start = hours_until_first_midnight + (current_gate_count - 1) * 24
+                new_da_end = min(hours_until_first_midnight + current_gate_count * 24, horizon_hours)
+                if new_da_start < new_da_end:
+                    da_baseline_hours = {"start": new_da_start, "end": new_da_end}
+                else:
+                    is_da_baseline = False
+        
+        # Store DA baseline hours range if applicable
+        if is_da_baseline and da_baseline_hours:
+            forecast_data["da_baseline_hours"] = da_baseline_hours
+        
         if not f:
             f = Forecast(
                 session_id=data["session_id"], 
                 player_id=player_id, 
                 round_num=0, 
                 data=forecast_data,
-                bids=bids_data
+                bids=bids_data,
+                is_da_baseline=is_da_baseline
             )
         else:
             f.data = forecast_data
             f.bids = bids_data
+            if is_da_baseline:
+                f.is_da_baseline = True
         db.session.add(f)
         db.session.commit()
         return {"status": "ok", "id": f.id}
@@ -530,6 +663,217 @@ class PlayerSessionItem(Resource):
         db.session.commit()
         
         return "", HTTPStatus.NO_CONTENT
+
+
+@ns.route("/da-baseline/<int:session_id>")
+class DABaseline(Resource):
+    @jwt_required()
+    def get(self, session_id: int):
+        """
+        Get Day-Ahead baseline forecast for the current player with gate closure info.
+        Returns the Round 1 forecast marked as is_da_baseline=True plus hour locking info.
+        
+        Response format:
+        {
+          "devices": {
+            "device_1": [100, 100, 100, ...],  // DA position per hour
+            "device_2": [50, 50, 50, ...]
+          },
+          "bids": {
+            "device_1": {
+              "A": {"price": 350, "hours": [50, 50, ...]},
+              "B": {"price": 400, "hours": [30, 30, ...]},
+              "C": {"price": 480, "hours": [20, 20, ...]}
+            }
+          },
+          "aggregate": [150, 150, 150, ...],  // Sum across all devices
+          "hour_status": ["locked", "locked", "da", "da", "id", "id", "future", "future", ...],
+          "locked_until_hour": 6,  // Hours 0-5 are locked (already executed)
+          "da_until_hour": 30,  // Hours 6-29 are DA (committed but tradeable as ID)
+          "id_until_hour": 48   // Hours 30-47 are ID (still adjustable)
+        }
+        """
+        player_id = int(get_jwt_identity())
+        
+        # Get session info for gate closure calculation
+        session = Session.query.get(session_id)
+        if not session:
+            return {"error": "Session not found"}, HTTPStatus.NOT_FOUND
+        
+        scenario = Scenario.query.get(session.scenario_id)
+        if not scenario or not scenario.config:
+            return {"error": "Scenario not found"}, HTTPStatus.NOT_FOUND
+        
+        general_cfg = scenario.config.get("general", {})
+        round_span = int(general_cfg.get("round_span_hours", 6))
+        # Use forecast_horizon_hours for DA calculation (visible in chart)
+        horizon_hours = int(general_cfg.get("forecast_horizon_hours", general_cfg.get("horizon_hours", 24)))
+        day_ahead_gate_hour = int(general_cfg.get("day_ahead_gate_hour", 12))  # Gate closes at 12:00
+        start_time_str = general_cfg.get("start_time") or "00:00"
+        current_round = session.current_round or 1
+        
+        # Parse start time
+        try:
+            start_hour = int(start_time_str.split(":")[0])
+        except:
+            start_hour = 0
+        
+        # Calculate current simulation hour and clock time
+        current_sim_hour = (current_round - 1) * round_span
+        current_clock_hour = (start_hour + current_sim_hour) % 24
+        
+        # SIMPLE DA MARKET MODEL:
+        # - Round 1: DA baseline for Day 1 (hours 0 to first midnight)
+        # - Gate at 12:00 Day N: DA baseline for Day N+1 (next 24 hours after midnight)
+        #
+        # DA-committed = hours where DA position is fixed and cannot be changed
+        # After Round 1, Day 1 is committed. After each gate, the next day is committed.
+        
+        locked_until_hour = current_sim_hour
+        
+        # Calculate which hours are DA-committed (cannot be changed)
+        # Find hours since scenario start until first midnight
+        hours_until_first_midnight = (24 - start_hour) % 24
+        if hours_until_first_midnight == 0:
+            hours_until_first_midnight = 24  # If start at 00:00, first midnight is 24h later
+        
+        # Gate hour relative to scenario start
+        first_gate_sim_hour = (day_ahead_gate_hour - start_hour) % 24
+        if first_gate_sim_hour <= 0:
+            first_gate_sim_hour += 24  # Gate is on next day
+        
+        # DA-committed always starts at 0 (Day 1 is committed from Round 1)
+        # Then extends with each gate
+        da_committed_start = 0
+        da_committed_end = hours_until_first_midnight  # Day 1 is always committed
+        
+        # Count how many gates have been passed
+        if current_sim_hour >= first_gate_sim_hour:
+            gate_count = 1 + (current_sim_hour - first_gate_sim_hour) // 24
+            # Each gate commits one more day
+            da_committed_end = min(hours_until_first_midnight + gate_count * 24, horizon_hours)
+        
+        # Clamp to valid range
+        da_committed_start = max(0, da_committed_start)
+        da_committed_end = min(da_committed_end, horizon_hours)
+        
+        # For API response
+        da_until_hour = da_committed_end
+        id_until_hour = horizon_hours
+        
+        # Find ALL DA baseline forecasts and combine them
+        # Each gate creates a new DA baseline for different hours
+        da_forecasts = Forecast.query.filter_by(
+            session_id=session_id,
+            player_id=player_id,
+            is_da_baseline=True
+        ).order_by(Forecast.round_num).all()
+        
+        if not da_forecasts:
+            # No DA baseline exists yet
+            # Build hour status based on gate logic
+            hour_status = []
+            for h in range(horizon_hours):
+                if h < locked_until_hour:
+                    hour_status.append("locked")
+                elif da_committed_start <= h < da_committed_end:
+                    hour_status.append("da")
+                else:
+                    hour_status.append("id")
+            
+            return {
+                "devices": {},
+                "bids": {},
+                "aggregate": [],
+                "hour_status": hour_status,
+                "locked_until_hour": locked_until_hour,
+                "da_committed_start": da_committed_start if da_committed_start < horizon_hours else -1,
+                "da_committed_end": da_committed_end if da_committed_end > 0 else -1,
+                "da_until_hour": da_until_hour,
+                "id_until_hour": id_until_hour
+            }, HTTPStatus.OK
+        
+        # Combine DA baselines from multiple gates
+        # Each forecast covers specific hours (stored in da_baseline_hours)
+        aggregate_hours = [0.0] * horizon_hours
+        devices_by_id = {}
+        bids_data = {}
+        
+        for da_forecast in da_forecasts:
+            forecast_data = da_forecast.data or {}
+            da_hours_range = forecast_data.get("da_baseline_hours", {"start": 0, "end": horizon_hours})
+            da_start = da_hours_range.get("start", 0)
+            da_end = da_hours_range.get("end", horizon_hours)
+            
+            # Copy aggregate hours for this range
+            forecast_hours = forecast_data.get("hours", [])
+            for h in range(da_start, min(da_end, len(forecast_hours), horizon_hours)):
+                if h < len(forecast_hours):
+                    aggregate_hours[h] = forecast_hours[h]
+            
+            # Copy device data for this range
+            devices_data = forecast_data.get("devices", [])
+            if isinstance(devices_data, list):
+                for item in devices_data:
+                    device_id = item.get("device_id")
+                    hours = item.get("hours", [])
+                    if device_id:
+                        if device_id not in devices_by_id:
+                            devices_by_id[device_id] = [0.0] * horizon_hours
+                        for h in range(da_start, min(da_end, len(hours), horizon_hours)):
+                            if h < len(hours):
+                                devices_by_id[device_id][h] = hours[h]
+            
+            # Copy bids for this range
+            forecast_bids = da_forecast.bids or {}
+            for device_id, lots in forecast_bids.items():
+                if device_id not in bids_data:
+                    bids_data[device_id] = {}
+                for lot_name, lot_data in lots.items():
+                    lot_hours = lot_data.get('hours', [])
+                    if lot_name not in bids_data[device_id]:
+                        bids_data[device_id][lot_name] = {
+                            'price': lot_data.get('price', 0),
+                            'hours': [0.0] * horizon_hours
+                        }
+                    for h in range(da_start, min(da_end, len(lot_hours), horizon_hours)):
+                        if h < len(lot_hours):
+                            bids_data[device_id][lot_name]['hours'][h] = lot_hours[h]
+        
+        # Truncate to da_until_hour
+        aggregate_hours = aggregate_hours[:da_until_hour]
+        for device_id in devices_by_id:
+            devices_by_id[device_id] = devices_by_id[device_id][:da_until_hour]
+        for device_id in bids_data:
+            for lot_name in bids_data[device_id]:
+                bids_data[device_id][lot_name]['hours'] = bids_data[device_id][lot_name]['hours'][:da_until_hour]
+        
+        # Build hour status array based on REAL DA gate logic:
+        # - "locked": Already delivered (past)
+        # - "da": DA-committed (Gate passed, cannot change forecast for these hours)
+        # - "id": ID-tradeable (can adjust forecast)
+        hour_status = []
+        for h in range(horizon_hours):
+            if h < locked_until_hour:
+                hour_status.append("locked")
+            elif da_committed_start <= h < da_committed_end:
+                # This hour is DA-committed (gate has passed for this delivery day)
+                hour_status.append("da")
+            else:
+                # ID-tradeable (either before DA period or beyond it)
+                hour_status.append("id")
+        
+        return {
+            "devices": devices_by_id,
+            "bids": bids_data,
+            "aggregate": aggregate_hours,
+            "hour_status": hour_status,
+            "locked_until_hour": locked_until_hour,
+            "da_committed_start": da_committed_start if da_committed_start < horizon_hours else -1,
+            "da_committed_end": da_committed_end if da_committed_end > 0 else -1,
+            "da_until_hour": da_until_hour,
+            "id_until_hour": id_until_hour
+        }, HTTPStatus.OK
 
 
 @ns.route("/reset-scenario")

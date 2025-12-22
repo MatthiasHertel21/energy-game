@@ -523,8 +523,17 @@ export default function Player() {
   const [activeLot, setActiveLot] = useState('A') // Active lot for editing (A, B, or C)
   const [confirmOvercapacityOpen, setConfirmOvercapacityOpen] = useState(false)
   const [overcapacityWarnings, setOvercapacityWarnings] = useState([])
+  const [daBaseline, setDaBaseline] = useState({ 
+    devices: {}, 
+    bids: {}, 
+    hour_status: [], 
+    locked_until_hour: 0,
+    da_until_hour: 24,
+    id_until_hour: 24
+  })
   useEffect(() => {
     forecastSeedKeyRef.current = null
+    setDaBaseline({ devices: {}, bids: {}, hour_status: [], locked_until_hour: 0, da_until_hour: 24, id_until_hour: 24 }) // Reset DA baseline when session changes
   }, [sessionId])
   const aggregateMax = useMemo(() => {
     const dataMax = Array.isArray(hours) && hours.length > 0
@@ -812,6 +821,26 @@ export default function Player() {
 
         }catch(_){ /* ignore */ }
         
+        // Load DA baseline if round > 1
+        if (Number(data.current_round || 1) > 1) {
+          try {
+            const baselineRes = await api.get(`/api/player/da-baseline/${sessionId}`)
+            if (baselineRes.data) {
+              setDaBaseline({
+                devices: baselineRes.data.devices || {},
+                bids: baselineRes.data.bids || {},
+                hour_status: baselineRes.data.hour_status || [],
+                locked_until_hour: baselineRes.data.locked_until_hour || 0,
+                da_until_hour: baselineRes.data.da_until_hour || 24,
+                id_until_hour: baselineRes.data.id_until_hour || 24
+              })
+              console.log('[Player] Loaded DA baseline with gate closure:', baselineRes.data)
+            }
+          } catch (err) {
+            console.error('Failed to load DA baseline:', err)
+          }
+        }
+        
       } catch (error) {
         console.error('Failed to load session config:', error)
         showSnack('Failed to load session configuration', 'error')
@@ -845,9 +874,10 @@ export default function Player() {
         setSubmitted(false)
         try{
           const { data } = await api.get(`/api/sessions/${sessionId}`)
+          const newRound = Number(data.current_round || 1)
           setCfg(prev=> ({ 
             ...prev, 
-            current_round: Number(data.current_round||prev.current_round), 
+            current_round: newRound, 
             scenario_name: data.scenario_name||prev.scenario_name,
             campaign_name: data.campaign_name||prev.campaign_name,
             general: {
@@ -857,6 +887,26 @@ export default function Player() {
             }
           }))
           setStatus(data.status||prev.status)
+          
+          // Load DA baseline when entering Round 2+ (ID market)
+          if (newRound > 1) {
+            try {
+              const baselineRes = await api.get(`/api/player/da-baseline/${sessionId}`)
+              if (baselineRes.data) {
+                setDaBaseline({
+                  devices: baselineRes.data.devices || {},
+                  bids: baselineRes.data.bids || {},
+                  hour_status: baselineRes.data.hour_status || [],
+                  locked_until_hour: baselineRes.data.locked_until_hour || 0,
+                  da_until_hour: baselineRes.data.da_until_hour || 24,
+                  id_until_hour: baselineRes.data.id_until_hour || 24
+                })
+                console.log('[Player] Loaded DA baseline on round_start:', baselineRes.data)
+              }
+            } catch (err) {
+              console.error('Failed to load DA baseline on round_start:', err)
+            }
+          }
         }catch(_){ }
       }
     })
@@ -1972,6 +2022,7 @@ export default function Player() {
                               const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
                                 ? deviceDef.enable_multi_bid 
                                 : biddingEnabled
+                              
                               return deviceBidding && deviceBids[did]
                             })() && (
                               <>
@@ -2005,6 +2056,8 @@ export default function Player() {
                                     startTime={cfg.general.start_time || '00:00'}
                                     deviceType={deviceType}
                                     deviceParams={deviceParams}
+                                    daBaseline={daBaseline.bids?.[did]?.[activeLot]?.hours || daBaseline.devices?.[did] || null}
+                                    hourStatus={daBaseline.hour_status || []}
                                   />
                                   <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
                                     <Button
@@ -2040,6 +2093,7 @@ export default function Player() {
                               const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
                                 ? deviceDef.enable_multi_bid 
                                 : biddingEnabled
+                              
                               return !deviceBidding
                             })() && (
                               <Box>
@@ -2058,6 +2112,8 @@ export default function Player() {
                                   startTime={cfg.general.start_time || '00:00'}
                                   deviceType={deviceType}
                                   deviceParams={deviceParams}
+                                  daBaseline={daBaseline.devices?.[did] || null}
+                                  hourStatus={daBaseline.hour_status || []}
                                 />
                               </Box>
                             )}
@@ -2208,6 +2264,7 @@ export default function Player() {
                       roundSpan={Number(cfg.general.round_span_hours || 6)}
                       freezeHours={Number(cfg.general.freeze_hours || 6)}
                       startTime={cfg.general.start_time || '00:00'}
+                      hourStatus={daBaseline.hour_status || []}
                     />
                   </Box>
                 ) : (

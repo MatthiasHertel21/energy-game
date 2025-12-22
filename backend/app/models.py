@@ -195,6 +195,7 @@ class Forecast(db.Model):
     #     'C': {'price': 480.0, 'hours': [100, 100, ...]}
     #   }
     # }
+    is_da_baseline = db.Column(db.Boolean, nullable=False, default=False)  # Day-Ahead baseline flag
     submitted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
