@@ -286,49 +286,85 @@ Zone B   5000 MW   ∞
 
 ---
 
-## 7. Tab: Environment
+## 7. Tab: Environment & Preview
 
-### 7.1 Market Participants
+Environment-related settings are edited in the **Market** tab in KSE but are grouped here conceptually.
+
+### 7.1 Generator & Consumer Mix (Preview)
+
+The **Generator Mix** and **Consumer Mix** control the *relative* composition of the synthetic supply and demand curves in the preview. They are no longer percentages but **absolute block counts** (0–1000 per group):
+
+**Generator Mix (blocks):**
+
+| Group | Field | Meaning | Typical Default |
+|-------|-------|---------|-----------------|
+| PV / Solar | `market.generator_mix.pv` | Number of solar supply blocks | 250 |
+| Wind | `market.generator_mix.wind` | Number of wind supply blocks | 200 |
+| Hydro | `market.generator_mix.hydro` | Number of hydro supply blocks | 100 |
+| Coal | `market.generator_mix.coal` | Number of coal supply blocks | 300 |
+| Gas | `market.generator_mix.gas` | Number of gas supply blocks | 150 |
+| Nuclear | `market.generator_mix.nuclear` | Number of nuclear supply blocks | 0 |
+
+**Consumer Mix (blocks):**
+
+| Group | Field | Meaning | Typical Default |
+|-------|-------|---------|-----------------|
+| Industrial | `market.consumer_mix.industrial` | Industrial demand blocks | 400 |
+| Household | `market.consumer_mix.household` | Household demand blocks | 500 |
+| Agriculture | `market.consumer_mix.agriculture` | Agricultural demand blocks | 100 |
+
+Notes:
+- Blocks are **normalized** internally for the preview curves; only **relative** sizes matter.
+- A value of `0` effectively removes a group from the preview.
+- These mixes influence preview curves and synthetic environment, but **do not replace** the detailed device list defined in the **Devices** tab.
+
+### 7.2 Randomness (Jitter & Noise)
+
+Randomness settings live under **Randomness** in the Market tab and control how noisy the synthetic environment and previews are:
+
+| Field | Location | Description | Default |
+|-------|----------|-------------|---------|
+| `market.random_capacity_pct` | Market → Randomness | Capacity jitter (%). Random variation of individual supply/demand block quantities. Range 0–50%. | 10 |
+| `market.random_price_pct` | Market → Randomness | Price jitter (%). Random variation of marginal costs and demand price steps. Range 0–50%. | 10 |
+| `environment.actual_noise_pct` | Market → Randomness | **Actual vs Forecast noise (%).** Std. deviation of actual dispatch around the dispatched plan in sessions; controls “Actual vs Forecast” differences in charts. | 5 |
+
+### 7.3 Environment Seed & Load Profiles
+
+The **Environment** subsection in the Market tab configures the synthetic load shape used for previews and, optionally, scenarios:
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| **Producer Total (MW)** | Total generator capacity | 10000 |
-| **Consumer Total (MW)** | Total consumer load | 8000 |
-| **Number of Agents** | Synthetic market participants | 50 |
+| `environment.seed` | Preview seed. Used **only** for KSE previews. Actual sessions use the campaign `seed`. | `"preview"` |
+| `environment.profile_preset` | Named preset for diurnal/seasonal load profiles. Options: `None`, `Winter Weekday`, `Summer Weekday`, `Weekend`. | `None` |
+| `environment.diurnal_profile` | 24-element array of hourly multipliers shaping the daily demand profile. | From preset or custom |
+| `environment.seasonal_factors` | 12-element array of monthly multipliers shaping seasonal effects. | From preset or custom |
 
-### 7.2 Group Shares
+**Presets:**
 
-Distribution of generation across technologies (must equal 100%):
+- **Winter Weekday** – Higher winter baseline, strong evening peak
+- **Summer Weekday** – Higher summer baseline, moderate evening peak
+- **Weekend** – Flatter weekday profile, lower industrial component
 
-| Group | Share | Description |
-|-------|-------|-------------|
-| Coal | 40% | Coal power plants |
-| Gas | 20% | Gas power plants |
-| Nuclear | 15% | Nuclear power plants |
-| Hydro | 10% | Hydropower |
-| Solar | 10% | Photovoltaics |
-| Wind | 5% | Wind power |
+You can also import custom profiles via the **Import Profiles (JSON)** field:
 
-### 7.3 Zonal Distribution
-
-Per group: How much capacity in which zone?
-
-```
-Coal: Zone A: 60%, Zone B: 40%
-Solar: Zone A: 80%, Zone B: 20%  (e.g., Northern Cape)
+```json
+{
+  "diurnal_profile": [24 numbers],
+  "seasonal_factors": [12 numbers]
+}
 ```
 
-### 7.4 Random Generator
+Click **Apply Profiles** to load these arrays into the configuration.
 
-| Field | Description | Default |
-|-------|-------------|---------|
-| **RNG Seed** | Fixed seed for reproducibility | (random) |
-| **Actual Noise (%)** | Deviation forecast/reality | 5 |
+### 7.4 Preview
 
-### 7.5 Preview
+The preview charts combine:
+- **Market basics** (base price, base volume, price floor/cap)
+- **Generator & consumer mixes** (block counts)
+- **Randomness** (capacity/price jitter, actual noise)
+- **Environment profiles** (diurnal + seasonal)
 
-- "Preview Curves" shows synthetic supply/demand curves
-- Export as PNG/SVG possible
+They provide a fast visual check of your environment, but the **actual game simulation** runs on the detailed devices, market rules, grid, and events.
 
 ---
 
@@ -500,6 +536,43 @@ Quick creation with predefined templates:
 - Numeric ranges are validated
 - Referenced zones must exist
 
+### 9.5 Device Defaults (Engine Assumptions)
+
+On save, the editor normalizes device data and fills in reasonable defaults if some fields are omitted. This section documents the most important defaults.
+
+**Conventional generators (coal, gas, hydro, nuclear)**
+
+| Field | Default / Mapping |
+|-------|-------------------|
+| `max_power_mw` | Taken from `capacity_mw` if set, otherwise `0`. |
+| `variable_cost_zar_per_mwh` | Taken from `variable_cost_zar_per_mwh` or, if missing, from `cost_per_mwh_zar`, otherwise `0`. |
+| `min_load_pct` | If missing, defaults to `0` (% of max). |
+| `ramp_rate_mw_per_min` | If missing, defaults to `60` MW/min. |
+
+**Renewables (solar, wind)**
+
+| Field | Default / Mapping |
+|-------|-------------------|
+| `max_power_mw` | Taken from `capacity_mw` if set, otherwise `0`. |
+| `variable_cost_zar_per_mwh` | Taken from `variable_cost_zar_per_mwh` or `cost_per_mwh_zar`, otherwise `0`. |
+| `capacity_factor_pct` | If missing, defaults to `30` (%). Represents typical availability over the horizon. |
+
+**Storage (battery)**
+
+| Field | Default / Mapping |
+|-------|-------------------|
+| `capacity_mwh` | Taken from `capacity_mwh` or, if missing, from `capacity_mw`, otherwise `100`. |
+| `power_mw` | Taken from `power_mw` or, if missing, from `power_rating_mw`, otherwise `50`. |
+| `efficiency_pct` | If missing, defaults to `85` (% round-trip efficiency). |
+| `initial_soc_pct` | If missing, defaults to `50` (% state of charge at start). |
+
+**Loads (e.g., `*_load` types)**
+
+- Use the baseline/peak load fields from the UI (e.g., `baseline_load_mw`, `peak_load_mw`).
+- No additional defaults are applied beyond numeric validation.
+
+In practice, this means you can omit some fine-grained technical parameters in the UI, but the engine will still receive a complete configuration. For advanced scenarios, explicitly set these fields to override the defaults.
+
 ---
 
 ## 10. Tab: Player Types
@@ -602,7 +675,7 @@ Checks in real-time:
 - Numeric ranges
 - Required fields
 - Unique IDs
-- Sums (e.g., group shares = 100%)
+- Preview mixes (non-negative generator/consumer block counts)
 
 ### 12.2 Backend Validation
 
@@ -685,7 +758,7 @@ Campaign: "Introduction to Electricity Markets"
 |-------|----------|
 | Horizon ≠ rounds × span | Adjust values |
 | Missing device references | Check device IDs |
-| Sum ≠ 100% | Correct group shares |
+| Invalid preview mix | Check generator/consumer block counts |
 | Event without target | Define target device |
 | Duplicate IDs | Regenerate automatically |
 
@@ -723,7 +796,22 @@ Campaign: "Introduction to Electricity Markets"
     "balancing_up_price_factor": "number",
     "balancing_down_price_factor": "number",
     "day_ahead_gate_hour": "integer (0-23)",
-    "id_price_spread_percent": "number (-100 to 100)"
+    "id_price_spread_percent": "number (-100 to 100)",
+    "generator_mix": {
+      "pv": "integer (0-1000)",
+      "wind": "integer (0-1000)",
+      "hydro": "integer (0-1000)",
+      "coal": "integer (0-1000)",
+      "gas": "integer (0-1000)",
+      "nuclear": "integer (0-1000)"
+    },
+    "consumer_mix": {
+      "industrial": "integer (0-1000)",
+      "household": "integer (0-1000)",
+      "agriculture": "integer (0-1000)"
+    },
+    "random_capacity_pct": "number (0-50)",
+    "random_price_pct": "number (0-50)"
   },
   "grid": {
     "zones": ["string"],
@@ -733,20 +821,11 @@ Campaign: "Introduction to Electricity Markets"
     "transmission_losses_pct": "number (0-100)"
   },
   "environment": {
-    "producer_total_mw": "number",
-    "consumer_total_mw": "number",
-    "num_agents": "integer",
-    "group_shares": {
-      "coal": "number (0-1)",
-      "gas": "number (0-1)",
-      "...": "..."
-    },
-    "zonal_splits": {
-      "coal": {"Zone A": 0.6, "Zone B": 0.4},
-      "...": "..."
-    },
-    "seed": "string | null",
-    "actual_noise_pct": "number (0-100)"
+    "seed": "string | null (preview seed)",
+    "actual_noise_pct": "number (0-100)",
+    "profile_preset": "string | null (None | Winter Weekday | Summer Weekday | Weekend)",
+    "diurnal_profile": "array[24] of numbers",
+    "seasonal_factors": "array[12] of numbers"
   },
   "events": [
     {
