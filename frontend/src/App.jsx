@@ -34,6 +34,7 @@ const DocsPlayer = React.lazy(()=> import('./pages/DocsPlayer'))
 const DocsTrainer = React.lazy(()=> import('./pages/DocsTrainer'))
 const DocsDesigner = React.lazy(()=> import('./pages/DocsDesigner'))
 const DocsAdmin = React.lazy(()=> import('./pages/DocsAdmin'))
+const DocsEngine = React.lazy(()=> import('./pages/DocsEngine'))
 import ProtectedRoute from './components/ProtectedRoute'
 import SnackbarProvider from './components/SnackbarProvider'
 import NotFound from './components/NotFound'
@@ -192,6 +193,7 @@ export default function App({ themeMode, onToggleTheme }) {
           <Route path="/docs/trainer" element={<DocsTrainer />} />
           <Route path="/docs/designer" element={<DocsDesigner />} />
           <Route path="/docs/admin" element={<DocsAdmin />} />
+          <Route path="/docs/engine" element={<DocsEngine />} />
           <Route element={<ProtectedRoute roles={["admin"]} /> }>
             <Route path="/admin" element={<AdminUsers />} />
           </Route>

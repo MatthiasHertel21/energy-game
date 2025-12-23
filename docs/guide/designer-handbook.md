@@ -2,49 +2,49 @@
 ## Energy Market Simulation Game (EMSG)
 
 **Version**: 2.0 (Sprint 24)  
-**Date**: 23. Dezember 2025  
+**Date**: December 23, 2025  
 **Audience**: Designers/Scenario Editors
 
 ---
 
-## Inhaltsverzeichnis
+## Table of Contents
 
-1. [Einführung](#1-einführung)
-2. [Kampagnen-Management](#2-kampagnen-management)
-3. [Szenario-Editor (KSE)](#3-szenario-editor-kse)
-4. [Tab: Allgemein](#4-tab-allgemein)
-5. [Tab: Marktregeln](#5-tab-marktregeln)
+1. [Introduction](#1-introduction)
+2. [Campaign Management](#2-campaign-management)
+3. [Scenario Editor (KSE)](#3-scenario-editor-kse)
+4. [Tab: General](#4-tab-general)
+5. [Tab: Market Rules](#5-tab-market-rules)
 6. [Tab: Grid](#6-tab-grid)
-7. [Tab: Umgebung](#7-tab-umgebung)
+7. [Tab: Environment](#7-tab-environment)
 8. [Tab: Events](#8-tab-events)
-9. [Tab: Geräte](#9-tab-geräte)
+9. [Tab: Devices](#9-tab-devices)
 10. [Tab: Player Types](#10-tab-player-types)
 11. [Tab: Scoring](#11-tab-scoring)
-12. [Validierung & Export](#12-validierung--export)
+12. [Validation & Export](#12-validation--export)
 13. [Best Practices](#13-best-practices)
-14. [Referenz: Konfigurationsschema](#14-referenz-konfigurationsschema)
+14. [Reference: Configuration Schema](#14-reference-configuration-schema)
 
 ---
 
-## 1. Einführung
+## 1. Introduction
 
-### Was ist der KSE?
+### What is the KSE?
 
-Der **Knowledge Scenario Editor (KSE)** ist das Werkzeug zum Erstellen und Bearbeiten von Kampagnen und Szenarien. Als Designer definierst du:
+The **Knowledge Scenario Editor (KSE)** is the tool for creating and editing campaigns and scenarios. As a designer, you define:
 
-- Marktstrukturen und Regeln
-- Netzwerkinfrastruktur (Zonen, Übertragungskapazitäten)
-- Kraftwerke, Erneuerbare, Speicher und Lasten
-- Ereignisse (Ausfälle, Wetterextreme, Nachfragespitzen)
-- Scoring-Regeln für die Bewertung
+- Market structures and rules
+- Network infrastructure (zones, transmission capacities)
+- Power plants, renewables, storage, and loads
+- Events (outages, weather extremes, demand spikes)
+- Scoring rules for evaluation
 
-### Workflow-Übersicht
+### Workflow Overview
 
 ```
-1. Kampagne erstellen
-   └── Name, Beschreibung, Cover-Bild
+1. Create Campaign
+   └── Name, description, cover image
 
-2. Szenarien erstellen/bearbeiten
+2. Create/Edit Scenarios
    ├── General Tab (Basics)
    ├── Market Rules Tab
    ├── Grid Tab
@@ -54,209 +54,209 @@ Der **Knowledge Scenario Editor (KSE)** ist das Werkzeug zum Erstellen und Bearb
    ├── Player Types Tab
    └── Scoring Tab
 
-3. Validieren & Testen
-   └── Preview, Dry-Run
+3. Validate & Test
+   └── Preview, dry-run
 
-4. Veröffentlichen
-   └── Kampagne publizieren → sichtbar im Catalog
+4. Publish
+   └── Publish campaign → visible in catalog
 ```
 
 ### Navigation
 
-| Route | Funktion |
+| Route | Function |
 |-------|----------|
-| `/designer/campaigns` | Kampagnen-Liste und -Management |
-| `/designer/scenarios` | Szenario-Liste |
-| `/kse?scenarioId=...` | Szenario-Editor |
+| `/designer/campaigns` | Campaign list and management |
+| `/designer/scenarios` | Scenario list |
+| `/kse?scenarioId=...` | Scenario editor |
 
 ---
 
-## 2. Kampagnen-Management
+## 2. Campaign Management
 
-### 2.1 Kampagne erstellen
+### 2.1 Create Campaign
 
-**Route**: `/designer/campaigns` → "Neue Kampagne"
+**Route**: `/designer/campaigns` → "New Campaign"
 
-| Feld | Beschreibung | Beispiel |
-|------|--------------|----------|
-| **Name** | Eindeutiger Kampagnenname | "Einführung in Strommärkte" |
-| **Beschreibung** | Markdown-fähig, erscheint im Catalog | "Lerne die Grundlagen..." |
-| **Cover-Bild** | 640×640px, PNG oder JPG | Hochladen oder URL |
-| **Veröffentlicht** | Sichtbar im Catalog? | Toggle Ein/Aus |
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Name** | Unique campaign name | "Introduction to Electricity Markets" |
+| **Description** | Markdown-enabled, appears in catalog | "Learn the basics..." |
+| **Cover Image** | 640×640px, PNG or JPG | Upload or URL |
+| **Published** | Visible in catalog? | Toggle On/Off |
 
-### 2.2 Szenarien zuweisen
+### 2.2 Assign Scenarios
 
-Nach dem Erstellen einer Kampagne:
+After creating a campaign:
 
-1. Klicke auf "Szenarien zuweisen"
-2. Wähle existierende Szenarien aus der Liste
-3. Reihenfolge per Drag & Drop festlegen
-4. Pro Szenario konfigurieren:
+1. Click "Assign Scenarios"
+2. Select existing scenarios from the list
+3. Set order via drag & drop
+4. Configure per scenario:
 
-| Option | Beschreibung |
-|--------|--------------|
-| **Solo erlaubt** | Spieler können dieses Szenario alleine starten |
-| **Kohorten erlaubt** | Trainer können Sessions für Kohorten starten |
+| Option | Description |
+|--------|-------------|
+| **Solo Allowed** | Players can start this scenario alone |
+| **Cohort Allowed** | Trainers can start sessions for cohorts |
 
-### 2.3 Kampagne veröffentlichen
+### 2.3 Publish Campaign
 
-- Toggle "Veröffentlicht" auf Ein
-- Kampagne erscheint im `/catalog` für alle Spieler
-- Änderungen an Szenarien werden sofort wirksam
+- Toggle "Published" to On
+- Campaign appears in `/catalog` for all players
+- Changes to scenarios take effect immediately
 
-### 2.4 Kampagne löschen
+### 2.4 Delete Campaign
 
-⚠️ **Warnung**: Löscht alle Zuweisungen, aber nicht die Szenarien selbst.
+⚠️ **Warning**: Deletes all assignments but not the scenarios themselves.
 
 ---
 
-## 3. Szenario-Editor (KSE)
+## 3. Scenario Editor (KSE)
 
-### 3.1 Neues Szenario erstellen
+### 3.1 Create New Scenario
 
-**Route**: `/designer/scenarios` → "Neues Szenario"
+**Route**: `/designer/scenarios` → "New Scenario"
 
-**Templates verfügbar:**
+**Templates available:**
 
-| Template | Beschreibung |
-|----------|--------------|
-| **Blank** | Leeres Szenario, alles manuell konfigurieren |
-| **Standard Day** | 24h mit typischem SA-Mix |
-| **High Renewables** | Hoher Solar/Wind-Anteil |
-| **Peak Winter** | Hohe Nachfrage, Engpässe |
+| Template | Description |
+|----------|-------------|
+| **Blank** | Empty scenario, configure everything manually |
+| **Standard Day** | 24h with typical SA mix |
+| **High Renewables** | High solar/wind share |
+| **Peak Winter** | High demand, bottlenecks |
 
-### 3.2 Szenario duplizieren
+### 3.2 Duplicate Scenario
 
-- Klicke auf ⋮ → "Duplizieren"
-- Erstellt Kopie mit Suffix "_copy"
-- Alle Konfiguration wird übernommen
+- Click ⋮ → "Duplicate"
+- Creates copy with "_copy" suffix
+- All configuration is copied
 
-### 3.3 Szenario exportieren/importieren
+### 3.3 Export/Import Scenario
 
 **Export:**
 - ⋮ → "Export JSON"
-- Vollständige Konfiguration als JSON-Datei
+- Complete configuration as JSON file
 
 **Import:**
-- "Import JSON" Button
-- Wähle: Überschreiben oder Neues erstellen
+- "Import JSON" button
+- Choose: Overwrite or Create new
 
 ---
 
-## 4. Tab: Allgemein
+## 4. Tab: General
 
-### 4.1 Grundeinstellungen
+### 4.1 Basic Settings
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **Name** | Szenario-Name | "Neues Szenario" |
-| **Objectives** | Lernziele, Markdown-fähig | (leer) |
-| **Fake Date** | Simuliertes Datum | Heute |
-| **Start Time** | Simulierte Startzeit | "00:00" |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **Name** | Scenario name | "New Scenario" |
+| **Objectives** | Learning goals, Markdown-enabled | (empty) |
+| **Fake Date** | Simulated date | Today |
+| **Start Time** | Simulated start time | "00:00" |
 
-### 4.2 Zeitparameter
+### 4.2 Time Parameters
 
-| Feld | Beschreibung | Standardwert | Constraints |
-|------|--------------|--------------|-------------|
-| **Rounds** | Anzahl Spielrunden | 4 | 1-20 |
-| **Round Duration (s)** | Echtzeit pro Runde | 300 | 60-3600 |
-| **Round Span (h)** | Simulierte Stunden pro Runde | 6 | 1-24 |
-| **Forecast Horizon (h)** | Sichtbarer Horizont | 48 | ≥ scenario_horizon |
-| **Freeze Hours** | Stunden vor Lieferung eingefroren | 6 | ≤ round_span |
+| Field | Description | Default | Constraints |
+|-------|-------------|---------|-------------|
+| **Rounds** | Number of game rounds | 4 | 1-20 |
+| **Round Duration (s)** | Real-time per round | 300 | 60-3600 |
+| **Round Span (h)** | Simulated hours per round | 6 | 1-24 |
+| **Forecast Horizon (h)** | Visible horizon | 48 | ≥ scenario_horizon |
+| **Freeze Hours** | Hours frozen before delivery | 6 | ≤ round_span |
 
-### 4.3 Berechnete Werte
+### 4.3 Calculated Values
 
 ```
 scenario_horizon = rounds × round_span
-Beispiel: 4 Runden × 6h = 24h Szenario
+Example: 4 rounds × 6h = 24h scenario
 ```
 
 ### 4.4 Objectives (Markdown)
 
-Das Objectives-Feld unterstützt Markdown:
+The objectives field supports Markdown:
 
 ```markdown
-## Lernziele
+## Learning Goals
 
-1. Verstehe den Day-Ahead Markt
-2. Lerne Prognosen zu erstellen
-3. Reagiere auf Ereignisse
+1. Understand the Day-Ahead market
+2. Learn to create forecasts
+3. React to events
 
-**Hinweis**: Die ersten 200 Zeichen erscheinen als Vorschau im Catalog.
+**Note**: The first 200 characters appear as preview in the catalog.
 ```
 
 ---
 
-## 5. Tab: Marktregeln
+## 5. Tab: Market Rules
 
-### 5.1 Marktstruktur
+### 5.1 Market Structure
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **Enable DA** | Day-Ahead Markt aktiv | ✓ |
-| **Enable IDM** | Intraday Markt aktiv | ✓ |
-| **Enable Balancing** | Ausgleichsenergie aktiv | ✓ |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **Enable DA** | Day-Ahead market active | ✓ |
+| **Enable IDM** | Intraday market active | ✓ |
+| **Enable Balancing** | Balancing energy active | ✓ |
 
-### 5.2 Preisregeln
+### 5.2 Price Rules
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **Base Price** | Basis-MCP (ZAR/MWh) | 1000 |
-| **Base Volume** | Basis-Volumen (MWh) | 20000 |
-| **Price Floor** | Mindestpreis (ZAR/MWh) | -500 |
-| **Price Cap** | Höchstpreis (ZAR/MWh) | 5000 |
-| **Allow Negative Pricing** | Preise < 0 erlaubt | ✓ |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **Base Price** | Base MCP (ZAR/MWh) | 1000 |
+| **Base Volume** | Base volume (MWh) | 20000 |
+| **Price Floor** | Minimum price (ZAR/MWh) | -500 |
+| **Price Cap** | Maximum price (ZAR/MWh) | 5000 |
+| **Allow Negative Pricing** | Prices < 0 allowed | ✓ |
 
-### 5.3 Clearing-Optionen
+### 5.3 Clearing Options
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **Uniform Price** | Alle erhalten MCP | ✓ |
-| **Pro-Rata Ties** | Bei Preisgleichheit proportional | ✓ |
-| **Enable Player Bidding** | Spieler bieten Preise | ✗ |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **Uniform Price** | All receive MCP | ✓ |
+| **Pro-Rata Ties** | Proportional at price ties | ✓ |
+| **Enable Player Bidding** | Players bid prices | ✗ |
 
-### 5.4 Imbalance-Preise
+### 5.4 Imbalance Prices
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **Balancing Up Price** | Preis bei Unterlieferung | 1.5 × MCP |
-| **Balancing Down Price** | Preis bei Überlieferung | 0.5 × MCP |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **Balancing Up Price** | Price for under-delivery | 1.5 × MCP |
+| **Balancing Down Price** | Price for over-delivery | 0.5 × MCP |
 
-### 5.5 DA/ID Preisdifferenzierung (NEU Sprint 24)
+### 5.5 DA/ID Price Differentiation (NEW Sprint 24)
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **day_ahead_gate_hour** | Gate-Closure Stunde | 12 |
-| **id_price_spread_percent** | ID-Preisaufschlag (%) | 0 |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **day_ahead_gate_hour** | Gate closure hour | 12 |
+| **id_price_spread_percent** | ID price premium (%) | 0 |
 
-**Beispielwerte:**
+**Example values:**
 
-| Spread | Effekt |
+| Spread | Effect |
 |--------|--------|
-| 0 | DA und ID gleicher Preis |
-| 8 | ID 8% teurer → Anreiz für gute DA-Planung |
-| -5 | ID 5% günstiger → Flexibilität belohnt |
+| 0 | DA and ID same price |
+| 8 | ID 8% more expensive → incentive for good DA planning |
+| -5 | ID 5% cheaper → flexibility rewarded |
 
 ### 5.6 Transmission
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **Transmission Losses (%)** | Übertragungsverluste | 2 |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **Transmission Losses (%)** | Transmission losses | 2 |
 
 ---
 
 ## 6. Tab: Grid
 
-### 6.1 Zonen definieren
+### 6.1 Define Zones
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **Anzahl Zonen** | 1-5 Zonen | 1 |
-| **Zonen-Namen** | Liste der Zonennamen | ["Zone A"] |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **Number of Zones** | 1-5 zones | 1 |
+| **Zone Names** | List of zone names | ["Zone A"] |
 
-### 6.2 ATC-Matrix (Available Transfer Capacity)
+### 6.2 ATC Matrix (Available Transfer Capacity)
 
-Symmetrische Matrix für Übertragungskapazitäten zwischen Zonen:
+Symmetric matrix for transmission capacities between zones:
 
 ```
          Zone A    Zone B
@@ -264,168 +264,168 @@ Zone A   ∞         5000 MW
 Zone B   5000 MW   ∞
 ```
 
-**Eingabe:**
-- Nur oberes Dreieck eingeben
-- Unteres Dreieck wird gespiegelt
+**Input:**
+- Only enter upper triangle
+- Lower triangle is mirrored
 
-### 6.3 Engpass-Handling
+### 6.3 Congestion Handling
 
-| Option | Beschreibung |
-|--------|--------------|
-| **Curtail by Cost** | Günstigste Erzeuger zuerst abregeln |
-| **Curtail Pro-Rata** | Proportional zur Kapazität |
-| **Redispatch** | Teurere Erzeuger in anderer Zone aktivieren |
+| Option | Description |
+|--------|-------------|
+| **Curtail by Cost** | Cheapest generators curtailed first |
+| **Curtail Pro-Rata** | Proportional to capacity |
+| **Redispatch** | Activate more expensive generators in other zone |
 
 ### 6.4 Congestion Revenue
 
-| Option | Beschreibung |
-|--------|--------------|
-| **To Grid** | Engpasserlöse an den Netzbetreiber |
-| **To Generators** | Engpasserlöse an betroffene Erzeuger |
-| **Split** | 50/50 Aufteilung |
+| Option | Description |
+|--------|-------------|
+| **To Grid** | Congestion revenue to grid operator |
+| **To Generators** | Congestion revenue to affected generators |
+| **Split** | 50/50 split |
 
 ---
 
-## 7. Tab: Umgebung
+## 7. Tab: Environment
 
-### 7.1 Marktteilnehmer
+### 7.1 Market Participants
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **Producer Total (MW)** | Gesamte Erzeugerkapazität | 10000 |
-| **Consumer Total (MW)** | Gesamte Verbraucherleistung | 8000 |
-| **Number of Agents** | Synthetische Marktteilnehmer | 50 |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **Producer Total (MW)** | Total generator capacity | 10000 |
+| **Consumer Total (MW)** | Total consumer load | 8000 |
+| **Number of Agents** | Synthetic market participants | 50 |
 
-### 7.2 Gruppenanteile
+### 7.2 Group Shares
 
-Verteilung der Erzeugung auf Technologien (muss 100% ergeben):
+Distribution of generation across technologies (must equal 100%):
 
-| Gruppe | Anteil | Beschreibung |
-|--------|--------|--------------|
-| Coal | 40% | Kohlekraftwerke |
-| Gas | 20% | Gaskraftwerke |
-| Nuclear | 15% | Kernkraftwerke |
-| Hydro | 10% | Wasserkraft |
-| Solar | 10% | Photovoltaik |
-| Wind | 5% | Windkraft |
+| Group | Share | Description |
+|-------|-------|-------------|
+| Coal | 40% | Coal power plants |
+| Gas | 20% | Gas power plants |
+| Nuclear | 15% | Nuclear power plants |
+| Hydro | 10% | Hydropower |
+| Solar | 10% | Photovoltaics |
+| Wind | 5% | Wind power |
 
-### 7.3 Zonale Verteilung
+### 7.3 Zonal Distribution
 
-Pro Gruppe: Wie viel Kapazität in welcher Zone?
+Per group: How much capacity in which zone?
 
 ```
 Coal: Zone A: 60%, Zone B: 40%
-Solar: Zone A: 80%, Zone B: 20%  (z.B. Nordkap)
+Solar: Zone A: 80%, Zone B: 20%  (e.g., Northern Cape)
 ```
 
-### 7.4 Zufallsgenerator
+### 7.4 Random Generator
 
-| Feld | Beschreibung | Standardwert |
-|------|--------------|--------------|
-| **RNG Seed** | Fester Seed für Reproduzierbarkeit | (zufällig) |
-| **Actual Noise (%)** | Abweichung Prognose/Realität | 5 |
+| Field | Description | Default |
+|-------|-------------|---------|
+| **RNG Seed** | Fixed seed for reproducibility | (random) |
+| **Actual Noise (%)** | Deviation forecast/reality | 5 |
 
-### 7.5 Vorschau
+### 7.5 Preview
 
-- "Preview Curves" zeigt synthetische Angebots-/Nachfragekurven
-- Export als PNG/SVG möglich
+- "Preview Curves" shows synthetic supply/demand curves
+- Export as PNG/SVG possible
 
 ---
 
 ## 8. Tab: Events
 
-### 8.1 Event-Typen
+### 8.1 Event Types
 
-| Typ | Beschreibung | Beispiel |
-|-----|--------------|----------|
-| **Outage** | Kapazitätsausfall | "Koeberg Outage" |
-| **Demand Spike** | Nachfrageanstieg | "Cold Snap" |
-| **Price Shock** | Preisänderung | "Carbon Tax" |
-| **Weather** | Wetterereignis | "Cloudy Day" |
-| **Grid** | Netzstörung | "Line Trip" |
+| Type | Description | Example |
+|------|-------------|---------|
+| **Outage** | Capacity outage | "Koeberg Outage" |
+| **Demand Spike** | Demand increase | "Cold Snap" |
+| **Price Shock** | Price change | "Carbon Tax" |
+| **Weather** | Weather event | "Cloudy Day" |
+| **Grid** | Grid disturbance | "Line Trip" |
 
-### 8.2 Event erstellen
+### 8.2 Create Event
 
-| Feld | Beschreibung | Beispiel |
-|------|--------------|----------|
-| **Name** | Event-Name | "Koeberg Unit 1 Outage" |
-| **Description** | Beschreibung für Briefing | "Unplanned maintenance..." |
-| **Type** | Event-Typ | Outage |
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Name** | Event name | "Koeberg Unit 1 Outage" |
+| **Description** | Description for briefing | "Unplanned maintenance..." |
+| **Type** | Event type | Outage |
 | **Scope** | Systemic / Player | Systemic |
 
-### 8.3 Trigger-Bedingungen
+### 8.3 Trigger Conditions
 
-| Trigger | Beschreibung | Beispiel |
-|---------|--------------|----------|
-| **Round** | Bei bestimmter Runde | Runde 3 |
-| **Probability** | Zufällig mit Wahrscheinlichkeit | 30% |
-| **Time** | Zu bestimmter Simulationszeit | Stunde 18 |
+| Trigger | Description | Example |
+|---------|-------------|---------|
+| **Round** | At specific round | Round 3 |
+| **Probability** | Random with probability | 30% |
+| **Time** | At specific simulation time | Hour 18 |
 
-### 8.4 Dauer & Impact
+### 8.4 Duration & Impact
 
-| Feld | Beschreibung | Beispiel |
-|------|--------------|----------|
-| **Duration (rounds)** | Anzahl aktiver Runden | 2 |
-| **Duration (hours)** | Anzahl aktiver Stunden | 6 |
-| **Impact Type** | Multiplikator (×) oder Offset (±) | × |
-| **Impact Value** | Wert der Änderung | 0.5 (= 50%) |
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Duration (rounds)** | Number of active rounds | 2 |
+| **Duration (hours)** | Number of active hours | 6 |
+| **Impact Type** | Multiplier (×) or Offset (±) | × |
+| **Impact Value** | Value of change | 0.5 (= 50%) |
 
-### 8.5 Target-Spezifikation
+### 8.5 Target Specification
 
-| Target | Beschreibung | Beispiel |
-|--------|--------------|----------|
-| **All** | Betrifft alle Teilnehmer | "System-wide outage" |
-| **Zone** | Betrifft eine Zone | "Zone A blackout" |
-| **Type** | Betrifft Gerätetyp | "All coal plants" |
-| **Device** | Betrifft spezifisches Gerät | "Koeberg Unit 1" |
+| Target | Description | Example |
+|--------|-------------|---------|
+| **All** | Affects all participants | "System-wide outage" |
+| **Zone** | Affects one zone | "Zone A blackout" |
+| **Type** | Affects device type | "All coal plants" |
+| **Device** | Affects specific device | "Koeberg Unit 1" |
 
 ### 8.6 Pre-Warning
 
-| Feld | Beschreibung |
-|------|--------------|
-| **Enable Pre-Warning** | Spieler werden vorgewarnt |
-| **Warning Rounds** | Wie viele Runden vorher |
-| **Warning Text** | Angezeigter Warntext |
+| Field | Description |
+|-------|-------------|
+| **Enable Pre-Warning** | Players are warned in advance |
+| **Warning Rounds** | How many rounds before |
+| **Warning Text** | Displayed warning text |
 
-### 8.7 Timeline-Vorschau
+### 8.7 Timeline Preview
 
-- Visuelle Darstellung aller Events über Runden
-- Überlappungen erkennbar
-- Klick auf Event → Details
+- Visual representation of all events over rounds
+- Overlaps visible
+- Click on event → details
 
 ---
 
-## 9. Tab: Geräte
+## 9. Tab: Devices
 
 ### 9.1 Preset Library
 
-Schnelles Erstellen mit vordefinierten Templates:
+Quick creation with predefined templates:
 
-**Generatoren:**
+**Generators:**
 
-| Preset | Kapazität | Effizienz | Variable Kosten |
-|--------|-----------|-----------|-----------------|
+| Preset | Capacity | Efficiency | Variable Cost |
+|--------|----------|------------|---------------|
 | Coal | 600 MW | 35% | 400 ZAR/MWh |
 | Gas (CCGT) | 400 MW | 50% | 600 ZAR/MWh |
 | Gas (OCGT) | 200 MW | 35% | 900 ZAR/MWh |
 | Hydro | 200 MW | 90% | 50 ZAR/MWh |
 | Nuclear | 1000 MW | 33% | 150 ZAR/MWh |
 
-**Erneuerbare:**
+**Renewables:**
 
-| Preset | Kapazität | Capacity Factor |
-|--------|-----------|-----------------|
+| Preset | Capacity | Capacity Factor |
+|--------|----------|-----------------|
 | Solar | 100 MW | 25% |
 | Wind | 150 MW | 35% |
 
-**Speicher:**
+**Storage:**
 
-| Preset | Kapazität | Power | Effizienz |
-|--------|-----------|-------|-----------|
+| Preset | Capacity | Power | Efficiency |
+|--------|----------|-------|------------|
 | Battery (Li-ion) | 100 MWh | 50 MW | 85% |
 | Pumped Hydro | 500 MWh | 100 MW | 75% |
 
-**Lasten:**
+**Loads:**
 
 | Preset | Baseline | Peak | DRM |
 |--------|----------|------|-----|
@@ -433,104 +433,104 @@ Schnelles Erstellen mit vordefinierten Templates:
 | Commercial | 100 MW | 200 MW | ✓ |
 | Residential | 150 MW | 300 MW | ✗ |
 
-### 9.2 Geräte-Felder
+### 9.2 Device Fields
 
-**Alle Geräte:**
+**All Devices:**
 
-| Feld | Beschreibung | Erforderlich |
-|------|--------------|--------------|
-| **id** | Eindeutige ID (auto-generiert) | ✓ |
-| **name** | Anzeigename | Empfohlen |
-| **type** | Gerätetyp | ✓ |
-| **zone** | Zugehörige Zone | ✓ |
+| Field | Description | Required |
+|-------|-------------|----------|
+| **id** | Unique ID (auto-generated) | ✓ |
+| **name** | Display name | Recommended |
+| **type** | Device type | ✓ |
+| **zone** | Assigned zone | ✓ |
 
-**Generator-spezifisch:**
+**Generator-specific:**
 
-| Feld | Beschreibung | Beispiel |
-|------|--------------|----------|
-| **capacity_mw** | Nennleistung | 600 |
-| **efficiency** | Wirkungsgrad (0-1) | 0.35 |
-| **variable_cost_zar_per_mwh** | Brennstoffkosten | 400 |
-| **ramp_up_mw_per_h** | Max. Hochfahren | 100 |
-| **ramp_down_mw_per_h** | Max. Runterfahren | 100 |
-| **min_stable_mw** | Minimale Teillast | 200 |
-| **start_cost_zar** | Anfahrkosten | 50000 |
+| Field | Description | Example |
+|-------|-------------|---------|
+| **capacity_mw** | Rated power | 600 |
+| **efficiency** | Efficiency (0-1) | 0.35 |
+| **variable_cost_zar_per_mwh** | Fuel costs | 400 |
+| **ramp_up_mw_per_h** | Max. ramp up | 100 |
+| **ramp_down_mw_per_h** | Max. ramp down | 100 |
+| **min_stable_mw** | Minimum partial load | 200 |
+| **start_cost_zar** | Start-up costs | 50000 |
 
-**Renewable-spezifisch:**
+**Renewable-specific:**
 
-| Feld | Beschreibung | Beispiel |
-|------|--------------|----------|
-| **capacity_mw** | Installierte Leistung | 100 |
-| **capacity_factor** | Durchschn. Auslastung | 0.25 |
-| **profile** | Stündliches Profil (optional) | [0, 0, ..., 0.8, 1, 0.7, ...] |
+| Field | Description | Example |
+|-------|-------------|---------|
+| **capacity_mw** | Installed power | 100 |
+| **capacity_factor** | Average utilization | 0.25 |
+| **profile** | Hourly profile (optional) | [0, 0, ..., 0.8, 1, 0.7, ...] |
 
-**Storage-spezifisch:**
+**Storage-specific:**
 
-| Feld | Beschreibung | Beispiel |
-|------|--------------|----------|
-| **capacity_mwh** | Speicherkapazität | 100 |
-| **power_mw** | Lade-/Entladeleistung | 50 |
-| **efficiency** | Round-Trip Effizienz | 0.85 |
-| **initial_soc** | Anfangs-SoC (0-1) | 0.5 |
+| Field | Description | Example |
+|-------|-------------|---------|
+| **capacity_mwh** | Storage capacity | 100 |
+| **power_mw** | Charge/discharge power | 50 |
+| **efficiency** | Round-trip efficiency | 0.85 |
+| **initial_soc** | Initial SoC (0-1) | 0.5 |
 | **min_soc** | Minimum SoC | 0.1 |
 | **max_soc** | Maximum SoC | 0.9 |
 
-**Load-spezifisch:**
+**Load-specific:**
 
-| Feld | Beschreibung | Beispiel |
-|------|--------------|----------|
-| **baseline_mw** | Grundlast | 300 |
-| **peak_mw** | Spitzenlast | 450 |
-| **drm_capable** | Demand Response möglich | true |
-| **flexibility_pct** | Max. Flexibilität | 20 |
-| **profile** | Stündliches Profil (optional) | [0.6, 0.5, ..., 1, ...] |
+| Field | Description | Example |
+|-------|-------------|---------|
+| **baseline_mw** | Base load | 300 |
+| **peak_mw** | Peak load | 450 |
+| **drm_capable** | Demand Response possible | true |
+| **flexibility_pct** | Max. flexibility | 20 |
+| **profile** | Hourly profile (optional) | [0.6, 0.5, ..., 1, ...] |
 
-### 9.3 Aktionen
+### 9.3 Actions
 
-| Aktion | Beschreibung |
-|--------|--------------|
-| **Add from Preset** | Gerät aus Bibliothek hinzufügen |
-| **Duplicate** | Gerät kopieren (neue ID) |
-| **Delete** | Gerät entfernen |
+| Action | Description |
+|--------|-------------|
+| **Add from Preset** | Add device from library |
+| **Duplicate** | Copy device (new ID) |
+| **Delete** | Remove device |
 
-### 9.4 Validierung
+### 9.4 Validation
 
-- IDs müssen eindeutig sein
-- Pflichtfelder pro Typ werden geprüft
-- Numerische Bereiche werden validiert
-- Referenzierte Zonen müssen existieren
+- IDs must be unique
+- Required fields per type are checked
+- Numeric ranges are validated
+- Referenced zones must exist
 
 ---
 
 ## 10. Tab: Player Types
 
-### 10.1 Wann benötigt?
+### 10.1 When Required?
 
-Player Types sind erforderlich für **Trainer-geführte Shared Market Sessions**.
+Player Types are required for **trainer-led Shared Market Sessions**.
 
-Jeder Player Type definiert:
-- Welche Geräte ein Spieler kontrolliert
-- In welcher Zone der Spieler agiert (optional)
+Each Player Type defines:
+- Which devices a player controls
+- In which zone the player operates (optional)
 
-### 10.2 Player Type erstellen
+### 10.2 Create Player Type
 
-| Feld | Beschreibung | Beispiel |
-|------|--------------|----------|
-| **id** | Eindeutige ID (auto-generiert) | ptype_1703340000_abc |
-| **name** | Anzeigename | "Generator Operator" |
-| **devices** | Liste zugewiesener Geräte-IDs | ["coal_001", "gas_001"] |
-| **zone** | Optionale Zone | "Zone A" |
+| Field | Description | Example |
+|-------|-------------|---------|
+| **id** | Unique ID (auto-generated) | ptype_1703340000_abc |
+| **name** | Display name | "Generator Operator" |
+| **devices** | List of assigned device IDs | ["coal_001", "gas_001"] |
+| **zone** | Optional zone | "Zone A" |
 
 ### 10.3 Best Practices
 
-| Empfehlung | Begründung |
-|------------|------------|
-| 2-4 Player Types | Übersichtlich für Trainer |
-| Komplementäre Rollen | z.B. Erzeuger vs Verbraucher |
-| Ausgewogene Kapazitäten | Keine Übermacht eines Typs |
-| Beschreibende Namen | "Wind Farm Operator" statt "Type A" |
+| Recommendation | Reasoning |
+|----------------|-----------|
+| 2-4 Player Types | Clear for trainers |
+| Complementary roles | e.g., producers vs consumers |
+| Balanced capacities | No dominance by one type |
+| Descriptive names | "Wind Farm Operator" not "Type A" |
 
-### 10.4 Beispielkonfiguration
+### 10.4 Example Configuration
 
 ```json
 "player_types": [
@@ -559,69 +559,69 @@ Jeder Player Type definiert:
 
 ## 11. Tab: Scoring
 
-### 11.1 KPI-Gewichtung
+### 11.1 KPI Weighting
 
-Definiere wie der Total Score berechnet wird:
+Define how the Total Score is calculated:
 
-| KPI | Beschreibung | Typisches Gewicht |
-|-----|--------------|-------------------|
-| **Profit** | Gewinn | 0.6 (60%) |
-| **Imbalance** | Prognosegenauigkeit (Penalty) | 0.3 (30%) |
-| **Curtailment** | Abregelungskosten (Penalty) | 0.1 (10%) |
+| KPI | Description | Typical Weight |
+|-----|-------------|----------------|
+| **Profit** | Profit | 0.6 (60%) |
+| **Imbalance** | Forecast accuracy (penalty) | 0.3 (30%) |
+| **Curtailment** | Curtailment costs (penalty) | 0.1 (10%) |
 
-**Wichtig**: Gewichte müssen 1.0 ergeben!
+**Important**: Weights must sum to 1.0!
 
-### 11.2 Normalisierung
+### 11.2 Normalization
 
-| Methode | Beschreibung |
-|---------|--------------|
-| **Z-Score** | Standardisierung auf μ=0, σ=1 |
-| **Min-Max** | Skalierung auf [0, 100] |
+| Method | Description |
+|--------|-------------|
+| **Z-Score** | Standardization to μ=0, σ=1 |
+| **Min-Max** | Scaling to [0, 100] |
 
-### 11.3 Leaderboard-Optionen
+### 11.3 Leaderboard Options
 
-| Option | Beschreibung |
-|--------|--------------|
-| **Global** | Ein Leaderboard für alle |
-| **Per Role** | Separate Rankings pro Player Type |
-| **Hidden** | Kein Ranking während des Spiels |
+| Option | Description |
+|--------|-------------|
+| **Global** | One leaderboard for all |
+| **Per Role** | Separate rankings per Player Type |
+| **Hidden** | No ranking during game |
 
-### 11.4 Referenz-Run (Optional)
+### 11.4 Reference Run (Optional)
 
-- Lade einen "Expert Run" hoch
-- Spieler werden gegen Referenz verglichen
-- Nützlich für Benchmarking
+- Upload an "Expert Run"
+- Players are compared against reference
+- Useful for benchmarking
 
 ---
 
-## 12. Validierung & Export
+## 12. Validation & Export
 
-### 12.1 Frontend-Validierung
+### 12.1 Frontend Validation
 
-Prüft in Echtzeit:
-- Numerische Bereiche
-- Pflichtfelder
-- Eindeutige IDs
-- Summen (z.B. Gruppenanteile = 100%)
+Checks in real-time:
+- Numeric ranges
+- Required fields
+- Unique IDs
+- Sums (e.g., group shares = 100%)
 
-### 12.2 Backend-Validierung
+### 12.2 Backend Validation
 
-Prüft bei Save:
+Checks on save:
 - `horizon = rounds × span`
-- Alle Gerät-Referenzen existieren
-- ATC-Matrix symmetrisch
-- Event-Targets existieren
-- Player Type Devices existieren
+- All device references exist
+- ATC matrix symmetric
+- Event targets exist
+- Player Type devices exist
 
 ### 12.3 "Save & Validate" Button
 
-- Speichert und führt vollständige Validierung durch
-- Zeigt Liste aller Fehler/Warnungen
-- Blockiert Speichern bei kritischen Fehlern
+- Saves and performs complete validation
+- Shows list of all errors/warnings
+- Blocks saving on critical errors
 
 ### 12.4 Export JSON
 
-Vollständige Konfiguration als JSON:
+Complete configuration as JSON:
 
 ```json
 {
@@ -642,58 +642,58 @@ Vollständige Konfiguration als JSON:
 
 ### 12.5 Import JSON
 
-- Datei auswählen
-- Wähle: "Überschreiben" oder "Neues erstellen"
-- Validierung wird durchgeführt
+- Select file
+- Choose: "Overwrite" or "Create new"
+- Validation is performed
 
 ---
 
 ## 13. Best Practices
 
-### 13.1 Szenario-Design
+### 13.1 Scenario Design
 
-| Empfehlung | Begründung |
-|------------|------------|
-| Klare Objectives | Spieler wissen was erwartet wird |
-| Gestaffelte Komplexität | Einfache Szenarien zuerst |
-| ≤3 Events pro Szenario | Nicht überladen |
-| Realistische SA-Mixe | Authentische Lernwirkung |
-| 2-4 Player Types | Übersichtlich für Trainer |
+| Recommendation | Reasoning |
+|----------------|-----------|
+| Clear objectives | Players know what's expected |
+| Graduated complexity | Simple scenarios first |
+| ≤3 events per scenario | Don't overload |
+| Realistic SA mixes | Authentic learning effect |
+| 2-4 Player Types | Clear for trainers |
 
-### 13.2 Kampagnen-Struktur
+### 13.2 Campaign Structure
 
 ```
-Kampagne: "Einführung Strommarkt"
-├── Szenario 1: "Grundlagen" (Solo, einfach)
-├── Szenario 2: "Day-Ahead Markt" (Solo/Kohort)
-├── Szenario 3: "Events & Risiko" (Kohort)
-└── Szenario 4: "Vollständige Simulation" (Kohort, komplex)
+Campaign: "Introduction to Electricity Markets"
+├── Scenario 1: "Basics" (Solo, easy)
+├── Scenario 2: "Day-Ahead Market" (Solo/Cohort)
+├── Scenario 3: "Events & Risk" (Cohort)
+└── Scenario 4: "Full Simulation" (Cohort, complex)
 ```
 
-### 13.3 Testen
+### 13.3 Testing
 
-| Schritt | Beschreibung |
-|---------|--------------|
-| 1. Preview | Kurz-Check der Konfiguration |
-| 2. Dry-Run | Solo als Designer durchspielen |
-| 3. Peer Review | Kollegen prüfen lassen |
-| 4. Pilot-Session | Mit kleiner Testgruppe |
+| Step | Description |
+|------|-------------|
+| 1. Preview | Quick check of configuration |
+| 2. Dry-Run | Play solo as designer |
+| 3. Peer Review | Have colleagues check |
+| 4. Pilot Session | With small test group |
 
-### 13.4 Häufige Fehler
+### 13.4 Common Errors
 
-| Fehler | Lösung |
-|--------|--------|
-| Horizon ≠ rounds × span | Werte anpassen |
-| Fehlende Geräte-Referenzen | Geräte-IDs prüfen |
-| Summe ≠ 100% | Gruppenanteile korrigieren |
-| Event ohne Target | Target-Gerät definieren |
-| Doppelte IDs | Automatisch regenerieren lassen |
+| Error | Solution |
+|-------|----------|
+| Horizon ≠ rounds × span | Adjust values |
+| Missing device references | Check device IDs |
+| Sum ≠ 100% | Correct group shares |
+| Event without target | Define target device |
+| Duplicate IDs | Regenerate automatically |
 
 ---
 
-## 14. Referenz: Konfigurationsschema
+## 14. Reference: Configuration Schema
 
-### 14.1 Vollständiges Schema
+### 14.1 Complete Schema
 
 ```json
 {
@@ -809,10 +809,10 @@ Kampagne: "Einführung Strommarkt"
 
 ## Support
 
-- **Technische Fragen**: support@emsg.example.com
-- **Dokumentation**: `/docs/designer` im Spiel
-- **API-Referenz**: docs/CALCULATION_ENGINE.md
+- **Technical Questions**: support@emsg.example.com
+- **Documentation**: `/docs/designer` in game
+- **API Reference**: `/docs/engine`
 
 ---
 
-*Letzte Aktualisierung: 23. Dezember 2025*
+*Last updated: December 23, 2025*

@@ -260,7 +260,7 @@ export default function Evaluation(){
                 Market Breakdown: Day-Ahead vs Intraday
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Zeigt die Aufteilung der Handelsvolumen zwischen Day-Ahead (Runde 1) und Intraday (Anpassungen in späteren Runden).
+                Shows the split of traded volumes between Day-Ahead (round 1) and Intraday (adjustments in later rounds).
               </Typography>
               <Table size="small">
                 <TableHead>
@@ -332,9 +332,9 @@ export default function Evaluation(){
               </Table>
               <Box sx={{ mt: 2, p: 1, bgcolor: 'background.default', borderRadius: 1 }}>
                 <Typography variant="caption" color="text.secondary">
-                  <strong>Legende:</strong>{' '}
-                  <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = Day-Ahead (Runde 1 Position){' '}
-                  <Chip label="ID" size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = Intraday (Anpassungen in Runde 2+)
+                  <strong>Legend:</strong>{' '}
+                  <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = Day-Ahead (round 1 position){' '}
+                  <Chip label="ID" size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = Intraday (adjustments in rounds 2+)
                 </Typography>
               </Box>
             </Box>

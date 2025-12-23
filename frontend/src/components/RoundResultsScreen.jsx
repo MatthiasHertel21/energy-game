@@ -215,7 +215,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
             {/* Consumer hint */}
             {my_result.da_id_breakdown.is_consumer && (
               <Alert severity="info" sx={{ mb: 2, py: 0.5 }}>
-                Als Consumer kaufst du Strom. Negative Revenues = Kosten für deinen Einkauf.
+                As a consumer you buy electricity. Negative revenues represent your purchase costs.
               </Alert>
             )}
             <Grid container spacing={2}>
@@ -225,7 +225,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                     <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
                       <Chip label="DA" size="small" sx={{ bgcolor: my_result.da_id_breakdown.is_consumer ? '#e91e63' : '#9e9e9e', color: 'white', fontSize: '0.65rem', height: 18 }} />
                       <Typography variant="caption" color="text.secondary">
-                        DA {my_result.da_id_breakdown.is_consumer ? 'Einkauf' : 'Verkauf'}
+                        DA {my_result.da_id_breakdown.is_consumer ? 'Purchase' : 'Sale'}
                       </Typography>
                     </Stack>
                     <Typography variant="h5" color="text.primary">
@@ -236,7 +236,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                         @ {formatNumber(my_result.da_id_breakdown.da_price_zar, 0)} ZAR/MWh
                       </Typography>
                       <Typography variant="caption" color={my_result.da_id_breakdown.da_revenue_zar >= 0 ? 'success.main' : 'error.main'}>
-                        {my_result.da_id_breakdown.is_consumer ? 'Kosten' : 'Revenue'}: {formatCurrency(Math.abs(my_result.da_id_breakdown.da_revenue_zar))}
+                        {my_result.da_id_breakdown.is_consumer ? 'Cost' : 'Revenue'}: {formatCurrency(Math.abs(my_result.da_id_breakdown.da_revenue_zar))}
                       </Typography>
                     </Stack>
                   </CardContent>

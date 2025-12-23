@@ -2,669 +2,445 @@
 ## Energy Market Simulation Game (EMSG)
 
 **Version**: 2.0 (Sprint 24)  
-**Date**: 23. Dezember 2025  
-**Audience**: Players/Students
+**Date**: December 23, 2025  
+**Audience**: Players/Participants
 
 ---
 
-## Inhaltsverzeichnis
+## Table of Contents
 
-1. [Einführung](#1-einführung)
-2. [Erste Schritte](#2-erste-schritte)
-3. [Navigation & Seiten](#3-navigation--seiten)
-4. [Spielablauf](#4-spielablauf)
-5. [Player Interface im Detail](#5-player-interface-im-detail)
-6. [Märkte verstehen](#6-märkte-verstehen)
-7. [Ergebnisse & Auswertung](#7-ergebnisse--auswertung)
-8. [Tipps & Strategien](#8-tipps--strategien)
+1. [Introduction](#1-introduction)
+2. [Getting Started](#2-getting-started)
+3. [Navigation & Pages](#3-navigation--pages)
+4. [Gameplay Flow](#4-gameplay-flow)
+5. [Player Interface Details](#5-player-interface-details)
+6. [Understanding Markets](#6-understanding-markets)
+7. [Results & Evaluation](#7-results--evaluation)
+8. [Tips & Strategies](#8-tips--strategies)
 9. [Troubleshooting](#9-troubleshooting)
-10. [Glossar](#10-glossar)
+10. [Glossary](#10-glossary)
 
 ---
 
-## 1. Einführung
+## 1. Introduction
 
-### Was ist EMSG?
+### What is the Energy Market Simulation Game?
 
-Das Energy Market Simulation Game (EMSG) ist eine interaktive Simulation des südafrikanischen Strommarkts. Du lernst:
+The EMSG is an interactive simulation for learning electricity market principles. You take on the role of an energy market participant and must:
 
-- Wie Strommärkte funktionieren (Day-Ahead, Intraday, Balancing)
-- Prognosen für Erzeugung und Verbrauch zu erstellen
-- Strategische Entscheidungen unter Unsicherheit zu treffen
-- Die Auswirkungen von Ereignissen (z.B. Kraftwerksausfälle) zu managen
+- Create forecasts for your generation and consumption
+- React to market events
+- Maximize profit while minimizing imbalances
 
-### Spielmodi
+### Learning Objectives
 
-| Modus | Beschreibung | Gestartet von |
-|-------|--------------|---------------|
-| **Solo** | Eigener privater Markt, nur deine Entscheidungen zählen | Du selbst via Catalog |
-| **Shared Market** | Handel mit anderen Spielern, Rollen-basiert | Trainer |
-
-### Typischer Spielablauf
-
-```
-Login → Home → Catalog/Session wählen → Briefing lesen → 
-→ Runden spielen (Forecast → Submit → Results) → Evaluation
-```
+- Understand the interaction between Day-Ahead and Intraday markets
+- Optimize energy forecasts
+- React to unexpected events (outages, weather changes)
+- Learn price formation mechanisms
 
 ---
 
-## 2. Erste Schritte
+## 2. Getting Started
 
-### 2.1 Registrierung
+### 2.1 Registration
 
-1. Öffne `/register` im Browser
-2. Gib E-Mail und Passwort ein
-3. **Wichtig**: Einige Szenarien erfordern Admin-Freigabe
+1. Open the game in your browser
+2. Click "Register"
+3. Enter email and password
+4. Confirm email (if required)
 
 ### 2.2 Login
 
-1. Öffne `/login`
-2. Gib deine Zugangsdaten ein
-3. Du wirst zu `/home` weitergeleitet
+- Use email and password
+- "Remember me" keeps you logged in
 
-### 2.3 Profil
+### 2.3 Join Cohort
 
-Unter `/profile` kannst du:
-- Passwort ändern
-- Anzeigeeinstellungen anpassen
-- Theme (Hell/Dunkel) wechseln
-
----
-
-## 3. Navigation & Seiten
-
-### 3.1 Home (`/home`)
-
-Deine Startseite zeigt:
-
-| Bereich | Inhalt |
-|---------|--------|
-| **Aktive Sessions** | Laufende Spiele, an denen du teilnimmst |
-| **Zugewiesene Szenarien** | Szenarien, die dein Trainer für dich aktiviert hat |
-| **Letzte Ergebnisse** | Zusammenfassung abgeschlossener Sessions |
-
-**Aktionen:**
-- Klicke auf eine Session → öffnet Player oder Evaluation
-- "Zum Catalog" → öffnet Campaign Catalog
-
-### 3.2 Campaign Catalog (`/catalog`)
-
-Der Catalog zeigt alle veröffentlichten Kampagnen:
-
-**Kampagnen-Karten:**
-- Cover-Bild (640×640px)
-- Name und Beschreibung
-- Fortschrittsbalken (abgeschlossene Szenarien)
-- Anzahl der Szenarien
-
-**Szenario-Timeline:**
-- Klicke auf eine Kampagne → zeigt Szenarien als Timeline
-- Jedes Szenario zeigt:
-  - Vorschau der Objectives (erste 200 Zeichen)
-  - Status (nicht gestartet / in Bearbeitung / abgeschlossen)
-  - "Solo starten" Button (wenn aktiviert)
-  - "Session beitreten" (wenn Trainer-Session aktiv)
-
-**Aktionen:**
-- ▶️ Solo starten: Startet eine private Session
-- 🔄 Zurücksetzen: Löscht deinen Fortschritt für dieses Szenario
-- 👥 Beitreten: Tritt einer laufenden Trainer-Session bei
-
-### 3.3 Briefing (`/briefing?sessionId=...`)
-
-Vor dem Spielen siehst du alle wichtigen Informationen:
-
-| Abschnitt | Inhalt |
-|-----------|--------|
-| **Objectives** | Lernziele und Aufgabenstellung (Markdown) |
-| **Allgemein** | Runden, Dauer, Zeithorizont, Freeze-Stunden |
-| **Marktregeln** | DA/ID/Balancing, Preisfloor/-cap, Imbalance-Preise |
-| **Grid** | Zonen, ATC (Available Transfer Capacity) |
-| **Deine Rolle** | Player Type, zugewiesene Geräte (Shared Market) |
-| **Events** | Geplante oder mögliche Ereignisse |
-| **Scoring** | Gewichtung der KPIs für die Bewertung |
-
-**Buttons:**
-- "Start Playing" → öffnet Player Interface
-- "Back to Home" → zurück zur Startseite
-
-### 3.4 Player (`/player?sessionId=...`)
-
-Das Hauptspiel-Interface. Details in [Abschnitt 5](#5-player-interface-im-detail).
-
-### 3.5 Evaluation (`/evaluation?sessionId=...`)
-
-Nach Spielende siehst du:
-- Zusammenfassung aller KPIs
-- Rundenweise Ergebnisse als Tabelle
-- Trend-Charts (Profit, MCP, Volume über Runden)
-- Vergleich mit Kohorten-Durchschnitt
-- Market Breakdown (DA vs ID Aufschlüsselung)
-- PDF-Export
-
-### 3.6 Leaderboard (`/leaderboard?sessionId=...`)
-
-Ranking aller Spieler nach:
-- Gewählter Metrik (Profit, Revenue, Imbalance, Curtailment)
-- Scoring-Regeln des Szenarios
-
-### 3.7 Replay (`/replay?sessionId=...`)
-
-Runde für Runde nachspielen:
-- Schritt-für-Schritt Navigation
-- Autoplay mit Pause
-- Overlay: Kohorten-Durchschnitt oder Referenz-Run
+If you receive an invitation link from your trainer:
+1. Click the link
+2. Log in (or register first)
+3. You will be automatically added to the cohort
 
 ---
 
-## 4. Spielablauf
+## 3. Navigation & Pages
 
-### 4.1 Rundenstruktur
+### 3.1 Main Navigation
 
-Ein typisches Szenario hat 4-8 Runden:
+| Route | Function |
+|-------|----------|
+| `/catalog` | Campaign and scenario overview |
+| `/player` | Active game interface |
+| `/evaluation` | Final results after session |
+| `/leaderboard` | Ranking compared to other players |
+| `/me` | Profile and settings |
 
-```
-Runde 1 (Day-Ahead)
-├── Forecast für Stunden 0-23 erstellen
-├── Submit vor Timer-Ende
-└── Market Clearing → Ergebnis
+### 3.2 Catalog
 
-Runde 2-N (Intraday)
-├── Forecast anpassen (nur nicht-gefrorene Stunden)
-├── Submit vor Timer-Ende
-└── Market Clearing → Ergebnis
-```
+The catalog shows all available campaigns:
 
-### 4.2 Timer
+| Element | Description |
+|---------|-------------|
+| **Campaign Card** | Title, image, description |
+| **Scenarios** | List of scenarios within the campaign |
+| **Solo/Cohort** | What modes are available |
 
-| Farbe | Bedeutung |
-|-------|-----------|
-| 🟢 Grün | > 60 Sekunden |
-| 🟡 Gelb | 31-60 Sekunden |
-| 🔴 Rot | ≤ 30 Sekunden |
-| ⚫ Grau | Zeit abgelaufen, kein Submit möglich |
+### 3.3 Player Page
 
-**Wichtig**: Der Timer läuft serverseitig. Auch bei Seitenrefresh bleibt die Zeit gleich.
+The central game interface with:
 
-### 4.3 Freeze (Einfrieren)
-
-- Nach Runde 1 werden frühere Stunden "eingefroren"
-- Gefrorene Stunden können nicht mehr bearbeitet werden
-- Erkennbar an grauer Hintergrundfarbe und deaktiviertem Input
-- Im Chart: Orange gestreifte "LOCKED" Zone
-
-### 4.4 Round Results
-
-Nach jeder Runde erscheint ein Modal mit:
-
-**KPI-Karten:**
-- Profit (ZAR)
-- Revenue (ZAR)
-- Variable Costs (ZAR)
-- Imbalance Cost (ZAR)
-- Curtailment (ZAR, nur bei Erzeugern)
-- Total Score (0-100)
-
-**Ranking:**
-- Dein Platz im Vergleich zu anderen Spielern
-- Nur in Shared Market Sessions
-
-**DA/ID Market Breakdown:**
-- Day-Ahead Volume und Revenue
-- Intraday Delta und Revenue
-- Tägliche Aufschlüsselung (klappbar)
-
-**Active Events:**
-- Liste der in dieser Runde aktiven Ereignisse
-- Typ und Beschreibung
-
-### 4.5 Scenario Results
-
-Nach der letzten Runde:
-- Zusammenfassung über alle Runden
-- Option: "Zur Evaluation" oder "Zurück zum Catalog"
+| Section | Function |
+|---------|----------|
+| **Header** | Round, timer, status |
+| **Forecast Chart** | Interactive editing |
+| **Device Panel** | Overview of your devices |
+| **Market Info** | Current prices and volumes |
 
 ---
 
-## 5. Player Interface im Detail
+## 4. Gameplay Flow
 
-### 5.1 Layout-Übersicht
+### 4.1 Session Types
+
+| Type | Description |
+|------|-------------|
+| **Solo** | Play alone against AI agents |
+| **Cohort** | With other players, trainer-led |
+
+### 4.2 Typical Session Flow
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Header: Session Info, Timer, Status                        │
-├────────────────┬────────────────────────────────────────────┤
-│                │                                            │
-│  Live KPIs     │        Forecast Editor                     │
-│  - MCP         │        (Chart oder Fields)                 │
-│  - Volume      │                                            │
-│  - Status      │        [Device 1]                          │
-│                │        [Device 2]                          │
-│                │        ...                                 │
-│                │                                            │
-│                │        [Save] [Submit]                     │
-│                │                                            │
-├────────────────┴────────────────────────────────────────────┤
-│  Charts: MCP und Volume über Runden                         │
-└─────────────────────────────────────────────────────────────┘
+1. Session starts
+   └── Read briefing, understand objectives
+
+2. Per Round:
+   ├── View forecasts (consumption, generation)
+   ├── Edit forecasts (Chart Editor)
+   ├── Submit forecast
+   ├── Wait for market clearing
+   └── View round results
+
+3. After last round:
+   └── View scenario results and evaluation
 ```
 
-### 5.2 Forecast Editor
+### 4.3 Round Timeline
 
-#### Chart-Modus (Standard)
+| Phase | Duration | Your Tasks |
+|-------|----------|------------|
+| **Active** | e.g. 5 min | Edit and submit forecast |
+| **Clearing** | ~10 sec | Automatic calculation |
+| **Results** | Variable | Analyze, click "Ready" |
 
-Der Chart-Editor bietet intuitive Drag-and-Drop-Bearbeitung:
+### 4.4 Timer & Submit
 
-- **Volle Interaktivität**: Klicke und ziehe irgendwo im Chart
-- **Y-Achse**: Automatisch skaliert auf 110% der Geräte-Kapazität
-- **X-Achse**: Stunden des Forecast-Horizonts (0-47 oder 0-71)
-- **Zonen-Visualisierung**:
-  
-  | Zone | Farbe | Bedeutung |
-  |------|-------|-----------|
-  | LOCKED | Orange gestreift | Bereits abgerechnet, nicht änderbar |
-  | DAY-AHEAD | Grau halbtransparent | Bei Gate-Closure committed |
-  | INTRADAY | Grün halbtransparent | Noch anpassbar |
-  | FUTURE | Blau gepunktet | Außerhalb des aktuellen Horizonts |
-
-- **Glättungsradius**: 3 Stunden - Bearbeitung einer Stunde passt Nachbarstunden sanft an (triangulares Falloff)
-- **Chart-Größe**: 700×320px für präzise Bearbeitung
-
-#### Field-Modus
-
-- Numerische Eingabefelder für jede Stunde (0-23 oder mehr)
-- Min/Max/Step gemäß Geräte-Constraints
-- Gefrorene Stunden sind deaktiviert (grau)
-- Validierung bei Eingabe (rote Umrandung bei Fehler)
-
-#### Umschalten
-
-- Toggle-Button oben rechts am Geräte-Abschnitt: 📊/📝
-- Chart ↔ Fields unabhängig pro Gerät wählbar
-
-### 5.3 Geräte-Informationen
-
-Jedes Gerät zeigt einen Header mit:
-
-| Feld | Beispiel | Gerätetypen |
-|------|----------|-------------|
-| **Name** | "Koeberg Unit 1" | Alle |
-| **Typ** | Nuclear / Coal / Gas / Hydro / Wind / Solar / Battery / Load | Alle |
-| **Zone** | Zone A / Zone B | Alle |
-| **Kapazität** | 1000 MW | Generator, Renewable |
-| **Effizienz** | 33% | Generator |
-| **Capacity Factor** | 25% | Renewable |
-| **Power/Capacity** | 50 MW / 100 MWh | Storage |
-| **Variable Kosten** | 250 ZAR/MWh | Generator |
-| **Ramping** | ±100 MW/h | Generator |
-| **Baseline/Peak** | 300/450 MW | Load |
-
-### 5.4 Aktionen
-
-| Button | API-Call | Effekt |
-|--------|----------|--------|
-| **Save Full Forecast** | POST `/api/player/forecast/full` | Speichert alle Stunden, kein Submit |
-| **Submit Current Round** | POST `/api/player/forecast` | Submitted nur aktuelle Runden-Slice |
-
-**Wichtig**: Save ≠ Submit!
-- **Save**: Zwischenspeichern, jederzeit möglich, persistent über Seitenrefresh
-- **Submit**: Verbindliche Abgabe für die Runde, nicht rückgängig machbar
-
-### 5.5 Player Type (Shared Market)
-
-In Trainer-geführten Sessions:
-
-1. **Typ-Auswahl-Dialog** erscheint beim ersten Laden
-2. Zeigt verfügbare Player Types mit:
-   - Name (z.B. "Generator Operator")
-   - Zugewiesene Geräte
-   - Verbleibende Kapazität (Slots)
-3. Nach Auswahl:
-   - Nur deine Geräte werden im Editor angezeigt
-   - Aggregat-Forecast wird automatisch berechnet
-   - Andere Spieler sehen andere Geräte
-
-### 5.6 Multi-Bid Pricing (Optional)
-
-Wenn im Szenario aktiviert (`enable_player_bidding = true`):
-
-**3 Gebots-Tranchen pro Gerät:**
-
-| Tranche | Beschreibung | Empfohlene Strategie |
-|---------|--------------|----------------------|
-| **Bid A** | Grundlast, immer angeboten | Preis = Variable Kosten ×1.0 |
-| **Bid B** | Mittlere Auslastung | Preis = Variable Kosten ×1.25 |
-| **Bid C** | Spitzenlast, teuer | Preis = Variable Kosten ×1.5 |
-
-**UI-Elemente:**
-- Drei Preis-Eingabefelder pro Gerät
-- Stacked Area Chart zeigt kumulierte Kapazität
-- Farbcodierung: A=Blau, B=Grün, C=Orange
-
-**Merit Order Clearing:**
-1. Alle Gebote aller Spieler werden gesammelt
-2. Sortierung nach Preis (günstigste zuerst)
-3. Markt räumt wo Angebot = Nachfrage
-4. **MCP** = Preis des teuersten akzeptierten Gebots
-5. Alle dispatched MWh erhalten den MCP (uniform pricing)
-
-**Strategische Überlegungen:**
-- Zu hoch bieten → nicht dispatched → kein Umsatz
-- Zu niedrig bieten → dispatched aber unter Potential
-- Optimal: MCP schätzen und knapp darunter bieten
+- **Timer**: Shows remaining time in the round
+- **Submit Button**: Confirms your forecast
+- **Auto-Submit**: If timer expires without submit, current values are used
 
 ---
 
-## 6. Märkte verstehen
+## 5. Player Interface Details
 
-### 6.1 Day-Ahead (DA) Markt
+### 5.1 Chart Editor
 
-Der DA-Markt ist der Hauptmarkt für Stromhandel:
-
-| Aspekt | Details |
-|--------|---------|
-| **Gate-Closure** | 12:00 des Vortags |
-| **Lieferfenster** | Kompletter Folgetag (00:00-23:59) |
-| **Commitment** | Bindend nach Gate-Closure |
-| **Liquidität** | Höchstes Volumen, stabilste Preise |
-| **Im Spiel** | Runde 1 legt DA-Position fest |
-
-### 6.2 Intraday (ID) Markt
-
-Der ID-Markt ermöglicht kurzfristige Anpassungen:
-
-| Aspekt | Details |
-|--------|---------|
-| **Gate-Closure** | Progressiv (6h, 3h, 1h vor Lieferung) |
-| **Lieferfenster** | Verbleibende Stunden |
-| **Purpose** | Anpassung der DA-Position |
-| **Liquidität** | Geringer, volatiler |
-| **Im Spiel** | Runden 2+ erlauben ID-Anpassungen |
-
-### 6.3 Balancing (Ausgleichsenergie)
-
-Für Prognosefehler zahlt man Ausgleichskosten:
-
-| Situation | Preis | Bedeutung |
-|-----------|-------|-----------|
-| **Unterlieferung** | Höherer Preis | Du kaufst teuer vom Grid |
-| **Überlieferung** | Niedrigerer Preis | Du verkaufst günstig ans Grid |
-
-**Berechnung:**
-```
-Imbalance_Cost = |Actual - Dispatched| × Balancing_Price
-```
-
-### 6.4 Preisbildung (Market Clearing)
-
-**Market Clearing Price (MCP):**
+The central element for forecast editing:
 
 ```
-                    Preis
-                      ▲
-                      │     Supply Curve ↗
-                      │            ╱
-          MCP ────────┼───────●──╱
-                      │      ╱│
-                      │     ╱ │
-                      │    ╱  │  Demand Curve ↘
-                      │   ╱   │
-                      └───────┴─────────────────► Menge
-                          Equilibrium
+┌────────────────────────────────────────────────────────────┐
+│  [Zone Dropdown]  [Device Dropdown]  [Reset] [Undo] [Redo] │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│  MW                                                        │
+│  ▲                                                         │
+│  │     ████                                                │
+│  │   ██    ██                                              │
+│  │  █        █                                             │
+│  │ █          ██████                                       │
+│  └──────────────────────────────────────────────────► Time │
+│     00:00  06:00  12:00  18:00  00:00                      │
+│                                                            │
+│  [Brush: Point | Range | Smooth]  [Lock DA Committed]      │
+└────────────────────────────────────────────────────────────┘
 ```
 
-**MCP = Preis wo Angebot = Nachfrage**
+### 5.2 Chart Zones
 
-**Einflussfaktoren:**
-- Nachfragekurve (synthetisch generiert oder von Consumer-Spielern)
-- Angebotskurve (Erzeuger-Geräte + synthetische Erzeuger)
-- Events (Kapazitätsausfälle erhöhen MCP, Nachfragespitzen)
-- Saisonale Muster (Peak: 08:00, 18:00)
+The chart shows different zones:
 
-### 6.5 ID Price Spread
+| Zone | Color | Meaning |
+|------|-------|---------|
+| **Frozen** | Gray | Already passed, cannot be edited |
+| **DA Committed** | Blue | Committed in Day-Ahead |
+| **Editable** | White | Can still be adjusted |
+| **Forecast Horizon** | Light | Visible but not yet tradable |
 
-Optionaler Preisaufschlag für Intraday-Handel:
+### 5.3 Editing Tools
 
-```
-ID_Price = DA_Price × (1 + id_price_spread_percent / 100)
-```
+| Tool | Function |
+|------|----------|
+| **Point** | Click to set individual values |
+| **Range** | Drag to set multiple hours |
+| **Smooth** | Automatic smoothing between points |
+| **Reset** | Back to original forecast |
+| **Undo/Redo** | Undo last edits |
 
-| Spread | Bedeutung | Effekt |
-|--------|-----------|--------|
-| 0% | Kein Unterschied (Standard) | DA und ID gleichwertig |
-| +8% | ID 8% teurer | Anreiz für gute DA-Planung |
-| -5% | ID 5% günstiger | Vorteil für späte Anpassung |
+### 5.4 Multi-Bid Pricing (Optional)
 
-**Anzeige**: Badge in Round Results zeigt Spread-Prozentsatz.
+If enabled in scenario:
 
-### 6.6 Stündliches Market Clearing
+| Field | Description |
+|-------|-------------|
+| **Bid Price** | Your price in ZAR/MWh |
+| **Volume** | Amount at this price |
+| **Tranches** | Up to 3 price levels |
 
-Seit Sprint 23 erfolgt das Clearing für **jede Stunde** separat:
+### 5.5 Device Panel
 
-- Jede Stunde hat eigenen MCP basierend auf stündlicher Nachfrage
-- Rundenresultat zeigt Durchschnitts-MCP
-- Ermöglicht realistischere Preisvolatilität
+Overview of your devices:
+
+| Column | Description |
+|--------|-------------|
+| **Name** | Device name |
+| **Type** | Generator, Renewable, Storage, Load |
+| **Capacity** | Maximum power (MW) |
+| **Status** | Online, Offline, Reduced |
+| **SoC** | State of Charge (storage only) |
+
+### 5.6 Device Types
+
+| Type | Symbol | Description |
+|------|--------|-------------|
+| **Generator** | ⚡ | Controllable power plant (coal, gas, nuclear) |
+| **Renewable** | 🌞🌬️ | Solar, wind (weather dependent) |
+| **Storage** | 🔋 | Battery, pumped hydro |
+| **Load** | 🏭 | Industrial, commercial, residential consumption |
 
 ---
 
-## 7. Ergebnisse & Auswertung
+## 6. Understanding Markets
 
-### 7.1 KPI-Definitionen
+### 6.1 Market Phases
 
-| KPI | Formel | Bedeutung |
-|-----|--------|-----------|
-| **Revenue** | `Dispatched_MWh × MCP` | Erlös aus Stromverkauf |
-| **Variable Cost** | `Dispatched_MWh × Variable_Cost_per_MWh` | Brennstoffkosten |
-| **Imbalance Cost** | `\|Actual - Dispatched\| × Balancing_Price` | Ausgleichskosten |
-| **Curtailment Cost** | `Curtailed_MWh × Curtailment_Price` | Kosten für Abregelung |
-| **Congestion Revenue** | `Transmission_Premium × MW` | Erlös aus Engpassmanagement |
-| **Profit** | `Revenue - Variable_Cost - Imbalance_Cost - Curtailment_Cost + Congestion_Revenue` | Gewinn |
+| Market | Timing | Purpose |
+|--------|--------|---------|
+| **Day-Ahead (DA)** | Before Gate Closure | Main planning |
+| **Intraday (ID)** | After Gate Closure | Fine-tuning |
+| **Balancing** | In real-time | Imbalance settlement |
 
-### 7.2 DA/ID Breakdown
+### 6.2 Gate Closure
 
-Nach jeder Runde zeigt das Round Results Modal:
+The **Day-Ahead Gate Closure** (typically hour 12) separates:
 
-**Vier Summary-Karten:**
+- **Before**: All trades count as Day-Ahead
+- **After**: All trades count as Intraday
 
-| Karte | Beschreibung | Farbe |
-|-------|--------------|-------|
-| **DA Volume** | Deine Position bei Gate-Closure | Grau |
-| **ID Delta** | Änderung durch Intraday-Handel | Grün (+) / Rot (-) |
-| **Final Position** | DA + ID = Endposition | Blau |
-| **ID Adjustment %** | `(ID Delta / DA Volume) × 100%` | Info |
+### 6.3 MCP (Market Clearing Price)
 
-**Preisanzeige (wenn Spread ≠ 0):**
-- DA Price: MCP im Day-Ahead Markt
-- ID Price: MCP × (1 + Spread%)
-- Spread Badge in Überschrift
-
-**Tägliche Aufschlüsselung:**
-- Klicke auf "📅 Daily Breakdown (X days)"
-- Tabelle mit DA MWh, ID MWh, Delta, ID Adjustment % pro Tag
-- Farbige Chips für signifikante Änderungen (>20%)
-
-### 7.3 Consumer-Ansicht
-
-Wenn du ein Verbraucher-Gerät steuerst:
-
-| Standard-Label | Consumer-Label |
-|----------------|----------------|
-| DA Volume | DA Einkauf |
-| Revenue | Kosten |
-| Final Position | Finaler Bedarf |
-| Total Revenue | Gesamtkosten |
-| ID+ | Mehr Einkauf (Mehrkosten) |
-| ID- | Weniger Einkauf (Ersparnis) |
-
-**Visuelle Hinweise:**
-- Rosa "Consumer" Badge in der Überschrift
-- Info-Alert: "Als Consumer kaufst du Strom..."
-- Rosa Hintergrund für Consumer-Karten
-
-### 7.4 Scoring
-
-Dein **Total Score** (0-100) wird berechnet aus gewichteten KPIs:
+The **Market Clearing Price** is determined by supply and demand intersection:
 
 ```
-Raw_Score = (Profit × w_profit) - (|Imbalance| × w_imbalance) - (Curtailment × w_curtailment)
-Score = normalize(Raw_Score, 0, 100)
+Price
+  ▲
+  │         Supply
+  │        ╱
+  │       ╱
+  │──────●────── MCP
+  │     ╱ ╲
+  │    ╱   Demand
+  │   ╱
+  └─────────────────► Quantity
 ```
 
-**Typische Gewichte:**
+### 6.4 ID Price Spread
 
-| KPI | Gewicht | Bedeutung |
-|-----|---------|-----------|
-| Profit | 60% | Hauptziel |
-| Imbalance | 30% | Prognosegenauigkeit |
-| Curtailment | 10% | Netzintegration |
+If configured in scenario:
 
-### 7.5 Evaluation Page
+| Spread | Effect |
+|--------|--------|
+| **+8%** | ID is 8% more expensive than DA |
+| **0%** | DA and ID same price |
+| **-5%** | ID is 5% cheaper than DA |
 
-Die finale Evaluation (`/evaluation?sessionId=...`) zeigt:
+**Strategic Implication**: High spread → better DA planning pays off!
 
-1. **Summary KPIs**: Über alle Runden aggregiert
-2. **Round Table**: Detaillierte Ergebnisse pro Runde
-3. **Trend Charts**: 
-   - Profit über Runden
-   - MCP über Runden
-   - Volume über Runden
-4. **Market Breakdown**: DA vs ID Volumen und Revenue
-5. **Cohort Comparison**: Deine Werte vs Durchschnitt
-6. **Export**: PDF-Download
+### 6.5 Imbalance
+
+Difference between forecast and actual delivery:
+
+| Situation | Consequence |
+|-----------|-------------|
+| **Under-delivery** | Pay balancing up price (expensive!) |
+| **Over-delivery** | Receive balancing down price (low!) |
+
+**Goal**: Minimize imbalances!
+
+### 6.6 Curtailment
+
+If your generation cannot be delivered (grid congestion):
+
+- You receive **Curtailment Costs**
+- Revenue is lost
+- Often affects renewable generators
 
 ---
 
-## 8. Tipps & Strategien
+## 7. Results & Evaluation
 
-### 8.1 Grundlagen
+### 7.1 Round Results
 
-1. **Speichere oft** - Save ist nicht Submit, keine Nachteile
-2. **Beobachte den Timer** - Kein Submit nach Ablauf möglich
-3. **Achte auf Freeze** - Gefrorene Stunden sind fix
-4. **Lies das Briefing** - Events und Regeln verstehen
-5. **Nutze den Chart-Editor** - Schneller als Feldbearbeitung
+After each round you see:
 
-### 8.2 Forecast-Strategien
+| KPI | Description |
+|-----|-------------|
+| **Revenue** | Earnings from sales |
+| **Costs** | Fuel, start-up, imbalance, curtailment |
+| **Profit** | Revenue - Costs |
+| **Imbalance** | Deviation from forecast |
 
-**Für Erzeuger (positive Volumes):**
+### 7.2 DA/ID Market Breakdown
 
-| Strategie | Wann | Risiko |
-|-----------|------|--------|
-| Konservativ (unterschätzen) | Unbekanntes Szenario | Verpasste Revenue |
-| Aggressiv (überschätzen) | Hohe MCP erwartet | Hohe Imbalance-Kosten |
-| Ramping beachten | Schnelle Änderungen | Physikalisch unmöglich |
+New feature (Sprint 24) - shows your trading activity:
 
-**Für Erneuerbare (Solar/Wind):**
-- Nutze Wetter-Prognosen im Briefing
-- Capacity Factor berücksichtigen
-- Tageszeit-Profile einplanen (Solar: Peak 12:00)
+| Metric | Description |
+|--------|-------------|
+| **DA Volume** | MWh committed in Day-Ahead |
+| **ID Delta** | MWh adjusted in Intraday |
+| **Final Position** | Actual delivery |
+| **ID Adjustment %** | Percentage change from DA to ID |
 
-**Für Verbraucher (negative Volumes):**
+**Example:**
+```
+DA Volume:    100 MWh (planned in DA)
+ID Delta:     +15 MWh (increased in ID)
+Final:        115 MWh (actual delivery)
+ID Adj %:     15%
+```
 
-| Strategie | Wann | Risiko |
-|-----------|------|--------|
-| Überschätzen | Sicherheit | Mehr Kosten |
-| Demand Response | Hohe Preise | Komfortverlust |
-| Flexibel bleiben | Volatiler Markt | Komplexität |
+### 7.3 Consumer View
 
-### 8.3 Multi-Bid Strategien
+For **Load** players (consumers):
 
-1. **Start konservativ**: Bid A nahe Variable Costs
-2. **MCP beobachten**: Historical MCP Chart analysieren
-3. **Portfolio nutzen**: Günstige Geräte (Solar/Wind) aggressiv niedrig bieten
-4. **Risiko balancieren**: Höhere Preise = höherer Gewinn ODER Ablehnung
-5. **Bid C als Hedge**: Nur bei Spitzennachfrage dispatched
+| Metric | Description |
+|--------|-------------|
+| **DA Procurement** | MWh bought in Day-Ahead |
+| **ID Adjustment** | Additional purchases in ID |
+| **Total Consumption** | Actual consumption |
+| **Avg. Price Paid** | Weighted average purchase price |
 
-### 8.4 DA vs ID Optimierung
+### 7.4 Scenario Results
 
-| Situation | Strategie |
-|-----------|-----------|
-| ID teurer (Spread > 0) | DA-Planung maximieren |
-| ID günstiger (Spread < 0) | Flexibilität nutzen |
-| Unerwartetes Event | ID-Anpassung nutzen |
-| Stabiles Wetter | DA-Commitment höher |
+After all rounds:
 
-### 8.5 Event-Management
+| Section | Content |
+|---------|---------|
+| **Summary KPIs** | Total profit, imbalance, score |
+| **Round Table** | Details per round |
+| **Trend Charts** | Performance over time |
+| **Ranking** | Your position vs other players |
 
-| Event-Typ | Reaktion |
-|-----------|----------|
-| Kraftwerksausfall | Andere Erzeuger hochfahren |
-| Nachfragespitze | Höhere Preise → mehr bieten |
-| Netzengpass | Zonenabhängig anpassen |
-| Wetterextrem | Solar/Wind Forecast korrigieren |
+### 7.5 Leaderboard
+
+| Column | Description |
+|--------|-------------|
+| **Rank** | 1, 2, 3, ... |
+| **Player** | Name or email |
+| **Score** | Total score (0-100) |
+| **Profit** | Total profit |
+
+---
+
+## 8. Tips & Strategies
+
+### 8.1 For Generators
+
+| Tip | Reasoning |
+|-----|-----------|
+| Plan conservatively | Imbalance costs are expensive |
+| Watch events | Outages affect capacity |
+| Ramp constraints | Don't ignore ramp limits |
+| Start costs | Avoid frequent starts |
+
+### 8.2 For Renewables
+
+| Tip | Reasoning |
+|-----|-----------|
+| Weather forecast | Solar/wind depends on weather |
+| Curtailment risk | Network congestion possible |
+| Combine with storage | Balance fluctuations |
+
+### 8.3 For Storage
+
+| Tip | Reasoning |
+|-----|-----------|
+| Buy low, sell high | Price differences = profit |
+| Keep reserve | Buffer for unforeseen events |
+| Efficiency | Account for losses |
+
+### 8.4 For Consumers (Loads)
+
+| Tip | Reasoning |
+|-----|-----------|
+| Plan DA accurately | ID adjustments cost more |
+| Flexibility | Use Demand Response if available |
+| Peak avoidance | High demand = high prices |
+
+### 8.5 General
+
+| Tip | Reasoning |
+|-----|-----------|
+| Read objectives! | Know what's expected |
+| Observe other players | Learn from strategies |
+| Use all rounds | Improve continuously |
+| Don't panic | One bad round isn't the end |
 
 ---
 
 ## 9. Troubleshooting
 
-### 9.1 Häufige Probleme
+### 9.1 Common Problems
 
-| Problem | Ursache | Lösung |
-|---------|---------|--------|
-| Kann nicht submitten | Timer abgelaufen | Warte auf nächste Runde |
-| Kann nicht submitten | Session pausiert | Trainer muss fortsetzen |
-| Kann nicht submitten | Player Type fehlt | Wähle einen Player Type |
-| Keine Charts | Erstes Clearing ausstehend | Warte auf Rundenende |
-| Verbindung verloren | WebSocket getrennt | Seite neu laden |
-| Forecast nicht gespeichert | Fehler bei Save | Erneut Save klicken |
-| Falsche Werte | Geräte-Constraints | Werte anpassen (Min/Max) |
+| Problem | Solution |
+|---------|----------|
+| Chart doesn't load | Refresh page |
+| Submit doesn't work | Check timer, internet connection |
+| Wrong values | Use Undo or Reset |
+| Session disappeared | Contact trainer |
+| Slow performance | Close other tabs |
 
-### 9.2 Error Messages
+### 9.2 Connection Problems
 
-| Meldung | Bedeutung | Lösung |
-|---------|-----------|--------|
-| "Session not found" | Session-ID ungültig | Zum Home navigieren |
-| "Not authorized" | Kein Zugang | Trainer kontaktieren |
-| "Round already submitted" | Bereits abgegeben | Warte auf nächste Runde |
-| "Validation failed" | Constraints verletzt | Werte prüfen |
-| "Time expired" | Zu spät | Nächste Runde nutzen |
+- **Red dot in header**: No connection to server
+- **"Reconnecting..."**: Automatic reconnection attempt
+- **Manual refresh**: F5 or browser reload button
 
-### 9.3 Browser-Kompatibilität
+### 9.3 Support
 
-**Empfohlen:**
-- Chrome (neueste Version)
-- Firefox (neueste Version)
-- Edge (neueste Version)
-
-**Nicht unterstützt:**
-- Internet Explorer
-- Safari (eingeschränkt)
+- **During session**: Contact trainer
+- **Technical issues**: support@emsg.example.com
 
 ---
 
-## 10. Glossar
+## 10. Glossary
 
-| Begriff | Definition |
-|---------|------------|
-| **ATC** | Available Transfer Capacity - Übertragungskapazität zwischen Zonen (MW) |
-| **Balancing** | Ausgleichsenergie für Prognosefehler |
-| **Capacity Factor** | Durchschnittliche Auslastung erneuerbarer Energien (%) |
-| **Curtailment** | Abregelung von Erzeugung wegen Netzüberlastung |
-| **DA** | Day-Ahead - Markt für Folgetag-Lieferung |
-| **Dispatch** | Tatsächlich abgerufene/gelieferte Menge (MWh) |
-| **DRM** | Demand Response Management - Laststeuerung |
-| **Freeze** | Einfrieren bereits abgerechneter Stunden |
-| **Gate Closure** | Handelsschluss für einen Markt (z.B. 12:00) |
-| **ID** | Intraday - Markt für kurzfristige Anpassungen |
-| **Imbalance** | Differenz zwischen Dispatch und tatsächlicher Menge |
-| **MCP** | Market Clearing Price - Marktpreis (ZAR/MWh) |
-| **Merit Order** | Sortierung der Gebote nach Preis (günstigste zuerst) |
-| **MW** | Megawatt - Einheit für Leistung |
-| **MWh** | Megawattstunden - Einheit für Energie (1 MW × 1h) |
-| **Ramping** | Änderungsrate der Leistung (MW/h) |
-| **Round Span** | Simulierte Stunden pro Spielrunde |
-| **SAWEM** | South African Wholesale Electricity Market |
-| **ZAR** | South African Rand (Währung) |
+| Term | Definition |
+|------|------------|
+| **MCP** | Market Clearing Price - uniform price for all |
+| **DA** | Day-Ahead - main planning market |
+| **ID** | Intraday - short-term adjustment market |
+| **Imbalance** | Difference between forecast and actual |
+| **Curtailment** | Forced generation reduction |
+| **SoC** | State of Charge (battery fill level) |
+| **Gate Closure** | Deadline for DA trading |
+| **Balancing** | Real-time energy settlement |
+| **ZAR** | South African Rand (currency) |
+| **MWh** | Megawatt-hours (energy unit) |
+| **MW** | Megawatt (power unit) |
+| **Ramp Rate** | Speed of power change (MW/h) |
+| **Capacity Factor** | Average utilization of a plant |
+| **DRM** | Demand Response Management |
 
 ---
 
-## Support
-
-- **Technische Fragen**: support@emsg.example.com
-- **Trainer/Admin**: Über deinen Kohorten-Kontakt
-- **In-Game Docs**: `/docs/player` (DocsFab Button rechts unten)
-
----
-
-*Letzte Aktualisierung: 23. Dezember 2025*
+*Last updated: December 23, 2025*

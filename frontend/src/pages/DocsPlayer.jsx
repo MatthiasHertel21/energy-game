@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Container, Paper, Typography } from '@mui/material'
 
 export default function DocsPlayer(){
@@ -11,7 +12,7 @@ export default function DocsPlayer(){
     <Container maxWidth="md" sx={{ mt: 4, mb: 6 }}>
         <Paper sx={{ p: 3, maxHeight: 'calc(100vh - 160px)', overflow: 'auto' }}>
         <Typography variant="h4" gutterBottom>Player Handbook</Typography>
-        <ReactMarkdown>{content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       </Paper>
     </Container>
   )

@@ -2,228 +2,228 @@
 ## Energy Market Simulation Game (EMSG)
 
 **Version**: 2.0 (Sprint 24)  
-**Date**: 23. Dezember 2025  
+**Date**: December 23, 2025  
 **Audience**: Trainers/Facilitators
 
 ---
 
-## Inhaltsverzeichnis
+## Table of Contents
 
-1. [Einführung](#1-einführung)
-2. [Kohorten-Management](#2-kohorten-management)
-3. [Session starten](#3-session-starten)
-4. [Session steuern](#4-session-steuern)
-5. [Live-Monitoring](#5-live-monitoring)
-6. [Kommunikation](#6-kommunikation)
-7. [Auswertung & Reporting](#7-auswertung--reporting)
-8. [Replay-Funktion](#8-replay-funktion)
+1. [Introduction](#1-introduction)
+2. [Cohort Management](#2-cohort-management)
+3. [Starting a Session](#3-starting-a-session)
+4. [Controlling a Session](#4-controlling-a-session)
+5. [Live Monitoring](#5-live-monitoring)
+6. [Communication](#6-communication)
+7. [Evaluation & Reporting](#7-evaluation--reporting)
+8. [Replay Function](#8-replay-function)
 9. [Best Practices](#9-best-practices)
 10. [Troubleshooting](#10-troubleshooting)
 
 ---
 
-## 1. Einführung
+## 1. Introduction
 
-### Rolle des Trainers
+### Role of the Trainer
 
-Als Trainer bist du verantwortlich für:
-- Verwaltung von Kohorten (Spielergruppen)
-- Starten und Steuern von Sessions
-- Live-Monitoring während des Spiels
-- Auswertung und Debriefing
+As a trainer, you are responsible for:
+- Managing cohorts (player groups)
+- Starting and controlling sessions
+- Live monitoring during gameplay
+- Evaluation and debriefing
 
 ### Navigation
 
-| Route | Funktion |
+| Route | Function |
 |-------|----------|
-| `/cohorts` | Kohorten- und Kampagnen-Management |
-| `/trainer` | Session-Steuerung und Live-Monitoring |
-| `/comparison?sessionId=...` | Cross-Player Vergleich |
+| `/cohorts` | Cohort and campaign management |
+| `/trainer` | Session control and live monitoring |
+| `/comparison?sessionId=...` | Cross-player comparison |
 | `/leaderboard?sessionId=...` | Ranking |
-| `/replay?sessionId=...` | Rundenweise Wiedergabe |
-| `/evaluation?sessionId=...` | Finale Auswertung |
+| `/replay?sessionId=...` | Round-by-round playback |
+| `/evaluation?sessionId=...` | Final evaluation |
 
-### Workflow-Übersicht
+### Workflow Overview
 
 ```
-1. Vorbereitung
-   ├── Kohorte erstellen
-   ├── Spieler einladen
-   └── Kampagnen aktivieren
+1. Preparation
+   ├── Create cohort
+   ├── Invite players
+   └── Activate campaigns
 
-2. Session durchführen
-   ├── Szenario auswählen
-   ├── Player Types konfigurieren
-   ├── Session starten
-   ├── Live überwachen
-   └── Session beenden
+2. Conduct Session
+   ├── Select scenario
+   ├── Configure Player Types
+   ├── Start session
+   ├── Monitor live
+   └── End session
 
-3. Nachbereitung
-   ├── Auswertung analysieren
-   ├── Leaderboard zeigen
-   └── Debriefing durchführen
+3. Follow-up
+   ├── Analyze evaluation
+   ├── Show leaderboard
+   └── Conduct debriefing
 ```
 
 ---
 
-## 2. Kohorten-Management
+## 2. Cohort Management
 
-### 2.1 Kohorte erstellen
+### 2.1 Create Cohort
 
-**Route**: `/cohorts` → "Neue Kohorte"
+**Route**: `/cohorts` → "New Cohort"
 
-| Feld | Beschreibung | Beispiel |
-|------|--------------|----------|
-| **Name** | Eindeutiger Kohortenname | "WS 2025 Gruppe A" |
-| **Beschreibung** | Optional, interne Notizen | "Dienstagskurs" |
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Name** | Unique cohort name | "WS 2025 Group A" |
+| **Description** | Optional, internal notes | "Tuesday class" |
 
-### 2.2 Mitglieder verwalten
+### 2.2 Manage Members
 
-**Spieler hinzufügen:**
+**Add Players:**
 
-| Methode | Beschreibung |
-|---------|--------------|
-| **E-Mail** | Einzelne E-Mail-Adresse eingeben |
-| **CSV-Import** | Liste von E-Mails hochladen |
-| **Einladungslink** | Link teilen, Spieler registrieren sich selbst |
+| Method | Description |
+|--------|-------------|
+| **Email** | Enter individual email address |
+| **CSV Import** | Upload list of emails |
+| **Invitation Link** | Share link, players self-register |
 
-**Spieler entfernen:**
-- Klick auf ✕ neben dem Spieler
-- ⚠️ Spieler verliert Zugang zu allen Sessions der Kohorte
+**Remove Players:**
+- Click ✕ next to the player
+- ⚠️ Player loses access to all cohort sessions
 
-### 2.3 Kampagnen aktivieren
+### 2.3 Activate Campaigns
 
-**Kampagnen-Tab:**
+**Campaigns Tab:**
 
-| Spalte | Beschreibung |
-|--------|--------------|
-| **Kampagne** | Name der Kampagne |
-| **Sichtbar** | Im Catalog für diese Kohorte sichtbar |
-| **Aktiv** | Sessions können gestartet werden |
+| Column | Description |
+|--------|-------------|
+| **Campaign** | Campaign name |
+| **Visible** | Visible in catalog for this cohort |
+| **Active** | Sessions can be started |
 
-**Aktionen:**
-- Toggle "Sichtbar" → Spieler sehen Kampagne im Catalog
-- Toggle "Aktiv" → Trainer kann Sessions starten
-- Klick auf Kampagne → Zeigt Szenarien
+**Actions:**
+- Toggle "Visible" → Players see campaign in catalog
+- Toggle "Active" → Trainer can start sessions
+- Click on campaign → Shows scenarios
 
-### 2.4 Session-Historie
+### 2.4 Session History
 
-**Sessions-Tab:**
-- Liste aller vergangenen Sessions
-- Status, Startzeit, Teilnehmer
-- Links zu Evaluation, Replay, Leaderboard
-
----
-
-## 3. Session starten
-
-### 3.1 Session-Start Workflow
-
-**Route**: `/trainer` oder `/cohorts` → Kampagne → Szenario → "Session starten"
-
-**Schritt 1: Kohorte wählen**
-- Dropdown zeigt verfügbare Kohorten
-- ⚠️ Warnung wenn Kohorte bereits aktive Session hat
-
-**Schritt 2: Kampagne wählen**
-- Nur veröffentlichte, für Kohorte aktive Kampagnen
-- Kampagnenbild und -beschreibung angezeigt
-
-**Schritt 3: Szenario wählen**
-- Liste der Szenarien in der Kampagne
-- Nur "Kohorten-fähige" Szenarien
-- Objectives-Preview (erste 200 Zeichen)
-
-**Schritt 4: Player Types konfigurieren**
-
-| Einstellung | Beschreibung |
-|-------------|--------------|
-| **Typ aktivieren** | Toggle pro Player Type |
-| **Max. Spieler** | Wie viele Spieler diesen Typ wählen können |
-
-**Schritt 5: Session starten**
-- Klick auf "Start Scenario"
-- Session wird erstellt im Status "Created"
-- Spieler können beitreten und Briefing sehen
-
-### 3.2 Session-Modi
-
-| Modus | Beschreibung | Markt |
-|-------|--------------|-------|
-| **Shared Market** | Alle Trainer-Sessions | Gemeinsamer Markt |
-
-ℹ️ Solo-Modus wird direkt von Spielern via Catalog gestartet.
-
-### 3.3 Automatischer Start
-
-Nach Session-Erstellung:
-1. Spieler treten bei (sehen Briefing)
-2. Trainer klickt "Run" → Session startet
-3. Timer beginnt für alle Spieler gleichzeitig
+**Sessions Tab:**
+- List of all past sessions
+- Status, start time, participants
+- Links to Evaluation, Replay, Leaderboard
 
 ---
 
-## 4. Session steuern
+## 3. Starting a Session
 
-### 4.1 Session-Status
+### 3.1 Session Start Workflow
 
-| Status | Farbe | Bedeutung |
-|--------|-------|-----------|
-| **Created** | Grau | Session erstellt, noch nicht gestartet |
-| **Running** | Grün | Session läuft, Timer aktiv |
-| **Paused** | Gelb | Session pausiert, Timer gestoppt |
-| **Ended** | Rot | Session beendet, Evaluation verfügbar |
+**Route**: `/trainer` or `/cohorts` → Campaign → Scenario → "Start Session"
 
-### 4.2 Steuerungselemente
+**Step 1: Choose Cohort**
+- Dropdown shows available cohorts
+- ⚠️ Warning if cohort already has active session
+
+**Step 2: Choose Campaign**
+- Only published campaigns active for cohort
+- Campaign image and description displayed
+
+**Step 3: Choose Scenario**
+- List of scenarios in the campaign
+- Only "cohort-enabled" scenarios
+- Objectives preview (first 200 characters)
+
+**Step 4: Configure Player Types**
+
+| Setting | Description |
+|---------|-------------|
+| **Enable Type** | Toggle per Player Type |
+| **Max Players** | How many players can choose this type |
+
+**Step 5: Start Session**
+- Click "Start Scenario"
+- Session is created with status "Created"
+- Players can join and see briefing
+
+### 3.2 Session Modes
+
+| Mode | Description | Market |
+|------|-------------|--------|
+| **Shared Market** | All trainer sessions | Shared market |
+
+ℹ️ Solo mode is started directly by players via catalog.
+
+### 3.3 Automatic Start
+
+After session creation:
+1. Players join (see briefing)
+2. Trainer clicks "Run" → Session starts
+3. Timer begins for all players simultaneously
+
+---
+
+## 4. Controlling a Session
+
+### 4.1 Session Status
+
+| Status | Color | Meaning |
+|--------|-------|---------|
+| **Created** | Gray | Session created, not yet started |
+| **Running** | Green | Session running, timer active |
+| **Paused** | Yellow | Session paused, timer stopped |
+| **Ended** | Red | Session ended, evaluation available |
+
+### 4.2 Control Elements
 
 **Trainer Dashboard** (`/trainer`):
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Session Info: Kohorte | Szenario | Status | Runde N/M      │
+│  Session Info: Cohort | Scenario | Status | Round N/M       │
 ├─────────────────────────────────────────────────────────────┤
-│  [▶ Run]  [⏸ Pause]  [⏹ End]  [⏭ Force Round End]         │
+│  [▶ Run]  [⏸ Pause]  [⏹ End]  [⏭ Force Round End]          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-| Button | Funktion | Wann nutzen |
+| Button | Function | When to Use |
 |--------|----------|-------------|
-| **▶ Run** | Session starten/fortsetzen | Nach Created oder Paused |
-| **⏸ Pause** | Timer stoppen | Für Erklärungen, Pausen |
-| **⏹ End** | Session beenden | Nach letzter Runde oder Abbruch |
-| **⏭ Force Round End** | Runde sofort beenden | ⚠️ Notfall, überspringt Timer |
+| **▶ Run** | Start/resume session | After Created or Paused |
+| **⏸ Pause** | Stop timer | For explanations, breaks |
+| **⏹ End** | End session | After last round or abort |
+| **⏭ Force Round End** | End round immediately | ⚠️ Emergency, skips timer |
 
-### 4.3 Runden-Management
+### 4.3 Round Management
 
-**Automatischer Rundenablauf:**
-1. Timer läuft (z.B. 300s)
-2. Spieler submitten Forecasts
-3. Timer endet → Market Clearing
-4. Round Results werden angezeigt
-5. Spieler signalisieren "Ready"
-6. Wenn alle Ready → Nächste Runde
+**Automatic Round Flow:**
+1. Timer runs (e.g., 300s)
+2. Players submit forecasts
+3. Timer ends → Market Clearing
+4. Round Results are displayed
+5. Players signal "Ready"
+6. When all Ready → Next round
 
-**Manuelles Eingreifen:**
-- "Force Round End" → Überspringt wartende Spieler
-- Nur nutzen wenn Spieler technische Probleme haben
+**Manual Intervention:**
+- "Force Round End" → Skips waiting players
+- Only use if players have technical problems
 
-### 4.4 Session beenden
+### 4.4 Ending a Session
 
-**Normales Ende:**
-- Nach letzter Runde automatisch
-- Spieler sehen Scenario Results
-- Weiterleitung zu Evaluation
+**Normal End:**
+- After last round automatically
+- Players see Scenario Results
+- Redirect to Evaluation
 
-**Vorzeitiges Ende:**
-- "End" Button → Session sofort beenden
-- Alle bisherigen Ergebnisse bleiben erhalten
-- Spieler werden zu Evaluation weitergeleitet
+**Early End:**
+- "End" button → Session ends immediately
+- All previous results are preserved
+- Players are redirected to Evaluation
 
 ---
 
-## 5. Live-Monitoring
+## 5. Live Monitoring
 
-### 5.1 Dashboard-Layout
+### 5.1 Dashboard Layout
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -245,133 +245,133 @@ Nach Session-Erstellung:
 
 ### 5.2 Presence Panel
 
-Zeigt Online-Status aller Spieler:
+Shows online status of all players:
 
 | Symbol | Status |
 |--------|--------|
-| 🟢 | Online, aktiv |
-| 🟡 | Online, inaktiv (>1 Min) |
+| 🟢 | Online, active |
+| 🟡 | Online, inactive (>1 min) |
 | 🔴 | Offline |
 
-**Automatisches Refresh**: Alle 5 Sekunden
+**Automatic Refresh**: Every 5 seconds
 
 ### 5.3 Status Matrix
 
-Detaillierte Übersicht pro Spieler:
+Detailed overview per player:
 
-| Spalte | Beschreibung |
-|--------|--------------|
-| **Spieler** | E-Mail oder Name |
-| **Typ** | Gewählter Player Type |
-| **Online** | Verbindungsstatus |
-| **Forecasted** | Forecast erstellt? |
-| **Submitted** | Diese Runde submitted? |
-| **Ready** | Bereit für nächste Runde? |
-| **Letzte Aktivität** | Zeitstempel |
+| Column | Description |
+|--------|-------------|
+| **Player** | Email or name |
+| **Type** | Chosen Player Type |
+| **Online** | Connection status |
+| **Forecasted** | Forecast created? |
+| **Submitted** | Submitted this round? |
+| **Ready** | Ready for next round? |
+| **Last Activity** | Timestamp |
 
-**Farbcodierung:**
-- 🟢 Grün: Aktiv spielend
-- 🟡 Gelb: Verbunden, aber nicht aktiv
-- ⬜ Weiß: Nicht verbunden
+**Color Coding:**
+- 🟢 Green: Actively playing
+- 🟡 Yellow: Connected but inactive
+- ⬜ White: Not connected
 
 ### 5.4 Type Distribution
 
-Kreisdiagramm zeigt:
-- Wie viele Spieler jeden Player Type gewählt haben
-- Verbleibende Slots pro Typ
-- Hilfreich für Balance-Prüfung
+Pie chart shows:
+- How many players chose each Player Type
+- Remaining slots per type
+- Helpful for balance check
 
 ### 5.5 Device Frequency
 
-Balkendiagramm zeigt:
-- Wie oft jedes Gerät gewählt wurde
-- Identifiziert beliebte/unbeliebte Geräte
+Bar chart shows:
+- How often each device was chosen
+- Identifies popular/unpopular devices
 
 ### 5.6 Market Charts
 
-**MCP über Runden:**
-- Grüne Linie
-- Zeigt Preisentwicklung
-- Tooltips mit Werten
+**MCP over Rounds:**
+- Green line
+- Shows price development
+- Tooltips with values
 
-**Volume über Runden:**
-- Blaue Linie
-- Gesamtes Handelsvolumen
+**Volume over Rounds:**
+- Blue line
+- Total trading volume
 
 **Export:** PNG/SVG
 
 ### 5.7 Aggregated KPIs
 
-Tabelle mit allen Spielern:
+Table with all players:
 
-| Spalte | Beschreibung |
-|--------|--------------|
-| **Spieler** | Name/E-Mail |
-| **Typ** | Player Type |
-| **Profit** | Gesamt-Profit (ZAR) |
-| **Revenue** | Gesamt-Erlöse (ZAR) |
-| **Imbalance** | Gesamt-Imbalance-Kosten |
-| **Curtailment** | Gesamt-Abregelungskosten |
-| **Runden** | Anzahl gespielter Runden |
+| Column | Description |
+|--------|-------------|
+| **Player** | Name/Email |
+| **Type** | Player Type |
+| **Profit** | Total profit (ZAR) |
+| **Revenue** | Total revenue (ZAR) |
+| **Imbalance** | Total imbalance costs |
+| **Curtailment** | Total curtailment costs |
+| **Rounds** | Number of rounds played |
 
-**Aktionen:**
-- Sortieren nach jeder Spalte
-- Export als CSV
+**Actions:**
+- Sort by any column
+- Export as CSV
 
 ### 5.8 Event Log
 
-Chronologische Liste aller Ereignisse:
+Chronological list of all events:
 
-| Event-Typ | Beispiel |
-|-----------|----------|
-| Session | "Session gestartet", "Runde 3 beendet" |
+| Event Type | Example |
+|------------|---------|
+| Session | "Session started", "Round 3 ended" |
 | Player | "player@email.com joined", "Forecast submitted" |
 | Market | "MCP = 450 ZAR/MWh", "Clearing completed" |
 
-**Filter:**
-- Nach Event-Typ
-- Nach Spieler
-- Nach Zeitraum
+**Filters:**
+- By event type
+- By player
+- By time period
 
 ---
 
-## 6. Kommunikation
+## 6. Communication
 
-### 6.1 Broadcast-Nachrichten
+### 6.1 Broadcast Messages
 
-Sende Nachrichten an alle Spieler:
+Send messages to all players:
 
-1. Eingabefeld im Trainer Dashboard
-2. Nachricht eingeben
-3. "Send" klicken
-4. Alle Spieler sehen Toast-Notification
+1. Input field in Trainer Dashboard
+2. Enter message
+3. Click "Send"
+4. All players see toast notification
 
-**Beispiele:**
-- "5 Minuten bis Rundenende!"
-- "Beachtet das Koeberg-Event in Runde 3"
-- "Pause für Fragen"
+**Examples:**
+- "5 minutes until round ends!"
+- "Note the Koeberg event in Round 3"
+- "Pause for questions"
 
-### 6.2 Player-spezifische Kommunikation
+### 6.2 Player-specific Communication
 
-Derzeit nicht implementiert. Workaround:
-- E-Mail direkt senden
-- Chat-Tool parallel nutzen (Teams, Slack)
+Currently not implemented. Workarounds:
+- Send email directly
+- Use parallel chat tool (Teams, Slack)
 
 ---
 
-## 7. Auswertung & Reporting
+## 7. Evaluation & Reporting
 
 ### 7.1 Comparison Dashboard
 
 **Route**: `/comparison?sessionId=...`
 
-Vergleich aller Spieler:
+Comparison of all players:
 
-| Element | Beschreibung |
-|---------|--------------|
-| **Metric Filter** | Wähle KPI (Profit, Imbalance, etc.) |
-| **Bar Chart** | Visuelle Darstellung pro Spieler |
-| **Table** | Detaillierte Zahlen |
+| Element | Description |
+|---------|-------------|
+| **Metric Filter** | Choose KPI (Profit, Imbalance, etc.) |
+| **Bar Chart** | Visual representation per player |
+| **Table** | Detailed numbers |
 
 **Export:** PNG/CSV
 
@@ -379,182 +379,182 @@ Vergleich aller Spieler:
 
 **Route**: `/leaderboard?sessionId=...`
 
-Ranking nach Scoring-Regeln:
+Ranking by scoring rules:
 
-| Element | Beschreibung |
-|---------|--------------|
-| **Platzierung** | 1, 2, 3, ... |
-| **Spieler** | Name/E-Mail |
+| Element | Description |
+|---------|-------------|
+| **Rank** | 1, 2, 3, ... |
+| **Player** | Name/Email |
 | **Score** | Total Score (0-100) |
-| **Breakdown** | Einzelne KPIs |
+| **Breakdown** | Individual KPIs |
 
-**Optionen:**
-- Metrik wählen
-- Pro Role filtern
-- PDF-Export
+**Options:**
+- Choose metric
+- Filter by role
+- PDF export
 
 ### 7.3 Evaluation
 
 **Route**: `/evaluation?sessionId=...`
 
-Vollständige Auswertung:
+Complete evaluation:
 
-| Abschnitt | Inhalt |
-|-----------|--------|
-| **Summary KPIs** | Aggregiert über alle Runden |
-| **Round Table** | Details pro Runde |
-| **Trend Charts** | Profit, MCP, Volume über Zeit |
-| **Market Breakdown** | DA vs ID Volumen/Revenue |
-| **Cohort Comparison** | Spieler vs Durchschnitt |
+| Section | Content |
+|---------|---------|
+| **Summary KPIs** | Aggregated over all rounds |
+| **Round Table** | Details per round |
+| **Trend Charts** | Profit, MCP, Volume over time |
+| **Market Breakdown** | DA vs ID Volume/Revenue |
+| **Cohort Comparison** | Player vs average |
 
 **Export:** PDF
 
 ### 7.4 DA/ID Market Breakdown
 
-Neue Funktion (Sprint 24):
+New feature (Sprint 24):
 
-| Metrik | Beschreibung |
-|--------|--------------|
-| **DA Volume** | Im Day-Ahead committed |
-| **ID Delta** | Intraday-Anpassungen |
-| **Final Position** | Endposition |
-| **ID Adjustment %** | Prozentuale Änderung |
+| Metric | Description |
+|--------|-------------|
+| **DA Volume** | Committed in Day-Ahead |
+| **ID Delta** | Intraday adjustments |
+| **Final Position** | Final position |
+| **ID Adjustment %** | Percentage change |
 
-**Pädagogischer Wert:**
-- Zeigt Trading-Aktivität
-- Identifiziert "Nachjustierer"
-- Diskussionsgrundlage für Debriefing
+**Pedagogical Value:**
+- Shows trading activity
+- Identifies "adjusters"
+- Discussion basis for debriefing
 
 ---
 
-## 8. Replay-Funktion
+## 8. Replay Function
 
-### 8.1 Replay starten
+### 8.1 Start Replay
 
 **Route**: `/replay?sessionId=...`
 
 ### 8.2 Navigation
 
-| Button | Funktion |
+| Button | Function |
 |--------|----------|
-| **⏮** | Zur ersten Runde |
-| **◀** | Vorherige Runde |
-| **▶** | Nächste Runde |
-| **⏭** | Zur letzten Runde |
-| **⏯** | Autoplay Start/Stop |
+| **⏮** | To first round |
+| **◀** | Previous round |
+| **▶** | Next round |
+| **⏭** | To last round |
+| **⏯** | Autoplay start/stop |
 
-### 8.3 Anzeige pro Runde
+### 8.3 Display per Round
 
-- Submitted Forecasts aller Spieler
-- Market Clearing Ergebnisse
-- MCP und Volume
-- Aktive Events
+- Submitted forecasts of all players
+- Market clearing results
+- MCP and volume
+- Active events
 
 ### 8.4 Overlays
 
-| Overlay | Beschreibung |
-|---------|--------------|
-| **Cohort Average** | Durchschnitt aller Spieler |
-| **Reference Run** | Vom Designer hochgeladene Referenz |
+| Overlay | Description |
+|---------|-------------|
+| **Cohort Average** | Average of all players |
+| **Reference Run** | Reference uploaded by designer |
 
 ### 8.5 Export
 
-- Rundenweise Screenshots
-- Daten als CSV
+- Round-by-round screenshots
+- Data as CSV
 
 ---
 
 ## 9. Best Practices
 
-### 9.1 Vorbereitung
+### 9.1 Preparation
 
-| Aufgabe | Timing |
-|---------|--------|
-| Kohorte erstellen | 1 Woche vorher |
-| Spieler einladen | 1 Woche vorher |
-| Test-Session | 1-2 Tage vorher |
-| Briefing-Material | Tag vorher |
+| Task | Timing |
+|------|--------|
+| Create cohort | 1 week before |
+| Invite players | 1 week before |
+| Test session | 1-2 days before |
+| Briefing material | Day before |
 
-### 9.2 Während der Session
+### 9.2 During Session
 
-| Tipp | Begründung |
-|------|------------|
-| **Timer ankündigen** | "Noch 2 Minuten!" |
-| **Pause bei Fragen** | Verständnis sichern |
-| **Status-Matrix beobachten** | Probleme früh erkennen |
-| **Nicht zu oft eingreifen** | Lernerfahrung lassen |
+| Tip | Reasoning |
+|-----|-----------|
+| **Announce timer** | "2 minutes remaining!" |
+| **Pause for questions** | Ensure understanding |
+| **Watch status matrix** | Detect problems early |
+| **Don't intervene too often** | Allow learning experience |
 
 ### 9.3 Debriefing
 
-| Element | Beschreibung |
-|---------|--------------|
-| **Leaderboard zeigen** | Motivation, Vergleich |
-| **Top-Performer interviewen** | "Was war deine Strategie?" |
-| **Fehler diskutieren** | "Was lief schief bei Spieler X?" |
-| **Marktdynamik erklären** | MCP-Entwicklung besprechen |
-| **DA vs ID analysieren** | Wer hat gut geplant? |
+| Element | Description |
+|---------|-------------|
+| **Show leaderboard** | Motivation, comparison |
+| **Interview top performers** | "What was your strategy?" |
+| **Discuss mistakes** | "What went wrong for Player X?" |
+| **Explain market dynamics** | Discuss MCP development |
+| **Analyze DA vs ID** | Who planned well? |
 
-### 9.4 Häufige Situationen
+### 9.4 Common Situations
 
-| Situation | Reaktion |
+| Situation | Response |
 |-----------|----------|
-| Spieler kommt zu spät | Nächste Runde abwarten |
-| Technische Probleme | Pause, Problem lösen |
-| Fragen während Spiel | Kurze Antwort, Details später |
-| Ungleiche Teams | Kapazitäten in Player Types anpassen |
+| Player arrives late | Wait for next round |
+| Technical problems | Pause, solve problem |
+| Questions during game | Brief answer, details later |
+| Unbalanced teams | Adjust capacities in Player Types |
 
 ---
 
 ## 10. Troubleshooting
 
-### 10.1 Häufige Probleme
+### 10.1 Common Problems
 
-| Problem | Ursache | Lösung |
-|---------|---------|--------|
-| Session startet nicht | Aktive Session existiert | Alte Session beenden |
-| Spieler sieht Session nicht | Nicht in Kohorte | Kohorte prüfen |
-| Timer läuft nicht | Session "Created" | "Run" klicken |
-| Keine Ergebnisse | Kein Submit | Force Round End |
-| Verbindung instabil | WebSocket-Problem | Seite neu laden |
+| Problem | Cause | Solution |
+|---------|-------|----------|
+| Session won't start | Active session exists | End old session |
+| Player can't see session | Not in cohort | Check cohort |
+| Timer not running | Session "Created" | Click "Run" |
+| No results | No submit | Force Round End |
+| Unstable connection | WebSocket issue | Reload page |
 
-### 10.2 Notfall-Aktionen
+### 10.2 Emergency Actions
 
-| Aktion | Wann |
+| Action | When |
 |--------|------|
-| **Force Round End** | Spieler kann nicht submitten |
-| **Pause** | Technisches Problem für alle |
-| **End Session** | Kritischer Fehler, Neustart nötig |
+| **Force Round End** | Player can't submit |
+| **Pause** | Technical problem for all |
+| **End Session** | Critical error, restart needed |
 
-### 10.3 Support kontaktieren
+### 10.3 Contact Support
 
-- **Technisch**: support@emsg.example.com
-- **Logs**: Trainer Dashboard → Event Log exportieren
+- **Technical**: support@emsg.example.com
+- **Logs**: Trainer Dashboard → Export Event Log
 - **Screenshots**: Status Matrix, Error Messages
 
 ---
 
-## Anhang: API-Referenz
+## Appendix: API Reference
 
-### Wichtige Endpoints
+### Important Endpoints
 
-| Endpoint | Methode | Beschreibung |
-|----------|---------|--------------|
-| `/api/sessions` | POST | Session erstellen |
-| `/api/sessions/:id/start` | POST | Session starten |
-| `/api/sessions/:id/pause` | POST | Session pausieren |
-| `/api/sessions/:id/end` | POST | Session beenden |
-| `/api/sessions/:id/broadcast` | POST | Nachricht senden |
-| `/api/trainer/presence` | GET | Online-Status aller Spieler |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/sessions` | POST | Create session |
+| `/api/sessions/:id/start` | POST | Start session |
+| `/api/sessions/:id/pause` | POST | Pause session |
+| `/api/sessions/:id/end` | POST | End session |
+| `/api/sessions/:id/broadcast` | POST | Send message |
+| `/api/trainer/presence` | GET | Online status of all players |
 
 ### WebSocket Events
 
-| Event | Richtung | Beschreibung |
-|-------|----------|--------------|
-| `session:status` | Server→Client | Status-Update |
-| `round:end` | Server→Client | Runde beendet |
-| `player:submit` | Server→Client | Spieler hat submitted |
-| `broadcast` | Server→Client | Trainer-Nachricht |
+| Event | Direction | Description |
+|-------|-----------|-------------|
+| `session:status` | Server→Client | Status update |
+| `round:end` | Server→Client | Round ended |
+| `player:submit` | Server→Client | Player submitted |
+| `broadcast` | Server→Client | Trainer message |
 
 ---
 
-*Letzte Aktualisierung: 23. Dezember 2025*
+*Last updated: December 23, 2025*

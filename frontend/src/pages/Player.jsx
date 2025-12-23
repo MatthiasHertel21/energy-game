@@ -1625,15 +1625,18 @@ export default function Player() {
         <Button size="small" startIcon={<BriefingIcon />} onClick={()=> navigate(`/briefing/${sessionId}`)}>
           Briefing
         </Button>
-        <Tooltip arrow title={
-          (allowedTypes.length > 0)
-            ? 'Shared Market: All players trade in the same market. Your decisions affect market prices and other players.' 
-            : 'Solo Mode: You have your own private market. Your decisions only affect your own results.'
-        }>
+        <Tooltip
+          arrow
+          title={
+            mode === 'isolated_per_player'
+              ? 'Solo Mode: You have your own private market. Your decisions only affect your own results.'
+              : 'Shared Market: All players trade in the same market. Your decisions affect market prices and other players.'
+          }
+        >
           <Chip 
-            label={(allowedTypes.length > 0) ? 'Shared Market' : 'Solo'}
+            label={mode === 'isolated_per_player' ? 'Solo' : 'Shared Market'}
             size="small"
-            color={(allowedTypes.length > 0) ? 'primary' : 'default'}
+            color={mode === 'isolated_per_player' ? 'default' : 'primary'}
             variant="outlined"
           />
         </Tooltip>

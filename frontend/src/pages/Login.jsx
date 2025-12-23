@@ -42,6 +42,7 @@ export default function Login() {
           <Button size="small" component="a" href="/docs/trainer" target="_blank" rel="noopener noreferrer">Trainer</Button>
           <Button size="small" component="a" href="/docs/designer" target="_blank" rel="noopener noreferrer">Designer</Button>
           <Button size="small" component="a" href="/docs/admin" target="_blank" rel="noopener noreferrer">Admin</Button>
+          <Button size="small" component="a" href="/docs/engine" target="_blank" rel="noopener noreferrer">Calc Engine</Button>
         </Stack>
       </Box>
     </Paper>
