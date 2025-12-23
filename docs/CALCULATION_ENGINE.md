@@ -4,8 +4,8 @@
 
 This document describes the exact calculations performed when a player submits forecast data for a round in the Energy Market Simulation Game (EMSG). The engine computes market clearing price, dispatch, revenues, costs, and profits based on energy market principles.
 
-**Version:** 1.6  
-**Last Updated:** December 19, 2025
+**Version:** 1.7  
+**Last Updated:** December 23, 2025
 
 ---
 
@@ -28,6 +28,7 @@ This document describes the exact calculations performed when a player submits f
 10. [Device Constraints Validation](#device-constraints-validation)
 11. [Mathematical Formulas](#mathematical-formulas)
 12. [Example Calculation](#example-calculation)
+13. [DA/ID Market Breakdown](#daid-market-breakdown)
 
 ---
 
@@ -1289,6 +1290,120 @@ When reviewing calculations, verify:
 
 ---
 
+## DA/ID Market Breakdown
+
+### Overview
+
+The engine tracks Day-Ahead (DA) and Intraday (ID) market positions separately to provide players with a realistic view of their trading activity.
+
+### DA Baseline Storage
+
+When a player's forecast passes a gate closure time, a DA baseline is stored:
+
+```python
+# In player.py - da_baseline endpoint
+# Round 1 always creates DA baseline for Day 1
+if round_num == 1:
+    da_start, da_end = 0, 24  # Hours 0-23
+
+# Later rounds check for gate crossing
+gate_hour = day_ahead_gate_hour  # Default: 12
+current_hour = round_num * round_span_hours
+if current_hour >= gate_hour and previous_hour < gate_hour:
+    day = (gate_hour // 24) + 1
+    da_start, da_end = day * 24, (day + 1) * 24
+```
+
+### Gate Closure Logic
+
+Gate closure determines when the DA position is locked:
+
+| Scenario Time | Gate | DA Position Locked For |
+|---------------|------|------------------------|
+| 00:00 - 11:59 | - | (not yet) |
+| 12:00+ Day 1 | 12:00 | Day 2 (hours 24-47) |
+| 12:00+ Day 2 | 36:00 | Day 3 (hours 48-71) |
+
+Configuration:
+```json
+{
+  "day_ahead_gate_hour": 12,
+  "round_span_hours": 6,
+  "forecast_horizon_hours": 72
+}
+```
+
+### DA/ID Revenue Calculation
+
+Revenue is calculated with optional price differentiation:
+
+```python
+# Price configuration
+id_price_spread = config.get("id_price_spread_percent", 0)  # Default: 0 (same price)
+da_price = base_mcp
+id_price = base_mcp * (1 + id_price_spread / 100)
+
+# Volume calculation (with sign for consumers)
+da_volume_signed = sum(da_hours)      # Negative for consumers
+current_volume_signed = sum(current_hours)
+id_delta_signed = current_volume_signed - da_volume_signed
+
+# Revenue calculation
+da_revenue = da_volume_signed * da_price
+id_revenue = id_delta_signed * id_price
+total_revenue = da_revenue + id_revenue
+```
+
+### Consumer vs Producer
+
+The engine correctly handles both producers (positive volumes) and consumers (negative volumes):
+
+| Role | Volume Sign | Revenue Sign | Interpretation |
+|------|-------------|--------------|----------------|
+| Producer | Positive (+) | Positive (+) | Sells electricity, earns revenue |
+| Consumer | Negative (-) | Negative (-) | Buys electricity, pays costs |
+
+### ID Price Spread
+
+The `id_price_spread_percent` parameter adds realism by differentiating DA and ID prices:
+
+| Spread Value | Meaning | Effect |
+|--------------|---------|--------|
+| `0` | No spread (default) | DA and ID prices equal |
+| `+8` | ID 8% more expensive | Penalty for late adjustments |
+| `-5` | ID 5% cheaper | Incentive for ID trading |
+
+Example with 8% spread and MCP = 450 ZAR/MWh:
+- DA Price: 450 ZAR/MWh
+- ID Price: 486 ZAR/MWh (+8%)
+
+### Round Results Output
+
+The `da_id_breakdown` object in round results contains:
+
+```json
+{
+  "is_consumer": false,
+  "da_volume_mwh": 1200.0,
+  "id_delta_mwh": 150.0,
+  "final_volume_mwh": 1350.0,
+  "da_price_zar": 450.0,
+  "id_price_zar": 486.0,
+  "id_price_spread_percent": 8,
+  "da_revenue_zar": 540000,
+  "id_revenue_zar": 72900,
+  "total_revenue_zar": 612900,
+  "has_baseline": true,
+  "daily_summary": [
+    {"day": 1, "da_mwh": 400, "id_mwh": 450, "delta_mwh": 50},
+    {"day": 2, "da_mwh": 400, "id_mwh": 450, "delta_mwh": 50},
+    {"day": 3, "da_mwh": 400, "id_mwh": 450, "delta_mwh": 50}
+  ]
+}
+```
+
+---
+
 ## References
 
 - Energy Market Clearing: ISO/RTO market mechanisms
@@ -1301,6 +1416,7 @@ When reviewing calculations, verify:
 **For questions or clarifications, contact the development team or refer to the source code in:**
 - `backend/app/engine.py` - Core calculation engine
 - `backend/app/player.py` - Forecast submission endpoint
+- `backend/app/sessions.py` - DA/ID breakdown in round results
 - `backend/app/device_types.py` - Device constraint validation
 
 ---
