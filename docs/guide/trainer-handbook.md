@@ -1,14 +1,26 @@
 # Trainer Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.4 (Sprint 23)  
-**Date**: 18 Dec 2025  
+**Version**: 1.5 (Sprint 24)  
+**Date**: 23 Dec 2025  
 **Audience**: Trainers/Facilitators
 
 ---
 
-## What's New (Sprint 23 - Updated)
+## What's New (Sprint 24)
 
+- **DA/ID Market Breakdown**: Spieler sehen nach jeder Runde detaillierte Marktaufschlüsselung:
+  - Day-Ahead vs Intraday Volume mit separaten Preisen
+  - Tägliche Aufschlüsselung als Accordion
+  - ID Adjustment Prozentsatz zeigt Handelsaktivität
+- **Consumer Role Support**: Verbraucher-Rollen werden korrekt dargestellt:
+  - Angepasste Labels (Kosten statt Revenue)
+  - Rosa Farbcodierung für Consumer-Karten
+- **ID Price Spread**: Konfigurierbarer Preisaufschlag für Intraday-Handel
+  - Scenario-Parameter `id_price_spread_percent`
+  - Pädagogisch wertvoll: zeigt reale Marktdynamik
+
+**Previous (Sprint 23)**:
 - **Hourly Market Clearing**: Engine now performs market clearing for each hour within a round
   - More granular price signals reflecting hourly supply/demand dynamics
   - Round MCP shown as average across all hours

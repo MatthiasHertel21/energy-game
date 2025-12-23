@@ -1,14 +1,29 @@
 # Player Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.5 (Sprint 23)  
-**Date**: 18 Dec 2025  
+**Version**: 1.6 (Sprint 24)  
+**Date**: 23 Dec 2025  
 **Audience**: Players/Students
 
 ---
 
-## What's New (Sprint 23 - Updated)
+## What's New (Sprint 24)
 
+- **DA/ID Market Breakdown**: Nach jeder Runde siehst du jetzt eine detaillierte Aufschlüsselung:
+  - **Day-Ahead Volume**: Deine Position bei Gate-Closure (12:00)
+  - **Intraday Delta**: Änderungen nach Gate-Closure
+  - **Final Position**: Endgültige Handelsposition
+  - **ID Adjustment %**: Prozentuale Änderung gegenüber DA
+  - **Tägliche Aufschlüsselung**: Klappbares Accordion mit Tag-für-Tag Details
+- **Consumer-Support**: Volle Unterstützung für Verbraucher-Rollen:
+  - Angepasste Labels ("Einkauf", "Kosten" statt "Verkauf", "Revenue")
+  - Rosa Farbcodierung für Consumer-Karten
+  - Info-Alert erklärt die Bedeutung negativer Werte
+- **ID Price Spread**: Optionaler Preisaufschlag für Intraday-Handel
+  - Konfigurierbar per Szenario (`id_price_spread_percent`)
+  - Anreiz für sorgfältige Day-Ahead Planung
+
+**Previous (Sprint 23)**:
 - **Hourly Market Clearing**: Market now clears every hour within a round (not just once per round)
   - More realistic price discovery reflecting time-varying supply and demand
   - Each hour gets its own Market Clearing Price (MCP) based on actual hourly conditions
@@ -178,6 +193,37 @@ Profit = Revenue - Fuel_Cost - Imbalance_Cost - Curtailment_Cost + Congestion_Re
 3.6 Charts
 - MCP (green) and Volume (blue) lines across rounds with tooltips; update after each clearing via WebSocket.
 - **With Multi-Bid enabled**: Additional MCP history chart in Player UI to inform bidding decisions
+
+3.7 DA/ID Market Breakdown (Round Results)
+
+Nach jeder Runde zeigt das Round Results Modal eine **Market Breakdown** Sektion:
+
+**Vier Karten-Übersicht:**
+| Karte | Beschreibung | Farbcodierung |
+|-------|-------------|---------------|
+| DA Volume | Day-Ahead Position bei Gate-Closure | Grau |
+| ID Delta | Intraday-Änderung | Grün (+) / Rot (-) |
+| Final Position | Endgültige Handelsposition | Blau |
+| ID Adjustment | Prozentuale Änderung | Info-Chip |
+
+**Preisanzeige:**
+- DA Price: Preis im Day-Ahead Markt (= MCP)
+- ID Price: Preis im Intraday Markt (MCP × (1 + Spread%))
+- ID Spread Badge: Zeigt den konfigurierten Preisaufschlag
+
+**Tägliche Aufschlüsselung (Accordion):**
+- Klicke auf "📅 Daily Breakdown" um Details zu sehen
+- Tabelle mit Tag, DA MWh, ID MWh, Delta, ID Adjustment %
+- Farbige Chips für signifikante Änderungen (>20%)
+
+**Für Consumer (Verbraucher):**
+- Rosa "Consumer" Badge in der Überschrift
+- Info-Alert: "Als Consumer kaufst du Strom. Negative Revenues = Kosten..."
+- Angepasste Labels:
+  - "DA Einkauf" statt "Day-Ahead Volume"
+  - "Kosten" statt "Revenue"
+  - "Finaler Bedarf" statt "Final Position"
+  - "Gesamtkosten" statt "Total Revenue"
 
 ### 4) After Playing
 

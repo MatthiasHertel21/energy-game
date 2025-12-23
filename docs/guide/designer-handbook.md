@@ -1,14 +1,28 @@
 # Designer Handbook (KSE)
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.4 (Sprint 23)  
-**Date**: 18 Dec 2025  
+**Version**: 1.5 (Sprint 24)  
+**Date**: 23 Dec 2025  
 **Audience**: Designers/Scenario Editors
 
 ---
 
-## What's New (Sprint 23 - Updated)
+## What's New (Sprint 24)
 
+- **DA/ID Price Differentiation**: Neuer Szenario-Parameter für realistische Marktpreise:
+  - `id_price_spread_percent`: Preisaufschlag für Intraday-Handel
+  - Beispiel: `8` = ID-Markt ist 8% teurer als DA-Markt
+  - Anreiz für sorgfältige Day-Ahead Planung
+  - Negative Werte möglich (ID günstiger)
+- **Enhanced Round Results**: Spieler sehen jetzt detaillierte DA/ID Breakdown:
+  - DA Volume, ID Delta, Final Position, ID Adjustment %
+  - Tägliche Aufschlüsselung als klappbares Accordion
+  - Separate Preisanzeige für DA und ID Märkte
+- **Consumer Role Support**: Volle Unterstützung für Verbraucher-Szenarien:
+  - Angepasste Labels und Farbcodierung
+  - Korrekte Berechnung von Kosten statt Revenue
+
+**Previous (Sprint 23)**:
 - **Hourly Market Clearing**: Engine automatically performs market clearing for each hour within a round
   - Works with any `round_span_hours` setting (1, 3, 4, 6, 8, 12, 24, etc.)
   - Provides more realistic price discovery based on hourly conditions
@@ -58,6 +72,11 @@ General
 
 Market Rules
 - Enable DA/IDM/Balancing; price floor/cap (allow negative pricing), uniform-price clearing, pro‑rata ties, imbalance prices (up/down), transmission losses.
+- **`id_price_spread_percent`** (Sprint 24): Preisaufschlag für Intraday-Handel
+  - `0` (Default): Gleicher Preis für DA und ID
+  - `5` bis `15`: Typischer Aufschlag für volatile ID-Märkte
+  - `-5`: ID günstiger (Verkäufermarkt)
+  - Wird im Round Results Modal angezeigt
 
 Grid
 - Zones (1–5), symmetric ATC matrix (MW), congestion handling and revenue (fixed options).

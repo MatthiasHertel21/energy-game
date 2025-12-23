@@ -1,9 +1,34 @@
 # Multi-Market System: Day-Ahead & Intraday Markets
 **Design Concept & Implementation Roadmap**
 
-**Version:** 1.0  
-**Date:** 22. Dezember 2025  
-**Status:** Draft for Review
+**Version:** 2.0  
+**Date:** 23. Dezember 2025  
+**Status:** Partially Implemented
+
+---
+
+## Implementation Status (Sprint 24)
+
+### ✅ Completed Features
+
+| Feature | Status | Details |
+|---------|--------|---------|
+| DA Baseline Storage | ✅ Done | `is_da_baseline` column in forecasts table |
+| Gate Closure Logic | ✅ Done | 12:00 commits forecast for next calendar day |
+| Multi-Day DA Tracking | ✅ Done | `da_baseline_hours` JSON with start/end |
+| Chart Zone Visualization | ✅ Done | LOCKED/DA/ID/FUTURE zones with colors |
+| Round Results DA/ID Breakdown | ✅ Done | 4 cards + daily accordion |
+| Consumer Support | ✅ Done | Signed volumes, adapted labels |
+| ID Price Spread | ✅ Done | `id_price_spread_percent` config |
+| Market Breakdown in Evaluation | ✅ Done | Final session statistics |
+
+### ⏳ Pending Features
+
+| Feature | Priority | Notes |
+|---------|----------|-------|
+| Separate DA/ID Tables | Medium | Currently using forecasts.is_da_baseline |
+| Delta-based ID Tracking | Medium | Currently absolute forecasts |
+| Imbalance vs Cumulative Position | Low | Currently vs dispatch |
 
 ---
 
@@ -812,6 +837,85 @@ describe('Multi-Market Flow', () => {
 - **Position**: Cumulative volume commitment for a specific delivery hour
 - **Delta**: Change in position relative to previous commitment
 - **Gate Closure**: Deadline after which trading is no longer possible for a delivery hour
+
+---
+
+## 14. Current Implementation Details (Sprint 24)
+
+### 14.1 DA Baseline Storage
+
+The DA baseline is stored in the existing `forecasts` table with additional columns:
+
+```python
+# In models.py
+class Forecast(db.Model):
+    is_da_baseline = db.Column(db.Boolean, default=False)
+    # data["da_baseline_hours"] = {"start": 0, "end": 24}  # Hours 0-23 for Day 1
+```
+
+### 14.2 Gate Closure Logic
+
+Gate closure is determined by scenario config and current simulation time:
+
+```python
+# In player.py - da_baseline endpoint
+day_ahead_gate_hour = config.get("day_ahead_gate_hour", 12)  # Default: 12:00
+current_hour = round_num * round_span_hours
+
+# Calculate which day's baseline to create
+if round_num == 1:
+    # Round 1: DA for Day 1 (hours 0-24)
+    da_start, da_end = 0, 24
+else:
+    # Check if we're crossing a gate
+    gate_hours = [h for h in range(day_ahead_gate_hour, forecast_horizon_hours, 24)]
+    for gate_hour in gate_hours:
+        if current_hour >= gate_hour and previous_hour < gate_hour:
+            # Gate crossed: create DA for next day
+            day = (gate_hour // 24) + 1
+            da_start = day * 24
+            da_end = (day + 1) * 24
+```
+
+### 14.3 Round Results DA/ID Breakdown
+
+The round-results endpoint calculates:
+
+```python
+# In sessions.py
+da_volume_signed = sum(v for v in da_hours)  # With sign (negative = consumer)
+current_volume_signed = sum(v for v in current_hours)
+id_delta_signed = current_volume_signed - da_volume_signed
+
+# Price differentiation
+id_price_spread = config.get("id_price_spread_percent", 0)
+da_price = base_mcp
+id_price = base_mcp * (1 + id_price_spread / 100)
+
+# Revenue calculation
+da_revenue = da_volume_signed * da_price
+id_revenue = id_delta_signed * id_price
+```
+
+### 14.4 Frontend Display
+
+The RoundResultsScreen shows:
+
+1. **4 Summary Cards**: DA Volume, ID Delta, Final Position, ID Adjustment %
+2. **Consumer Badge**: Rosa chip wenn `is_consumer = true`
+3. **Price Display**: Separate DA/ID Preise mit Spread-Badge
+4. **Daily Accordion**: Klappbare Tabelle mit Tag-für-Tag Aufschlüsselung
+
+### 14.5 Configuration
+
+```json
+{
+  "day_ahead_gate_hour": 12,
+  "id_price_spread_percent": 8,
+  "round_span_hours": 6,
+  "forecast_horizon_hours": 72
+}
+```
 - **Imbalance**: Difference between actual delivery and cumulative position
 - **Dispatch**: Actual volume instructed by system operator (may differ from bid)
 
