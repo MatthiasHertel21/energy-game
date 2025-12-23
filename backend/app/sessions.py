@@ -444,6 +444,34 @@ class RoundResults(Resource):
         config = scenario.config or {}
         weights = config.get("scoring", {}).get("weights", {"profit": 0.6, "imbalance": 0.3, "curtailment": 0.1})
         
+        # Get DA baseline forecasts for DA/ID breakdown
+        from .models import Forecast
+        da_baselines = Forecast.query.filter_by(session_id=sid, is_da_baseline=True).all()
+        da_baseline_by_player = {}  # player_id -> combined hourly data
+        for f in da_baselines:
+            pid = f.player_id
+            da_hours_range = f.data.get("da_baseline_hours", {})
+            da_start = da_hours_range.get("start", 0)
+            da_end = da_hours_range.get("end", len(f.data.get("hours", [])))
+            
+            if pid not in da_baseline_by_player:
+                da_baseline_by_player[pid] = {}
+            
+            # Store baseline hours
+            hours = f.data.get("hours", [])
+            if "aggregate" not in da_baseline_by_player[pid]:
+                da_baseline_by_player[pid]["aggregate"] = [0.0] * max(len(hours), 72)
+            
+            for h in range(da_start, min(da_end, len(hours))):
+                if h < len(da_baseline_by_player[pid]["aggregate"]):
+                    da_baseline_by_player[pid]["aggregate"][h] = hours[h]
+        
+        # Get current (final) forecasts for comparison
+        current_forecasts = Forecast.query.filter_by(session_id=sid, round_num=round_num).all()
+        current_by_player = {}
+        for f in current_forecasts:
+            current_by_player[f.player_id] = f.data.get("hours", [])
+        
         # Get active events for this round
         events = config.get("events", [])
         active_events = []
@@ -517,6 +545,83 @@ class RoundResults(Resource):
                 "volume": r.data.get("volume"),
                 "bid_dispatch": r.bid_dispatch,  # Include lot dispatch tracking
                 "hourly_breakdown": kpis.get("hourly_breakdown", [])  # Include detailed hourly breakdown
+            }
+            
+            # Calculate DA/ID breakdown for this player
+            da_hours = da_baseline_by_player.get(r.player_id, {}).get("aggregate", [])
+            current_hours = current_by_player.get(r.player_id, [])
+            base_mcp = float(r.data.get("mcp", 0) or 450)
+            
+            # Price differentiation: DA trades at stable price, ID at premium/discount
+            # id_price_spread_percent: positive = ID more expensive (buying penalty), negative = ID discount
+            id_price_spread = config.get("id_price_spread_percent", 0)  # Default: same price
+            da_price = base_mcp  # DA market clears at MCP
+            id_price = base_mcp * (1 + id_price_spread / 100)  # ID market has spread
+            
+            # Sum volumes WITH sign: positive = producer (sells), negative = consumer (buys)
+            da_volume_signed = sum(v for v in da_hours if isinstance(v, (int, float)))
+            current_volume_signed = sum(v for v in current_hours if isinstance(v, (int, float)))
+            id_delta_signed = current_volume_signed - da_volume_signed
+            
+            # Absolute volumes for display
+            da_volume_abs = sum(abs(v) for v in da_hours if isinstance(v, (int, float)))
+            current_volume_abs = sum(abs(v) for v in current_hours if isinstance(v, (int, float)))
+            
+            # Determine player type: producer (positive) or consumer (negative)
+            is_consumer = current_volume_signed < 0
+            
+            # Revenue attribution with separate prices
+            # Producer: positive volume = positive revenue (sells electricity)
+            # Consumer: negative volume = negative revenue (pays for electricity)
+            da_revenue = da_volume_signed * da_price
+            id_revenue = id_delta_signed * id_price  # ID delta valued at ID price
+            
+            # Hourly breakdown per day (for detailed view)
+            hourly_detail = []
+            daily_summary = {}
+            max_hours = max(len(da_hours), len(current_hours))
+            for h in range(max_hours):
+                da_val = da_hours[h] if h < len(da_hours) else 0
+                current_val = current_hours[h] if h < len(current_hours) else 0
+                delta = current_val - da_val
+                day = h // 24 + 1  # Day 1, 2, 3...
+                
+                hourly_detail.append({
+                    "hour": h,
+                    "day": day,
+                    "hour_of_day": h % 24,
+                    "da_mwh": round(da_val, 2),
+                    "id_mwh": round(current_val, 2),
+                    "delta_mwh": round(delta, 2),
+                    "is_da_locked": da_val != 0  # DA was committed for this hour
+                })
+                
+                # Aggregate by day
+                if day not in daily_summary:
+                    daily_summary[day] = {"da_mwh": 0, "id_mwh": 0, "delta_mwh": 0}
+                daily_summary[day]["da_mwh"] += abs(da_val)
+                daily_summary[day]["id_mwh"] += abs(current_val)
+                daily_summary[day]["delta_mwh"] += delta
+            
+            # Total revenue = DA portion at DA price + ID delta at ID price
+            total_revenue = da_revenue + id_revenue
+            
+            player_data["da_id_breakdown"] = {
+                "is_consumer": is_consumer,
+                "da_volume_mwh": round(da_volume_abs, 2),  # Absolute for display
+                "da_volume_signed_mwh": round(da_volume_signed, 2),  # With sign for calculations
+                "id_delta_mwh": round(id_delta_signed, 2),  # Signed delta
+                "final_volume_mwh": round(current_volume_abs, 2),  # Absolute for display
+                "final_volume_signed_mwh": round(current_volume_signed, 2),  # With sign
+                "da_price_zar": round(da_price, 2),
+                "id_price_zar": round(id_price, 2),
+                "id_price_spread_percent": id_price_spread,
+                "da_revenue_zar": round(da_revenue, 0),  # Negative for consumers
+                "id_revenue_zar": round(id_revenue, 0),  # Negative if buying more
+                "total_revenue_zar": round(total_revenue, 0),
+                "has_baseline": len(da_hours) > 0,
+                "hourly_detail": hourly_detail,
+                "daily_summary": [{"day": d, **v} for d, v in sorted(daily_summary.items())]
             }
             
             ranking.append(player_data)

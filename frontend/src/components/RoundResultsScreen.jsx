@@ -16,14 +16,18 @@ import {
   CardContent,
   Chip,
   CircularProgress,
-  Alert
+  Alert,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails
 } from '@mui/material';
 import {
   EmojiEvents as TrophyIcon,
   TrendingUp as ProfitIcon,
   Warning as WarningIcon,
   Bolt as EnergyIcon,
-  NavigateNext as NextIcon
+  NavigateNext as NextIcon,
+  ExpandMore as ExpandMoreIcon
 } from '@mui/icons-material';
 import api from '../services/api';
 
@@ -182,6 +186,235 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
             </Grid>
           </Grid>
         </Box>
+
+        {/* DA/ID Market Breakdown */}
+        {my_result?.da_id_breakdown?.has_baseline && (
+          <Box>
+            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+              <ProfitIcon color="primary" />
+              Market Breakdown: Day-Ahead vs Intraday
+              {my_result.da_id_breakdown.is_consumer && (
+                <Chip 
+                  label="Consumer"
+                  size="small"
+                  sx={{ bgcolor: '#e91e63', color: 'white', fontWeight: 500 }}
+                />
+              )}
+              {my_result.da_id_breakdown.id_price_spread_percent !== 0 && (
+                <Chip 
+                  label={`ID Spread: ${my_result.da_id_breakdown.id_price_spread_percent >= 0 ? '+' : ''}${my_result.da_id_breakdown.id_price_spread_percent}%`}
+                  size="small"
+                  sx={{ 
+                    bgcolor: my_result.da_id_breakdown.id_price_spread_percent > 0 ? 'warning.light' : 'success.light',
+                    color: my_result.da_id_breakdown.id_price_spread_percent > 0 ? 'warning.dark' : 'success.dark',
+                    fontWeight: 500
+                  }}
+                />
+              )}
+            </Typography>
+            {/* Consumer hint */}
+            {my_result.da_id_breakdown.is_consumer && (
+              <Alert severity="info" sx={{ mb: 2, py: 0.5 }}>
+                Als Consumer kaufst du Strom. Negative Revenues = Kosten für deinen Einkauf.
+              </Alert>
+            )}
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card sx={{ bgcolor: my_result.da_id_breakdown.is_consumer ? 'rgba(233, 30, 99, 0.08)' : 'rgba(158, 158, 158, 0.08)' }}>
+                  <CardContent>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                      <Chip label="DA" size="small" sx={{ bgcolor: my_result.da_id_breakdown.is_consumer ? '#e91e63' : '#9e9e9e', color: 'white', fontSize: '0.65rem', height: 18 }} />
+                      <Typography variant="caption" color="text.secondary">
+                        DA {my_result.da_id_breakdown.is_consumer ? 'Einkauf' : 'Verkauf'}
+                      </Typography>
+                    </Stack>
+                    <Typography variant="h5" color="text.primary">
+                      {formatNumber(my_result.da_id_breakdown.da_volume_mwh, 0)} MWh
+                    </Typography>
+                    <Stack spacing={0.25}>
+                      <Typography variant="caption" color="text.secondary">
+                        @ {formatNumber(my_result.da_id_breakdown.da_price_zar, 0)} ZAR/MWh
+                      </Typography>
+                      <Typography variant="caption" color={my_result.da_id_breakdown.da_revenue_zar >= 0 ? 'success.main' : 'error.main'}>
+                        {my_result.da_id_breakdown.is_consumer ? 'Kosten' : 'Revenue'}: {formatCurrency(Math.abs(my_result.da_id_breakdown.da_revenue_zar))}
+                      </Typography>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card sx={{ 
+                  bgcolor: my_result.da_id_breakdown.id_delta_mwh >= 0 
+                    ? 'rgba(76, 175, 80, 0.08)' 
+                    : 'rgba(244, 67, 54, 0.08)' 
+                }}>
+                  <CardContent>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                      <Chip 
+                        label="ID" 
+                        size="small" 
+                        sx={{ 
+                          bgcolor: my_result.da_id_breakdown.id_delta_mwh >= 0 ? '#4caf50' : '#f44336', 
+                          color: 'white', 
+                          fontSize: '0.65rem', 
+                          height: 18 
+                        }} 
+                      />
+                      <Typography variant="caption" color="text.secondary">
+                        ID {my_result.da_id_breakdown.is_consumer ? 'Änderung' : 'Delta'}
+                      </Typography>
+                    </Stack>
+                    <Typography 
+                      variant="h5" 
+                      color={my_result.da_id_breakdown.id_delta_mwh >= 0 ? 'success.main' : 'error.main'}
+                    >
+                      {my_result.da_id_breakdown.id_delta_mwh >= 0 ? '+' : ''}
+                      {formatNumber(my_result.da_id_breakdown.id_delta_mwh, 0)} MWh
+                    </Typography>
+                    <Stack spacing={0.25}>
+                      <Typography variant="caption" color={my_result.da_id_breakdown.id_price_spread_percent !== 0 ? 'warning.main' : 'text.secondary'}>
+                        @ {formatNumber(my_result.da_id_breakdown.id_price_zar, 0)} ZAR/MWh
+                        {my_result.da_id_breakdown.id_price_spread_percent !== 0 && 
+                          ` (${my_result.da_id_breakdown.id_price_spread_percent >= 0 ? '+' : ''}${my_result.da_id_breakdown.id_price_spread_percent}%)`
+                        }
+                      </Typography>
+                      <Typography 
+                        variant="caption" 
+                        color={my_result.da_id_breakdown.id_revenue_zar >= 0 ? 'success.main' : 'error.main'}
+                      >
+                        {my_result.da_id_breakdown.is_consumer 
+                          ? (my_result.da_id_breakdown.id_revenue_zar >= 0 ? 'Ersparnis' : 'Mehrkosten')
+                          : 'Revenue'
+                        }: {my_result.da_id_breakdown.id_revenue_zar >= 0 ? '+' : ''}
+                        {formatCurrency(my_result.da_id_breakdown.id_revenue_zar)}
+                      </Typography>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card sx={{ bgcolor: my_result.da_id_breakdown.is_consumer ? 'rgba(233, 30, 99, 0.08)' : 'transparent' }}>
+                  <CardContent>
+                    <Typography variant="caption" color="text.secondary">
+                      {my_result.da_id_breakdown.is_consumer ? 'Finaler Bedarf' : 'Final Position'}
+                    </Typography>
+                    <Typography variant="h5" color="primary.main">
+                      {formatNumber(my_result.da_id_breakdown.final_volume_mwh, 0)} MWh
+                    </Typography>
+                    <Typography variant="caption" color={my_result.da_id_breakdown.total_revenue_zar >= 0 ? 'success.main' : 'error.main'}>
+                      {my_result.da_id_breakdown.is_consumer ? 'Gesamtkosten' : 'Total Revenue'}: {formatCurrency(Math.abs(my_result.da_id_breakdown.total_revenue_zar))}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card sx={{ bgcolor: 'rgba(33, 150, 243, 0.08)' }}>
+                  <CardContent>
+                    <Typography variant="caption" color="text.secondary">ID Adjustment</Typography>
+                    <Typography variant="h5" color="info.main">
+                      {my_result.da_id_breakdown.da_volume_mwh > 0 
+                        ? `${((my_result.da_id_breakdown.id_delta_mwh / my_result.da_id_breakdown.da_volume_mwh) * 100).toFixed(1)}%`
+                        : '0%'
+                      }
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {my_result.da_id_breakdown.is_consumer ? 'Änderung vom DA Einkauf' : 'Change from DA baseline'}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            </Grid>
+            <Box sx={{ mt: 1, p: 1, bgcolor: 'background.default', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary">
+                <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.6rem', height: 14, mx: 0.5 }} /> = Day-Ahead (initial position at gate closure)
+                <Chip label="ID+" size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.6rem', height: 14, mx: 0.5 }} /> = Intraday increase
+                <Chip label="ID-" size="small" sx={{ bgcolor: '#f44336', color: 'white', fontSize: '0.6rem', height: 14, mx: 0.5 }} /> = Intraday decrease
+              </Typography>
+            </Box>
+
+            {/* Daily Breakdown Accordion */}
+            {my_result.da_id_breakdown.daily_summary?.length > 0 && (
+              <Accordion sx={{ mt: 2, bgcolor: 'background.paper' }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography variant="subtitle2">
+                    📅 Daily Breakdown ({my_result.da_id_breakdown.daily_summary.length} days)
+                  </Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow sx={{ bgcolor: 'background.default' }}>
+                          <TableCell sx={{ fontWeight: 600 }}>Day</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 600 }}>
+                            <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.6rem', height: 16, mr: 0.5 }} />
+                            MWh
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 600 }}>
+                            <Chip label="ID" size="small" sx={{ bgcolor: '#2196f3', color: 'white', fontSize: '0.6rem', height: 16, mr: 0.5 }} />
+                            MWh
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 600 }}>Delta (MWh)</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 600 }}>ID Adjustment %</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {my_result.da_id_breakdown.daily_summary.map((day) => {
+                          const adjustPct = day.da_mwh > 0 ? ((day.delta_mwh / day.da_mwh) * 100) : 0;
+                          return (
+                            <TableRow key={day.day} hover>
+                              <TableCell>
+                                <Typography variant="body2" fontWeight={500}>
+                                  Tag {day.day}
+                                </Typography>
+                              </TableCell>
+                              <TableCell align="right">
+                                <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                                  {formatNumber(day.da_mwh, 0)}
+                                </Typography>
+                              </TableCell>
+                              <TableCell align="right">
+                                <Typography variant="body2" color="primary">
+                                  {formatNumber(day.id_mwh, 0)}
+                                </Typography>
+                              </TableCell>
+                              <TableCell align="right">
+                                <Typography 
+                                  variant="body2" 
+                                  sx={{ 
+                                    color: day.delta_mwh >= 0 ? 'success.main' : 'error.main',
+                                    fontWeight: 500
+                                  }}
+                                >
+                                  {day.delta_mwh >= 0 ? '+' : ''}{formatNumber(day.delta_mwh, 0)}
+                                </Typography>
+                              </TableCell>
+                              <TableCell align="right">
+                                <Chip 
+                                  label={`${adjustPct >= 0 ? '+' : ''}${adjustPct.toFixed(1)}%`}
+                                  size="small"
+                                  sx={{ 
+                                    bgcolor: Math.abs(adjustPct) > 20 
+                                      ? (adjustPct >= 0 ? 'success.light' : 'error.light')
+                                      : 'grey.200',
+                                    color: Math.abs(adjustPct) > 20 
+                                      ? (adjustPct >= 0 ? 'success.dark' : 'error.dark')
+                                      : 'text.primary',
+                                    fontSize: '0.7rem'
+                                  }}
+                                />
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </AccordionDetails>
+              </Accordion>
+            )}
+          </Box>
+        )}
 
         {/* Lot Dispatch Breakdown - Show per device if device has enable_multi_bid */}
         {my_result?.bid_dispatch && Object.keys(my_result.bid_dispatch).length > 0 ? (
