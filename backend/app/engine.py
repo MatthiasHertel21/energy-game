@@ -950,7 +950,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 player_device_ids = set(hour_bid_dispatch[pid].keys())
             elif pid in normalized_forecasts:
                 forecast_data = normalized_forecasts[pid]
-                if 'bids' in forecast_data:
+                if 'bids' in forecast_data and forecast_data['bids'] is not None:
                     player_device_ids = set(forecast_data['bids'].keys())
             
             # Check if any of these devices are consumers (loads)
@@ -968,8 +968,11 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             if is_consumer:
                 # Consumers: actual = dispatched with consumption noise
                 # No availability envelope for demand side, but consumption varies
-                noise = random.uniform(-frac, frac) * max(1.0, dispatched)
-                actual = max(0.0, dispatched + noise)
+                if dispatched <= 0:
+                    actual = 0.0
+                else:
+                    noise = random.uniform(-frac, frac) * max(1.0, dispatched)
+                    actual = max(0.0, dispatched + noise)
                 
                 # Track consumer actual per device for hourly breakdown
                 if enable_bidding and pid in hour_bid_dispatch:

@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { IconButton, Menu, MenuItem, Avatar, Divider, ListItemIcon, ListItemText, Typography } from '@mui/material'
-import { Logout as LogoutIcon, Person as PersonIcon, Settings as SettingsIcon, AccountCircle as ProfileIcon } from '@mui/icons-material'
+import { Logout as LogoutIcon, Person as PersonIcon, AccountCircle as ProfileIcon } from '@mui/icons-material'
 import useAuth from '../store/auth'
 
 export default function UserMenu() {
@@ -102,13 +102,6 @@ export default function UserMenu() {
             <ProfileIcon fontSize="small" />
           </ListItemIcon>
           <ListItemText>Profile</ListItemText>
-        </MenuItem>
-        
-        <MenuItem onClick={() => { handleClose(); navigate('/settings'); }}>
-          <ListItemIcon>
-            <SettingsIcon fontSize="small" />
-          </ListItemIcon>
-          <ListItemText>Settings</ListItemText>
         </MenuItem>
         
         <Divider />

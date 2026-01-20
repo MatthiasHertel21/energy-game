@@ -195,7 +195,7 @@ export default function Cohorts(){
         <EmptyState 
           icon={GroupsIcon}
           title="No cohorts yet"
-          message="Create your first cohort to organize students into groups"
+          message="Create your first cohort to organise students into groups"
           actionLabel="Create Cohort"
           onAction={() => document.querySelector('input[label="Name"]')?.focus()}
         />

@@ -17,6 +17,8 @@ export default defineConfig({
   },
   build: {
     sourcemap: false,
+    // Avoid esbuild hoisting bug triggering ReferenceError in Player screen bundle
+    minify: false,
     rollupOptions: {
       output: {
         entryFileNames: `assets/[name]-[hash]-${Date.now()}.js`,

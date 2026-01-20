@@ -28,6 +28,7 @@ export default function ForecastChartEditor({
   currentRound = 1,
   roundSpan = 6,
   freezeHours = 6,
+  dayAheadGateHour = 12,
   startTime = '00:00',
   daBaseline = null,
   hourStatus = []
@@ -104,7 +105,8 @@ export default function ForecastChartEditor({
     const targetMax = hintedMax || seriesMax
     const yMax = Math.max(targetMax * 1.05, seriesMax * 1.2, ...refLines.map(r => Math.abs(r.value)), 10)
 
-    const x = d3.scaleLinear().domain([1, n]).range([0, iw])
+    // Extend X-domain by +1 hour so DA baseline and markers can reach the next day boundary (e.g. 00:00 next day)
+    const x = d3.scaleLinear().domain([1, n + 1]).range([0, iw])
     const y = d3.scaleLinear().domain([yMin, yMax]).nice().range([ih, 0])
     const [yDomainMin, yDomainMax] = y.domain()
     const clampY = (val) => Math.max(yDomainMin, Math.min(yDomainMax, val))
@@ -163,7 +165,7 @@ export default function ForecastChartEditor({
       return Math.min(n, fallback)
     })()
     const hourToX = (hourIdx) => {
-      const domainHour = Math.max(1, Math.min(n, (hourIdx || 0) + 1))
+      const domainHour = Math.max(1, Math.min(n + 1, (hourIdx || 0) + 1))
       return x(domainHour)
     }
     const formatClock = (hourIdx) => {
@@ -208,6 +210,41 @@ export default function ForecastChartEditor({
         .attr('fill', '#e91e63')
         .attr('font-size', 10)
         .text(formatClock(Math.floor(currentSimHour)))
+    }
+
+    // Day-Ahead gate closure marker: next upcoming DA gate based on configured hour-of-day
+    const gateHourOfDay = Number.isFinite(Number(dayAheadGateHour))
+      ? Math.max(0, Math.min(23, Number(dayAheadGateHour)))
+      : 12
+    const nextDaGateAbs = (() => {
+      const todayGate = currentDayIndex * 24 + gateHourOfDay
+      if (todayGate > currentAbsHour) return todayGate
+      return (currentDayIndex + 1) * 24 + gateHourOfDay
+    })()
+    const nextDaGateRel = nextDaGateAbs - startHour
+    if (nextDaGateRel >= 0 && nextDaGateRel <= n) {
+      const daGateX = hourToX(nextDaGateRel)
+      g.append('line')
+        .attr('x1', daGateX)
+        .attr('x2', daGateX)
+        .attr('y1', 0)
+        .attr('y2', ih)
+        .attr('stroke', '#1565c0')
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '4,2')
+        .append('title')
+        .text('Next Day-Ahead gate closure')
+
+      const gateClockLabel = formatClock(Math.floor(nextDaGateRel))
+      g.append('text')
+        .attr('x', daGateX + 6)
+        .attr('y', 28)
+        .attr('text-anchor', 'start')
+        .attr('fill', '#1565c0')
+        .attr('font-size', 10)
+        .attr('font-weight', 'bold')
+        .style('cursor', 'default')
+        .text(`DA Gate ${gateClockLabel}`)
     }
     
     if (lockedLineHour > 0 && lockedLineHour < n) {
@@ -299,7 +336,7 @@ export default function ForecastChartEditor({
       const lockedX = hourToX(lockedLineHour)
       
       // Create striped pattern for locked zone
-      const defs = svg.append('defs')
+      const defs = svg.select('defs').empty() ? svg.append('defs') : svg.select('defs')
       const pattern = defs.append('pattern')
         .attr('id', 'locked-stripes')
         .attr('patternUnits', 'userSpaceOnUse')
@@ -309,7 +346,7 @@ export default function ForecastChartEditor({
       pattern.append('rect')
         .attr('width', 4)
         .attr('height', 8)
-        .attr('fill', '#ff5722')
+        .attr('fill', '#bdbdbd')
         .attr('opacity', 0.2)
       
       g.append('rect')
@@ -319,18 +356,7 @@ export default function ForecastChartEditor({
         .attr('height', ih)
         .attr('fill', 'url(#locked-stripes)')
         .style('pointer-events', 'none')
-      
-      // Add "LOCKED" label at the top of locked zone
-      if (lockedX > 30) {
-        g.append('text')
-          .attr('x', lockedX / 2)
-          .attr('y', 28)
-          .attr('text-anchor', 'middle')
-          .attr('fill', '#ff5722')
-          .attr('font-size', 9)
-          .attr('opacity', 0.8)
-          .text('🔒 LOCKED')
-      }
+      // Label removed on request: locked zone is now indicated by grey hatching only
     }
     
     // Draw ID (Intraday) zone marker - the tradeable window
@@ -343,27 +369,7 @@ export default function ForecastChartEditor({
         const idEndX = hourToX(idEndIdx + 1)
         const idWidth = idEndX - idStartX
         
-        // Light green background for ID zone (tradeable)
-        g.append('rect')
-          .attr('x', idStartX)
-          .attr('y', 0)
-          .attr('width', idWidth)
-          .attr('height', ih)
-          .attr('fill', '#4caf50')
-          .attr('opacity', 0.08)
-          .style('pointer-events', 'none')
-        
-        // Add "INTRADAY" label
-        if (idWidth > 50) {
-          g.append('text')
-            .attr('x', idStartX + idWidth / 2)
-            .attr('y', 28)
-            .attr('text-anchor', 'middle')
-            .attr('fill', '#4caf50')
-            .attr('font-size', 9)
-            .attr('opacity', 0.8)
-            .text('⚡ INTRADAY')
-        }
+        // Background stays white; keep only boundary lines for ID zone
         
         // Draw vertical lines at ID zone boundaries
         g.append('line')
@@ -394,27 +400,7 @@ export default function ForecastChartEditor({
         const daEndX = hourToX(daEndIdx + 1)
         const daWidth = daEndX - daStartX
         
-        // Light grey overlay for DA zone (committed, not editable)
-        g.append('rect')
-          .attr('x', daStartX)
-          .attr('y', 0)
-          .attr('width', daWidth)
-          .attr('height', ih)
-          .attr('fill', '#9e9e9e')
-          .attr('opacity', 0.1)
-          .style('pointer-events', 'none')
-        
-        // Add "DAY-AHEAD" label
-        if (daWidth > 60) {
-          g.append('text')
-            .attr('x', daStartX + daWidth / 2)
-            .attr('y', 28)
-            .attr('text-anchor', 'middle')
-            .attr('fill', '#757575')
-            .attr('font-size', 9)
-            .attr('opacity', 0.8)
-            .text('📊 DAY-AHEAD')
-        }
+        // Background stays white; DA zone is represented via baseline and DA/ID fills only
       }
     }
     
@@ -472,6 +458,9 @@ export default function ForecastChartEditor({
     // Draw DA Baseline and market area fills if provided
     if (daBaseline && Array.isArray(daBaseline) && daBaseline.length > 0) {
       const baselineData = daBaseline.map((val, i) => ({ i, v: val }))
+      const extendedBaseline = baselineData.length > 0
+        ? [...baselineData, { i: baselineData[baselineData.length - 1].i + 1, v: baselineData[baselineData.length - 1].v }]
+        : baselineData
       
       // 1. Fill area from X-axis to DA baseline (grey) - DA Position
       const daAreaPath = d3.area()
@@ -481,7 +470,7 @@ export default function ForecastChartEditor({
         .curve(d3.curveMonotoneX)
       
       g.append('path')
-        .datum(baselineData)
+        .datum(extendedBaseline)
         .attr('fill', '#9e9e9e')
         .attr('opacity', 0.15)
         .attr('d', daAreaPath)
@@ -500,6 +489,19 @@ export default function ForecastChartEditor({
             da: Number(daBaseline[i]) || 0
           })
         }
+
+        // Extend by one point so DA/ID difference is also visible
+        // in the last hour block (e.g. 23:00–24:00)
+        const extendedCombined = combinedData.length > 0
+          ? [
+              ...combinedData,
+              {
+                i: combinedData[combinedData.length - 1].i + 1,
+                current: combinedData[combinedData.length - 1].current,
+                da: combinedData[combinedData.length - 1].da
+              }
+            ]
+          : combinedData
         
         // ID Buy area (current > DA) - Green
         const idBuyArea = d3.area()
@@ -509,7 +511,7 @@ export default function ForecastChartEditor({
           .curve(d3.curveMonotoneX)
         
         g.append('path')
-          .datum(combinedData)
+          .datum(extendedCombined)
           .attr('fill', '#4caf50')
           .attr('opacity', 0.25)
           .attr('d', idBuyArea)
@@ -522,7 +524,7 @@ export default function ForecastChartEditor({
           .curve(d3.curveMonotoneX)
         
         g.append('path')
-          .datum(combinedData)
+          .datum(extendedCombined)
           .attr('fill', '#f44336')
           .attr('opacity', 0.25)
           .attr('d', idSellArea)
@@ -535,7 +537,7 @@ export default function ForecastChartEditor({
         .curve(d3.curveMonotoneX)
       
       g.append('path')
-        .datum(baselineData)
+        .datum(extendedBaseline)
         .attr('fill', 'none')
         .attr('stroke', '#666')
         .attr('stroke-width', 2)
@@ -630,7 +632,7 @@ export default function ForecastChartEditor({
 
     // axes
     // X-axis with day/time labels
-    const xAxis = d3.axisBottom(x).ticks(Math.min(n, 12)).tickFormat((hourNum) => {
+    const xAxis = d3.axisBottom(x).ticks(Math.min(n + 1, 12)).tickFormat((hourNum) => {
       const hourIdx = Math.round(hourNum) - 1
       const totalHours = startHour + hourIdx
       const dayOffset = Math.floor(totalHours / 24)
@@ -846,7 +848,7 @@ export default function ForecastChartEditor({
     // labels
     g.append('text').attr('x', iw / 2).attr('y', ih + 28).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Hour')
     g.append('text').attr('transform', 'rotate(-90)').attr('x', -ih / 2).attr('y', -36).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Power (MW) per hour')
-  }, [hours, lockedUntil, onChange, maxValue, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, startTime, daBaseline, hourStatus])
+  }, [hours, lockedUntil, onChange, maxValue, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, dayAheadGateHour, startTime, daBaseline, hourStatus])
 
   return (
     <svg ref={ref} role="img" aria-label="Forecast editor chart" style={{ border: '1px solid #eee', borderRadius: 4 }} />

@@ -876,6 +876,42 @@ class DABaseline(Resource):
         }, HTTPStatus.OK
 
 
+@ns.route("/results/<int:session_id>")
+class PlayerResults(Resource):
+    @jwt_required()
+    def get(self, session_id: int):
+        """
+        Get all round results for the current player in this session, including hourly_results.
+        Returns MCP, volume, and hourly data for each completed round.
+        """
+        from .models import Result
+        player_id = int(get_jwt_identity())
+        
+        # Get all results for this player in this session
+        results = Result.query.filter_by(session_id=session_id, player_id=player_id).order_by(Result.round_num).all()
+        
+        rounds_data = []
+        all_hourly_results = []
+        
+        for result in results:
+            if result.data:
+                rounds_data.append({
+                    "round": result.round_num,
+                    "mcp": result.data.get("mcp", 0),
+                    "volume": result.data.get("volume", 0),
+                })
+                
+                # Collect hourly_results from this round
+                hourly = result.data.get("hourly_results", [])
+                if hourly:
+                    all_hourly_results.extend(hourly)
+        
+        return {
+            "rounds": rounds_data,
+            "hourly_results": all_hourly_results
+        }, HTTPStatus.OK
+
+
 @ns.route("/reset-scenario")
 class ResetScenario(Resource):
     @jwt_required()

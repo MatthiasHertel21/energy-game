@@ -644,6 +644,30 @@ class RoundResults(Resource):
         }
 
 
+@ns.route("/<int:sid>/latest-round-results")
+class LatestRoundResults(Resource):
+    @jwt_required()
+    def get(self, sid: int):
+        """Get the latest available round results for the current player."""
+        from .models import Result
+        player_id = int(get_jwt_identity())
+        
+        # Get the latest result for this player in this session
+        latest_result = (
+            Result.query
+            .filter_by(session_id=sid, player_id=player_id)
+            .order_by(Result.round_num.desc())
+            .first()
+        )
+        
+        if not latest_result:
+            return {"error": "No results found"}, HTTPStatus.NOT_FOUND
+        
+        # Get the round-results endpoint handler to reuse the logic
+        rr = RoundResults()
+        return rr.get(sid, latest_result.round_num)
+
+
 @ns.route("/<int:sid>/final-results")
 class FinalResults(Resource):
     @jwt_required()

@@ -254,12 +254,14 @@ def run_rounds(session_id: int, app=None):
                 
                 # persist per-player results
                 bid_dispatch = res.get("bid_dispatch", {})
+                hourly_results = res.get("hourly_results", [])
                 print(f"[SCHEDULER] Got bid_dispatch from engine: {type(bid_dispatch)}, empty={not bid_dispatch}, keys={list(bid_dispatch.keys()) if bid_dispatch else 'N/A'}")
                 for pid, kp in (res.get("round_kpis") or {}).items():
                     data = {
                         "kpis": kp,
                         "mcp": res["mcp"],
                         "volume": res["volume"],
+                        "hourly_results": hourly_results,
                     }
                     # Include bid dispatch info if available
                     player_bid_dispatch = bid_dispatch.get(pid) if bid_dispatch else None
@@ -290,7 +292,14 @@ def run_rounds(session_id: int, app=None):
                 curtailed_by_zone, signal_by_zone = compute_zone_flows((sc.config or {}).get('grid',{}).get('atc',[]), net)
                 # attach zone congestion signal to payload
                 zone_payload = { 'curtailed': curtailed_by_zone, 'signal': signal_by_zone }
-                payload = {"session_id": s.id, "round": current, "mcp": res["mcp"], "volume": res["volume"], "kpis": res.get("round_kpis")}
+                payload = {
+                    "session_id": s.id,
+                    "round": current,
+                    "mcp": res["mcp"],
+                    "volume": res["volume"],
+                    "kpis": res.get("round_kpis"),
+                    "hourly_results": res.get("hourly_results", []),
+                }
                 payload['zone'] = zone_payload
                 socketio.emit("round_results", payload, namespace="/trainer")
                 socketio.emit("market_cleared", payload, namespace="/game", to=f"session-{s.id}")

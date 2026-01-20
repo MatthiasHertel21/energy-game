@@ -112,9 +112,11 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
             <Grid item xs={12} sm={6} md={3}>
               <Card>
                 <CardContent>
-                  <Typography variant="caption" color="text.secondary">Total Profit</Typography>
-                  <Typography variant="h5" color="success.main">
-                    {my_cumulative.total_profit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'} ZAR
+                  <Typography variant="caption" color="text.secondary">
+                    {my_cumulative.total_profit < 0 ? 'Total Expenses' : 'Total Profit'}
+                  </Typography>
+                  <Typography variant="h5" color={my_cumulative.total_profit >= 0 ? 'success.main' : 'error.main'}>
+                    {Math.abs(my_cumulative.total_profit || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ZAR
                   </Typography>
                 </CardContent>
               </Card>
@@ -124,7 +126,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                 <CardContent>
                   <Typography variant="caption" color="text.secondary">Total Imbalance</Typography>
                   <Typography variant="h5" color={Math.abs(my_cumulative.total_imbalance || 0) > 5 ? 'error.main' : 'text.primary'}>
-                    {my_cumulative.total_imbalance?.toFixed(2) || '0.00'} MWh
+                    {(my_cumulative.total_imbalance || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} MWh
                   </Typography>
                 </CardContent>
               </Card>
@@ -134,7 +136,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                 <CardContent>
                   <Typography variant="caption" color="text.secondary">Total Curtailment</Typography>
                   <Typography variant="h5" color={Math.abs(my_cumulative.total_curtailment || 0) > 1 ? 'warning.main' : 'text.primary'}>
-                    {my_cumulative.total_curtailment?.toFixed(2) || '0.00'} MWh
+                    {(my_cumulative.total_curtailment || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} MWh
                   </Typography>
                 </CardContent>
               </Card>
@@ -144,7 +146,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                 <CardContent>
                   <Typography variant="caption" color="text.secondary">Final Score</Typography>
                   <Typography variant="h5" color="primary.main">
-                    {my_cumulative.total_score?.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) || '0.0'}
+                    {(my_cumulative.total_score || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                   </Typography>
                 </CardContent>
               </Card>
@@ -186,7 +188,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                               Avg Dispatch Rate: <strong>{dispatchRate.toFixed(1)}%</strong>
                             </Typography>
                             <Typography variant="body2" color="text.secondary">
-                              Total Revenue: <strong>{totalRevenue.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ZAR</strong>
+                              Total Revenue: <strong>{totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ZAR</strong>
                             </Typography>
                           </Box>
                         </Box>
@@ -218,11 +220,18 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                                   'CLASSIC': '#757575'  // Gray for classic devices
                                 };
                                 
+                                const lotNames = {
+                                  'A': 'Baseload',
+                                  'B': 'Mid Merit',
+                                  'C': 'Peak Load',
+                                  'CLASSIC': 'Classic'
+                                };
+                                
                                 return (
                                   <TableRow key={lotLabel}>
                                     <TableCell>
                                       <Chip 
-                                        label={lotLabel === 'CLASSIC' ? 'Classic' : `Lot ${lotLabel}`} 
+                                        label={lotNames[lotLabel] || `Lot ${lotLabel}`} 
                                         size="small"
                                         sx={{ 
                                           bgcolor: lotColors[lotLabel] || '#64b5f6',
@@ -231,9 +240,9 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                                         }}
                                       />
                                     </TableCell>
-                                    <TableCell align="right">{offered.toLocaleString('en-ZA', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</TableCell>
+                                    <TableCell align="right">{offered.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</TableCell>
                                     <TableCell align="right" sx={{ fontWeight: 600 }}>
-                                      {dispatched.toLocaleString('en-ZA', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                                      {dispatched.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                     </TableCell>
                                     <TableCell align="right">
                                       <Chip 
@@ -243,7 +252,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                                       />
                                     </TableCell>
                                     <TableCell align="right" sx={{ fontWeight: 600, color: 'success.main' }}>
-                                      {revenue.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      {revenue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                     </TableCell>
                                     <TableCell align="right">{roundsOffered}</TableCell>
                                   </TableRow>
@@ -302,10 +311,10 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                         {isMe && <Chip label="You" size="small" color="primary" sx={{ ml: 1 }} />}
                       </TableCell>
                       <TableCell>{player.player_type || '-'}</TableCell>
-                      <TableCell align="right">{player.total_profit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}</TableCell>
-                      <TableCell align="right">{player.total_imbalance?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}</TableCell>
-                      <TableCell align="right">{player.total_curtailment?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}</TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 600 }}>{player.total_score?.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) || '0.0'}</TableCell>
+                      <TableCell align="right">{player.total_profit?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}</TableCell>
+                      <TableCell align="right">{player.total_imbalance?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}</TableCell>
+                      <TableCell align="right">{player.total_curtailment?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}</TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 600 }}>{player.total_score?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}</TableCell>
                     </TableRow>
                   );
                 })}
@@ -324,26 +333,26 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
               <Accordion key={idx}>
                 <AccordionSummary expandIcon={<ExpandIcon />}>
                   <Typography>
-                    Round {round.round_num} - Score: {round.total_score?.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) || '0.0'}
+                    Round {round.round_num} - Score: {(round.total_score || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                   </Typography>
                 </AccordionSummary>
                 <AccordionDetails>
                   <Grid container spacing={2}>
                     <Grid item xs={6} sm={3}>
                       <Typography variant="caption" color="text.secondary">Profit</Typography>
-                      <Typography variant="body1">{round.profit?.toLocaleString(undefined, { minimumFractionDigits: 2 }) || '0.00'} ZAR</Typography>
+                      <Typography variant="body1">{round.profit?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'} ZAR</Typography>
                     </Grid>
                     <Grid item xs={6} sm={3}>
                       <Typography variant="caption" color="text.secondary">Imbalance</Typography>
-                      <Typography variant="body1">{round.imbalance?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'} MWh</Typography>
+                      <Typography variant="body1">{round.imbalance?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'} MWh</Typography>
                     </Grid>
                     <Grid item xs={6} sm={3}>
                       <Typography variant="caption" color="text.secondary">Curtailment</Typography>
-                      <Typography variant="body1">{round.curtailment?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'} MWh</Typography>
+                      <Typography variant="body1">{round.curtailment?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'} MWh</Typography>
                     </Grid>
                     <Grid item xs={6} sm={3}>
                       <Typography variant="caption" color="text.secondary">Dispatched</Typography>
-                      <Typography variant="body1">{round.dispatched_mwh?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'} MWh</Typography>
+                      <Typography variant="body1">{round.dispatched_mwh?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'} MWh</Typography>
                     </Grid>
                   </Grid>
                 </AccordionDetails>

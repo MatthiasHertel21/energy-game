@@ -19,10 +19,9 @@ import {
   PlayArrow as PlayIcon,
   MenuBook as HandbookIcon,
   Assessment as ReportsIcon,
-  EmojiEvents as LeaderboardIcon,
   LibraryBooks as CatalogIcon,
-  AccountCircle as ProfileIcon,
-  TrendingUp as TrendingIcon
+  TrendingUp as TrendingIcon,
+  AddCircle as NewIcon
 } from '@mui/icons-material'
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
@@ -30,6 +29,7 @@ import useAuth from '../store/auth'
 
 export default function Home() {
   const [sessions, setSessions] = useState([])
+  const [campaigns, setCampaigns] = useState([])
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
@@ -37,16 +37,28 @@ export default function Home() {
 
   const load = async () => {
     try {
-      const { data } = await api.get('/api/me/sessions')
-      setSessions(data || [])
+      const [sessionsRes, campaignsRes] = await Promise.all([
+        api.get('/api/me/sessions'),
+        api.get('/api/catalog/campaigns').catch(() => ({ data: [] })) // Fix: correct API endpoint
+      ])
       
-      // Calculate stats
-      const active = data.filter(s => s.status === 'running' || s.status === 'paused').length
-      const completed = data.filter(s => s.status === 'ended' || s.status === 'scenario_complete').length
+      setSessions(sessionsRes.data || [])
+      const campaignData = campaignsRes.data || []
+      console.log('Loaded campaigns:', campaignData)
+      setCampaigns(campaignData)
       
-      setStats({ active, completed, total: data.length })
+      // Calculate stats - fix: nur running/paused zählen als active
+      const active = (sessionsRes.data || []).filter(s => 
+        s.status === 'running' || s.status === 'paused' || s.status === 'round_active'
+      ).length
+      const completed = (sessionsRes.data || []).filter(s => 
+        s.status === 'ended' || s.status === 'scenario_complete'
+      ).length
+      
+      setStats({ active, completed, total: (sessionsRes.data || []).length })
     } catch (error) {
-      console.error('Failed to load sessions:', error)
+      console.error('Failed to load data:', error)
+      setCampaigns([]) // Ensure campaigns is always an array
     } finally {
       setLoading(false)
     }
@@ -58,7 +70,7 @@ export default function Home() {
 
   // Get most recent active session
   const activeSession = sessions
-    .filter(s => s.status === 'running' || s.status === 'paused')
+    .filter(s => s.status === 'running' || s.status === 'paused' || s.status === 'round_active')
     .sort((a, b) => b.id - a.id)[0]
   
   // Get most recent completed session  
@@ -89,7 +101,7 @@ export default function Home() {
           Welcome back, {user?.email?.split('@')[0] || 'Player'}!
         </Typography>
         <Typography variant="h6" sx={{ opacity: 0.9 }}>
-          Ready to trade energy in the South African market?
+          Ready to trade electricity in the South African market?
         </Typography>
       </Paper>
 
@@ -139,97 +151,116 @@ export default function Home() {
       )}
 
       <Grid container spacing={3}>
-        {/* Quick Start Section */}
-        <Grid item xs={12} md={6}>
+        {/* Quick Actions - Always show play options */}
+        <Grid item xs={12} md={8}>
           <Card sx={{ height: '100%' }}>
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <PlayIcon /> Quick Start
+                <PlayIcon /> Quick Actions
               </Typography>
               <Divider sx={{ my: 2 }} />
               
               {activeSession ? (
-                <Box sx={{ mb: 2 }}>
+                <Box sx={{ mb: 3 }}>
                   <Alert severity="success" sx={{ mb: 2 }}>
                     You have an active session!
                   </Alert>
-                  <Typography variant="subtitle2" gutterBottom>
-                    {activeSession.scenario_name}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    Round {activeSession.current_round}/{activeSession.max_rounds} • {activeSession.mode === 'isolated_per_player' ? 'Solo' : 'Shared Market'}
-                  </Typography>
-                  <Button 
-                    variant="contained" 
-                    startIcon={<PlayIcon />}
-                    onClick={() => navigate(`/player?sessionId=${activeSession.id}`)}
-                    fullWidth
-                  >
-                    Resume Session
-                  </Button>
+                  <Paper elevation={0} sx={{ p: 2, bgcolor: 'success.lighter', border: '2px solid', borderColor: 'success.main', borderRadius: 2 }}>
+                    <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+                      {activeSession.scenario_name}
+                    </Typography>
+                    <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+                      <Chip label={`Round ${activeSession.current_round}/${activeSession.max_rounds}`} size="small" color="primary" />
+                      <Chip label={activeSession.mode === 'isolated_per_player' ? 'Solo Mode' : 'Shared Market'} size="small" />
+                    </Stack>
+                    <Button 
+                      variant="contained" 
+                      size="large"
+                      startIcon={<PlayIcon />}
+                      onClick={() => navigate(`/player?sessionId=${activeSession.id}`)}
+                      fullWidth
+                      sx={{ py: 1.5 }}
+                    >
+                      Continue Playing
+                    </Button>
+                  </Paper>
                 </Box>
-              ) : (
-                <Box sx={{ mb: 2 }}>
-                  <Alert severity="info" sx={{ mb: 2 }}>
-                    No active sessions. Browse the catalog to start!
-                  </Alert>
-                </Box>
-              )}
+              ) : null}
               
-              <Button 
-                variant="outlined" 
-                startIcon={<CatalogIcon />}
-                onClick={() => navigate('/catalog')}
-                fullWidth
-              >
-                Browse Campaign Catalog
-              </Button>
+              {/* Available Campaigns */}
+              <Typography variant="subtitle2" gutterBottom sx={{ mt: activeSession ? 2 : 0, mb: 1 }}>
+                {activeSession ? 'Start New Session' : 'Start Playing'}
+              </Typography>
+              
+              {campaigns.length > 0 ? (
+                <Stack spacing={1.5}>
+                  {campaigns.slice(0, 3).map(campaign => (
+                    <Paper 
+                      key={campaign.id}
+                      elevation={0} 
+                      sx={{ 
+                        p: 2, 
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        borderRadius: 2,
+                        '&:hover': {
+                          borderColor: 'primary.main',
+                          bgcolor: 'action.hover',
+                          cursor: 'pointer'
+                        }
+                      }}
+                      onClick={() => navigate(`/catalog/${campaign.id}`)}
+                    >
+                      <Stack direction="row" justifyContent="space-between" alignItems="center">
+                        <Box>
+                          <Typography variant="subtitle2" fontWeight={600}>
+                            {campaign.name}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {campaign.scenario_name || 'Scenario'} • {campaign.max_rounds || 8} rounds
+                          </Typography>
+                        </Box>
+                        <Button 
+                          variant="contained" 
+                          size="small"
+                          startIcon={<PlayIcon />}
+                        >
+                          Play
+                        </Button>
+                      </Stack>
+                    </Paper>
+                  ))}
+                  
+                  {campaigns.length > 3 && (
+                    <Button
+                      variant="outlined"
+                      startIcon={<CatalogIcon />}
+                      onClick={() => navigate('/catalog')}
+                      fullWidth
+                    >
+                      View All {campaigns.length} Campaigns
+                    </Button>
+                  )}
+                </Stack>
+              ) : (
+                <Alert severity="info">
+                  No campaigns available yet. Ask your trainer to publish campaigns or check back later.
+                </Alert>
+              )}
             </CardContent>
           </Card>
         </Grid>
 
-        {/* Reports & Resources */}
-        <Grid item xs={12} md={6}>
+        {/* Resources & Help */}
+        <Grid item xs={12} md={4}>
           <Card sx={{ height: '100%' }}>
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <ReportsIcon /> Reports & Resources
+                <HandbookIcon /> Resources & Help
               </Typography>
               <Divider sx={{ my: 2 }} />
               
               <Stack spacing={2}>
-                {lastCompletedSession && (
-                  <>
-                    <Button
-                      variant="outlined"
-                      startIcon={<ReportsIcon />}
-                      onClick={() => navigate(`/evaluation?sessionId=${lastCompletedSession.id}`)}
-                      fullWidth
-                    >
-                      View Last Session Results
-                    </Button>
-                    <Button
-                      variant="outlined"
-                      startIcon={<LeaderboardIcon />}
-                      onClick={() => navigate(`/leaderboard?sessionId=${lastCompletedSession.id}`)}
-                      fullWidth
-                    >
-                      View Leaderboard
-                    </Button>
-                  </>
-                )}
-                
-                <Button
-                  variant="outlined"
-                  startIcon={<ReportsIcon />}
-                  onClick={() => navigate('/evaluation')}
-                  fullWidth
-                >
-                  All Session Reports
-                </Button>
-                
-                <Divider />
-                
                 <Button
                   variant="outlined"
                   startIcon={<HandbookIcon />}
@@ -238,14 +269,21 @@ export default function Home() {
                 >
                   Player Handbook
                 </Button>
-                
                 <Button
                   variant="outlined"
-                  startIcon={<ProfileIcon />}
-                  onClick={() => navigate('/profile')}
+                  startIcon={<TrendingIcon />}
+                  onClick={() => navigate('/did-you-know')}
                   fullWidth
                 >
-                  My Profile
+                  Did You Know
+                </Button>
+                <Button
+                  variant="outlined"
+                  startIcon={<NewIcon />}
+                  onClick={() => navigate('/course-materials')}
+                  fullWidth
+                >
+                  Course Materials
                 </Button>
               </Stack>
             </CardContent>

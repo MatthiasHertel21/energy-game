@@ -22,6 +22,7 @@ import {
   Groups as PlayersIcon
 } from '@mui/icons-material';
 import api from '../services/api';
+import TermTooltip from './TermTooltip';
 
 /**
  * BriefingScreen - Scenario introduction and start screen
@@ -56,10 +57,10 @@ export default function BriefingScreen({ session, scenario, onStart }) {
     "Welcome to the energy trading simulation. Your goal is to maximize profit while maintaining grid stability.";
 
   const objectives = [
-    "Submit accurate demand forecasts each round",
-    "Minimize imbalance penalties by staying close to actual consumption",
-    "Reduce curtailment costs through efficient energy usage",
-    "Maximize your total score across all rounds"
+    <>Submit accurate demand forecasts each round</>,
+    <>Minimize <TermTooltip term="Imbalance">imbalance</TermTooltip> penalties by staying close to actual consumption</>,
+    <>Reduce curtailment costs through efficient electricity usage</>,
+    <>Maximize your total score across all rounds</>
   ];
 
   return (
@@ -127,8 +128,8 @@ export default function BriefingScreen({ session, scenario, onStart }) {
             </Typography>
             <Typography variant="body2">
               Your total score is calculated from:
-              • Profit from day-ahead market
-              • Imbalance penalties (minimized)
+              • Profit from <TermTooltip term="DA">day-ahead market</TermTooltip>
+              • <TermTooltip term="Imbalance">Imbalance</TermTooltip> penalties (minimized)
               • Curtailment costs (minimized)
             </Typography>
           </Alert>

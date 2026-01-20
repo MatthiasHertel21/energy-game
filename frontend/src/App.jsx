@@ -1,6 +1,6 @@
 import React, { Suspense, useEffect } from 'react'
 import { Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { AppBar, Toolbar, Typography, Button, Container, Box, CircularProgress } from '@mui/material'
+import { AppBar, Toolbar, Typography, Button, Container, Box, CircularProgress, Stack } from '@mui/material'
 import { 
   AdminPanelSettings as AdminIcon, 
   School as TrainerIcon,
@@ -8,33 +8,33 @@ import {
   BarChart as ComparisonIcon,
   Home as HomeIcon,
   LibraryBooks as CatalogIcon,
-  Collections as CollectionsIcon,
-  List as ListIcon,
-  Assessment as EvaluationIcon,
+  Edit as EditIcon,
 } from '@mui/icons-material'
 const Login = React.lazy(()=> import('./pages/Login'))
 const Register = React.lazy(()=> import('./pages/Register'))
 const AdminUsers = React.lazy(()=> import('./pages/AdminUsers'))
-const KSE = React.lazy(()=> import('./pages/KSE'))
 const Trainer = React.lazy(()=> import('./pages/Trainer'))
 const Player = React.lazy(()=> import('./pages/Player'))
 const Home = React.lazy(()=> import('./pages/Home'))
 const Briefing = React.lazy(()=> import('./pages/Briefing'))
 const Cohorts = React.lazy(()=> import('./pages/Cohorts'))
-const Evaluation = React.lazy(()=> import('./pages/Evaluation'))
 const Replay = React.lazy(()=> import('./pages/Replay'))
 const Comparison = React.lazy(()=> import('./pages/Comparison'))
 const Catalog = React.lazy(()=> import('./pages/Catalog'))
 const CampaignDetail = React.lazy(()=> import('./pages/CampaignDetail'))
-const DesignerCampaigns = React.lazy(()=> import('./pages/DesignerCampaigns'))
-const DesignerScenarios = React.lazy(()=> import('./pages/DesignerScenarios'))
+const Designer = React.lazy(()=> import('./pages/Designer'))
 const Profile = React.lazy(()=> import('./pages/Profile'))
-const Settings = React.lazy(()=> import('./pages/Settings'))
+const KSE = React.lazy(()=> import('./pages/KSE'))
 const DocsPlayer = React.lazy(()=> import('./pages/DocsPlayer'))
 const DocsTrainer = React.lazy(()=> import('./pages/DocsTrainer'))
 const DocsDesigner = React.lazy(()=> import('./pages/DocsDesigner'))
 const DocsAdmin = React.lazy(()=> import('./pages/DocsAdmin'))
 const DocsEngine = React.lazy(()=> import('./pages/DocsEngine'))
+const About = React.lazy(()=> import('./pages/About'))
+const AboutDetails = React.lazy(()=> import('./pages/AboutDetails'))
+const DidYouKnow = React.lazy(()=> import('./pages/DidYouKnow'))
+const CourseMaterials = React.lazy(()=> import('./pages/CourseMaterials'))
+const AdminEditStaticPage = React.lazy(()=> import('./pages/AdminEditStaticPage'))
 import ProtectedRoute from './components/ProtectedRoute'
 import SnackbarProvider from './components/SnackbarProvider'
 import NotFound from './components/NotFound'
@@ -51,12 +51,12 @@ export default function App({ themeMode, onToggleTheme }) {
   const isActive = (path) => location.pathname === path || location.pathname.startsWith(path + '/')
   
   return (
-    <>
+    <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <AppBar position="static">
   <Toolbar sx={{ flexWrap: 'wrap', gap: 1 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexGrow: 1 }}>
             <img src="/logo.svg" alt="Logo" height={24} />
-            <Typography variant="h6">EMSG</Typography>
+            <Typography variant="h6">EMSG Electricity Market Simulation Game</Typography>
           </Box>
           {user ? (
             <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 0.5 }}>
@@ -75,25 +75,13 @@ export default function App({ themeMode, onToggleTheme }) {
               {(user.role === 'designer' || user.role === 'admin') && (
                 <Button 
                   size="small"
-                  color={isActive('/designer/scenarios') ? 'secondary' : 'inherit'} 
+                  color={isActive('/designer') ? 'secondary' : 'inherit'} 
                   component={Link} 
-                  to="/designer/scenarios"
-                  startIcon={<ListIcon />}
-                  aria-label="Scenarios list"
+                  to="/designer"
+                  startIcon={<EditIcon />}
+                  aria-label="Designer"
                 >
-                  Scenarios
-                </Button>
-              )}
-              {(user.role === 'designer' || user.role === 'admin') && (
-                <Button 
-                  size="small"
-                  color={isActive('/designer/campaigns') ? 'secondary' : 'inherit'} 
-                  component={Link} 
-                  to="/designer/campaigns"
-                  startIcon={<CollectionsIcon />}
-                  aria-label="Campaign management"
-                >
-                  Campaigns
+                  Designer
                 </Button>
               )}
               {(user.role === 'trainer' || user.role === 'admin') && (
@@ -152,16 +140,6 @@ export default function App({ themeMode, onToggleTheme }) {
                   >
                     Catalog
                   </Button>
-                  <Button 
-                    size="small"
-                    color={isActive('/evaluation') ? 'secondary' : 'inherit'} 
-                    component={Link} 
-                    to="/evaluation"
-                    startIcon={<EvaluationIcon />}
-                    aria-label="Session evaluation"
-                  >
-                    Evaluation
-                  </Button>
                 </>
               )}
               <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />
@@ -176,7 +154,7 @@ export default function App({ themeMode, onToggleTheme }) {
         </Toolbar>
       </AppBar>
       <SnackbarProvider>
-        <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+        <Container maxWidth="lg" sx={{ mt: 4, mb: 4, flex: 1 }}>
           {/* Force navigate poll for players */}
           {user && user.role === 'player' && (
             <ForceNavigateWatcher onNavigate={(url)=> navigate(url)} />
@@ -185,22 +163,31 @@ export default function App({ themeMode, onToggleTheme }) {
           <input name="Name" value="" aria-label="Name" style={{ display:'none' }} readOnly />
           <Suspense fallback={<Box sx={{ display:'flex', justifyContent:'center', mt:6 }}><CircularProgress /></Box>}>
           <Routes>
-          <Route path="/" element={<Navigate to={user ? (user.role === 'admin' ? '/admin' : user.role === 'trainer' ? '/trainer' : user.role === 'designer' ? '/designer/campaigns' : '/catalog') : '/login'} />} />
+          <Route path="/" element={<Navigate to={user ? (user.role === 'admin' ? '/admin' : user.role === 'trainer' ? '/trainer' : user.role === 'designer' ? '/designer' : '/catalog') : '/login'} />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          {/* Public routes */}
+          <Route path="/about" element={<About />} />
+          <Route path="/about/details" element={<AboutDetails />} />
           {/* Public docs routes for handbook viewing */}
           <Route path="/docs/player" element={<DocsPlayer />} />
           <Route path="/docs/trainer" element={<DocsTrainer />} />
           <Route path="/docs/designer" element={<DocsDesigner />} />
           <Route path="/docs/admin" element={<DocsAdmin />} />
           <Route path="/docs/engine" element={<DocsEngine />} />
+          {/* Public static pages */}
+          <Route path="/did-you-know" element={<DidYouKnow />} />
+          <Route path="/course-materials" element={<CourseMaterials />} />
           <Route element={<ProtectedRoute roles={["admin"]} /> }>
             <Route path="/admin" element={<AdminUsers />} />
+            <Route path="/admin/edit-page/:pageKey" element={<AdminEditStaticPage />} />
           </Route>
           <Route element={<ProtectedRoute roles={["designer","admin"]} /> }>
             <Route path="/kse" element={<KSE />} />
-            <Route path="/designer/campaigns" element={<DesignerCampaigns />} />
-            <Route path="/designer/scenarios" element={<DesignerScenarios />} />
+            <Route path="/designer" element={<Designer />} />
+            {/* Legacy redirects for old routes */}
+            <Route path="/designer/campaigns" element={<Navigate to="/designer" replace />} />
+            <Route path="/designer/scenarios" element={<Navigate to="/designer" replace />} />
           </Route>
           <Route element={<ProtectedRoute roles={["trainer","admin"]} /> }>
             <Route path="/trainer" element={<Trainer />} />
@@ -211,10 +198,8 @@ export default function App({ themeMode, onToggleTheme }) {
             <Route path="/catalog/:id" element={<CampaignDetail />} />
             <Route path="/briefing/:sessionId" element={<Briefing />} />
             <Route path="/player" element={<Player />} />
-            <Route path="/evaluation" element={<Evaluation />} />
             <Route path="/replay" element={<Replay />} />
             <Route path="/profile" element={<Profile />} />
-            <Route path="/settings" element={<Settings />} />
           </Route>
           <Route element={<ProtectedRoute roles={["trainer","admin"]} /> }>
             <Route path="/cohorts" element={<Cohorts />} />
@@ -224,8 +209,67 @@ export default function App({ themeMode, onToggleTheme }) {
           </Routes>
           </Suspense>
         </Container>
+        
+        {/* Footer with Imprint */}
+        <Box
+          component="footer"
+          sx={{
+            mt: 'auto',
+            py: 3,
+            px: 2,
+            backgroundColor: (theme) =>
+              theme.palette.mode === 'light'
+                ? theme.palette.grey[200]
+                : theme.palette.grey[800],
+            borderTop: 1,
+            borderColor: 'divider'
+          }}
+        >
+          <Container maxWidth="lg">
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={2}
+              justifyContent="space-between"
+              alignItems={{ xs: 'flex-start', sm: 'center' }}
+            >
+              <Typography variant="body2" color="text.secondary">
+                © {new Date().getFullYear()} Electricity Market Simulation Game
+              </Typography>
+              <Stack direction="row" spacing={2}>
+                <Typography
+                  variant="body2"
+                  component="a"
+                  href="/about"
+                  sx={{ color: 'text.secondary', textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }}
+                >
+                  About
+                </Typography>
+                <Typography
+                  variant="body2"
+                  component="a"
+                  href="/docs/player"
+                  sx={{ color: 'text.secondary', textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }}
+                >
+                  Documentation
+                </Typography>
+                <Typography
+                  variant="body2"
+                  component="a"
+                  href="#imprint"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    alert('Imprint\n\nResponsible for content:\n\nElectricity Market Simulation\nDevelopment Team\n\nContact: info@example.com\n\nThis is a sample imprint. Please update with actual legal information.');
+                  }}
+                  sx={{ color: 'text.secondary', textDecoration: 'none', cursor: 'pointer', '&:hover': { textDecoration: 'underline' } }}
+                >
+                  Imprint
+                </Typography>
+              </Stack>
+            </Stack>
+          </Container>
+        </Box>
       </SnackbarProvider>
-    </>
+    </Box>
   )
 }
 

@@ -5,6 +5,7 @@ import { EmojiEvents as LeaderboardIcon, TrendingUp as DAIcon, SwapHoriz as IDIc
 import api from '../services/api'
 import Radar from '../components/Radar'
 import { exportSVG } from '../utils/exportSvg'
+import TermTooltip from '../components/TermTooltip'
 
 export default function Evaluation(){
   const [params] = useSearchParams()
@@ -257,10 +258,10 @@ export default function Evaluation(){
               <Divider sx={{ mb: 2 }} />
               <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <DAIcon color="action" />
-                Market Breakdown: Day-Ahead vs Intraday
+                Market Breakdown: <TermTooltip term="DA">Day-Ahead</TermTooltip> vs <TermTooltip term="ID">Intraday</TermTooltip>
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Shows the split of traded volumes between Day-Ahead (round 1) and Intraday (adjustments in later rounds).
+                Shows the split of traded volumes between <TermTooltip term="DA">Day-Ahead</TermTooltip> (round 1) and <TermTooltip term="ID">Intraday</TermTooltip> (adjustments in later rounds).
               </Typography>
               <Table size="small">
                 <TableHead>
@@ -290,9 +291,9 @@ export default function Evaluation(){
                         Revenue (ZAR)
                       </Stack>
                     </TableCell>
-                    <TableCell align="right">Total (MWh)</TableCell>
+                    <TableCell align="right">Total (<TermTooltip term="MWh">MWh</TermTooltip>)</TableCell>
                     <TableCell align="right">Total Revenue</TableCell>
-                    <TableCell align="right">Avg MCP</TableCell>
+                    <TableCell align="right">Avg <TermTooltip term="MCP">MCP</TermTooltip></TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -333,8 +334,8 @@ export default function Evaluation(){
               <Box sx={{ mt: 2, p: 1, bgcolor: 'background.default', borderRadius: 1 }}>
                 <Typography variant="caption" color="text.secondary">
                   <strong>Legend:</strong>{' '}
-                  <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = Day-Ahead (round 1 position){' '}
-                  <Chip label="ID" size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = Intraday (adjustments in rounds 2+)
+                  <Chip label={<TermTooltip term="DA">DA</TermTooltip>} size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = <TermTooltip term="DA">Day-Ahead</TermTooltip> (round 1 position){' '}
+                  <Chip label={<TermTooltip term="ID">ID</TermTooltip>} size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = <TermTooltip term="ID">Intraday</TermTooltip> (adjustments in rounds 2+)
                 </Typography>
               </Box>
             </Box>

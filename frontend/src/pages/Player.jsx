@@ -15,7 +15,6 @@ import {
   CircularProgress,
   Chip,
   LinearProgress,
-  Divider,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -142,18 +141,28 @@ const getDefaultBidPrices = (device) => {
   
   if (variableCost <= 0) {
     // Fallback defaults for devices without cost data
-    // For consumers (loads): use willingness-to-pay around expected MCP (~1000)
+    // For consumers (loads): bid slightly above expected MCP (~1000)
     // Strategy: A=high (always get), B=medium (usually get), C=low (marginal)
     if (deviceType.includes('load')) {
-      return { A: 1200, B: 1000, C: 800 }  // Consumer WTP: high/medium/low around MCP
+      return { A: 1300, B: 1150, C: 1050 }  // Consumers bid above MCP, Baseload highest
     }
-    // For generators: conservative bid prices
-    return { A: 300, B: 400, C: 500 }
+    // For generators: bid around/below expected MCP to get dispatched
+    return { A: 850, B: 950, C: 1100 }
   }
+  // When varCost is provided, check if consumer or generator
+  if (deviceType.includes('load')) {
+    // Consumers: Bid above variable cost (A highest)
+    return {
+      A: Math.round(variableCost * 1.30),   // Baseload: +30%
+      B: Math.round(variableCost * 1.15),   // Mid-merit: +15%
+      C: Math.round(variableCost * 1.05)    // Peak: +5% (can be curtailed)
+    }
+  }
+  // Generators: Bid near variable cost (A lowest)
   return {
-    A: Math.round(variableCost * 1.0),   // At-cost
-    B: Math.round(variableCost * 1.25),  // Moderate markup
-    C: Math.round(variableCost * 1.5)    // Premium
+    A: Math.round(variableCost * 0.85),   // Baseload: -15% (dispatched first)
+    B: Math.round(variableCost * 0.95),   // Mid-merit: -5%
+    C: Math.round(variableCost * 1.10)    // Peak: +10% (dispatched last)
   }
 }
 
@@ -209,32 +218,11 @@ const getDeviceMaxCapability = (device = {}) => {
   return 0
 }
 
-function CountdownTimer({ timeRemaining }) {
+function TimerAndClock({ timeRemaining, fakeDate, startTime, currentRound, roundSpan }) {
   const minutes = Math.floor(timeRemaining / 60)
   const seconds = timeRemaining % 60
   const isWarning = timeRemaining <= 30 && timeRemaining > 0
 
-  return (
-    <Box
-      sx={{
-        textAlign: 'center',
-        p: 2,
-        backgroundColor: isWarning ? 'warning.light' : 'primary.light',
-        borderRadius: 2,
-        transition: 'background-color 0.3s'
-      }}
-    >
-      <Typography variant="h4" sx={{ fontWeight: 'bold', color: isWarning ? 'warning.dark' : 'primary.dark' }}>
-        {String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}
-      </Typography>
-      <Typography variant="caption" sx={{ color: isWarning ? 'warning.dark' : 'primary.dark' }}>
-        {isWarning ? 'Time is running out!' : 'Time remaining'}
-      </Typography>
-    </Box>
-  )
-}
-
-function ScenarioClock({ fakeDate, startTime, currentRound, roundSpan }) {
   // Calculate current simulation time based on round and start time
   const simulationTime = useMemo(() => {
     if (!startTime || !currentRound) return ''
@@ -261,41 +249,56 @@ function ScenarioClock({ fakeDate, startTime, currentRound, roundSpan }) {
     }
   }, [fakeDate, currentRound, roundSpan])
 
-  const [realTime, setRealTime] = useState(new Date())
-
-  useEffect(() => {
-    const interval = setInterval(() => setRealTime(new Date()), 1000)
-    return () => clearInterval(interval)
-  }, [])
-
   return (
     <Box
       sx={{
         textAlign: 'center',
-        p: 1.5,
-        backgroundColor: '#f5f5f5',
+        p: 2,
+        backgroundColor: isWarning ? 'warning.light' : '#f5f5f5',
         borderRadius: 2,
-        mb: 1
+        border: isWarning ? '2px solid' : 'none',
+        borderColor: 'warning.main',
+        transition: 'all 0.3s'
       }}
     >
-      <Typography variant="h6" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
-        {simulationTime}
-      </Typography>
-      {displayDate && (
-        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
-          {displayDate}
-        </Typography>
+      {timeRemaining !== null && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="h4" sx={{ fontWeight: 'bold', color: isWarning ? 'warning.dark' : 'primary.dark' }}>
+            {String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}
+          </Typography>
+          <Typography variant="caption" sx={{ color: isWarning ? 'warning.dark' : 'text.secondary' }}>
+            {isWarning ? 'Time is running out!' : 'Time remaining'}
+          </Typography>
+        </Box>
       )}
-      <Divider sx={{ my: 0.5 }} />
-      <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-        Real: {realTime.toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-      </Typography>
+      <Box sx={{ borderTop: timeRemaining !== null ? '1px solid #ddd' : 'none', pt: timeRemaining !== null ? 2 : 0 }}>
+        <Typography
+          variant="overline"
+          sx={{
+            color: 'text.secondary',
+            letterSpacing: 1,
+            textTransform: 'uppercase',
+            display: 'block',
+            mb: 1
+          }}
+        >
+          Scenario date/time
+        </Typography>
+        {displayDate && (
+          <Typography variant="h6" sx={{ color: 'text.primary', fontWeight: 600, mb: 0.5 }}>
+            {displayDate}
+          </Typography>
+        )}
+        <Typography variant="h5" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
+          {simulationTime || '—'}
+        </Typography>
+      </Box>
     </Box>
   )
 }
 
 // Stacked area chart showing all three lots (clickable to select lot)
-function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams }) {
+function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, startTime }) {
   const svgRef = useRef(null)
   
   useEffect(() => {
@@ -339,9 +342,13 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, currentRound, roundSp
       .attr('stroke-dasharray', '2,2')
     
     // Axes
+    const startHour = startTime ? parseInt(startTime.split(':')[0]) : 0
     g.append('g')
       .attr('transform', `translate(0,${ih})`)
-      .call(d3.axisBottom(x).ticks(n > 24 ? 12 : n).tickFormat(d => `h${Math.round(d-1)}`))
+      .call(d3.axisBottom(x).ticks(n > 24 ? 12 : n).tickFormat(d => {
+        const hour = (startHour + Math.round(d - 1)) % 24
+        return `${String(hour).padStart(2, '0')}:00`
+      }))
       .selectAll('text')
       .style('font-size', '10px')
     
@@ -494,7 +501,7 @@ export default function Player() {
   const [loading, setLoading] = useState(true)
   const [hours, setHours] = useState([])
   const [cfg, setCfg] = useState({
-    general: { round_span_hours: 6, forecast_horizon_hours: 48, freeze_hours: 6, horizon_hours: 24, fake_date: '', start_time: '' },
+    general: { round_span_hours: 6, forecast_horizon_hours: 48, freeze_hours: 6, day_ahead_gate_hour: 12, horizon_hours: 24, fake_date: '', start_time: '' },
     current_round: 1,
     scenario_name: '',
     campaign_name: ''
@@ -518,6 +525,7 @@ export default function Player() {
   const [deviceView, setDeviceView] = useState({}) // { device_id: 'chart'|'fields' }
   const [submitted, setSubmitted] = useState(false)
   const [scenario, setScenario] = useState(null)
+  const [hourlySeries, setHourlySeries] = useState([])
   const [deviceBids, setDeviceBids] = useState({}) // { device_id: { A: {price, hours}, B: {price, hours}, C: {price, hours} } }
   const [biddingEnabled, setBiddingEnabled] = useState(false)
   const [activeLot, setActiveLot] = useState('A') // Active lot for editing (A, B, or C)
@@ -534,6 +542,7 @@ export default function Player() {
   useEffect(() => {
     forecastSeedKeyRef.current = null
     setDaBaseline({ devices: {}, bids: {}, hour_status: [], locked_until_hour: 0, da_until_hour: 24, id_until_hour: 24 }) // Reset DA baseline when session changes
+    setHourlySeries([])
   }, [sessionId])
   const aggregateMax = useMemo(() => {
     const dataMax = Array.isArray(hours) && hours.length > 0
@@ -665,11 +674,14 @@ export default function Player() {
         const round_span = Number(gen.round_span_hours || 6)
         const fh = Number(gen.forecast_horizon_hours || gen.horizon_hours || 24)
         const freeze = Number(gen.freeze_hours || 6)
+        const daGateHour = Number.isFinite(Number(gen.day_ahead_gate_hour)) ? Number(gen.day_ahead_gate_hour) : 12
+        console.log('[Player] Session loaded - status:', data.status, 'round:', data.current_round, 'mode:', data.mode)
         setCfg({
           general: {
             round_span_hours: round_span,
             forecast_horizon_hours: fh,
             freeze_hours: freeze,
+            day_ahead_gate_hour: daGateHour,
             horizon_hours: Number(gen.horizon_hours || 24),
             fake_date: gen.fake_date || '',
             start_time: gen.start_time || '00:00'
@@ -721,6 +733,7 @@ export default function Player() {
           const sel = brief.data?.selected_type || null
           const pts = brief.data?.player_types || []
           const devices = brief.data?.devices || []
+          console.log('[Player] Briefing data - allowed:', allowed, 'selected:', sel, 'status:', data.status)
           setAllowedTypes(allowed)
           setSelectedType(sel)
           setPlayerTypes(pts)
@@ -815,8 +828,12 @@ export default function Player() {
               return next
             })
           }
+          // Only open type dialog if player types are configured AND user hasn't selected yet
           if(allowed.length>0 && !sel){
+            console.log('[Player] Opening type selection dialog - no type selected yet')
             setTypeDialogOpen(true)
+          } else if (sel) {
+            console.log('[Player] Player already selected type:', sel, '- not showing dialog')
           }
 
         }catch(_){ /* ignore */ }
@@ -841,6 +858,30 @@ export default function Player() {
           }
         }
         
+        // Load historical round results including hourly_results
+        try {
+          const resultsRes = await api.get(`/api/player/results/${sessionId}`)
+          if (resultsRes.data) {
+            const { rounds, hourly_results } = resultsRes.data
+            
+            // Populate series with historical rounds
+            if (Array.isArray(rounds) && rounds.length > 0) {
+              setSeries(rounds.map(r => ({ r: r.round, mcp: r.mcp, volume: r.volume })))
+            }
+            
+            // Populate hourlySeries with historical hourly data
+            if (Array.isArray(hourly_results) && hourly_results.length > 0) {
+              setHourlySeries(hourly_results.map(hr => ({
+                ...hr,
+                hour_idx: Number(hr.hour_idx ?? hr.hour_offset ?? 0)
+              })))
+              console.log('[Player] Loaded hourly results:', hourly_results.length, 'hours')
+            }
+          }
+        } catch (err) {
+          console.error('Failed to load historical results:', err)
+        }
+        
       } catch (error) {
         console.error('Failed to load session config:', error)
         showSnack('Failed to load session configuration', 'error')
@@ -855,6 +896,7 @@ export default function Player() {
   const mcpRef = useRef(null)
   const volRef = useRef(null)
   const localTimerRef = useRef(null)
+  const autoSubmitRef = useRef(false)
 
   useEffect(() => {
     if (!sessionId) return
@@ -872,6 +914,7 @@ export default function Player() {
         setTimeRemaining(null)
         try{ sessionStorage.removeItem(`emsg_timer_${sessionId}`) }catch(_){ }
         setSubmitted(false)
+        autoSubmitRef.current = false
         try{
           const { data } = await api.get(`/api/sessions/${sessionId}`)
           const newRound = Number(data.current_round || 1)
@@ -930,6 +973,18 @@ export default function Player() {
       if (p && Number(p.session_id) === Number(sessionId)) {
         setLive({ mcp: p.mcp, volume: p.volume, round: p.round })
         setSeries((prev) => [...prev, { r: p.round, mcp: p.mcp, volume: p.volume }])
+        if (Array.isArray(p.hourly_results) && p.hourly_results.length > 0) {
+          setHourlySeries((prev) => {
+            const map = new Map(prev.map((entry) => [entry.hour_idx ?? entry.hour_offset ?? 0, entry]))
+            p.hourly_results.forEach((hr) => {
+              if (!hr) return
+              const idx = Number(hr.hour_idx)
+              if (!Number.isFinite(idx)) return
+              map.set(idx, { ...hr, hour_idx: idx })
+            })
+            return Array.from(map.values()).sort((a, b) => (a.hour_idx ?? 0) - (b.hour_idx ?? 0))
+          })
+        }
       }
     })
 
@@ -1044,6 +1099,50 @@ export default function Player() {
     }
   }, [status, timeRemaining])
 
+  // Calculate locked hours and validation state early so hooks depending on them can reference safely
+  const lockedUntil = useMemo(() => {
+    const r = Number(cfg.current_round || 1)
+    const spanHours = Number(cfg.general.round_span_hours || 6)
+    const freeze = Number(cfg.general.freeze_hours || 6)
+    return Math.min(Number(cfg.general.forecast_horizon_hours || 24), (r - 1) * spanHours + freeze)
+  }, [cfg])
+
+  // Freeze override for round 1: allow editing even if freeze covers first round
+  const effectiveLockedUntil = useMemo(
+    () => (Number(cfg.current_round || 1) === 1 ? 0 : lockedUntil),
+    [cfg, lockedUntil]
+  )
+
+  const isEditable = (status === 'running' || status === 'round_active') && sessionId
+  const span = Number(cfg.general.round_span_hours || 6)
+  const cur = Number(cfg.current_round || 1)
+  const startIdx = (cur - 1) * span
+  const endIdx = startIdx + span
+  const editableIdx = new Set(
+    Array.from({ length: span }, (_, k) => startIdx + k).filter((i) => i >= effectiveLockedUntil && i < hours.length)
+  )
+
+  const isValid = useMemo(() => {
+    return Array.from(editableIdx).every((i) => Number.isFinite(Number(hours[i])))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hours, effectiveLockedUntil, cfg])
+
+  // Auto-submit current round when time runs out and player has not submitted
+  useEffect(() => {
+    if (!sessionId) return
+    if (!(status === 'running' || status === 'round_active')) return
+    if (timeRemaining !== 0) return
+    if (submitted) return
+    if (autoSubmitRef.current) return
+    if (allowedTypes.length > 0 && !selectedType) return
+
+    autoSubmitRef.current = true
+    showSnack('Time is up. Auto-submitting your latest forecast.', 'info')
+    // Skip overcapacity confirmation on automatic submit
+    submitCurrent(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeRemaining, status, submitted, sessionId, allowedTypes.length, selectedType, showSnack])
+
   // Restore remaining time from storage on reload to avoid reset
   useEffect(()=>{
     if (!sessionId) return
@@ -1059,6 +1158,47 @@ export default function Player() {
       }
     }catch(_){ }
   }, [sessionId])
+
+  // Sessions can get stuck on calculating without socket updates; poll backend as a fallback
+  useEffect(() => {
+    if (!sessionId) return
+    if (!(status === 'round_closing' || status === 'calculating')) return
+
+    let cancelled = false
+
+    const pollStatus = async () => {
+      try {
+        const { data } = await api.get(`/api/sessions/${sessionId}`)
+        if (cancelled) return
+
+        const nextStatus = data?.status
+        if (nextStatus && nextStatus !== status) {
+          console.log(`[Player] Status poll: ${status} -> ${nextStatus}`)
+          setStatus(nextStatus)
+        }
+
+        const nextRound = Number(data?.current_round)
+        if (Number.isFinite(nextRound)) {
+          setCfg((prev) => {
+            if (nextRound === prev.current_round) return prev
+            console.log(`[Player] Round poll: ${prev.current_round} -> ${nextRound}`)
+            return { ...prev, current_round: nextRound }
+          })
+        }
+      } catch (err) {
+        console.error('Session status poll failed:', err)
+      }
+    }
+
+    console.log(`[Player] Starting status polling for session ${sessionId} in status ${status}`)
+    pollStatus()
+    const interval = setInterval(pollStatus, 2000)
+    return () => {
+      console.log(`[Player] Stopping status polling`)
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [sessionId, status])
 
   // Ensure per-device hours arrays are initialized to horizon length
   useEffect(()=>{
@@ -1102,21 +1242,21 @@ export default function Player() {
           if (!next[did]) {
             needsInit = true
             const def = scenarioById.get(did)
-            const varCost = Number(def?.variable_cost_zar_per_mwh || def?.cost_per_mwh_zar || def?.marginal_cost || 400)
+            const defaultPrices = getDefaultBidPrices(def)
             const deviceHoursFallback = buildDeviceProfile(def, fh)
             
             // Initialize 3 bids with default prices and quantity tranches
             next[did] = {
               A: { 
-                price: Math.round(varCost * 1.0), 
+                price: defaultPrices.A, 
                 hours: deviceHoursFallback.map(h => Math.round(h * 0.5 * 100) / 100) // 50% in Bid A
               },
               B: { 
-                price: Math.round(varCost * 1.25), 
+                price: defaultPrices.B, 
                 hours: deviceHoursFallback.map(h => Math.round(h * 0.3 * 100) / 100) // 30% in Bid B
               },
               C: { 
-                price: Math.round(varCost * 1.5), 
+                price: defaultPrices.C, 
                 hours: deviceHoursFallback.map(h => Math.round(h * 0.2 * 100) / 100) // 20% in Bid C
               }
             }
@@ -1154,9 +1294,47 @@ export default function Player() {
     seedForecastData({ generalConfig: generalCfg, deviceIds, deviceDefs })
   }, [sessionId, cfg.general, allowedTypes.length, selectedType, typeDevices, scenarioDevices, seedForecastData])
 
+  const hourlyChartData = useMemo(() => {
+    if (!Array.isArray(hourlySeries) || hourlySeries.length === 0) return []
+    const HOUR_MS = 3600000
+    let startHour = 0
+    let startMinute = 0
+    if (typeof cfg.general.start_time === 'string') {
+      const parts = cfg.general.start_time.split(':').map((n) => Number(n))
+      if (Number.isFinite(parts[0])) startHour = parts[0]
+      if (Number.isFinite(parts[1])) startMinute = parts[1]
+    }
+    let baseTime = null
+    if (cfg.general.fake_date) {
+      const base = new Date(cfg.general.fake_date)
+      if (!Number.isNaN(base.getTime())) {
+        base.setHours(startHour, startMinute, 0, 0)
+        baseTime = base.getTime()
+      }
+    }
+
+    return [...hourlySeries]
+      .map((entry) => {
+        const idx = Number(entry.hour_idx ?? entry.hour_offset ?? 0)
+        const safeIdx = Number.isFinite(idx) ? idx : 0
+        if (baseTime != null) {
+          const timestamp = baseTime + safeIdx * HOUR_MS
+          const label = new Date(timestamp).toLocaleString('en-ZA', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+          })
+          return { ...entry, hour_idx: safeIdx, timestamp, label }
+        }
+        return { ...entry, hour_idx: safeIdx, timestamp: safeIdx, label: `h${safeIdx + 1}` }
+      })
+      .sort((a, b) => a.hour_idx - b.hour_idx)
+  }, [hourlySeries, cfg.general.fake_date, cfg.general.start_time])
+
   // D3 Charts
   useEffect(() => {
-    if (series.length === 0) return
+    if (hourlyChartData.length === 0) return
     // create or reuse a floating tooltip div for charts
     const tipSel = d3.select('body').select('div.emsg-chart-tip')
     const tooltip = tipSel.empty() ? d3.select('body').append('div').attr('class','emsg-chart-tip') : tipSel
@@ -1175,17 +1353,34 @@ export default function Player() {
     if (mcpRef.current) {
       const svg = d3.select(mcpRef.current)
       svg.selectAll('*').remove()
-  const M = { top: 10, right: 10, bottom: 34, left: 46 }
-      const W = 360 - M.left - M.right
-      const H = 120 - M.top - M.bottom
+      const M = { top: 10, right: 14, bottom: 40, left: 50 }
+      const W = 420 - M.left - M.right
+      const H = 160 - M.top - M.bottom
       const g = svg
-        .attr('width', 360)
-        .attr('height', 120)
+        .attr('width', 420)
+        .attr('height', 160)
         .append('g')
         .attr('transform', `translate(${M.left},${M.top})`)
-      const x = d3.scaleLinear().domain([1, d3.max(series, (d) => d.r) || 1]).range([0, W])
-      const y = d3.scaleLinear().domain([d3.min(series, (d) => d.mcp) || 0, d3.max(series, (d) => d.mcp) || 1]).nice().range([H, 0])
-  const line = d3.line().x((d) => x(d.r)).y((d) => y(d.mcp))
+      const hasRealTime = hourlyChartData.some((d) => d.timestamp > 1000000)
+      const xDomain = hasRealTime
+        ? d3.extent(hourlyChartData, (d) => d.timestamp)
+        : d3.extent(hourlyChartData, (d) => d.hour_idx)
+      const x = hasRealTime
+        ? d3.scaleTime().domain(xDomain).range([0, W])
+        : d3.scaleLinear().domain(xDomain).range([0, W])
+      const y = d3
+        .scaleLinear()
+        .domain([
+          d3.min(hourlyChartData, (d) => d.mcp) ?? 0,
+          d3.max(hourlyChartData, (d) => d.mcp) ?? 1
+        ])
+        .nice()
+        .range([H, 0])
+      const xValue = (d) => (hasRealTime ? x(d.timestamp) : x(d.hour_idx))
+      const line = d3
+        .line()
+        .x((d) => xValue(d))
+        .y((d) => y(d.mcp))
       // gridlines
       g.append('g')
         .attr('class', 'grid')
@@ -1193,24 +1388,36 @@ export default function Player() {
         .selectAll('line')
         .attr('stroke', '#ddd')
         .attr('stroke-opacity', 0.6)
-      g.append('path').datum(series).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2).attr('d', line)
-      g.append('g').attr('transform', `translate(0,${H})`).call(d3.axisBottom(x).ticks(series.length))
+      g.append('path').datum(hourlyChartData).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2).attr('d', line)
+      const startHour = cfg.general.start_time ? parseInt(cfg.general.start_time.split(':')[0]) : 0
+      g.append('g')
+        .attr('transform', `translate(0,${H})`)
+        .call(
+          d3.axisBottom(x).ticks(5).tickFormat((d) => {
+            if (hasRealTime) {
+              return new Date(d).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
+            } else {
+              const hour = (startHour + Math.round(d)) % 24
+              return `${String(hour).padStart(2, '0')}:00`
+            }
+          })
+        )
       g.append('g').call(d3.axisLeft(y).ticks(4))
       // points + tooltips
       g.selectAll('circle.point')
-        .data(series)
+        .data(hourlyChartData)
         .enter()
         .append('circle')
         .attr('class','point')
-        .attr('cx', d=> x(d.r))
+        .attr('cx', (d)=> xValue(d))
         .attr('cy', d=> y(d.mcp))
         .attr('r', 3)
-  .attr('fill', '#2e7d32')
-  .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`R${d.r}: ${d.mcp} ZAR/MWh`) })
+        .attr('fill', '#2e7d32')
+        .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`${d.label}: ${d.mcp} ZAR/MWh`) })
   .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
   .on('mouseleave', ()=> { tooltip.style('display','none') })
       // axis labels
-      g.append('text').attr('x', W/2).attr('y', H+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Round')
+      g.append('text').attr('x', W/2).attr('y', H+30).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Simulation Time')
       g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('MCP (ZAR/MWh)')
     }
 
@@ -1218,17 +1425,31 @@ export default function Player() {
     if (volRef.current) {
       const svg = d3.select(volRef.current)
       svg.selectAll('*').remove()
-  const M = { top: 10, right: 10, bottom: 34, left: 46 }
-      const W = 360 - M.left - M.right
-      const H = 120 - M.top - M.bottom
+      const M = { top: 10, right: 14, bottom: 40, left: 50 }
+      const W = 420 - M.left - M.right
+      const H = 160 - M.top - M.bottom
       const g = svg
-        .attr('width', 360)
-        .attr('height', 120)
+        .attr('width', 420)
+        .attr('height', 160)
         .append('g')
         .attr('transform', `translate(${M.left},${M.top})`)
-      const x = d3.scaleLinear().domain([1, d3.max(series, (d) => d.r) || 1]).range([0, W])
-      const y = d3.scaleLinear().domain([0, d3.max(series, (d) => d.volume) || 1]).nice().range([H, 0])
-  const line = d3.line().x((d) => x(d.r)).y((d) => y(d.volume))
+      const hasRealTime = hourlyChartData.some((d) => d.timestamp > 1000000)
+      const xDomain = hasRealTime
+        ? d3.extent(hourlyChartData, (d) => d.timestamp)
+        : d3.extent(hourlyChartData, (d) => d.hour_idx)
+      const x = hasRealTime
+        ? d3.scaleTime().domain(xDomain).range([0, W])
+        : d3.scaleLinear().domain(xDomain).range([0, W])
+      const y = d3
+        .scaleLinear()
+        .domain([0, (d3.max(hourlyChartData, (d) => d.volume) ?? 1)])
+        .nice()
+        .range([H, 0])
+      const xValue = (d) => (hasRealTime ? x(d.timestamp) : x(d.hour_idx))
+      const line = d3
+        .line()
+        .x((d) => xValue(d))
+        .y((d) => y(d.volume))
       // gridlines
       g.append('g')
         .attr('class', 'grid')
@@ -1236,38 +1457,40 @@ export default function Player() {
         .selectAll('line')
         .attr('stroke', '#ddd')
         .attr('stroke-opacity', 0.6)
-      g.append('path').datum(series).attr('fill', 'none').attr('stroke', '#1976d2').attr('stroke-width', 2).attr('d', line)
-      g.append('g').attr('transform', `translate(0,${H})`).call(d3.axisBottom(x).ticks(series.length))
+      g.append('path').datum(hourlyChartData).attr('fill', 'none').attr('stroke', '#1976d2').attr('stroke-width', 2).attr('d', line)
+      const startHour = cfg.general.start_time ? parseInt(cfg.general.start_time.split(':')[0]) : 0
+      g.append('g')
+        .attr('transform', `translate(0,${H})`)
+        .call(
+          d3.axisBottom(x).ticks(5).tickFormat((d) => {
+            if (hasRealTime) {
+              return new Date(d).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
+            } else {
+              const hour = (startHour + Math.round(d)) % 24
+              return `${String(hour).padStart(2, '0')}:00`
+            }
+          })
+        )
       g.append('g').call(d3.axisLeft(y).ticks(4))
       // points + tooltips
       g.selectAll('circle.point')
-        .data(series)
+        .data(hourlyChartData)
         .enter()
         .append('circle')
         .attr('class','point')
-        .attr('cx', d=> x(d.r))
+        .attr('cx', (d)=> xValue(d))
         .attr('cy', d=> y(d.volume))
         .attr('r', 3)
-  .attr('fill', '#1976d2')
-  .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`R${d.r}: ${d.volume} MWh`) })
+        .attr('fill', '#1976d2')
+        .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`${d.label}: ${d.volume} MWh`) })
   .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
   .on('mouseleave', ()=> { tooltip.style('display','none') })
       // axis labels
-      g.append('text').attr('x', W/2).attr('y', H+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Round')
+      g.append('text').attr('x', W/2).attr('y', H+30).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Simulation Time')
       g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Volume (MWh)')
     }
     return ()=> { try { tooltip.remove() } catch(_){} }
-  }, [series])
-
-  // Calculate locked hours and validation
-  const lockedUntil = useMemo(() => {
-    const r = Number(cfg.current_round || 1)
-    const span = Number(cfg.general.round_span_hours || 6)
-    const freeze = Number(cfg.general.freeze_hours || 6)
-    return Math.min(Number(cfg.general.forecast_horizon_hours || 24), (r - 1) * span + freeze)
-  }, [cfg])
-  // Freeze override for round 1: allow editing even if freeze covers first round
-  const effectiveLockedUntil = useMemo(()=> (Number(cfg.current_round||1) === 1 ? 0 : lockedUntil), [cfg, lockedUntil])
+  }, [hourlyChartData])
 
   const onChange = (i, val) => setHours((prev) => prev.map((v, idx) => (idx === i ? Number(val) : v)))
   const onDeviceChange = (did, i, val) => {
@@ -1382,28 +1605,16 @@ export default function Player() {
     })
   }
 
-  const saveFull = async () => {
-    try {
-      const payload = { session_id: Number(sessionId), hours }
-      if(allowedTypes.length>0 && selectedType && typeDevices.length>0){
-        payload.devices = typeDevices.map(did=> ({ device_id: did, hours: deviceHours[did] || [] }))
-      }
-      // Add bids if bidding is enabled
-      if (biddingEnabled && Object.keys(deviceBids).length > 0) {
-        payload.bids = deviceBids
-      }
-      await api.post('/api/player/forecast/full', payload)
-      showSnack('Full forecast saved', 'success')
-    } catch (e) {
-      showSnack(e?.response?.data?.message || 'Save failed', 'error')
-    }
-  }
-
-  const submitCurrent = async () => {
+  const submitCurrent = async (skipCapacityWarnings = false) => {
     const r = Number(cfg.current_round || 1)
     const span = Number(cfg.general.round_span_hours || 6)
     const start = (r - 1) * span
-    const slice = hours.slice(start, start + span)
+    const slice = hours
+      .slice(start, start + span)
+      .map((value) => {
+        const num = Number(value)
+        return Number.isFinite(num) ? num : 0
+      })
     
     // Check for overcapacity bids
     const warnings = []
@@ -1411,9 +1622,15 @@ export default function Player() {
       typeDevices.forEach(deviceId => {
         const device = scenarioDevices.find(d => d.id === deviceId)
         if (!device) return
-        
-        const maxPower = device.max_power_mw || device.capacity_mw || 0
+        const deviceType = (device.type || '').toLowerCase()
+        if (deviceType.includes('load')) return
+
+        const maxPower = getDeviceMaxCapability(device)
         const deviceHoursData = deviceHours[deviceId] || []
+
+        if (!Number.isFinite(maxPower) || maxPower <= 0) {
+          return
+        }
         
         for (let i = start; i < start + span && i < deviceHoursData.length; i++) {
           const offered = deviceHoursData[i] || 0
@@ -1430,7 +1647,7 @@ export default function Player() {
     }
     
     // Show confirmation dialog if overcapacity detected
-    if (warnings.length > 0) {
+    if (warnings.length > 0 && !skipCapacityWarnings) {
       setOvercapacityWarnings(warnings)
       setConfirmOvercapacityOpen(true)
       return
@@ -1471,20 +1688,6 @@ export default function Player() {
   // Filter out dismissed events
   const visibleEvents = activeEvents.filter(e => !dismissedEvents.has(e.id))
 
-  const isEditable = (status === 'running' || status === 'round_active') && sessionId
-  const span = Number(cfg.general.round_span_hours || 6)
-  const cur = Number(cfg.current_round || 1)
-  const startIdx = (cur - 1) * span
-  const endIdx = startIdx + span
-  const editableIdx = new Set(
-    Array.from({ length: span }, (_, k) => startIdx + k).filter((i) => i >= effectiveLockedUntil && i < hours.length)
-  )
-
-  const isValid = useMemo(() => {
-    return Array.from(editableIdx).every((i) => Number.isFinite(Number(hours[i])))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hours, effectiveLockedUntil, cfg])
-
   if (loading) {
     return (
       <Container maxWidth="lg" sx={{ mt: 4, display: 'flex', justifyContent: 'center' }}>
@@ -1505,6 +1708,9 @@ export default function Player() {
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+      {/* Debug: Show current status */}
+      {console.log('[Player] Rendering with status:', status, 'round:', cfg.current_round)}
+      
       {/* Briefing Screen */}
       {status === 'briefing' && scenario && (
         <BriefingScreen 
@@ -1530,9 +1736,11 @@ export default function Player() {
 
       {/* Round Results Screen */}
       {status === 'round_results' && (
+        <>
+        {console.log('[Player] Showing RoundResultsScreen for round', cfg.current_round - 1)}
         <RoundResultsScreen 
           sessionId={sessionId}
-          round={cfg.current_round}
+          round={cfg.current_round - 1}
           mode={mode}
           scenario={scenario}
           onAdvance={async () => {
@@ -1548,6 +1756,7 @@ export default function Player() {
             } catch (_) {}
           }}
         />
+        </>
       )}
 
       {/* Scenario Complete Screen */}
@@ -1561,6 +1770,7 @@ export default function Player() {
       {/* Main Game Interface - only show when in active round */}
       {(status === 'running' || status === 'round_active') && (
       <>
+      {console.log('[Player] Showing Main Game Interface')}
       <Dialog open={typeDialogOpen} onClose={()=> setTypeDialogOpen(false)}>
         <DialogTitle>Select your player type</DialogTitle>
         <DialogContent>
@@ -1625,6 +1835,15 @@ export default function Player() {
         <Button size="small" startIcon={<BriefingIcon />} onClick={()=> navigate(`/briefing/${sessionId}`)}>
           Briefing
         </Button>
+        {cfg.current_round > 1 && (
+          <Button 
+            size="small" 
+            variant="outlined"
+            onClick={() => setStatus('round_results')}
+          >
+            View Last Round Results
+          </Button>
+        )}
         <Tooltip
           arrow
           title={
@@ -1669,55 +1888,54 @@ export default function Player() {
       <Grid container spacing={3}>
         {/* Left: Timer and KPIs */}
         <Grid item xs={12} md={4}>
-          <ScenarioClock 
+          <TimerAndClock 
+            timeRemaining={timeRemaining}
             fakeDate={cfg.general.fake_date} 
             startTime={cfg.general.start_time} 
             currentRound={cfg.current_round}
             roundSpan={cfg.general.round_span_hours}
           />
-          {timeRemaining !== null && <CountdownTimer timeRemaining={timeRemaining} />}
 
           <Card sx={{ mt: 2 }}>
             <CardContent>
               <Typography variant="h6" gutterBottom>
                 Session Info
               </Typography>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Campaign
-                </Typography>
-                <Typography variant="body2">{cfg.campaign_name || '—'}</Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Scenario
-                </Typography>
-                <Typography variant="body2">{cfg.scenario_name || '—'}</Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Status
-                </Typography>
-                <Chip label={status} color={(status === 'running' || status === 'round_active') ? 'success' : 'default'} size="small" />
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Round
-                </Typography>
-                <Typography variant="body2">{cfg.current_round}</Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                <Typography variant="body2" color="text.secondary">
-                  Forecast Horizon
-                </Typography>
-                <Typography variant="body2">{cfg.general.forecast_horizon_hours}h</Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Typography variant="body2" color="text.secondary">
-                  Locked until
-                </Typography>
-                <Typography variant="body2">h{lockedUntil}</Typography>
-              </Box>
+              <Stack spacing={1} sx={{ mt: 1 }}>
+                {[
+                  { label: 'Campaign', value: cfg.campaign_name, optional: true },
+                  { label: 'Scenario', value: cfg.scenario_name || '—' },
+                  {
+                    label: 'Status',
+                    value: (
+                      <Chip
+                        label={status}
+                        color={(status === 'running' || status === 'round_active') ? 'success' : 'default'}
+                        size="small"
+                      />
+                    )
+                  },
+                  { label: 'Round', value: cfg.current_round ?? '—' },
+                  { label: 'Forecast Horizon', value: `${cfg.general.forecast_horizon_hours}h` },
+                  { label: 'Locked until', value: Number.isFinite(lockedUntil) ? `h${lockedUntil}` : '—' }
+                ].map(({ label, value, optional }) => {
+                  if (optional && !value) return null
+                  const renderedValue = React.isValidElement(value) ? value : (
+                    <Typography variant="body2">{value}</Typography>
+                  )
+                  return (
+                    <Box
+                      key={label}
+                      sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        {label}
+                      </Typography>
+                      {renderedValue}
+                    </Box>
+                  )
+                })}
+              </Stack>
               {timeRemaining !== null && initialDuration && initialDuration>0 && (
                 <Box sx={{ mt: 1 }}>
                   <Typography variant="caption" color="text.secondary">Round progress</Typography>
@@ -1785,11 +2003,22 @@ export default function Player() {
                     </Box>
                   )}
                 </Stack>
-              ) : (
+              ) : cfg.current_round === 1 ? (
                 <Typography variant="body2" color="text.secondary">
-                  Waiting for market data... Results appear after each round.
+                  Waiting for market data...
                 </Typography>
-              )}
+              ) : null}
+            </CardContent>
+          </Card>
+
+          {/* MCP and Volume Charts */}
+          <Card sx={{ mt: 2 }}>
+            <CardContent>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>MCP last round</Typography>
+              <svg ref={mcpRef} width="100%" height={160} style={{ border: '1px solid #eee' }} />
+
+              <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>Volume last round</Typography>
+              <svg ref={volRef} width="100%" height={160} style={{ border: '1px solid #eee' }} />
             </CardContent>
           </Card>
 
@@ -1844,9 +2073,6 @@ export default function Player() {
             {(allowedTypes.length === 0 || (selectedType && typeDevices.length>0)) ? (
               allowedTypes.length > 0 ? (
                 <Stack spacing={3} sx={{ mt:2 }}>
-                  <Alert severity="info">
-                    Enter your hourly forecast for each device. Locked hours (before freeze) cannot be changed.
-                  </Alert>
                   {typeDevices.map(did=> {
                   const deviceDef = scenarioDevices.find(d=> d.id === did)
                   const deviceType = deviceDef?.type || 'unknown'
@@ -1906,27 +2132,9 @@ export default function Player() {
                           const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
                             ? deviceDef.enable_multi_bid 
                             : biddingEnabled
-                          console.log(`[Player] Render check for device ${did}:`, {
-                            deviceBidding,
-                            globalBidding: biddingEnabled,
-                            deviceBidsExists: !!deviceBids[did],
-                            deviceBids: deviceBids[did],
-                            deviceDef_enable_multi_bid: deviceDef?.enable_multi_bid,
-                            deviceDef_name: deviceDef?.name,
-                            deviceDef_type: deviceDef?.type
-                          });
-                          return null;
-                        })()}
-                        {(() => {
-                          const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
-                            ? deviceDef.enable_multi_bid 
-                            : biddingEnabled
                           return deviceBidding && deviceBids[did]
                         })() && (
                           <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-                            <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1.5 }}>
-                              Multi-Bid Pricing
-                            </Typography>
                             <Typography variant="caption" color="text.secondary" sx={{ mb: 2, display: 'block' }}>
                               Set three different price levels and quantity curves (in MW). Lower prices dispatch first. All dispatched energy receives the Market Clearing Price (MCP). Enter power per hour - e.g., 600 MW for 6 hours means 600 in each hour.
                             </Typography>
@@ -2041,11 +2249,53 @@ export default function Player() {
                                     activeLot={activeLot}
                                     onLotChange={setActiveLot}
                                     deviceParams={deviceParams}
+                                    startTime={cfg.general.start_time || '00:00'}
                                   />
                                 </Box>
                                 <Box>
                                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                                    Edit Lot {activeLot}
+                                    Edit{' '}
+                                    <Box
+                                      component="span"
+                                      sx={{
+                                        cursor: 'pointer',
+                                        fontWeight: activeLot === 'A' ? 'bold' : 'normal',
+                                        color: activeLot === 'A' ? 'primary.main' : 'text.secondary',
+                                        textDecoration: activeLot === 'A' ? 'underline' : 'none',
+                                        '&:hover': { textDecoration: 'underline', color: 'primary.main' }
+                                      }}
+                                      onClick={() => setActiveLot('A')}
+                                    >
+                                      Baseload
+                                    </Box>
+                                    {' | '}
+                                    <Box
+                                      component="span"
+                                      sx={{
+                                        cursor: 'pointer',
+                                        fontWeight: activeLot === 'B' ? 'bold' : 'normal',
+                                        color: activeLot === 'B' ? 'primary.main' : 'text.secondary',
+                                        textDecoration: activeLot === 'B' ? 'underline' : 'none',
+                                        '&:hover': { textDecoration: 'underline', color: 'primary.main' }
+                                      }}
+                                      onClick={() => setActiveLot('B')}
+                                    >
+                                      Mid Merit
+                                    </Box>
+                                    {' | '}
+                                    <Box
+                                      component="span"
+                                      sx={{
+                                        cursor: 'pointer',
+                                        fontWeight: activeLot === 'C' ? 'bold' : 'normal',
+                                        color: activeLot === 'C' ? 'primary.main' : 'text.secondary',
+                                        textDecoration: activeLot === 'C' ? 'underline' : 'none',
+                                        '&:hover': { textDecoration: 'underline', color: 'primary.main' }
+                                      }}
+                                      onClick={() => setActiveLot('C')}
+                                    >
+                                      Peak Load
+                                    </Box>
                                   </Typography>
                                   <ForecastChartEditor 
                                     hours={deviceBids[did][activeLot]?.hours || []} 
@@ -2056,38 +2306,13 @@ export default function Player() {
                                     currentRound={Number(cfg.current_round || 1)}
                                     roundSpan={Number(cfg.general.round_span_hours || 6)}
                                     freezeHours={Number(cfg.general.freeze_hours || 6)}
+                                    dayAheadGateHour={Number(cfg.general.day_ahead_gate_hour ?? 12)}
                                     startTime={cfg.general.start_time || '00:00'}
                                     deviceType={deviceType}
                                     deviceParams={deviceParams}
                                     daBaseline={daBaseline.bids?.[did]?.[activeLot]?.hours || daBaseline.devices?.[did] || null}
                                     hourStatus={daBaseline.hour_status || []}
                                   />
-                                  <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-                                    <Button
-                                      size="small"
-                                      variant={activeLot === 'A' ? 'contained' : 'outlined'}
-                                      onClick={() => setActiveLot('A')}
-                                      sx={{ bgcolor: activeLot === 'A' ? '#ffd54f' : 'transparent', color: activeLot === 'A' ? '#000' : '#64b5f6', '&:hover': { bgcolor: activeLot === 'A' ? '#ffca28' : '#e3f2fd' } }}
-                                    >
-                                      Baseload
-                                    </Button>
-                                    <Button
-                                      size="small"
-                                      variant={activeLot === 'B' ? 'contained' : 'outlined'}
-                                      onClick={() => setActiveLot('B')}
-                                      sx={{ bgcolor: activeLot === 'B' ? '#ffd54f' : 'transparent', color: activeLot === 'B' ? '#000' : '#2196f3', '&:hover': { bgcolor: activeLot === 'B' ? '#ffca28' : '#e3f2fd' } }}
-                                    >
-                                      Mid-Merit
-                                    </Button>
-                                    <Button
-                                      size="small"
-                                      variant={activeLot === 'C' ? 'contained' : 'outlined'}
-                                      onClick={() => setActiveLot('C')}
-                                      sx={{ bgcolor: activeLot === 'C' ? '#ffd54f' : 'transparent', color: activeLot === 'C' ? '#000' : '#1565c0', '&:hover': { bgcolor: activeLot === 'C' ? '#ffca28' : '#e3f2fd' } }}
-                                    >
-                                      Peak
-                                    </Button>
-                                  </Stack>
                                 </Box>
                               </>
                             )}
@@ -2112,6 +2337,7 @@ export default function Player() {
                                   currentRound={Number(cfg.current_round || 1)}
                                   roundSpan={Number(cfg.general.round_span_hours || 6)}
                                   freezeHours={Number(cfg.general.freeze_hours || 6)}
+                                  dayAheadGateHour={Number(cfg.general.day_ahead_gate_hour ?? 12)}
                                   startTime={cfg.general.start_time || '00:00'}
                                   deviceType={deviceType}
                                   deviceParams={deviceParams}
@@ -2360,32 +2586,18 @@ export default function Player() {
           ) : null}
 
             <Stack direction="row" spacing={2} sx={{ mt: 3 }}>
-              <Tooltip arrow title="Saves all hourly values for the full forecast horizon without submitting the current round.">
-                <span>
-                  <Button variant="outlined" onClick={saveFull} disabled={!sessionId || (allowedTypes.length>0 && !selectedType)}>
-                    Save Full Forecast
-                  </Button>
-                </span>
-              </Tooltip>
               <Tooltip arrow title={`Submits only the hours of the current round (R${cfg.current_round}).`}>
                 <span>
-                  <Button variant="contained" onClick={submitCurrent} disabled={!isEditable || !isValid || timeRemaining === 0 || (allowedTypes.length>0 && !selectedType)}>
+                  <Button
+                    variant="contained"
+                    onClick={() => submitCurrent(false)}
+                    disabled={!isEditable || !isValid || timeRemaining === 0 || (allowedTypes.length>0 && !selectedType)}
+                  >
                     Submit Current Round
                   </Button>
                 </span>
               </Tooltip>
             </Stack>
-
-            {/* Charts */}
-            {series.length > 0 && (
-              <>
-                <Typography variant="subtitle2" sx={{ mt: 4, mb: 1 }}>MCP over rounds</Typography>
-                <svg ref={mcpRef} width={360} height={120} style={{ border: '1px solid #eee' }} />
-
-                <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>Volume over rounds</Typography>
-                <svg ref={volRef} width={360} height={120} style={{ border: '1px solid #eee' }} />
-              </>
-            )}
           </Paper>
         </Grid>
       </Grid>

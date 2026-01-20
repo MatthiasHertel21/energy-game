@@ -30,9 +30,6 @@ class CampaignList(Resource):
         elif for_me:
             # campaigns visible for any cohort the user belongs to
             # user cohorts
-            sub = _rq.app.db.session.query(CohortMember.cohort_id).filter(CohortMember.user_id == uid).subquery() if False else None
-            # SQLAlchemy on this setup: use db from extensions
-            from .extensions import db
             sub = db.session.query(CohortMember.cohort_id).filter(CohortMember.user_id == uid).subquery()
             q = q.join(CohortCampaign, CohortCampaign.campaign_id == Campaign.id, isouter=False).\
                 filter(CohortCampaign.cohort_id.in_(sub), CohortCampaign.visible == True)

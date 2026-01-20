@@ -15,6 +15,7 @@ from .export import ns as export_ns
 from .health import bp as health_bp
 from .catalog import ns as catalog_ns
 from .trainer import ns as trainer_ns
+from .static_pages import ns as static_pages_ns
 
 
 def create_app() -> Flask:
@@ -57,6 +58,7 @@ def create_app() -> Flask:
     api.add_namespace(export_ns)
     api.add_namespace(catalog_ns)
     api.add_namespace(trainer_ns)
+    api.add_namespace(static_pages_ns)
 
     # Blueprints
     app.register_blueprint(health_bp)
@@ -81,6 +83,8 @@ def create_app() -> Flask:
             Scenario,
             CampaignScenario,
         )
+        from .static_pages import StaticPage
+        
         with app.app_context():
             insp = inspect(db.engine)
             if not insp.has_table(SessionAllowedType.__tablename__):
@@ -93,6 +97,8 @@ def create_app() -> Flask:
                 Scenario.__table__.create(bind=db.engine, checkfirst=True)
             if not insp.has_table(CampaignScenario.__tablename__):
                 CampaignScenario.__table__.create(bind=db.engine, checkfirst=True)
+            if not insp.has_table(StaticPage.__tablename__):
+                StaticPage.__table__.create(bind=db.engine, checkfirst=True)
 
             # Lightweight column backfill for campaigns to avoid 500s when migrations weren't run
             try:
