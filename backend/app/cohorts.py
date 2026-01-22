@@ -25,33 +25,51 @@ class Cohorts(Resource):
     @jwt_required()
     @role_required("trainer", "admin")
     def get(self):
-        rows = (
-            db.session.query(
-                Cohort.id,
-                Cohort.name,
-                Cohort.trainer_id,
-                User.email.label("trainer_email"),
-                func.count(func.distinct(CohortMember.id)).label("members_count"),
-                func.coalesce(func.sum(case((CohortCampaign.active == True, 1), else_=0)), 0).label("campaigns_count"),
-            )
-            .outerjoin(User, User.id == Cohort.trainer_id)
-            .outerjoin(CohortMember, CohortMember.cohort_id == Cohort.id)
-            .outerjoin(CohortCampaign, CohortCampaign.cohort_id == Cohort.id)
-            .group_by(Cohort.id, Cohort.name, Cohort.trainer_id, User.email)
+        cohorts = (
+            db.session.query(Cohort)
+            .filter(~Cohort.name.like('Solo %'))  # Exclude solo cohorts
             .order_by(Cohort.id.desc())
             .all()
         )
-        return [
-            {
-                "id": r.id,
-                "name": r.name,
-                "trainer_id": r.trainer_id,
-                "trainer_email": r.trainer_email,
-                "members_count": int(r.members_count or 0),
-                "campaigns_count": int(r.campaigns_count or 0),
-            }
-            for r in rows
-        ]
+        
+        result = []
+        for cohort in cohorts:
+            # Get trainer email
+            trainer = User.query.get(cohort.trainer_id)
+            
+            # Get members count
+            members_count = CohortMember.query.filter_by(cohort_id=cohort.id).count()
+            
+            # Get campaigns with scenario counts
+            campaign_mappings = (
+                db.session.query(CohortCampaign, Campaign)
+                .join(Campaign, Campaign.id == CohortCampaign.campaign_id)
+                .filter(CohortCampaign.cohort_id == cohort.id)
+                .filter(CohortCampaign.active == True)
+                .all()
+            )
+            
+            campaigns_info = []
+            for mapping, campaign in campaign_mappings:
+                # Count scenarios in this campaign
+                from .models import CampaignScenario
+                scenario_count = CampaignScenario.query.filter_by(campaign_id=campaign.id).count()
+                campaigns_info.append({
+                    "id": campaign.id,
+                    "name": campaign.name,
+                    "scenario_count": scenario_count
+                })
+            
+            result.append({
+                "id": cohort.id,
+                "name": cohort.name,
+                "trainer_id": cohort.trainer_id,
+                "trainer_email": trainer.email if trainer else None,
+                "members_count": members_count,
+                "campaigns": campaigns_info
+            })
+        
+        return result
 
     @jwt_required()
     @role_required("trainer", "admin")
@@ -71,6 +89,41 @@ class Cohorts(Resource):
 
 @ns.route("/<int:cid>")
 class CohortItem(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def get(self, cid: int):
+        """Get cohort details including invite token."""
+        c = Cohort.query.get_or_404(cid)
+        
+        # Find or create a valid invite token for this cohort
+        invite = Invite.query.filter_by(cohort_id=cid, used=False).filter(
+            Invite.expires_at >= datetime.utcnow()
+        ).first()
+        
+        if not invite:
+            # Create a new invite token (no specific email, valid for 365 days)
+            import uuid
+            from datetime import timedelta
+            token = uuid.uuid4().hex
+            expires = datetime.utcnow() + timedelta(days=365)
+            invite = Invite(
+                email="",  # Empty email means it can be used by anyone
+                role=Role.player,
+                token=token,
+                expires_at=expires,
+                used=False,
+                cohort_id=cid
+            )
+            db.session.add(invite)
+            db.session.commit()
+        
+        return {
+            "id": c.id,
+            "name": c.name,
+            "trainer_id": c.trainer_id,
+            "invite_token": invite.token
+        }
+    
     @jwt_required()
     @role_required("trainer", "admin")
     @ns.expect(cohort_in, validate=True)
@@ -117,7 +170,33 @@ class CohortPlayers(Resource):
             .filter(CohortMember.cohort_id == cid)
             .all()
         )
-        return [{"user_id": m.user_id, "email": u.email, "name": getattr(u, 'name', None)} for m, u in members]
+        
+        # Get solo session counts for all members
+        user_ids = [m.user_id for m, u in members]
+        solo_session_counts = {}
+        if user_ids:
+            # Count sessions in cohorts that start with "Solo "
+            counts = (
+                db.session.query(
+                    Result.player_id,
+                    func.count(func.distinct(Result.session_id)).label('count')
+                )
+                .join(Session, Session.id == Result.session_id)
+                .join(Cohort, Cohort.id == Session.cohort_id)
+                .filter(Result.player_id.in_(user_ids))
+                .filter(Cohort.name.like('Solo %'))
+                .group_by(Result.player_id)
+                .all()
+            )
+            solo_session_counts = {user_id: count for user_id, count in counts}
+        
+        return [{
+            "user_id": m.user_id, 
+            "email": u.email, 
+            "name": getattr(u, 'name', None),
+            "last_login": u.last_login.isoformat() if u.last_login else None,
+            "solo_sessions": solo_session_counts.get(m.user_id, 0)
+        } for m, u in members]
     
     @jwt_required()
     @role_required("trainer", "admin")

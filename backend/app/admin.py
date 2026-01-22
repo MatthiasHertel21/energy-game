@@ -60,9 +60,53 @@ role_patch = ns.model(
 class Users(Resource):
     @jwt_required()
     @role_required("admin")
-    @ns.marshal_list_with(user_out)
     def get(self):
-        return [u.to_dict() for u in User.query.order_by(User.id.asc()).all()]
+        """Get all users with cohort and solo session information."""
+        users = User.query.order_by(User.id.asc()).all()
+        
+        # Get all user IDs for batch queries
+        user_ids = [u.id for u in users]
+        
+        # Get cohort memberships (excluding Solo cohorts)
+        cohort_memberships = {}
+        if user_ids:
+            memberships = (
+                db.session.query(CohortMember.user_id, Cohort.id, Cohort.name)
+                .join(Cohort, Cohort.id == CohortMember.cohort_id)
+                .filter(CohortMember.user_id.in_(user_ids))
+                .filter(~Cohort.name.like('Solo %'))
+                .all()
+            )
+            for user_id, cohort_id, cohort_name in memberships:
+                if user_id not in cohort_memberships:
+                    cohort_memberships[user_id] = []
+                cohort_memberships[user_id].append({"id": cohort_id, "name": cohort_name})
+        
+        # Get solo session counts
+        solo_session_counts = {}
+        if user_ids:
+            counts = (
+                db.session.query(
+                    Result.player_id,
+                    func.count(func.distinct(Result.session_id)).label('count')
+                )
+                .join(Session, Session.id == Result.session_id)
+                .join(Cohort, Cohort.id == Session.cohort_id)
+                .filter(Result.player_id.in_(user_ids))
+                .filter(Cohort.name.like('Solo %'))
+                .group_by(Result.player_id)
+                .all()
+            )
+            solo_session_counts = {user_id: count for user_id, count in counts}
+        
+        result = []
+        for u in users:
+            user_dict = u.to_dict()
+            user_dict["cohorts"] = cohort_memberships.get(u.id, [])
+            user_dict["solo_sessions"] = solo_session_counts.get(u.id, 0)
+            result.append(user_dict)
+        
+        return result
 
     create_in = ns.model(
         "UserCreate",
@@ -201,6 +245,50 @@ class UserPassword(Resource):
         }, HTTPStatus.OK
 
 
+@ns.route("/users/<int:user_id>/cohort")
+class UserCohortAssignment(Resource):
+    @jwt_required()
+    @role_required("admin")
+    def post(self, user_id: int):
+        """Assign a user to a cohort."""
+        user = User.query.get_or_404(user_id)
+        body = request.json or {}
+        cohort_id = body.get("cohort_id")
+        
+        if not cohort_id:
+            ns.abort(HTTPStatus.BAD_REQUEST, "cohort_id required")
+        
+        cohort = Cohort.query.get_or_404(cohort_id)
+        
+        # Check if already a member
+        existing = CohortMember.query.filter_by(cohort_id=cohort_id, user_id=user_id).first()
+        if existing:
+            return {"status": "ok", "message": "User already in cohort"}
+        
+        # Add user to cohort
+        member = CohortMember(cohort_id=cohort_id, user_id=user_id)
+        db.session.add(member)
+        db.session.commit()
+        
+        return {"status": "ok", "message": f"User {user.email} added to cohort {cohort.name}"}
+    
+    @jwt_required()
+    @role_required("admin")
+    def delete(self, user_id: int):
+        """Remove a user from a cohort."""
+        body = request.json or {}
+        cohort_id = body.get("cohort_id")
+        
+        if not cohort_id:
+            ns.abort(HTTPStatus.BAD_REQUEST, "cohort_id required")
+        
+        member = CohortMember.query.filter_by(cohort_id=cohort_id, user_id=user_id).first_or_404()
+        db.session.delete(member)
+        db.session.commit()
+        
+        return {"status": "ok", "message": "User removed from cohort"}
+
+
 @ns.route("/users/<int:user_id>")
 class UserItem(Resource):
     @jwt_required()
@@ -273,6 +361,21 @@ class UserItem(Resource):
 
 
 # (Removed duplicate UserDelete route with unreachable code)
+
+
+@ns.route("/cohorts")
+class AdminCohorts(Resource):
+    @jwt_required()
+    @role_required("admin")
+    def get(self):
+        """Get all cohorts (excluding Solo cohorts) for user assignment."""
+        cohorts = (
+            db.session.query(Cohort)
+            .filter(~Cohort.name.like('Solo %'))
+            .order_by(Cohort.name.asc())
+            .all()
+        )
+        return [{"id": c.id, "name": c.name} for c in cohorts]
 
 
 @ns.route("/invites")

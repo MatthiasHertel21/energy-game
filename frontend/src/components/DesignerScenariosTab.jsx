@@ -84,9 +84,8 @@ export default function DesignerScenariosTab(){
 
   return (
     <Box>
-      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <Box sx={{ mb: 3 }}>
         <Typography variant="h5">All Scenarios</Typography>
-        <Button variant="contained" onClick={()=> navigate('/kse')}>New Scenario</Button>
       </Box>
 
       <Paper sx={{ mb: 2, p: 2 }}>

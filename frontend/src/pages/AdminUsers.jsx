@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Paper, Typography, Table, TableHead, TableBody, TableRow, TableCell, Select, MenuItem, TextField, Button, Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, Box, Skeleton, Tabs, Tab, Grid, Card, CardContent, Chip } from '@mui/material'
-import { PersonAdd as PersonAddIcon } from '@mui/icons-material'
+import { Paper, Typography, Table, TableHead, TableBody, TableRow, TableCell, Select, MenuItem, TextField, Button, Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, Box, Skeleton, Tabs, Tab, Grid, Card, CardContent, Chip, IconButton, Tooltip } from '@mui/material'
+import { PersonAdd as PersonAddIcon, LockReset as LockResetIcon, Delete as DeleteIcon, GroupAdd as GroupAddIcon } from '@mui/icons-material'
 import api from '../services/api'
 import DocsFab from '../components/DocsFab'
 import EmptyState from '../components/EmptyState'
@@ -71,6 +71,11 @@ export default function AdminUsers(){
   const [sessPage, setSessPage] = useState(0)
   const [sessRows, setSessRows] = useState(25)
   const [sessFilters, setSessFilters] = useState({ status: '', scenario_id: '', date_from: '', date_to: '' })
+  // Cohort assignment
+  const [cohortModalOpen, setCohortModalOpen] = useState(false)
+  const [selectedUser, setSelectedUser] = useState(null)
+  const [availableCohorts, setAvailableCohorts] = useState([])
+  const [selectedCohort, setSelectedCohort] = useState('')
 
   const load = async () => {
     setLoading(true)
@@ -203,6 +208,33 @@ export default function AdminUsers(){
     }
   }
 
+  const openCohortModal = async (user) => {
+    setSelectedUser(user)
+    setCohortModalOpen(true)
+    setSelectedCohort('')
+    
+    // Load available cohorts
+    try {
+      const { data } = await api.get('/api/admin/cohorts')
+      setAvailableCohorts(data)
+    } catch (e) {
+      setSnack('Failed to load cohorts')
+    }
+  }
+
+  const assignCohort = async () => {
+    if (!selectedCohort || !selectedUser) return
+    
+    try {
+      await api.post(`/api/admin/users/${selectedUser.id}/cohort`, { cohort_id: selectedCohort })
+      setSnack('User assigned to cohort')
+      setCohortModalOpen(false)
+      await load()
+    } catch (e) {
+      setSnack(e?.response?.data?.message || 'Failed to assign cohort')
+    }
+  }
+
   return (
     <Paper sx={{ p:2, maxWidth: 1400, mx: 'auto' }}>
       <Tabs value={tab} onChange={(_,v)=>setTab(v)} aria-label="Admin tabs">
@@ -217,13 +249,6 @@ export default function AdminUsers(){
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, mt: 1 }}>
         <Typography variant="h5">User Management</Typography>
         <Box>
-          <Button 
-            variant="outlined" 
-            onClick={() => setInviteModalOpen(true)}
-            sx={{ mr: 1 }}
-          >
-            Invite User
-          </Button>
           <Button 
             variant="contained" 
             onClick={() => setCreateModalOpen(true)}
@@ -249,9 +274,9 @@ export default function AdminUsers(){
         <EmptyState 
           icon={PersonAddIcon}
           title={query ? "No users found" : "No users yet"}
-          message={query ? "Try adjusting your search criteria" : "Invite your first user to get started"}
-          actionLabel={!query ? "Invite User" : undefined}
-          onAction={!query ? () => setInviteModalOpen(true) : undefined}
+          message={query ? "Try adjusting your search criteria" : "Create your first user to get started"}
+          actionLabel={!query ? "Create User" : undefined}
+          onAction={!query ? () => setCreateModalOpen(true) : undefined}
         />
       ) : (
         <>
@@ -261,6 +286,8 @@ export default function AdminUsers(){
             <TableCell>ID</TableCell>
             <TableCell>Email</TableCell>
             <TableCell>Role</TableCell>
+            <TableCell>Cohorts</TableCell>
+            <TableCell align="right">Solo Sessions</TableCell>
             <TableCell>Created</TableCell>
             <TableCell align="right">Actions</TableCell>
           </TableRow>
@@ -277,10 +304,35 @@ export default function AdminUsers(){
                   {roles.map(r=> <MenuItem key={r} value={r}>{r}</MenuItem>)}
                 </Select>
               </TableCell>
+              <TableCell>
+                {u.cohorts && u.cohorts.length > 0 ? (
+                  <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                    {u.cohorts.map(c => (
+                      <Chip key={c.id} label={c.name} size="small" />
+                    ))}
+                  </Box>
+                ) : (
+                  <Typography variant="caption" color="text.secondary">—</Typography>
+                )}
+              </TableCell>
+              <TableCell align="right">{u.solo_sessions || 0}</TableCell>
               <TableCell>{u.created_at}</TableCell>
               <TableCell align="right">
-                <Button size="small" onClick={() => resetPassword(u.id, u.email)} sx={{ mr: 1 }}>Reset Password</Button>
-                <Button size="small" color="error" onClick={() => deleteUser(u.id, u.email)}>Delete</Button>
+                <Tooltip title="Assign to Cohort" arrow>
+                  <IconButton size="small" onClick={() => openCohortModal(u)}>
+                    <GroupAddIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Reset Password" arrow>
+                  <IconButton size="small" onClick={() => resetPassword(u.id, u.email)}>
+                    <LockResetIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Delete User" arrow>
+                  <IconButton size="small" color="error" onClick={() => deleteUser(u.id, u.email)}>
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
               </TableCell>
             </TableRow>
           ))}
@@ -372,6 +424,51 @@ export default function AdminUsers(){
         <DialogActions>
           <Button onClick={() => setCreateModalOpen(false)}>Cancel</Button>
           <Button onClick={createUser} disabled={!createEmail} variant="contained">Create User</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Cohort Assignment Modal */}
+      <Dialog open={cohortModalOpen} onClose={() => setCohortModalOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Assign User to Cohort</DialogTitle>
+        <DialogContent>
+          <Box sx={{ pt: 1 }}>
+            {selectedUser && (
+              <Typography variant="body2" sx={{ mb: 2 }}>
+                User: <strong>{selectedUser.email}</strong>
+              </Typography>
+            )}
+            <Select
+              fullWidth
+              value={selectedCohort}
+              onChange={e => setSelectedCohort(e.target.value)}
+              displayEmpty
+            >
+              <MenuItem value="" disabled>
+                <em>Select a cohort</em>
+              </MenuItem>
+              {availableCohorts.map(c => (
+                <MenuItem key={c.id} value={c.id}>
+                  {c.name}
+                </MenuItem>
+              ))}
+            </Select>
+            {selectedUser && selectedUser.cohorts && selectedUser.cohorts.length > 0 && (
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="caption" color="text.secondary">
+                  Current cohorts:
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
+                  {selectedUser.cohorts.map(c => (
+                    <Chip key={c.id} label={c.name} size="small" />
+                  ))}
+                </Box>
+              </Box>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCohortModalOpen(false)}>Cancel</Button>
+          <Button onClick={assignCohort} disabled={!selectedCohort} variant="contained">Assign</Button>
         </DialogActions>
       </Dialog>
 

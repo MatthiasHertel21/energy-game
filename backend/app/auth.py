@@ -64,6 +64,10 @@ class Login(Resource):
         if not user or not bcrypt.check_password_hash(user.password_hash, password):
             ns.abort(HTTPStatus.UNAUTHORIZED, "Invalid credentials")
 
+        # Update last login timestamp
+        user.last_login = datetime.utcnow()
+        db.session.commit()
+
         access = create_access_token(identity=str(user.id), additional_claims={"role": user.role.value})
         refresh = create_refresh_token(identity=str(user.id))
         
@@ -98,20 +102,33 @@ class Register(Resource):
             ns.abort(HTTPStatus.FORBIDDEN, f"System limit reached: maximum {Config.MAX_USERS} users allowed")
 
         role = Role.player
+        cohort_id = None
         # Bootstrap: first ever user becomes admin
         if user_count == 0:
             role = Role.admin
         if invite_token and role != Role.admin:
             inv = Invite.query.filter_by(token=invite_token).first()
-            if not inv or not inv.is_valid() or inv.email.lower() != email:
+            # Allow empty email in invite for cohort-wide tokens
+            if not inv or not inv.is_valid():
+                ns.abort(HTTPStatus.BAD_REQUEST, "Invalid or expired invite")
+            if inv.email and inv.email.lower() != email:
                 ns.abort(HTTPStatus.BAD_REQUEST, "Invalid or expired invite")
             role = inv.role
+            cohort_id = inv.cohort_id
             inv.used = True
             db.session.add(inv)
 
         pw_hash = bcrypt.generate_password_hash(password).decode("utf-8")
         user = User(email=email, password_hash=pw_hash, role=role)
         db.session.add(user)
+        db.session.flush()  # Get user.id
+        
+        # Add user to cohort if invite had cohort_id
+        if cohort_id:
+            from .models import CohortMember
+            member = CohortMember(cohort_id=cohort_id, user_id=user.id)
+            db.session.add(member)
+        
         db.session.commit()
 
         access = create_access_token(identity=str(user.id), additional_claims={"role": user.role.value})

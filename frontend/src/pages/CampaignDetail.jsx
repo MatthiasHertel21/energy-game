@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Box, Stack, Typography, Chip, Button, Card, CardMedia, CardContent, Divider, LinearProgress, List, ListItem, ListItemText, ListItemButton } from '@mui/material'
-import { Assessment as EvaluationIcon } from '@mui/icons-material'
+import { Assessment as EvaluationIcon, PlayArrow as PlayArrowIcon } from '@mui/icons-material'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
 import InfoLabel from '../components/InfoLabel'
@@ -235,10 +235,12 @@ export default function CampaignDetail(){
                         {session && !isCompleted && (
                           <Button 
                             disabled={!sc.solo_enabled} 
-                            variant="outlined" 
-                            color="secondary"
+                            variant="contained" 
+                            color="primary"
                             onClick={()=> handlePlayAction(sc.scenario_id, true)}
                             size="small"
+                            startIcon={<PlayArrowIcon />}
+                            sx={{ minWidth: 100 }}
                           >
                             Start New
                           </Button>

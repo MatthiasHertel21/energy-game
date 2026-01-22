@@ -1,8 +1,8 @@
 # Player Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 2.0 (Sprint 24)  
-**Date**: December 23, 2025  
+**Version**: 2.1 (Sprint 24)  
+**Date**: January 22, 2026  
 **Audience**: Players/Participants
 
 ---
@@ -76,7 +76,24 @@ If you receive an invitation link from your trainer:
 | `/leaderboard` | Ranking compared to other players |
 | `/me` | Profile and settings |
 
-### 3.2 Catalog
+### 3.2 Profile Page (NEW in Sprint 24)
+
+The profile page (`/me`) allows you to:
+
+| Feature | Description |
+|---------|-------------|
+| **Display Name** | Set your display name (shown in leaderboards) |
+| **Bio** | Add a short biography or description |
+| **Statistics** | View your game statistics |
+| **Recent Sessions** | Access your recent game sessions |
+
+**To edit your profile:**
+1. Navigate to `/me`
+2. Click the "Edit" button
+3. Update your name and/or bio
+4. Click "Save" to confirm changes
+
+### 3.3 Catalog
 
 The catalog shows all available campaigns:
 
@@ -86,7 +103,7 @@ The catalog shows all available campaigns:
 | **Scenarios** | List of scenarios within the campaign |
 | **Solo/Cohort** | What modes are available |
 
-### 3.3 Player Page
+### 3.4 Player Page
 
 The central game interface with:
 

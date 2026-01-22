@@ -1,8 +1,8 @@
 # Trainer Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 2.0 (Sprint 24)  
-**Date**: December 23, 2025  
+**Version**: 2.1 (Sprint 24)  
+**Date**: January 22, 2026  
 **Audience**: Trainers/Facilitators
 
 ---
@@ -36,12 +36,11 @@ As a trainer, you are responsible for:
 
 | Route | Function |
 |-------|----------|
-| `/cohorts` | Cohort and campaign management |
-| `/trainer` | Session control and live monitoring |
+| `/trainer` | Cohort and campaign management (formerly `/cohorts`) |
+| `/session-control?cohort=...` | Session control and live monitoring |
 | `/comparison?sessionId=...` | Cross-player comparison |
 | `/leaderboard?sessionId=...` | Ranking |
-| `/replay?sessionId=...` | Round-by-round playback |
-| `/evaluation?sessionId=...` | Final evaluation |
+| `/replay?session=...` | Round-by-round playback |
 
 ### Workflow Overview
 
@@ -70,48 +69,72 @@ As a trainer, you are responsible for:
 
 ### 2.1 Create Cohort
 
-**Route**: `/cohorts` → "New Cohort"
+**Route**: `/trainer` → "Create Cohort" button in toolbar
 
 | Field | Description | Example |
 |-------|-------------|---------|
 | **Name** | Unique cohort name | "WS 2025 Group A" |
-| **Description** | Optional, internal notes | "Tuesday class" |
+
+**Features (Sprint 24 Update)**:
+- Modal-based creation dialog
+- Simplified single-field form
+- Immediate feedback on creation
 
 ### 2.2 Manage Members
+
+**Members Tab (NEW in Sprint 24)**:
+
+The Members tab in the cohort details modal shows:
+
+| Column | Description |
+|--------|-------------|
+| **Email** | Player email address |
+| **Name** | Player's display name (editable in profile) |
+| **Last Login** | Last login timestamp or "Never" |
+| **Solo Sessions** | Count of solo sessions completed by this player |
 
 **Add Players:**
 
 | Method | Description |
 |--------|-------------|
-| **Email** | Enter individual email address |
-| **CSV Import** | Upload list of emails |
-| **Invitation Link** | Share link, players self-register |
+| **Registration Link** | Share cohort-specific link (NEW in Sprint 24) |
+| ↳ Auto-assignment | Players automatically join cohort on registration |
+| ↳ Copy link | Click copy icon to copy registration URL |
 
 **Remove Players:**
-- Click ✕ next to the player
+- Click delete icon next to the player
 - ⚠️ Player loses access to all cohort sessions
+
+**Note**: CSV import has been removed. Use registration links for bulk onboarding.
 
 ### 2.3 Activate Campaigns
 
 **Campaigns Tab:**
 
+The Campaigns tab shows active campaigns with detailed information:
+
 | Column | Description |
 |--------|-------------|
-| **Campaign** | Campaign name |
+| **Campaign Name** | Campaign name with scenario count |
+| **Published** | Publication status |
 | **Visible** | Visible in catalog for this cohort |
 | **Active** | Sessions can be started |
 
 **Actions:**
 - Toggle "Visible" → Players see campaign in catalog
 - Toggle "Active" → Trainer can start sessions
-- Click on campaign → Shows scenarios
 
-### 2.4 Session History
+**Display Format (NEW in Sprint 24)**:
+- Campaigns shown with names instead of just IDs
+- Scenario count displayed for each campaign
+- Example: "Tutorial Campaign (3 scenarios)"
 
-**Sessions Tab:**
-- List of all past sessions
-- Status, start time, participants
-- Links to Evaluation, Replay, Leaderboard
+### 2.4 Activity Tab
+
+**Activity Tab (Sprint 24)**:
+- Shows recent activity logs for the cohort
+- Pagination with 50 items per page
+- Filterable by action type and user
 
 ---
 
@@ -119,10 +142,10 @@ As a trainer, you are responsible for:
 
 ### 3.1 Session Start Workflow
 
-**Route**: `/trainer` or `/cohorts` → Campaign → Scenario → "Start Session"
+**Route**: `/session-control?cohort=...` (or via "Session Control" button in Trainer Panel)
 
 **Step 1: Choose Cohort**
-- Dropdown shows available cohorts
+- Select cohort from URL parameter
 - ⚠️ Warning if cohort already has active session
 
 **Step 2: Choose Campaign**

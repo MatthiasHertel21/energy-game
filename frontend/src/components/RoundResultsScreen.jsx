@@ -180,29 +180,37 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
   };
 
   useEffect(() => {
-    if (!sessionId || !round) return;
+    console.log('[RoundResultsScreen] useEffect triggered:', { sessionId, round });
+    if (!sessionId || !round) {
+      console.log('[RoundResultsScreen] Skipping fetch - missing sessionId or round');
+      return;
+    }
 
     const fetchResults = async () => {
+      console.log('[RoundResultsScreen] Fetching results for session', sessionId, 'round', round);
       try {
         const { data } = await api.get(`/api/sessions/${sessionId}/round-results/${round}`);
+        console.log('[RoundResultsScreen] Results loaded successfully:', data);
         setResults(data);
         setLoading(false);
       } catch (error) {
-        console.error('Failed to fetch round results:', error);
+        console.error('[RoundResultsScreen] Failed to fetch round results:', error);
         
         // If 404, try to get the latest available round results
         if (error.response?.status === 404) {
           try {
-            console.log('Round results not found, fetching latest available...');
+            console.log('[RoundResultsScreen] Round results not found, fetching latest available...');
             const { data } = await api.get(`/api/sessions/${sessionId}/latest-round-results`);
+            console.log('[RoundResultsScreen] Latest results loaded:', data);
             setResults(data);
             setLoading(false);
             return;
           } catch (fallbackError) {
-            console.error('Failed to fetch latest results:', fallbackError);
+            console.error('[RoundResultsScreen] Failed to fetch latest results:', fallbackError);
           }
         }
         
+        console.log('[RoundResultsScreen] Setting loading to false after error');
         setLoading(false);
       }
     };

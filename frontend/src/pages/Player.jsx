@@ -1737,10 +1737,10 @@ export default function Player() {
       {/* Round Results Screen */}
       {status === 'round_results' && (
         <>
-        {console.log('[Player] Showing RoundResultsScreen for round', cfg.current_round - 1)}
+        {console.log('[Player] Showing RoundResultsScreen for round', cfg.current_round)}
         <RoundResultsScreen 
           sessionId={sessionId}
-          round={cfg.current_round - 1}
+          round={cfg.current_round}
           mode={mode}
           scenario={scenario}
           onAdvance={async () => {

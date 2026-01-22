@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Box, Stack, Typography, Grid, Paper, TextField, Button, List, ListItem, ListItemText, Divider, Switch, FormControlLabel, IconButton, Select, MenuItem, LinearProgress } from '@mui/material'
+import { Box, Stack, Typography, Grid, Paper, TextField, Button, List, ListItem, ListItemText, Divider, Switch, FormControlLabel, IconButton, Select, MenuItem, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material'
 import { ArrowUpward, ArrowDownward, Delete } from '@mui/icons-material'
 import api from '../services/api'
 import EmptyState from './EmptyState'
 import InfoLabel from './InfoLabel'
 
-export default function DesignerCampaignsTab(){
+export default function DesignerCampaignsTab({ createOpen, setCreateOpen }){
   const [campaigns, setCampaigns] = useState(null)
   const [selected, setSelected] = useState(null)
   const [scenarios, setScenarios] = useState([])
@@ -47,6 +47,7 @@ export default function DesignerCampaignsTab(){
     if(!creating.name) return
     await api.post('/api/kse/campaigns', creating)
     setCreating({ name:'', description:'' })
+    setCreateOpen(false)
     await load()
   }
 
@@ -154,13 +155,6 @@ export default function DesignerCampaignsTab(){
               </ListItem>
             ))}
           </List>
-          <Divider sx={{ my:1 }} />
-          <Stack spacing={1}>
-            <InfoLabel title="New campaign" tooltip="Create a new campaign with name and description." />
-            <TextField size="small" label="Name" value={creating.name} onChange={e=> setCreating({...creating, name:e.target.value})} inputProps={{ name:'Name', 'aria-label':'Name', label:'Name' }} />
-            <TextField size="small" label="Description" value={creating.description} onChange={e=> setCreating({...creating, description:e.target.value})} />
-            <Button variant="contained" onClick={create} disabled={!creating.name}>Create</Button>
-          </Stack>
         </Paper>
       </Grid>
       <Grid item xs={12} md={8}>
@@ -225,6 +219,35 @@ export default function DesignerCampaignsTab(){
         )}
       </Grid>
       </Grid>
+
+      {/* Create Campaign Modal */}
+      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Add Campaign</DialogTitle>
+        <DialogContent>
+          <Box sx={{ pt: 1 }}>
+            <TextField 
+              fullWidth 
+              label="Name" 
+              value={creating.name} 
+              onChange={e=> setCreating({...creating, name:e.target.value})} 
+              sx={{ mb: 2 }}
+              inputProps={{ name:'Name', 'aria-label':'Name', label:'Name' }}
+            />
+            <TextField 
+              fullWidth 
+              label="Description" 
+              value={creating.description} 
+              onChange={e=> setCreating({...creating, description:e.target.value})} 
+              multiline
+              minRows={3}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setCreateOpen(false); setCreating({ name:'', description:'' }) }}>Cancel</Button>
+          <Button onClick={create} disabled={!creating.name} variant="contained">Create</Button>
+        </DialogActions>
+      </Dialog>
     </>
   )
 }

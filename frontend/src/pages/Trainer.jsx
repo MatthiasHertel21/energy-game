@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Select, MenuItem, Tooltip, Checkbox, FormControlLabel, Chip, Box, IconButton } from '@mui/material'
-import { Pause as PauseIcon, PlayArrow as ResumeIcon, Stop as StopIcon } from '@mui/icons-material'
+import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Select, MenuItem, Tooltip, Checkbox, FormControlLabel, Chip, Box, IconButton, Dialog, DialogTitle, DialogContent, IconButton as MuiIconButton, Skeleton } from '@mui/material'
+import { Pause as PauseIcon, PlayArrow as ResumeIcon, Stop as StopIcon, BarChart as ComparisonIcon, Close as CloseIcon } from '@mui/icons-material'
+import { useSearchParams } from 'react-router-dom'
 import InfoLabel from '../components/InfoLabel'
 import { io } from 'socket.io-client'
 import api from '../services/api'
@@ -9,7 +10,8 @@ import { exportSVG, exportPNG } from '../utils/exportSvg'
 import DocsFab from '../components/DocsFab'
 
 export default function Trainer(){
-  const [cohortId, setCohortId] = useState('1')
+  const [searchParams] = useSearchParams()
+  const [cohortId, setCohortId] = useState(searchParams.get('cohort') || '1')
   const [campaignId, setCampaignId] = useState('')
   const [scenarioId, setScenarioId] = useState('')
   const [sessionId, setSessionId] = useState(null)
@@ -37,6 +39,14 @@ export default function Trainer(){
   const [campaigns, setCampaigns] = useState([])
   const [campScenarios, setCampScenarios] = useState([])
   const [sessionInfo, setSessionInfo] = useState(null)
+  const [comparisonOpen, setComparisonOpen] = useState(false)
+  const [comparisonData, setComparisonData] = useState([])
+  const [comparisonLoading, setComparisonLoading] = useState(false)
+  const [comparisonMetric, setComparisonMetric] = useState('profit_zar')
+  const comparisonChartRef = useRef(null)
+
+  // Disabled overlay for work in progress
+  const isDisabled = true
 
   useEffect(()=>{
     const s = io('/trainer', { path: '/socket.io', transports: ['websocket','polling'], forceNew: true })
@@ -275,9 +285,105 @@ export default function Trainer(){
     }
   },[brief, status])
 
+  // Load comparison data
+  const loadComparisonData = async () => {
+    if (!sessionId) return
+    setComparisonLoading(true)
+    try {
+      const { data } = await api.get(`/api/leaderboard/sessions/${sessionId}`)
+      setComparisonData(data)
+    } catch (error) {
+      console.error('Failed to load comparison data:', error)
+    } finally {
+      setComparisonLoading(false)
+    }
+  }
+
+  // Load comparison when modal opens
+  useEffect(() => {
+    if (comparisonOpen) {
+      loadComparisonData()
+    }
+  }, [comparisonOpen, sessionId])
+
+  // Draw comparison chart
+  useEffect(() => {
+    if (!comparisonChartRef.current || comparisonData.length === 0) return
+    const svg = d3.select(comparisonChartRef.current)
+    svg.selectAll('*').remove()
+    const width = 640, height = 240
+    const margin = { top: 10, right: 10, bottom: 30, left: 60 }
+    const innerW = width - margin.left - margin.right
+    const innerH = height - margin.top - margin.bottom
+    const g = svg.attr('width', width).attr('height', height).append('g').attr('transform', `translate(${margin.left},${margin.top})`)
+    const x = d3.scaleBand().domain(comparisonData.map(d => String(d.player_id))).range([0, innerW]).padding(0.2)
+    const y = d3.scaleLinear().domain([0, d3.max(comparisonData, d => d[comparisonMetric]) || 0]).nice().range([innerH, 0])
+    g.append('g').call(d3.axisLeft(y).ticks(5).tickSize(-innerW).tickFormat('')).selectAll('line').attr('stroke', '#ddd').attr('stroke-opacity', 0.6)
+    g.append('g').attr('transform', `translate(0,${innerH})`).call(d3.axisBottom(x))
+    g.append('g').call(d3.axisLeft(y).ticks(5))
+    const yLabelMap = {
+      profit_zar: 'Profit (ZAR)',
+      revenue_zar: 'Revenue (ZAR)',
+      imbalance_cost_zar: 'Imbalance Cost (ZAR)',
+      curtailment_cost_zar: 'Curtailment Cost (ZAR)'
+    }
+    g.append('text').attr('transform', 'rotate(-90)').attr('x', -innerH / 2).attr('y', -45).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', '10px').text(yLabelMap[comparisonMetric] || 'Value')
+    g.selectAll('rect').data(comparisonData).enter().append('rect')
+      .attr('x', d => x(String(d.player_id)))
+      .attr('y', d => y(d[comparisonMetric]))
+      .attr('width', x.bandwidth())
+      .attr('height', d => innerH - y(d[comparisonMetric]))
+      .attr('fill', '#1976d2')
+  }, [comparisonData, comparisonMetric])
+
   return (
-    <Paper sx={{ p:2 }}>
-      <Typography variant="h5" gutterBottom>Trainer – Session Control</Typography>
+    <Paper sx={{ p:2, position: 'relative' }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+        <Typography variant="h5">Trainer – Session Control</Typography>
+        {sessionId && (
+          <Tooltip title="Session Comparison">
+            <IconButton onClick={() => setComparisonOpen(true)} color="primary" size="small">
+              <ComparisonIcon />
+            </IconButton>
+          </Tooltip>
+        )}
+      </Box>
+      
+      {/* Disabled Overlay */}
+      {isDisabled && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(255, 255, 255, 0.92)',
+            backdropFilter: 'blur(2px)',
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 1,
+          }}
+        >
+          <Paper
+            elevation={4}
+            sx={{
+              p: 4,
+              textAlign: 'center',
+              backgroundColor: 'background.paper',
+            }}
+          >
+            <Typography variant="h5" gutterBottom sx={{ fontWeight: 500 }}>
+              🚧 In Entwicklung
+            </Typography>
+            <Typography variant="body1" color="text.secondary">
+              Der Session Control Screen ist noch nicht vollständig implementiert
+            </Typography>
+          </Paper>
+        </Box>
+      )}
       
       {/* Start New Scenario Section - with Cohort -> Campaign -> Scenario selection */}
       <Paper variant="outlined" sx={{ p:2, mb:2 }}>
@@ -483,6 +589,69 @@ export default function Trainer(){
       <Paper variant="outlined" sx={{ p:1, maxHeight:220, overflow:'auto' }}>
         {log.map((l,i)=>(<Typography key={i} variant="caption" display="block">{l}</Typography>))}
       </Paper>
+      
+      {/* Comparison Modal */}
+      <Dialog open={comparisonOpen} onClose={() => setComparisonOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="h6">Session Comparison</Typography>
+          <IconButton onClick={() => setComparisonOpen(false)} size="small">
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent>
+          {!sessionId ? (
+            <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
+              No active session. Start a session to view comparison data.
+            </Typography>
+          ) : comparisonLoading ? (
+            <Box sx={{ py: 4 }}>
+              <Skeleton variant="rectangular" height={240} sx={{ mb: 2 }} />
+              <Skeleton variant="rectangular" height={200} />
+            </Box>
+          ) : comparisonData.length === 0 ? (
+            <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
+              No data available for this session yet.
+            </Typography>
+          ) : (
+            <Stack spacing={2}>
+              <Stack direction="row" spacing={2} alignItems="center">
+                <Typography variant="body2">Metric:</Typography>
+                <Select size="small" value={comparisonMetric} onChange={e => setComparisonMetric(e.target.value)} sx={{ minWidth: 200 }}>
+                  <MenuItem value="profit_zar">Profit (ZAR)</MenuItem>
+                  <MenuItem value="revenue_zar">Revenue (ZAR)</MenuItem>
+                  <MenuItem value="imbalance_cost_zar">Imbalance Cost (ZAR)</MenuItem>
+                  <MenuItem value="curtailment_cost_zar">Curtailment Cost (ZAR)</MenuItem>
+                </Select>
+              </Stack>
+              <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                <svg ref={comparisonChartRef} />
+              </Box>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Player ID</TableCell>
+                    <TableCell align="right">Profit (ZAR)</TableCell>
+                    <TableCell align="right">Revenue (ZAR)</TableCell>
+                    <TableCell align="right">Imbalance Cost</TableCell>
+                    <TableCell align="right">Curtailment Cost</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {comparisonData.map(row => (
+                    <TableRow key={row.player_id}>
+                      <TableCell>Player {row.player_id}</TableCell>
+                      <TableCell align="right">{Math.round(row.profit_zar || 0).toLocaleString()}</TableCell>
+                      <TableCell align="right">{Math.round(row.revenue_zar || 0).toLocaleString()}</TableCell>
+                      <TableCell align="right">{Math.round(row.imbalance_cost_zar || 0).toLocaleString()}</TableCell>
+                      <TableCell align="right">{Math.round(row.curtailment_cost_zar || 0).toLocaleString()}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Stack>
+          )}
+        </DialogContent>
+      </Dialog>
       
       <DocsFab href="/docs/trainer" label="Open Trainer Handbook" />
     </Paper>

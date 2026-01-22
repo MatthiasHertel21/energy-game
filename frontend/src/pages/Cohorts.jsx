@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Skeleton, Box, Switch, FormControlLabel, Select, MenuItem, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, Tabs, Tab, TablePagination, Chip } from '@mui/material'
+import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Skeleton, Box, Switch, FormControlLabel, Select, MenuItem, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, Tabs, Tab, TablePagination, Chip, Alert, InputAdornment, Toolbar } from '@mui/material'
 import { useNavigate } from 'react-router-dom'
-import { Groups as GroupsIcon, Edit as EditIcon, Delete as DeleteIcon, FileDownload as DownloadIcon } from '@mui/icons-material'
+import { Groups as GroupsIcon, Edit as EditIcon, Delete as DeleteIcon, FileDownload as DownloadIcon, ContentCopy as CopyIcon, PlayArrow as SessionControlIcon, Add as AddIcon } from '@mui/icons-material'
 import api from '../services/api'
 import EmptyState from '../components/EmptyState'
 
@@ -9,9 +9,10 @@ export default function Cohorts(){
   const [list, setList] = useState([])
   const [loading, setLoading] = useState(true)
   const [name, setName] = useState('')
-  const [csv, setCsv] = useState('')
   const [selected, setSelected] = useState(null)
   const [campaigns, setCampaigns] = useState([])
+  const [createDialog, setCreateDialog] = useState(false)
+  const [detailsDialog, setDetailsDialog] = useState(false)
   const [editDialog, setEditDialog] = useState(null)
   const [editName, setEditName] = useState('')
   const [deleteDialog, setDeleteDialog] = useState(null)
@@ -22,43 +23,43 @@ export default function Cohorts(){
   const [activityPage, setActivityPage] = useState(0)
   const [activityLimit, setActivityLimit] = useState(50)
   const [activityFilters, setActivityFilters] = useState({ action_type: '', user_id: '' })
+  const [cohortToken, setCohortToken] = useState('')
   const navigate = useNavigate()
   
   const load = async ()=>{ 
     setLoading(true)
     try {
       const { data } = await api.get('/api/cohorts')
-      let rows = Array.isArray(data) ? data : []
-      // Fallback enrichment if backend doesn't provide counts/emails
-      const enriched = await Promise.all(rows.map(async (c)=>{
-        const out = { ...c }
-        // Members count
-        if (typeof out.members_count !== 'number'){
-          try{
-            const res = await api.get(`/api/cohorts/${c.id}/players`)
-            out.members_count = Array.isArray(res.data) ? res.data.length : 0
-          }catch(_){ out.members_count = 0 }
-        }
-        // Campaigns count (active only if field missing)
-        if (typeof out.campaigns_count !== 'number'){
-          try{
-            const res = await api.get(`/api/cohorts/${c.id}/campaigns`)
-            const arr = Array.isArray(res.data) ? res.data : []
-            out.campaigns_count = arr.filter(x=> x.active === true).length
-          }catch(_){ out.campaigns_count = 0 }
-        }
-        // Trainer email fallback not available without admin; leave as provided
-        return out
-      }))
-      setList(enriched)
+      setList(Array.isArray(data) ? data : [])
+    } catch (e) {
+      setList([])
     } finally {
       setLoading(false)
     }
   }
   
   useEffect(()=>{ load() },[])
-  const create = async ()=>{ await api.post('/api/cohorts', { name }); setName(''); load() }
-  const importCsv = async ()=>{ if(!selected) return; await api.post(`/api/cohorts/${selected}/players`, { csv }); setCsv(''); loadMembers(selected) }
+  
+  const create = async ()=>{ 
+    await api.post('/api/cohorts', { name })
+    setName('')
+    setCreateDialog(false)
+    load()
+  }
+  
+  const openDetailsDialog = (cohortId) => {
+    setSelected(cohortId)
+    setTab(0)
+    setDetailsDialog(true)
+  }
+  
+  const closeDetailsDialog = () => {
+    setDetailsDialog(false)
+    setSelected(null)
+    setTab(0)
+  }
+  
+
   
   const openEdit = (cohort) => {
     setEditDialog(cohort)
@@ -101,6 +102,21 @@ export default function Cohorts(){
     } catch (e) {
       setMembers([])
     }
+  }
+  
+  const loadCohortToken = async (cid) => {
+    try {
+      const { data } = await api.get(`/api/cohorts/${cid}`)
+      setCohortToken(data.invite_token || '')
+    } catch (e) {
+      setCohortToken('')
+    }
+  }
+  
+  const copyToken = () => {
+    const registrationUrl = `${window.location.origin}/register?token=${cohortToken}`
+    navigator.clipboard.writeText(registrationUrl)
+    if (window.__showSnack) window.__showSnack('Registration link copied to clipboard', 'success')
   }
   
   const removeMember = async (userId) => {
@@ -162,12 +178,14 @@ export default function Cohorts(){
     if(selected){ 
       loadCampaigns(selected)
       loadMembers(selected)
+      loadCohortToken(selected)
       if (tab === 2) loadActivity(selected)
     } else {
       // Clear members when no cohort selected
       setMembers([])
       setCampaigns([])
       setActivities([])
+      setCohortToken('')
     }
   },[selected, tab, activityPage, activityLimit, activityFilters])
   const toggleCampaign = async (campId, key, val)=>{
@@ -179,11 +197,16 @@ export default function Cohorts(){
   
   return (
     <Paper sx={{ p:2 }}>
-      <Typography variant="h5" gutterBottom>Cohorts</Typography>
-      <Stack direction="row" spacing={2}>
-        <TextField size="small" label="Name" value={name} onChange={e=>setName(e.target.value)} />
-        <Button variant="contained" onClick={create}>Create</Button>
-      </Stack>
+      <Toolbar sx={{ pl: 0, pr: 0 }}>
+        <Typography variant="h5" sx={{ flexGrow: 1 }}>Trainer Panel</Typography>
+        <Button 
+          variant="contained" 
+          startIcon={<AddIcon />}
+          onClick={() => setCreateDialog(true)}
+        >
+          Create Cohort
+        </Button>
+      </Toolbar>
       
       {loading ? (
         <Box sx={{ mt: 2 }}>
@@ -197,7 +220,7 @@ export default function Cohorts(){
           title="No cohorts yet"
           message="Create your first cohort to organise students into groups"
           actionLabel="Create Cohort"
-          onAction={() => document.querySelector('input[label="Name"]')?.focus()}
+          onAction={() => setCreateDialog(true)}
         />
       ) : (
         <>
@@ -213,12 +236,27 @@ export default function Cohorts(){
         </TableHead>
         <TableBody>
           {list.map(c=> (
-            <TableRow key={c.id} hover onClick={()=> setSelected(c.id)} sx={{ cursor:'pointer' }}>
+            <TableRow key={c.id} hover onClick={()=> openDetailsDialog(c.id)} sx={{ cursor:'pointer' }}>
               <TableCell>{c.name}</TableCell>
               <TableCell>{c.trainer_email || '—'}</TableCell>
               <TableCell align="right">{c.members_count ?? '—'}</TableCell>
-              <TableCell align="right">{c.campaigns_count ?? '—'}</TableCell>
+              <TableCell>
+                {c.campaigns && c.campaigns.length > 0 ? (
+                  <Box>
+                    {c.campaigns.map(camp => (
+                      <Typography key={camp.id} variant="body2" sx={{ lineHeight: 1.4 }}>
+                        {camp.name} ({camp.scenario_count})
+                      </Typography>
+                    ))}
+                  </Box>
+                ) : (
+                  '—'
+                )}
+              </TableCell>
               <TableCell onClick={(e)=> e.stopPropagation()}>
+                <IconButton size="small" onClick={()=> navigate(`/session-control?cohort=${c.id}`)} title="Session Control" color="primary" aria-label="Session control">
+                  <SessionControlIcon fontSize="small" />
+                </IconButton>
                 <IconButton size="small" onClick={()=> openEdit(c)} title="Edit name" aria-label="Edit cohort name">
                   <EditIcon fontSize="small" />
                 </IconButton>
@@ -232,9 +270,32 @@ export default function Cohorts(){
       </Table>
         </>
       )}
-      {selected && (
-        <Box sx={{ mt: 3 }}>
-          <Typography variant="h6" sx={{ mb: 2 }}>Cohort #{selected}</Typography>
+      
+      {/* Create Cohort Dialog */}
+      <Dialog open={createDialog} onClose={() => setCreateDialog(false)}>
+        <DialogTitle>Create New Cohort</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Cohort Name"
+            fullWidth
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCreateDialog(false)}>Cancel</Button>
+          <Button onClick={create} variant="contained">Create</Button>
+        </DialogActions>
+      </Dialog>
+      
+      {/* Cohort Details Dialog */}
+      <Dialog open={detailsDialog} onClose={closeDetailsDialog} maxWidth="md" fullWidth>
+        <DialogTitle>
+          Cohort Details
+        </DialogTitle>
+        <DialogContent>
           <Tabs value={tab} onChange={(e, v) => setTab(v)} aria-label="Cohort management tabs">
             <Tab label="Members" />
             <Tab label="Campaigns" />
@@ -244,19 +305,41 @@ export default function Cohorts(){
           {/* Tab 0: Members */}
           {tab === 0 && (
             <Box sx={{ mt: 2 }}>
-              <Stack spacing={1} data-testid="cohorts-import-section">
-                <Typography variant="subtitle1">Import Players (CSV, one email per line)</Typography>
-                <TextField inputProps={{ 'data-testid': 'cohorts-csv' }} label="CSV" multiline minRows={4} value={csv} onChange={e=>setCsv(e.target.value)} />
-                <Button variant="outlined" data-testid="cohorts-import-btn" onClick={importCsv}>Import</Button>
+              <Stack spacing={2}>
+                {cohortToken && (
+                  <Alert severity="info" sx={{ mb: 2 }}>
+                    <Typography variant="subtitle2" gutterBottom>Cohort Registration Link</Typography>
+                    <Typography variant="body2" sx={{ mb: 1 }}>
+                      Share this link with new members to register and automatically join this cohort:
+                    </Typography>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      value={`${window.location.origin}/register?token=${cohortToken}`}
+                      InputProps={{
+                        readOnly: true,
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <IconButton onClick={copyToken} edge="end" size="small" title="Copy link">
+                              <CopyIcon />
+                            </IconButton>
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+                  </Alert>
+                )}
                 
-                {members.length > 0 && (
-                  <Box sx={{ mt: 2 }}>
-                    <Typography variant="subtitle2">Members ({members.length})</Typography>
+                {members.length > 0 ? (
+                  <Box>
+                    <Typography variant="subtitle2" sx={{ mb: 2 }}>Members ({members.length})</Typography>
                     <Table size="small">
                       <TableHead>
                         <TableRow>
                           <TableCell>Email</TableCell>
                           <TableCell>Name</TableCell>
+                          <TableCell>Last Login</TableCell>
+                          <TableCell align="right">Solo Sessions</TableCell>
                           <TableCell>Actions</TableCell>
                         </TableRow>
                       </TableHead>
@@ -265,6 +348,10 @@ export default function Cohorts(){
                           <TableRow key={m.user_id}>
                             <TableCell>{m.email}</TableCell>
                             <TableCell>{m.name || '-'}</TableCell>
+                            <TableCell>
+                              {m.last_login ? new Date(m.last_login).toLocaleString() : 'Never'}
+                            </TableCell>
+                            <TableCell align="right">{m.solo_sessions || 0}</TableCell>
                             <TableCell>
                               <IconButton size="small" onClick={() => removeMember(m.user_id)} color="error" title="Remove from cohort" aria-label="Remove member from cohort">
                                 <DeleteIcon fontSize="small" />
@@ -275,6 +362,8 @@ export default function Cohorts(){
                       </TableBody>
                     </Table>
                   </Box>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">No members yet</Typography>
                 )}
               </Stack>
             </Box>
@@ -315,10 +404,10 @@ export default function Cohorts(){
           )}
           <Box sx={{ mt: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              To start a session for this cohort, use the Trainer Panel:
+              To start a session for this cohort:
             </Typography>
-            <Button variant="contained" onClick={() => navigate('/trainer')}>
-              Go to Trainer Panel
+            <Button variant="contained" onClick={() => { closeDetailsDialog(); navigate(`/session-control?cohort=${selected}`); }}>
+              Session Control
             </Button>
           </Box>
         </Box>
@@ -389,8 +478,11 @@ export default function Cohorts(){
               )}
             </Box>
           )}
-        </Box>
-      )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeDetailsDialog}>Close</Button>
+        </DialogActions>
+      </Dialog>
       
       {/* Edit Dialog */}
       <Dialog open={!!editDialog} onClose={() => setEditDialog(null)}>

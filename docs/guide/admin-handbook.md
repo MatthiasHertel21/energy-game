@@ -1,35 +1,43 @@
 # Admin Handbook
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 1.5 (Sprint 23)  
-**Date**: 18 Dec 2025  
+**Version**: 2.1 (Sprint 24)  
+**Date**: January 22, 2026  
 **Audience**: System Administrators
 
 ---
 
-## What's New (Sprint 23 - Updated)
+## What's New (Sprint 24 - Updated)
 
-- **Hourly Market Clearing**: Calculation engine performs market clearing for each hour within a round
-  - More accurate energy market simulation with hourly price discovery
-  - Performance impact: ~linear with round_span_hours (8h round takes ~8x longer than 1h)
-  - Scalability: Tested with 1h, 3h, 4h, 6h, 8h round configurations
-  - Database: `hourly_results` field added to result records
-- **Campaign Catalog System**: Published campaigns visible to all players in catalog
-- **Solo Session Management**: Players can start and track solo sessions independently
-- **Player Progress Tracking**: Automatic scenario completion with reset functionality
-- **Campaign/Scenario Display**: Player UI shows campaign and scenario names throughout
-- **Currency Formatting**: All ZAR values with locale-aware formatting (en-ZA)
-- **Password Reset**: Admins can reset passwords with auto-generation or custom passwords
-- **Improved User Deletion**: Complete cascade deletion including solo cohorts
-- **Email Notifications**: Password reset emails via SMTP when configured
-- **Database Recovery**: Auto-create tables on startup if missing (prevents 500 errors)
+- **Enhanced User Management**:
+  - Cohort membership display in user table
+  - Solo session activity tracking per user
+  - Direct cohort assignment via modal dialog
+  - Icon-based actions with tooltips (Reset Password, Delete, Assign Cohort)
+- **Profile Enhancements**:
+  - Editable name and bio fields for all users
+  - Last login tracking across the system
+- **Cohort Invite System**:
+  - Token-based registration for automatic cohort assignment
+  - Registration links with copy-to-clipboard functionality
+- **Trainer Panel Redesign**:
+  - Modal-based cohort details with tabs (Members, Campaigns, Activity)
+  - Campaign display with names and scenario counts
+  - Member list with last login status and solo session counts
+  - Solo cohort filtering (Solo cohorts excluded from trainer panel)
+- **Previous Updates (Sprint 23)**:
+  - Hourly Market Clearing with accurate price discovery
+  - Campaign Catalog System with published campaigns
+  - Player Progress Tracking with scenario completion
+  - Password Reset with auto-generation and email notifications
+  - Database Recovery with auto-create tables on startup
 
 ---
 
 ## Quick Guide
 
 - Tabs: Users | Activity Dashboard | Sessions.
-- Manage users/roles, invites, and review activity and sessions.
+- Manage users/roles, cohort assignments, and review activity and sessions.
 - Ops: ensure backups, logs/monitoring, and security hygiene.
 
 ---
@@ -37,16 +45,25 @@
 ## Detailed Guide
 
 ### 1) Users
-- **List users**: View all users with ID, email, role, and creation date
+- **List users**: View all users with ID, email, role, cohorts, solo sessions, and creation date
 - **Change role**: Select dropdown (player/trainer/designer/admin); changes apply immediately
-- **Reset Password** (NEW in Sprint 23):
-  - Click "Reset Password" button next to any user
+- **Cohort Assignment** (NEW in Sprint 24):
+  - Click "Assign to Cohort" icon (GroupAdd) next to any user
+  - Select cohort from dropdown in modal dialog
+  - View current cohort memberships for each user
+  - Users can be members of multiple cohorts
+- **Solo Session Tracking** (NEW in Sprint 24):
+  - See count of solo sessions per user in dedicated column
+  - Solo sessions are sessions in cohorts named "Solo {user_id}"
+  - Helps identify active vs inactive users
+- **Reset Password**:
+  - Click "Reset Password" icon (LockReset) next to any user
   - System generates secure 16-character password (or provide custom password ≥12 chars)
   - New password displayed in alert dialog (copy before closing!)
   - If SMTP configured: Password automatically sent to user's email
   - If SMTP not configured: Admin must manually share password with user
   - Password requirements: Min 12 characters (letters, digits, punctuation)
-- **Delete user**: Delete with confirmation; properly cascades to:
+- **Delete user**: Click "Delete" icon (Delete) with confirmation; properly cascades to:
   - All forecasts and results by this user
   - Session player type selections
   - Player progress records
@@ -54,8 +71,11 @@
   - Cohorts where user is trainer (including all sessions in those cohorts)
   - Campaigns created by user (if designer)
   - Activity logs related to user
-- **Invite**: email + role → invite link (send via SMTP or copy link)
-- **Create**: email + role (+ optional password); Backend enforces password policy (min 12 chars)
+- **Create User**: Click "Create User" button to directly create a new user
+  - Enter email and select role
+  - Optional: Set temporary password (min 12 chars)
+  - If no password provided, user receives email to set password
+  - If SMTP configured, credentials sent via email
 
 ### 2) Activity Dashboard
 - Period filter (e.g., 30d) for summary tiles and time series (logins, registrations, sessions).
@@ -110,13 +130,19 @@
 ### 5) API Endpoints (Admin)
 
 **User Management**:
-- `GET /api/admin/users` - List all users
+- `GET /api/admin/users` - List all users with cohort and solo session info
 - `POST /api/admin/users` - Create user with optional password
 - `DELETE /api/admin/users/<id>` - Delete user (with cascade)
 - `POST /api/admin/users/<id>/role` - Change user role
-- `POST /api/admin/users/<id>/password` - Reset user password (NEW)
+- `POST /api/admin/users/<id>/password` - Reset user password
   - Request body: `{ "password": "optional", "send_email": true }`
   - Response: `{ "status": "ok", "new_password": "...", "email_sent": true }`
+- `POST /api/admin/users/<id>/cohort` - Assign user to cohort (NEW)
+  - Request body: `{ "cohort_id": 123 }`
+  - Response: `{ "status": "ok", "message": "User added to cohort" }`
+- `DELETE /api/admin/users/<id>/cohort` - Remove user from cohort (NEW)
+  - Request body: `{ "cohort_id": 123 }`
+- `GET /api/admin/cohorts` - List all cohorts (excluding Solo cohorts) (NEW)
 
 **Session Data Display**:
 - `GET /api/sessions/<id>` - Now includes `campaign_name` and `scenario_name` fields

@@ -1,8 +1,8 @@
 # Designer Handbook (KSE)
 ## Energy Market Simulation Game (EMSG)
 
-**Version**: 2.0 (Sprint 24)  
-**Date**: December 23, 2025  
+**Version**: 2.1 (Sprint 24)  
+**Date**: January 22, 2026  
 **Audience**: Designers/Scenario Editors
 
 ---

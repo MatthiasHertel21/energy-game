@@ -116,11 +116,19 @@ class MyProfile(Resource):
         # Get player results for KPI aggregation
         results = Result.query.filter_by(player_id=uid).all()
         
-        total_profit = sum(r.profit_zar or 0 for r in results)
-        total_revenue = sum(r.revenue_zar or 0 for r in results)
-        total_imbalance = sum(r.imbalance_cost_zar or 0 for r in results)
-        total_curtailment = sum(r.curtailment_cost_zar or 0 for r in results)
-        total_rounds = sum(r.rounds or 0 for r in results)
+        total_profit = 0
+        total_revenue = 0
+        total_imbalance = 0
+        total_curtailment = 0
+        total_rounds = len(results)
+        
+        for r in results:
+            if r.data and "kpis" in r.data:
+                kpis = r.data["kpis"]
+                total_profit += kpis.get("profit_zar", 0)
+                total_revenue += kpis.get("revenue_zar", 0)
+                total_imbalance += kpis.get("imbalance_cost_zar", 0)
+                total_curtailment += kpis.get("curtailment_cost_zar", 0)
         
         # Calculate best rank (minimum rank value = best)
         best_rank = None
@@ -128,11 +136,19 @@ class MyProfile(Resource):
             # Get all session IDs where user has results
             session_ids = list(set(r.session_id for r in results))
             for sid in session_ids:
-                # Get all results for this session sorted by profit
-                session_results = Result.query.filter_by(session_id=sid).order_by(Result.profit_zar.desc()).all()
+                # Get all results for this session with aggregated profits
+                session_results = Result.query.filter_by(session_id=sid).all()
+                # Calculate total profit per player for ranking
+                player_profits = {}
+                for res in session_results:
+                    if res.data and "kpis" in res.data:
+                        player_profits[res.player_id] = player_profits.get(res.player_id, 0) + res.data["kpis"].get("profit_zar", 0)
+                
+                # Sort by profit
+                sorted_players = sorted(player_profits.items(), key=lambda x: x[1], reverse=True)
                 # Find user's rank (1-indexed)
-                for idx, res in enumerate(session_results, start=1):
-                    if res.player_id == uid:
+                for idx, (pid, _) in enumerate(sorted_players, start=1):
+                    if pid == uid:
                         if best_rank is None or idx < best_rank:
                             best_rank = idx
                         break
@@ -143,8 +159,12 @@ class MyProfile(Resource):
             scenario = Scenario.query.get(s.scenario_id)
             cohort = Cohort.query.get(s.cohort_id)
             
-            # Get user's result for this session
-            result = Result.query.filter_by(session_id=s.id, player_id=uid).first()
+            # Get user's results for this session and sum up profit
+            session_results = Result.query.filter_by(session_id=s.id, player_id=uid).all()
+            session_profit = 0
+            for result in session_results:
+                if result.data and "kpis" in result.data:
+                    session_profit += result.data["kpis"].get("profit_zar", 0)
             
             recent_sessions.append({
                 "id": s.id,
@@ -154,7 +174,7 @@ class MyProfile(Resource):
                 "mode": s.mode,
                 "started_at": s.started_at.isoformat() if s.started_at else None,
                 "current_round": s.current_round,
-                "profit": result.profit_zar if result else None,
+                "profit": session_profit if session_results else None,
                 "rank": None  # Will be calculated if needed
             })
         
@@ -162,9 +182,11 @@ class MyProfile(Resource):
             "user": {
                 "id": user.id,
                 "email": user.email,
-                "role": user.role,
+                "role": user.role.value if hasattr(user.role, 'value') else str(user.role),
                 "created_at": user.created_at.isoformat() if hasattr(user, 'created_at') and user.created_at else None,
-                "avatar_url": user.avatar_url if hasattr(user, 'avatar_url') else None
+                "avatar_url": user.avatar_url if hasattr(user, 'avatar_url') else None,
+                "name": user.name if hasattr(user, 'name') else None,
+                "bio": user.bio if hasattr(user, 'bio') else None
             },
             "statistics": {
                 "total_sessions": len(all_sessions),
@@ -181,4 +203,33 @@ class MyProfile(Resource):
                 "best_rank": best_rank
             },
             "recent_sessions": recent_sessions
+        }
+
+    @jwt_required()
+    def put(self):
+        """Update user profile (name and bio)."""
+        uid = int(get_jwt_identity())
+        user = User.query.get(uid)
+        
+        if not user:
+            return {"error": "User not found"}, 404
+        
+        from flask import request
+        data = request.get_json()
+        
+        if "name" in data:
+            user.name = data["name"]
+        if "bio" in data:
+            user.bio = data["bio"]
+        
+        db.session.commit()
+        
+        return {
+            "message": "Profile updated successfully",
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "name": user.name,
+                "bio": user.bio
+            }
         }

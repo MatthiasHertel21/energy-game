@@ -20,6 +20,9 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.Enum(Role), nullable=False, default=Role.player)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    name = db.Column(db.String(255), nullable=True)
+    bio = db.Column(db.Text, nullable=True)
+    last_login = db.Column(db.DateTime, nullable=True)
 
     def to_dict(self):
         return {
@@ -27,6 +30,8 @@ class User(db.Model):
             "email": self.email,
             "role": self.role.value,
             "created_at": self.created_at.isoformat() + "Z",
+            "name": self.name,
+            "bio": self.bio,
         }
 
 

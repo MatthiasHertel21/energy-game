@@ -91,30 +91,10 @@ export default function App({ themeMode, onToggleTheme }) {
                     color={isActive('/trainer') ? 'secondary' : 'inherit'} 
                     component={Link} 
                     to="/trainer"
-                    startIcon={<TrainerIcon />}
-                    aria-label="Trainer session control"
+                    startIcon={<GroupsIcon />}
+                    aria-label="Trainer and cohort management"
                   >
                     Trainer
-                  </Button>
-                  <Button 
-                    size="small"
-                    color={isActive('/cohorts') ? 'secondary' : 'inherit'} 
-                    component={Link} 
-                    to="/cohorts"
-                    startIcon={<GroupsIcon />}
-                    aria-label="Cohort management"
-                  >
-                    Cohorts
-                  </Button>
-                  <Button 
-                    size="small"
-                    color={isActive('/comparison') ? 'secondary' : 'inherit'} 
-                    component={Link} 
-                    to="/comparison"
-                    startIcon={<ComparisonIcon />}
-                    aria-label="Session comparison"
-                  >
-                    Comparison
                   </Button>
                 </>
               )}
@@ -189,9 +169,6 @@ export default function App({ themeMode, onToggleTheme }) {
             <Route path="/designer/campaigns" element={<Navigate to="/designer" replace />} />
             <Route path="/designer/scenarios" element={<Navigate to="/designer" replace />} />
           </Route>
-          <Route element={<ProtectedRoute roles={["trainer","admin"]} /> }>
-            <Route path="/trainer" element={<Trainer />} />
-          </Route>
           <Route element={<ProtectedRoute roles={["player","admin"]} /> }>
             <Route path="/home" element={<Home />} />
             <Route path="/catalog" element={<Catalog />} />
@@ -202,7 +179,8 @@ export default function App({ themeMode, onToggleTheme }) {
             <Route path="/profile" element={<Profile />} />
           </Route>
           <Route element={<ProtectedRoute roles={["trainer","admin"]} /> }>
-            <Route path="/cohorts" element={<Cohorts />} />
+            <Route path="/trainer" element={<Cohorts />} />
+            <Route path="/session-control" element={<Trainer />} />
             <Route path="/comparison" element={<Comparison />} />
           </Route>
           <Route path="*" element={<NotFound />} />
@@ -251,6 +229,16 @@ export default function App({ themeMode, onToggleTheme }) {
                   sx={{ color: 'text.secondary', textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }}
                 >
                   Documentation
+                </Typography>
+                <Typography
+                  variant="body2"
+                  component="a"
+                  href="https://www.notion.so/fastbreakone/Energy-Game-Dev-Board-2b185b48a241809fb0e1d4bce96e8574"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  sx={{ color: 'text.secondary', textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }}
+                >
+                  DevBoard
                 </Typography>
                 <Typography
                   variant="body2"
