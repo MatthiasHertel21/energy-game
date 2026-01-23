@@ -54,6 +54,10 @@ class Invite(db.Model):
         return Invite(email=email.lower().strip(), role=role, token=token, expires_at=expires)
 
     def is_valid(self) -> bool:
+        # Cohort-wide invites (empty email) can be reused, only check expiration
+        # Email-specific invites must not be used yet
+        if not self.email:
+            return self.expires_at >= datetime.utcnow()
         return (not self.used) and (self.expires_at >= datetime.utcnow())
 
 

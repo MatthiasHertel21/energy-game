@@ -109,14 +109,19 @@ class Register(Resource):
         if invite_token and role != Role.admin:
             inv = Invite.query.filter_by(token=invite_token).first()
             # Allow empty email in invite for cohort-wide tokens
-            if not inv or not inv.is_valid():
-                ns.abort(HTTPStatus.BAD_REQUEST, "Invalid or expired invite")
+            if not inv:
+                ns.abort(HTTPStatus.BAD_REQUEST, "Invalid invite token. Please request a new invitation link.")
+            if not inv.is_valid():
+                ns.abort(HTTPStatus.BAD_REQUEST, "Invite token has expired or has already been used. Please request a new invitation link.")
             if inv.email and inv.email.lower() != email:
-                ns.abort(HTTPStatus.BAD_REQUEST, "Invalid or expired invite")
+                ns.abort(HTTPStatus.BAD_REQUEST, "This invite token is for a different email address.")
             role = inv.role
             cohort_id = inv.cohort_id
-            inv.used = True
-            db.session.add(inv)
+            # Only mark email-specific invites as used
+            # Cohort-wide invites (empty email) can be reused
+            if inv.email:
+                inv.used = True
+                db.session.add(inv)
 
         pw_hash = bcrypt.generate_password_hash(password).decode("utf-8")
         user = User(email=email, password_hash=pw_hash, role=role)
