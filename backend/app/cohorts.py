@@ -152,6 +152,8 @@ class CohortItem(Resource):
         CohortMember.query.filter_by(cohort_id=cid).delete()
         # Delete campaign mappings
         CohortCampaign.query.filter_by(cohort_id=cid).delete()
+        # Delete invites
+        Invite.query.filter_by(cohort_id=cid).delete()
         # Delete cohort
         db.session.delete(c)
         db.session.commit()

@@ -29,6 +29,7 @@ import {
   CheckCircle as CheckIcon,
   Bolt as EnergyIcon
 } from '@mui/icons-material';
+import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 
 /**
@@ -36,6 +37,7 @@ import api from '../services/api';
  * Displayed when scenario is complete
  */
 export default function ScenarioResultsScreen({ sessionId, onHome }) {
+  const navigate = useNavigate();
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -377,7 +379,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
             variant="outlined"
             size="large"
             startIcon={<DetailsIcon />}
-            onClick={() => window.location.href = `/evaluation?sessionId=${sessionId}`}
+            onClick={() => navigate(`/evaluation?sessionId=${sessionId}`)}
           >
             View Detailed Analysis
           </Button>
