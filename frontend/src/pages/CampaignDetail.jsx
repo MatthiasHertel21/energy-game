@@ -183,7 +183,7 @@ export default function CampaignDetail(){
               if (session) {
                 if (session.status === 'scenario_complete' || isCompleted) {
                   playLabel = 'Replay'
-                  playColor = 'secondary'
+                  playColor = 'primary'
                   playTooltip = 'Replay this scenario (creates new session)'
                 } else if (session.status === 'created' || session.status === 'briefing') {
                   playLabel = 'Continue'
@@ -197,7 +197,7 @@ export default function CampaignDetail(){
               } else if (isCompleted) {
                 // No active session but scenario is marked as completed
                 playLabel = 'Replay'
-                playColor = 'secondary'
+                playColor = 'primary'
                 playTooltip = 'Replay this completed scenario'
               }
               

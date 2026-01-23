@@ -56,7 +56,7 @@ export default function Comparison(){
   const [metric, setMetric] = useState('profit_zar')
   const chartRef = useRef(null)
   const [fileBase, setFileBase] = useState('comparison')
-  const sessionId = params.get('session')
+  const sessionId = params.get('session') || params.get('sessionId')
 
   // Persist metric preference
   useEffect(()=>{

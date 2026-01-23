@@ -20,6 +20,7 @@ const Briefing = React.lazy(()=> import('./pages/Briefing'))
 const Cohorts = React.lazy(()=> import('./pages/Cohorts'))
 const Replay = React.lazy(()=> import('./pages/Replay'))
 const Comparison = React.lazy(()=> import('./pages/Comparison'))
+const Evaluation = React.lazy(()=> import('./pages/Evaluation'))
 const Catalog = React.lazy(()=> import('./pages/Catalog'))
 const CampaignDetail = React.lazy(()=> import('./pages/CampaignDetail'))
 const Designer = React.lazy(()=> import('./pages/Designer'))
@@ -176,12 +177,14 @@ export default function App({ themeMode, onToggleTheme }) {
             <Route path="/briefing/:sessionId" element={<Briefing />} />
             <Route path="/player" element={<Player />} />
             <Route path="/replay" element={<Replay />} />
+            <Route path="/evaluation" element={<Evaluation />} />
             <Route path="/profile" element={<Profile />} />
           </Route>
           <Route element={<ProtectedRoute roles={["trainer","admin"]} /> }>
             <Route path="/trainer" element={<Cohorts />} />
             <Route path="/session-control" element={<Trainer />} />
             <Route path="/comparison" element={<Comparison />} />
+            <Route path="/leaderboard" element={<Comparison />} />
           </Route>
           <Route path="*" element={<NotFound />} />
           </Routes>
