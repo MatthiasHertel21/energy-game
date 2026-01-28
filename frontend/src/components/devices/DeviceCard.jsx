@@ -383,6 +383,59 @@ export default function DeviceCard({
                 unit="ZAR/MWh"
               />
             )}
+
+            {/* Profile Editor */}
+            {!isLoad ? (
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="subtitle2" gutterBottom>
+                  Availability Profile (24h)
+                  <Tooltip title="Hourly availability factor (0-1) for this generator. Default: device type preset. Solar is 0 at night, wind varies.">
+                    <IconButton size="small" sx={{ ml: 0.5 }}>ℹ️</IconButton>
+                  </Tooltip>
+                </Typography>
+                <TextField
+                  fullWidth
+                  multiline
+                  minRows={2}
+                  size="small"
+                  placeholder="[1.0, 1.0, ...] (24 values) - Leave empty for device type default"
+                  value={device.availability_profile ? JSON.stringify(device.availability_profile) : ''}
+                  onChange={(e) => {
+                    try {
+                      const parsed = e.target.value.trim() ? JSON.parse(e.target.value) : null;
+                      handleFieldChange('availability_profile', parsed);
+                    } catch (err) {
+                      // Invalid JSON, ignore
+                    }
+                  }}
+                />
+              </Box>
+            ) : (
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="subtitle2" gutterBottom>
+                  Load Profile (24h)
+                  <Tooltip title="Hourly load factor (0-1) for this consumer. Default: device type preset. Residential peaks evening, commercial peaks daytime.">
+                    <IconButton size="small" sx={{ ml: 0.5 }}>ℹ️</IconButton>
+                  </Tooltip>
+                </Typography>
+                <TextField
+                  fullWidth
+                  multiline
+                  minRows={2}
+                  size="small"
+                  placeholder="[1.0, 1.0, ...] (24 values) - Leave empty for device type default"
+                  value={device.load_profile ? JSON.stringify(device.load_profile) : ''}
+                  onChange={(e) => {
+                    try {
+                      const parsed = e.target.value.trim() ? JSON.parse(e.target.value) : null;
+                      handleFieldChange('load_profile', parsed);
+                    } catch (err) {
+                      // Invalid JSON, ignore
+                    }
+                  }}
+                />
+              </Box>
+            )}
           </Stack>
         </CardContent>
       </Collapse>

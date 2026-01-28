@@ -226,28 +226,45 @@ def run_rounds(session_id: int, app=None):
                 try:
                     events = (sc.config or {}).get("events", [])
                     active_events = []
-                    for evt in events:
-                        trigger = evt.get("trigger", {})
-                        ttype = trigger.get("type", "round")
-                        tval = trigger.get("value")
+                    for idx, evt in enumerate(events):
+                        trigger_type = evt.get("trigger_type", "round")
+                        trigger_value = evt.get("trigger_value", 1)
+                        duration = evt.get("duration_rounds", 1)
                         
                         # Check if event is active in this round
-                        if ttype == "round" and tval == current:
+                        is_active = False
+                        if trigger_type == "round":
+                            start = int(trigger_value)
+                            end = start + int(duration) - 1
+                            if start <= current <= end:
+                                is_active = True
+                        elif trigger_type == "prob":
+                            # Use same deterministic logic as engine.py
+                            import hashlib
+                            key = evt.get("key") or evt.get("name") or f"event_{idx}"
+                            h = int(hashlib.sha256(f"event_prob_{current}_{key}".encode()).hexdigest(), 16)
+                            r = (h % 1000000) / 1000000.0
+                            p = float(trigger_value)
+                            if r < max(0.0, min(1.0, p)):
+                                is_active = True
+                        
+                        if is_active:
                             active_events.append({
-                                "event_id": evt.get("id", f"evt-{len(active_events)}"),
-                                "type": evt.get("type", "unknown"),
+                                "id": evt.get("id") or evt.get("key") or evt.get("name") or f"evt-{idx}",
+                                "type": evt.get("type", "systemic"),
                                 "name": evt.get("name", "Event"),
                                 "description": evt.get("description", ""),
                                 "multiplier": evt.get("multiplier", 1.0),
                                 "additive": evt.get("additive", 0),
-                                "duration_rounds": evt.get("duration_rounds", 1),
-                                "target": evt.get("target", ""),
+                                "duration_rounds": duration,
+                                "target": evt.get("target", "all"),
+                                "target_id": evt.get("target_id", ""),
                                 "round": current
                             })
                     
                     # Broadcast active events to players
                     for event in active_events:
-                        event["session_id"] = s.id
+                        socketio.emit("event_triggered", {**event, "session_id": s.id}, namespace="/game", to=f"session-{s.id}")
                         socketio.emit("event_triggered", event, namespace="/game", to=f"session-{s.id}")
                 except Exception as e:
                     current_app.logger.warning(f"Failed to emit events: {e}")

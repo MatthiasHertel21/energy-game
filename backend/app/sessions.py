@@ -472,22 +472,22 @@ class RoundResults(Resource):
         for f in current_forecasts:
             current_by_player[f.player_id] = f.data.get("hours", [])
         
-        # Get active events for this round
+        # Get active events for this round (use select_events_for_round logic)
+        from .engine import select_events_for_round
         events = config.get("events", [])
+        active_round_events = select_events_for_round(events, round_num)
+        
         active_events = []
-        for evt in events:
-            trigger = evt.get("trigger", {})
-            ttype = trigger.get("type", "round")
-            tval = trigger.get("value")
-            duration = evt.get("duration_rounds", 1)
-            
-            # Check if event was active in this round
-            if ttype == "round" and isinstance(tval, (int, float)) and tval <= round_num < tval + duration:
-                active_events.append({
-                    "name": evt.get("name", "Event"),
-                    "description": evt.get("description", ""),
-                    "type": evt.get("type", "unknown")
-                })
+        for evt in active_round_events:
+            active_events.append({
+                "name": evt.get("name", "Event"),
+                "description": evt.get("description", ""),
+                "type": evt.get("type", "systemic"),
+                "multiplier": evt.get("multiplier", 1.0),
+                "additive": evt.get("additive", 0),
+                "target": evt.get("target", "all"),
+                "target_id": evt.get("target_id", "")
+            })
         
         # Calculate total score for each player (normalized to 0-100)
         ranking = []

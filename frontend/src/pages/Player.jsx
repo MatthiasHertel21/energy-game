@@ -289,9 +289,32 @@ function TimerAndClock({ timeRemaining, fakeDate, startTime, currentRound, round
             {displayDate}
           </Typography>
         )}
-        <Typography variant="h5" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
+        <Typography variant="h5" sx={{ fontWeight: 'bold', color: 'primary.main', mb: visibleEvents.length > 0 ? 2 : 0 }}>
           {simulationTime || '—'}
         </Typography>
+        
+        {/* Active Events */}
+        {visibleEvents.length > 0 && (
+          <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid #ddd' }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 1, display: 'block', mb: 1 }}>
+              Active Events
+            </Typography>
+            <Stack spacing={1}>
+              {visibleEvents.map(event => (
+                <Box key={event.id} sx={{ p: 1, bgcolor: 'warning.lighter', borderRadius: 1, border: '1px solid', borderColor: 'warning.main' }}>
+                  <Typography variant="caption" sx={{ fontWeight: 600, color: 'warning.dark', display: 'block' }}>
+                    {event.name}
+                  </Typography>
+                  {event.description && (
+                    <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.7rem' }}>
+                      {event.description}
+                    </Typography>
+                  )}
+                </Box>
+              ))}
+            </Stack>
+          </Box>
+        )}
       </Box>
     </Box>
   )
@@ -871,11 +894,15 @@ export default function Player() {
             
             // Populate hourlySeries with historical hourly data
             if (Array.isArray(hourly_results) && hourly_results.length > 0) {
-              setHourlySeries(hourly_results.map(hr => ({
+              const mapped = hourly_results.map(hr => ({
                 ...hr,
                 hour_idx: Number(hr.hour_idx ?? hr.hour_offset ?? 0)
-              })))
+              }))
+              setHourlySeries(mapped)
               console.log('[Player] Loaded hourly results:', hourly_results.length, 'hours')
+              console.log('[Player] Sample hourly result:', hourly_results[0])
+            } else {
+              console.log('[Player] No hourly_results in API response or empty array')
             }
           }
         } catch (err) {
@@ -1295,7 +1322,11 @@ export default function Player() {
   }, [sessionId, cfg.general, allowedTypes.length, selectedType, typeDevices, scenarioDevices, seedForecastData])
 
   const hourlyChartData = useMemo(() => {
-    if (!Array.isArray(hourlySeries) || hourlySeries.length === 0) return []
+    console.log('[Player] hourlyChartData useMemo - hourlySeries:', hourlySeries?.length || 0, 'entries')
+    if (!Array.isArray(hourlySeries) || hourlySeries.length === 0) {
+      console.log('[Player] hourlySeries is empty or not an array')
+      return []
+    }
     const HOUR_MS = 3600000
     let startHour = 0
     let startMinute = 0
@@ -1334,7 +1365,11 @@ export default function Player() {
 
   // D3 Charts
   useEffect(() => {
-    if (hourlyChartData.length === 0) return
+    console.log('[Player] D3 Charts useEffect - hourlyChartData length:', hourlyChartData.length)
+    if (hourlyChartData.length === 0) {
+      console.log('[Player] No hourly chart data - skipping D3 render')
+      return
+    }
     // create or reuse a floating tooltip div for charts
     const tipSel = d3.select('body').select('div.emsg-chart-tip')
     const tooltip = tipSel.empty() ? d3.select('body').append('div').attr('class','emsg-chart-tip') : tipSel
@@ -1490,7 +1525,7 @@ export default function Player() {
       g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Volume (MWh)')
     }
     return ()=> { try { tooltip.remove() } catch(_){} }
-  }, [hourlyChartData])
+  }, [hourlyChartData, mcpRef.current, volRef.current, cfg.general.start_time])
 
   const onChange = (i, val) => setHours((prev) => prev.map((v, idx) => (idx === i ? Number(val) : v)))
   const onDeviceChange = (did, i, val) => {

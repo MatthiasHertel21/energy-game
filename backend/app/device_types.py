@@ -42,9 +42,10 @@ DEVICE_SPECS = {
             "variable_cost_zar_per_mwh": 400.0,
             "efficiency_pct": 35.0,
             "curtailment_priority": CurtailmentPriority.HIGH,
+            "availability_profile": [1.0] * 24,  # Constant baseload
         },
         "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_zar_per_mwh"],
-        "optional_params": ["efficiency_pct"],
+        "optional_params": ["efficiency_pct", "availability_profile"],
     },
     DeviceType.GAS: {
         "name": "Gas Turbine (OCGT)",
@@ -57,9 +58,10 @@ DEVICE_SPECS = {
             "variable_cost_zar_per_mwh": 1200.0,
             "efficiency_pct": 30.0,
             "curtailment_priority": CurtailmentPriority.MEDIUM,
+            "availability_profile": [0.8, 0.8, 0.8, 0.8, 0.8, 0.9, 1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0, 0.95, 0.9, 0.85, 0.8],  # Peaking pattern
         },
         "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_zar_per_mwh"],
-        "optional_params": ["efficiency_pct"],
+        "optional_params": ["efficiency_pct", "availability_profile"],
     },
     DeviceType.HYDRO: {
         "name": "Hydro Power",
@@ -73,9 +75,10 @@ DEVICE_SPECS = {
             "efficiency_pct": 85.0,
             "reservoir_capacity_mwh": 1500.0,
             "curtailment_priority": CurtailmentPriority.MEDIUM,
+            "availability_profile": [0.7, 0.7, 0.7, 0.7, 0.8, 0.9, 1.0, 1.0, 0.9, 0.8, 0.8, 0.8, 0.8, 0.8, 0.9, 1.0, 1.0, 1.0, 1.0, 0.95, 0.9, 0.85, 0.8, 0.7],  # Flexible dispatch
         },
         "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min"],
-        "optional_params": ["variable_cost_zar_per_mwh", "efficiency_pct", "reservoir_capacity_mwh"],
+        "optional_params": ["variable_cost_zar_per_mwh", "efficiency_pct", "reservoir_capacity_mwh", "availability_profile"],
     },
     DeviceType.NUCLEAR: {
         "name": "Nuclear Power Plant",
@@ -88,9 +91,10 @@ DEVICE_SPECS = {
             "variable_cost_zar_per_mwh": 100.0,
             "efficiency_pct": 33.0,
             "curtailment_priority": CurtailmentPriority.VERY_HIGH,
+            "availability_profile": [1.0] * 24,  # Constant baseload
         },
         "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_zar_per_mwh"],
-        "optional_params": ["efficiency_pct"],
+        "optional_params": ["efficiency_pct", "availability_profile"],
     },
     DeviceType.SOLAR: {
         "name": "Solar PV",
@@ -101,9 +105,10 @@ DEVICE_SPECS = {
             "capacity_factor_pct": 25.0,
             "variable_cost_zar_per_mwh": 0.0,
             "curtailment_priority": CurtailmentPriority.LOW,
+            "availability_profile": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.4, 0.7, 0.9, 1.0, 1.0, 1.0, 1.0, 0.9, 0.7, 0.4, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # Solar curve: sunrise to sunset
         },
         "required_params": ["max_power_mw"],
-        "optional_params": ["capacity_factor_pct", "variable_cost_zar_per_mwh"],
+        "optional_params": ["capacity_factor_pct", "variable_cost_zar_per_mwh", "availability_profile"],
     },
     DeviceType.WIND: {
         "name": "Wind Turbine",
@@ -114,9 +119,10 @@ DEVICE_SPECS = {
             "capacity_factor_pct": 35.0,
             "variable_cost_zar_per_mwh": 0.0,
             "curtailment_priority": CurtailmentPriority.LOW,
+            "availability_profile": [0.6, 0.65, 0.7, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.4, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.85, 0.8, 0.75, 0.7],  # Wind: stronger at night/evening
         },
         "required_params": ["max_power_mw"],
-        "optional_params": ["capacity_factor_pct", "variable_cost_zar_per_mwh"],
+        "optional_params": ["capacity_factor_pct", "variable_cost_zar_per_mwh", "availability_profile"],
     },
     DeviceType.BATTERY: {
         "name": "Battery Storage",
@@ -129,9 +135,10 @@ DEVICE_SPECS = {
             "initial_soc_pct": 50.0,
             "max_dod_pct": 80.0,
             "degradation_pct_per_cycle": 0.1,
+            "availability_profile": [1.0] * 24,  # Always available
         },
         "required_params": ["capacity_mwh", "power_mw", "efficiency_pct"],
-        "optional_params": ["initial_soc_pct", "max_dod_pct", "degradation_pct_per_cycle"],
+        "optional_params": ["initial_soc_pct", "max_dod_pct", "degradation_pct_per_cycle", "availability_profile"],
     },
     DeviceType.INDUSTRIAL_LOAD: {
         "name": "Industrial Load",
@@ -142,9 +149,10 @@ DEVICE_SPECS = {
             "peak_load_mw": 450.0,
             "drm_capable": True,
             "demand_response_capacity_mw": 50.0,
+            "load_profile": [0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.98, 0.98, 0.98, 0.97, 0.96, 0.95],  # Nearly constant, slightly lower at night
         },
         "required_params": ["baseline_load_mw", "peak_load_mw"],
-        "optional_params": ["drm_capable", "demand_response_capacity_mw"],
+        "optional_params": ["drm_capable", "demand_response_capacity_mw", "load_profile"],
     },
     DeviceType.COMMERCIAL_LOAD: {
         "name": "Commercial Load",
@@ -155,9 +163,10 @@ DEVICE_SPECS = {
             "peak_load_mw": 200.0,
             "drm_capable": False,
             "demand_response_capacity_mw": 20.0,
+            "load_profile": [0.3, 0.3, 0.3, 0.3, 0.4, 0.6, 0.8, 0.95, 1.0, 1.0, 1.0, 1.0, 0.95, 0.95, 1.0, 1.0, 0.95, 0.8, 0.6, 0.5, 0.4, 0.35, 0.3, 0.3],  # Office hours peak 8-17
         },
         "required_params": ["baseline_load_mw", "peak_load_mw"],
-        "optional_params": ["drm_capable", "demand_response_capacity_mw"],
+        "optional_params": ["drm_capable", "demand_response_capacity_mw", "load_profile"],
     },
     DeviceType.RESIDENTIAL_LOAD: {
         "name": "Residential Load",
@@ -168,9 +177,10 @@ DEVICE_SPECS = {
             "peak_load_mw": 300.0,
             "drm_capable": False,
             "demand_response_capacity_mw": 10.0,
+            "load_profile": [0.6, 0.6, 0.6, 0.6, 0.6, 0.65, 0.75, 0.85, 0.9, 0.85, 0.8, 0.75, 0.75, 0.75, 0.8, 0.85, 0.9, 1.0, 1.0, 0.95, 0.9, 0.85, 0.75, 0.7],  # Evening peak 17-19
         },
         "required_params": ["baseline_load_mw", "peak_load_mw"],
-        "optional_params": ["drm_capable", "demand_response_capacity_mw"],
+        "optional_params": ["drm_capable", "demand_response_capacity_mw", "load_profile"],
     },
 }
 

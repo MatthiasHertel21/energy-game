@@ -890,6 +890,8 @@ class PlayerResults(Resource):
         # Get all results for this player in this session
         results = Result.query.filter_by(session_id=session_id, player_id=player_id).order_by(Result.round_num).all()
         
+        print(f"[PlayerResults] Session {session_id}, Player {player_id}: Found {len(results)} results")
+        
         rounds_data = []
         all_hourly_results = []
         
@@ -904,7 +906,12 @@ class PlayerResults(Resource):
                 # Collect hourly_results from this round
                 hourly = result.data.get("hourly_results", [])
                 if hourly:
+                    print(f"[PlayerResults] Round {result.round_num}: {len(hourly)} hourly entries")
                     all_hourly_results.extend(hourly)
+                else:
+                    print(f"[PlayerResults] Round {result.round_num}: No hourly_results in data")
+        
+        print(f"[PlayerResults] Returning {len(all_hourly_results)} total hourly results")
         
         return {
             "rounds": rounds_data,

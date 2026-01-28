@@ -11,12 +11,14 @@ import DeviceCard from '../components/devices/DeviceCard'
 import { createDeviceFromPreset, duplicateDevice, DEVICE_PRESETS } from '../components/devices/devicePresets'
 import EventsList from '../components/events/EventsList'
 import EventEditor from '../components/events/EventEditor'
+import ProfileEditorModal from '../components/ProfileEditorModal'
 import api from '../services/api'
 import * as d3 from 'd3'
 import ReactMarkdown from 'react-markdown'
 import ValidationPanel from '../components/ValidationPanel'
 import StickyActionBar from '../components/StickyActionBar'
 import { exportPNG, exportSVG } from '../utils/exportSvg'
+import useAuth from '../store/auth'
 
 // Bump this when making breaking/editor-visible changes to KSE
 const KSE_EDITOR_VERSION = '1.1.0'
@@ -29,7 +31,7 @@ const defaultConfig = {
       base_volume_mwh: 20000,
       price_floor: -500,
       price_cap: 5000,
-      enable_player_bidding: false,
+      enable_player_bidding: true,
       // generator_mix / consumer_mix are interpreted as counts (0-1000) per group
       generator_mix: { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150, nuclear: 0 },
       consumer_mix: { industrial: 400, household: 500, agriculture: 100 },
@@ -258,17 +260,22 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMc
 
 export default function KSE(){
   const [sp] = useSearchParams()
+  const user = useAuth((state) => state.user)
   const scenarioParam = sp.get('id')
   const [tab, setTab] = useState(0)
   const [name, setName] = useState('New Scenario')
   const [cfg, setCfg] = useState(defaultConfig)
   const [scenarioId, setScenarioId] = useState(null)
   const [preview, setPreview] = useState(null)
-  const [roundPrev, setRoundPrev] = useState(1)
   const [errors, setErrors] = useState([])
   const [importText, setImportText] = useState('')
-  const [hours, setHours] = useState(24)
   const [hPrev, setHPrev] = useState(null)
+  const [previewDate, setPreviewDate] = useState('2025-01-15') // Preview date for seasonal variation
+  const [previewTime, setPreviewTime] = useState('00:00') // Preview start time
+  const [showHourlyPoints, setShowHourlyPoints] = useState(false)
+  const [showHourlyGrid, setShowHourlyGrid] = useState(false)
+  // Compute hours from config instead of state
+  const hours = Number(cfg?.general?.forecast_horizon_hours) || 24
   const mcpRef = useRef(null)
   const volRef = useRef(null)
   // generator mix now stored in cfg.market.generator_mix
@@ -285,6 +292,12 @@ export default function KSE(){
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false)
   const [templates, setTemplates] = useState([])
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
+  // Profile Editor Modal
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false)
+  const [profileEditorType, setProfileEditorType] = useState('') // 'pv', 'wind', 'industrial', etc.
+  const [profileEditorTitle, setProfileEditorTitle] = useState('')
+  const [profileEditorCurrent, setProfileEditorCurrent] = useState(null)
+  const [profileEditorPath, setProfileEditorPath] = useState([]) // path in config object
   // Modals (IO + Description)
   const [ioOpen, setIoOpen] = useState(false)
   const [ioTab, setIoTab] = useState(0)
@@ -298,8 +311,6 @@ export default function KSE(){
   const [showDemand, setShowDemand] = useState(true)
   const [showMcp, setShowMcp] = useState(true)
   const stepRef = useRef(null)
-  const [showHourlyPoints, setShowHourlyPoints] = useState(true)
-  const [showHourlyGrid, setShowHourlyGrid] = useState(true)
   const descInputRef = useRef(null)
   // Refs for validation scroll
   const refZones = useRef(null)
@@ -372,6 +383,89 @@ export default function KSE(){
     })
   }
 
+  const openProfileEditor = (type, title, currentHourlyProfile, currentSeasonalProfile, savePath) => {
+    setProfileEditorType(type)
+    setProfileEditorTitle(title)
+    setProfileEditorCurrent({ hourly: currentHourlyProfile, seasonal: currentSeasonalProfile })
+    setProfileEditorPath(savePath)
+    setProfileEditorOpen(true)
+  }
+
+  const handleProfileSave = (profiles) => {
+    // Save both hourly and seasonal profiles to generator_mix or consumer_mix
+    const current = profileEditorPath.reduce((obj, key) => obj?.[key], cfg)
+    if (typeof current === 'object' && current !== null && !Array.isArray(current)) {
+      // Already an object with blocks/profile/seasonal_profile
+      update(profileEditorPath, { 
+        ...current, 
+        profile: profiles.hourly,
+        seasonal_profile: profiles.seasonal 
+      })
+    } else {
+      // Convert from number to object
+      update(profileEditorPath, { 
+        blocks: current || 0, 
+        profile: profiles.hourly,
+        seasonal_profile: profiles.seasonal
+      })
+    }
+    setProfileEditorOpen(false)
+  }
+
+  const getGeneratorMixValue = (type) => {
+    const val = cfg.market.generator_mix?.[type]
+    if (typeof val === 'object') return val.blocks || 0
+    return val || 0
+  }
+
+  const getGeneratorMixProfile = (type) => {
+    const val = cfg.market.generator_mix?.[type]
+    if (typeof val === 'object') return val.profile
+    return null
+  }
+
+  const getGeneratorMixSeasonalProfile = (type) => {
+    const val = cfg.market.generator_mix?.[type]
+    if (typeof val === 'object') return val.seasonal_profile
+    return null
+  }
+
+  const setGeneratorMixBlocks = (type, blocks) => {
+    const current = cfg.market.generator_mix?.[type]
+    if (typeof current === 'object') {
+      update(['market', 'generator_mix', type], { ...current, blocks })
+    } else {
+      update(['market', 'generator_mix', type], blocks)
+    }
+  }
+
+  const getConsumerMixValue = (type) => {
+    const val = cfg.market.consumer_mix?.[type]
+    if (typeof val === 'object') return val.blocks || 0
+    return val || 0
+  }
+
+  const getConsumerMixProfile = (type) => {
+    const val = cfg.market.consumer_mix?.[type]
+    if (typeof val === 'object') return val.profile
+    return null
+  }
+
+  const getConsumerMixSeasonalProfile = (type) => {
+    const val = cfg.market.consumer_mix?.[type]
+    if (typeof val === 'object') return val.seasonal_profile
+    return null
+  }
+
+  const setConsumerMixBlocks = (type, blocks) => {
+    const current = cfg.market.consumer_mix?.[type]
+    if (typeof current === 'object') {
+      update(['market', 'consumer_mix', type], { ...current, blocks })
+    } else {
+      update(['market', 'consumer_mix', type], blocks)
+    }
+  }
+
   const validate = ()=>{
     const errs = []
     const zones = cfg.grid.zones
@@ -400,13 +494,16 @@ export default function KSE(){
 
   const doPreviewNow = async ()=>{
     if(!validate()) return
-    const totalRounds = Number(cfg?.general?.rounds || 4)
-    const r = Math.min(Math.max(1, Number(roundPrev)||1), totalRounds)
     try{
       if (previewController.current) previewController.current.abort()
       const controller = new AbortController()
       previewController.current = controller
-      const { data } = await api.post('/api/engine/preview', { config: cfg, round: r }, { signal: controller.signal })
+      const { data } = await api.post('/api/engine/preview', { 
+        config: cfg, 
+        round: 1,
+        preview_date: previewDate,
+        preview_time: previewTime
+      }, { signal: controller.signal })
       setPreview(data)
     }catch(err){ /* aborted or failed */ }
   }
@@ -578,7 +675,12 @@ export default function KSE(){
       if (hourlyController.current) hourlyController.current.abort()
       const controller = new AbortController()
       hourlyController.current = controller
-      const { data } = await api.post('/api/engine/preview/hourly', { config: cfg, hours: Number(hours)||24 }, { signal: controller.signal })
+      const { data } = await api.post('/api/engine/preview/hourly', { 
+        config: cfg, 
+        hours: hours,
+        preview_date: previewDate,
+        preview_time: previewTime
+      }, { signal: controller.signal })
       setHPrev(data)
       drawHourly(data)
     }catch(err){ /* aborted or failed */ }
@@ -592,12 +694,12 @@ export default function KSE(){
   useEffect(()=>{
     if (tab===2) doPreview()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, cfg, roundPrev])
+  }, [tab, cfg, previewDate, previewTime])
 
   useEffect(()=>{
     if (tab===2) doHourly()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, cfg, hours])
+  }, [tab, cfg, previewDate, previewTime])
 
   const onValidationSelect = (_idx, text)=>{
     const map = [
@@ -1027,55 +1129,82 @@ export default function KSE(){
               <Stack spacing={2} sx={{ minWidth: 320, flex: 1 }}>
                 <Typography variant="subtitle2">Generator Mix</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="PV blocks" tooltip="Number of PV supply blocks in preview mix (0–1000)." showTitle={false} />
-                    <NumberInput label="PV (#)" value={cfg.market.generator_mix?.pv||0} onChange={(val)=>update(['market','generator_mix','pv'], Number(val)||0)} min={0} max={1000} step={1} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <NumberInput label="PV (#)" value={getGeneratorMixValue('pv')} onChange={(val)=>setGeneratorMixBlocks('pv', Number(val)||0)} min={0} max={1000} step={1} />
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('solar', 'PV Profile', getGeneratorMixProfile('pv'), getGeneratorMixSeasonalProfile('pv'), ['market','generator_mix','pv'])} sx={{ minWidth: 40 }}>Edit</Button>
+                    </Stack>
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Wind blocks" tooltip="Number of wind supply blocks in preview mix (0–1000)." showTitle={false} />
-                    <NumberInput label="Wind (#)" value={cfg.market.generator_mix?.wind||0} onChange={(val)=>update(['market','generator_mix','wind'], Number(val)||0)} min={0} max={1000} step={1} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <NumberInput label="Wind (#)" value={getGeneratorMixValue('wind')} onChange={(val)=>setGeneratorMixBlocks('wind', Number(val)||0)} min={0} max={1000} step={1} />
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('wind', 'Wind Profile', getGeneratorMixProfile('wind'), getGeneratorMixSeasonalProfile('wind'), ['market','generator_mix','wind'])} sx={{ minWidth: 40 }}>Edit</Button>
+                    </Stack>
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Hydro blocks" tooltip="Number of hydro supply blocks in preview mix (0–1000)." showTitle={false} />
-                    <NumberInput label="Hydro (#)" value={cfg.market.generator_mix?.hydro||0} onChange={(val)=>update(['market','generator_mix','hydro'], Number(val)||0)} min={0} max={1000} step={1} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <NumberInput label="Hydro (#)" value={getGeneratorMixValue('hydro')} onChange={(val)=>setGeneratorMixBlocks('hydro', Number(val)||0)} min={0} max={1000} step={1} />
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('hydro', 'Hydro Profile', getGeneratorMixProfile('hydro'), getGeneratorMixSeasonalProfile('hydro'), ['market','generator_mix','hydro'])} sx={{ minWidth: 40 }}>Edit</Button>
+                    </Stack>
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Coal blocks" tooltip="Number of coal supply blocks in preview mix (0–1000)." showTitle={false} />
-                    <NumberInput label="Coal (#)" value={cfg.market.generator_mix?.coal||0} onChange={(val)=>update(['market','generator_mix','coal'], Number(val)||0)} min={0} max={1000} step={1} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <NumberInput label="Coal (#)" value={getGeneratorMixValue('coal')} onChange={(val)=>setGeneratorMixBlocks('coal', Number(val)||0)} min={0} max={1000} step={1} />
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Coal Profile', getGeneratorMixProfile('coal'), getGeneratorMixSeasonalProfile('coal'), ['market','generator_mix','coal'])} sx={{ minWidth: 40 }}>Edit</Button>
+                    </Stack>
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Gas blocks" tooltip="Number of gas supply blocks in preview mix (0–1000)." showTitle={false} />
-                    <NumberInput label="Gas (#)" value={cfg.market.generator_mix?.gas||0} onChange={(val)=>update(['market','generator_mix','gas'], Number(val)||0)} min={0} max={1000} step={1} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <NumberInput label="Gas (#)" value={getGeneratorMixValue('gas')} onChange={(val)=>setGeneratorMixBlocks('gas', Number(val)||0)} min={0} max={1000} step={1} />
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('peaking', 'Gas Profile', getGeneratorMixProfile('gas'), getGeneratorMixSeasonalProfile('gas'), ['market','generator_mix','gas'])} sx={{ minWidth: 40 }}>Edit</Button>
+                    </Stack>
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Nuclear blocks" tooltip="Number of nuclear supply blocks in preview mix (0–1000)." showTitle={false} />
-                    <NumberInput label="Nuclear (#)" value={cfg.market.generator_mix?.nuclear||0} onChange={(val)=>update(['market','generator_mix','nuclear'], Number(val)||0)} min={0} max={1000} step={1} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <NumberInput label="Nuclear (#)" value={getGeneratorMixValue('nuclear')} onChange={(val)=>setGeneratorMixBlocks('nuclear', Number(val)||0)} min={0} max={1000} step={1} />
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Nuclear Profile', getGeneratorMixProfile('nuclear'), getGeneratorMixSeasonalProfile('nuclear'), ['market','generator_mix','nuclear'])} sx={{ minWidth: 40 }}>Edit</Button>
+                    </Stack>
                   </Stack>
                 </Stack>
                 {(() => {
                   const gm = cfg.market.generator_mix||{}
-                  const sum = ['pv','wind','hydro','coal','gas','nuclear'].reduce((s,k)=> s + Number(gm[k]||0), 0)
+                  const sum = ['pv','wind','hydro','coal','gas','nuclear'].reduce((s,k)=> s + getGeneratorMixValue(k), 0)
                   return <Typography variant="caption" color={sum>0? 'text.secondary':'warning.main'}>Total generator blocks: {sum} (normalized in preview)</Typography>
                 })()}
 
                 <Typography variant="subtitle2">Consumer Mix</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Industrial blocks" tooltip="Number of industrial consumer blocks in preview demand mix (0–1000)." showTitle={false} />
-                    <NumberInput label="Industrial (#)" value={cfg.market.consumer_mix?.industrial||0} onChange={(val)=>update(['market','consumer_mix','industrial'], Number(val)||0)} min={0} max={1000} step={1} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <NumberInput label="Industrial (#)" value={getConsumerMixValue('industrial')} onChange={(val)=>setConsumerMixBlocks('industrial', Number(val)||0)} min={0} max={1000} step={1} />
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Industrial Load Profile', getConsumerMixProfile('industrial'), getConsumerMixSeasonalProfile('industrial'), ['market','consumer_mix','industrial'])} sx={{ minWidth: 40 }}>Edit</Button>
+                    </Stack>
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Household blocks" tooltip="Number of household consumer blocks in preview demand mix (0–1000)." showTitle={false} />
-                    <NumberInput label="Household (#)" value={cfg.market.consumer_mix?.household||0} onChange={(val)=>update(['market','consumer_mix','household'], Number(val)||0)} min={0} max={1000} step={1} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <NumberInput label="Household (#)" value={getConsumerMixValue('household')} onChange={(val)=>setConsumerMixBlocks('household', Number(val)||0)} min={0} max={1000} step={1} />
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('residential', 'Household Load Profile', getConsumerMixProfile('household'), getConsumerMixSeasonalProfile('household'), ['market','consumer_mix','household'])} sx={{ minWidth: 40 }}>Edit</Button>
+                    </Stack>
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 160 }}>
+                  <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Agriculture blocks" tooltip="Number of agriculture consumer blocks in preview demand mix (0–1000)." showTitle={false} />
-                    <NumberInput label="Agriculture (#)" value={cfg.market.consumer_mix?.agriculture||0} onChange={(val)=>update(['market','consumer_mix','agriculture'], Number(val)||0)} min={0} max={1000} step={1} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <NumberInput label="Agriculture (#)" value={getConsumerMixValue('agriculture')} onChange={(val)=>setConsumerMixBlocks('agriculture', Number(val)||0)} min={0} max={1000} step={1} />
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Agriculture Load Profile', getConsumerMixProfile('agriculture'), getConsumerMixSeasonalProfile('agriculture'), ['market','consumer_mix','agriculture'])} sx={{ minWidth: 40 }}>Edit</Button>
+                    </Stack>
                   </Stack>
                 </Stack>
                 {(() => {
                   const cm = cfg.market.consumer_mix||{}
-                  const sum = ['industrial','household','agriculture'].reduce((s,k)=> s + Number(cm[k]||0), 0)
+                  const sum = ['industrial','household','agriculture'].reduce((s,k)=> s + getConsumerMixValue(k), 0)
                   return <Typography variant="caption" color={sum>0? 'text.secondary':'warning.main'}>Total consumer blocks: {sum} (normalized in preview)</Typography>
                 })()}
 
@@ -1101,42 +1230,6 @@ export default function KSE(){
                     <InfoLabel title="Preview seed" tooltip="Used only for KSE previews. Simulation uses campaign.seed." showTitle={false} />
                     <TextField label="Preview Seed" value={cfg.environment.seed} onChange={e=>update(['environment','seed'], e.target.value)}/>
                   </Stack>
-                  <Stack spacing={0.5} sx={{ minWidth: 260 }}>
-                    <InfoLabel title="Profiles" tooltip="Select preset diurnal/seasonal profiles or import JSON with diurnal_profile[24], seasonal_factors[12]." showTitle={false} />
-                    <Select size="small" value={cfg.environment.profile_preset || ''} onChange={(e)=>{
-                      const p = e.target.value
-                      const presets = {
-                        '': null,
-                        'Winter Weekday': { diurnal:[0.8,0.7,0.7,0.7,0.8,0.9,1.0,1.1,1.2,1.1,1.0,0.95,0.9,0.95,1.0,1.1,1.2,1.25,1.2,1.1,1.0,0.95,0.9,0.85], seasonal:[1.1,1.1,1.05,1.0,0.95,0.9,0.9,0.9,0.95,1.0,1.05,1.1] },
-                        'Summer Weekday': { diurnal:[0.7,0.7,0.7,0.7,0.8,0.95,1.05,1.1,1.15,1.1,1.05,1.0,0.95,1.0,1.05,1.15,1.25,1.2,1.1,1.0,0.9,0.85,0.8,0.75], seasonal:[0.9,0.9,0.95,1.0,1.05,1.1,1.1,1.1,1.05,1.0,0.95,0.9] },
-                        'Weekend': { diurnal:[0.6,0.6,0.6,0.6,0.7,0.85,0.95,1.0,1.05,1.0,0.95,0.9,0.9,0.95,1.0,1.05,1.1,1.1,1.0,0.9,0.8,0.75,0.7,0.65], seasonal:[1,1,1,1,1,1,1,1,1,1,1,1] }
-                      }
-                      const sel = presets[p]
-                      update(['environment','profile_preset'], p)
-                      if (sel){
-                        update(['environment','diurnal_profile'], sel.diurnal)
-                        update(['environment','seasonal_factors'], sel.seasonal)
-                      }
-                    }} sx={{ minWidth: 220 }}>
-                      <MenuItem value=''>None</MenuItem>
-                      <MenuItem value='Winter Weekday'>Winter Weekday</MenuItem>
-                      <MenuItem value='Summer Weekday'>Summer Weekday</MenuItem>
-                      <MenuItem value='Weekend'>Weekend</MenuItem>
-                    </Select>
-                    <TextField label="Import Profiles (JSON)" placeholder='{"diurnal_profile":[...],"seasonal_factors":[...]}' multiline minRows={2} value={cfg.environment._profiles_json || ''} onChange={(e)=> update(['environment','_profiles_json'], e.target.value)} />
-                    <Button size="small" onClick={()=>{
-                      try{
-                        const val = JSON.parse(cfg.environment._profiles_json || '{}')
-                        if (Array.isArray(val.diurnal_profile) && Array.isArray(val.seasonal_factors)){
-                          update(['environment','diurnal_profile'], val.diurnal_profile)
-                          update(['environment','seasonal_factors'], val.seasonal_factors)
-                          alert('Profiles imported')
-                        } else {
-                          alert('JSON must include diurnal_profile[24] and seasonal_factors[12]')
-                        }
-                      }catch(err){ alert('Invalid JSON') }
-                    }}>Apply Profiles</Button>
-                  </Stack>
                 </Stack>
               </Stack>
               {/* Right: Sticky Preview */}
@@ -1159,24 +1252,15 @@ export default function KSE(){
                     <FormControlLabel control={<Switch size="small" checked={showHourlyPoints} onChange={(_,v)=> setShowHourlyPoints(v)} />} label="Points" />
                     <FormControlLabel control={<Switch size="small" checked={showHourlyGrid} onChange={(_,v)=> setShowHourlyGrid(v)} />} label="Grid" />
                   </Stack>
-                  {/* Controls moved under hourly charts */}
+                  {/* Date/Time controls for preview */}
                   <Stack direction="row" spacing={2} alignItems="flex-start" sx={{ mt:1 }}>
-                    <Stack spacing={0.5} sx={{ minWidth: 180 }}>
-                      <InfoLabel title="Preview round" tooltip="Select a round used for MCP/Volume preview rendering." showTitle={false} />
-                      {(() => {
-                        const totalRounds = Number(cfg?.general?.rounds || 4)
-                        const items = Array.from({ length: totalRounds }, (_, i) => i + 1)
-                        const value = Math.min(Math.max(1, Number(roundPrev) || 1), totalRounds)
-                        return (
-                          <Select size="small" value={value} onChange={e=>setRoundPrev(e.target.value)} sx={{ width: 160 }}>
-                            {items.map(r => <MenuItem key={r} value={r}>{`Round ${r}`}</MenuItem>)}
-                          </Select>
-                        )
-                      })()}
-                    </Stack>
                     <Stack spacing={0.5} sx={{ minWidth: 160 }}>
-                      <InfoLabel title="Hours (hourly charts)" tooltip="Number of hours for hourly MCP/Volume preview. Auto-updates charts." showTitle={false} />
-                      <TextField inputRef={refHours} type="number" size="small" label="Hours" value={hours} onChange={e=>setHours(e.target.value)} sx={{ width: 140 }} />
+                      <InfoLabel title="Preview Date" tooltip="Start date for preview (affects seasonal profiles)" showTitle={false} />
+                      <TextField type="date" size="small" label="Preview Date" value={previewDate} onChange={e=>setPreviewDate(e.target.value)} sx={{ width: 160 }} />
+                    </Stack>
+                    <Stack spacing={0.5} sx={{ minWidth: 140 }}>
+                      <InfoLabel title="Preview Time" tooltip="Start time for preview (affects hourly profiles)" showTitle={false} />
+                      <TextField type="time" size="small" label="Preview Time" value={previewTime} onChange={e=>setPreviewTime(e.target.value)} sx={{ width: 140 }} />
                     </Stack>
                   </Stack>
                 </Stack>
@@ -1375,18 +1459,22 @@ export default function KSE(){
               </Stack>
               <Paper sx={{ p: 2 }}>
                 <Stack spacing={1}>
-                  <FormControlLabel
-                    control={<Switch checked={Boolean(cfg.market.enable_player_bidding)} onChange={(e)=>update(['market','enable_player_bidding'], e.target.checked)} />}
-                    label={
-                      <InfoLabel 
-                        title="Enable Multi-Bid Pricing" 
-                        tooltip="Allow players to submit 3 price bids (A/B/C) per device with 24h quantity profiles. The engine merges player bids into the merit order and tracks dispatch per bid. Default: false (classic forecast-only mode)."
+                  {user?.role === 'admin' && (
+                    <>
+                      <FormControlLabel
+                        control={<Switch checked={Boolean(cfg.market.enable_player_bidding)} onChange={(e)=>update(['market','enable_player_bidding'], e.target.checked)} />}
+                        label={
+                          <InfoLabel 
+                            title="Enable Multi-Bid Pricing" 
+                            tooltip="Allow players to submit 3 price bids (A/B/C) per device with 24h quantity profiles. The engine merges player bids into the merit order and tracks dispatch per bid. Default: true (enabled)."
+                          />
+                        }
                       />
-                    }
-                  />
-                  <Typography variant="caption" color="text.secondary">
-                    When enabled, players can submit multiple price-quantity bid pairs for each device, enabling strategic bidding behavior.
-                  </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        When enabled, players can submit multiple price-quantity bid pairs for each device, enabling strategic bidding behavior.
+                      </Typography>
+                    </>
+                  )}
                 </Stack>
               </Paper>
               {(cfg.player_types||[]).map((pt, idx)=> (
@@ -1624,6 +1712,8 @@ export default function KSE(){
           setEditingEventIndex(null)
         }}
         event={editingEvent}
+        playerTypes={cfg.player_types || []}
+        devices={cfg.devices || []}
         onSave={(eventData) => {
           setCfg((prev) => {
             const n = structuredClone(prev)
@@ -1744,6 +1834,17 @@ export default function KSE(){
         onImportExport={()=> setIoOpen(true)}
         onEditDescription={()=> { setDescDraft(cfg?.general?.description || ''); setDescOpen(true) }}
         disabled={errors.length>0}
+      />
+      
+      {/* Profile Editor Modal */}
+      <ProfileEditorModal
+        open={profileEditorOpen}
+        onClose={()=> setProfileEditorOpen(false)}
+        title={profileEditorTitle}
+        hourlyProfile={profileEditorCurrent?.hourly}
+        seasonalProfile={profileEditorCurrent?.seasonal}
+        onSave={handleProfileSave}
+        type={profileEditorType}
       />
       
       {/* Bottom padding to prevent content being hidden by sticky bar */}

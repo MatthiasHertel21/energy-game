@@ -133,10 +133,20 @@ def _avg_variability(cfg: dict) -> Tuple[float, float]:
     return cap / n / 100.0, mc / n / 100.0
 
 
-def generate_curves_from_config(cfg: dict, seed: Optional[str] = None) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+def generate_curves_from_config(cfg: dict, seed: Optional[str] = None, hour_of_day: Optional[int] = None, month_of_year: Optional[int] = None) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
     """
     Step-wise supply and demand curves around base points influenced by config.
     Adds seed-based jitter based on average variability across player types.
+    Now supports device-specific availability/load profiles (hourly and seasonal).
+    
+    Args:
+        cfg: Scenario configuration
+        seed: Random seed for reproducibility
+        hour_of_day: Hour (0-23) for applying device hourly profiles, None = use average
+        month_of_year: Month (1-12) for applying device seasonal profiles, None = use average
+    
+    Returns:
+        Tuple of (supply_curve, demand_curve)
     """
     market = cfg.get("market", {})
     base_price = float(market.get("base_price", 1000))
@@ -149,6 +159,120 @@ def generate_curves_from_config(cfg: dict, seed: Optional[str] = None) -> Tuple[
     seeded(str(env_seed))
 
     cap_var, mc_var = _avg_variability(cfg)  # 0..1
+
+    # Build device-weighted profiles from generator_mix and consumer_mix
+    supply_profile_factor = 1.0
+    supply_seasonal_factor = 1.0
+    demand_profile_factor = 1.0
+    demand_seasonal_factor = 1.0
+    
+    if hour_of_day is not None:
+        # Get profiles from generator_mix (market-level, not player devices)
+        gen_mix = market.get("generator_mix", {})
+        if gen_mix:
+            # Default profiles by type (from DEVICE_SPECS)
+            DEFAULT_GEN_PROFILES = {
+                "coal": [1.0] * 24,
+                "nuclear": [1.0] * 24,
+                "gas": [0.8, 0.8, 0.8, 0.8, 0.8, 0.9, 1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0, 0.95, 0.9, 0.85, 0.8],
+                "hydro": [0.7, 0.7, 0.7, 0.7, 0.8, 0.9, 1.0, 1.0, 0.9, 0.8, 0.8, 0.8, 0.8, 0.8, 0.9, 1.0, 1.0, 1.0, 1.0, 0.95, 0.9, 0.85, 0.8, 0.7],
+                "solar": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.4, 0.7, 0.9, 1.0, 1.0, 1.0, 1.0, 0.9, 0.7, 0.4, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "pv": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.4, 0.7, 0.9, 1.0, 1.0, 1.0, 1.0, 0.9, 0.7, 0.4, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "wind": [0.6, 0.65, 0.7, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.4, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.85, 0.8, 0.75, 0.7],
+            }
+            
+            total_blocks = 0
+            weighted_avail = 0.0
+            for gen_type, value in gen_mix.items():
+                # Support both old format (number) and new format (dict with blocks/profile/seasonal_profile)
+                if isinstance(value, dict):
+                    blocks = float(value.get("blocks", 0))
+                    profile = value.get("profile") or DEFAULT_GEN_PROFILES.get(gen_type.lower(), [1.0] * 24)
+                else:
+                    blocks = float(value or 0)
+                    profile = DEFAULT_GEN_PROFILES.get(gen_type.lower(), [1.0] * 24)
+                
+                if blocks > 0:
+                    avail = profile[hour_of_day % len(profile)] if profile else 1.0
+                    weighted_avail += blocks * avail
+                    total_blocks += blocks
+            
+            if total_blocks > 0:
+                supply_profile_factor = weighted_avail / total_blocks
+    
+    if month_of_year is not None:
+        # Apply seasonal profiles from generator_mix
+        gen_mix = market.get("generator_mix", {})
+        if gen_mix:
+            total_blocks = 0
+            weighted_seasonal = 0.0
+            for gen_type, value in gen_mix.items():
+                if isinstance(value, dict):
+                    blocks = float(value.get("blocks", 0))
+                    seasonal_profile = value.get("seasonal_profile") or [1.0] * 12
+                else:
+                    blocks = float(value or 0)
+                    seasonal_profile = [1.0] * 12
+                
+                if blocks > 0:
+                    seasonal_factor = seasonal_profile[(month_of_year - 1) % len(seasonal_profile)] if seasonal_profile else 1.0
+                    weighted_seasonal += blocks * seasonal_factor
+                    total_blocks += blocks
+            
+            if total_blocks > 0:
+                supply_seasonal_factor = weighted_seasonal / total_blocks
+    
+    if hour_of_day is not None:
+        # Get profiles from consumer_mix
+        cons_mix = market.get("consumer_mix", {})
+        if cons_mix:
+            DEFAULT_CONS_PROFILES = {
+                "industrial": [0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.98, 0.98, 0.98, 0.97, 0.96, 0.95],
+                "household": [0.6, 0.6, 0.6, 0.6, 0.6, 0.65, 0.75, 0.85, 0.9, 0.85, 0.8, 0.75, 0.75, 0.75, 0.8, 0.85, 0.9, 1.0, 1.0, 0.95, 0.9, 0.85, 0.75, 0.7],
+                "residential": [0.6, 0.6, 0.6, 0.6, 0.6, 0.65, 0.75, 0.85, 0.9, 0.85, 0.8, 0.75, 0.75, 0.75, 0.8, 0.85, 0.9, 1.0, 1.0, 0.95, 0.9, 0.85, 0.75, 0.7],
+                "commercial": [0.3, 0.3, 0.3, 0.3, 0.4, 0.6, 0.8, 0.95, 1.0, 1.0, 1.0, 1.0, 0.95, 0.95, 1.0, 1.0, 0.95, 0.8, 0.6, 0.5, 0.4, 0.35, 0.3, 0.3],
+                "agriculture": [0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.98, 0.98, 0.98, 0.97, 0.96, 0.95],
+            }
+            
+            total_blocks = 0
+            weighted_load = 0.0
+            for cons_type, value in cons_mix.items():
+                if isinstance(value, dict):
+                    blocks = float(value.get("blocks", 0))
+                    profile = value.get("profile") or DEFAULT_CONS_PROFILES.get(cons_type.lower(), [1.0] * 24)
+                else:
+                    blocks = float(value or 0)
+                    profile = DEFAULT_CONS_PROFILES.get(cons_type.lower(), [1.0] * 24)
+                
+                if blocks > 0:
+                    load_factor = profile[hour_of_day % len(profile)] if profile else 1.0
+                    weighted_load += blocks * load_factor
+                    total_blocks += blocks
+            
+            if total_blocks > 0:
+                demand_profile_factor = weighted_load / total_blocks
+    
+    if month_of_year is not None:
+        # Apply seasonal profiles from consumer_mix
+        cons_mix = market.get("consumer_mix", {})
+        if cons_mix:
+            total_blocks = 0
+            weighted_seasonal = 0.0
+            for cons_type, value in cons_mix.items():
+                if isinstance(value, dict):
+                    blocks = float(value.get("blocks", 0))
+                    seasonal_profile = value.get("seasonal_profile") or [1.0] * 12
+                else:
+                    blocks = float(value or 0)
+                    seasonal_profile = [1.0] * 12
+                
+                if blocks > 0:
+                    seasonal_factor = seasonal_profile[(month_of_year - 1) % len(seasonal_profile)] if seasonal_profile else 1.0
+                    weighted_seasonal += blocks * seasonal_factor
+                    total_blocks += blocks
+            
+            if total_blocks > 0:
+                demand_seasonal_factor = weighted_seasonal / total_blocks
 
     supply: List[Tuple[float, float]] = []
     demand: List[Tuple[float, float]] = []
@@ -167,8 +291,10 @@ def generate_curves_from_config(cfg: dict, seed: Optional[str] = None) -> Tuple[
         # Apply capacity variability as volume jitter
         if cap_var > 0:
             v = max(0.0, v * (1.0 + random.uniform(-cap_var, cap_var)))
-        supply.append((p_s, v))
-        demand.append((p_d, v))
+        
+        # Apply device-specific profiles (both hourly and seasonal)
+        supply.append((p_s, v * supply_profile_factor * supply_seasonal_factor))
+        demand.append((p_d, v * demand_profile_factor * demand_seasonal_factor))
     
     # Ensure strict monotonicity: sort supply ascending, demand descending by price
     supply = sorted(supply, key=lambda x: x[0])
@@ -576,15 +702,44 @@ def track_demand_dispatch(demand_bids: List[dict], mcp: float, volume: float,
     return dispatch_tracking
 
 
-def apply_events(price: float, volume: float, events: list[dict]) -> Tuple[float, float]:
+def apply_events(price: float, volume: float, events: list[dict], player_id: str = None, zone: int = None, device_type: str = None) -> Tuple[float, float]:
+    """
+    Apply events to price and volume.
+    
+    Events are filtered by target:
+    - target='all': Always applied
+    - target='zone': Applied if zone matches target_id
+    - target='player': Applied if player_id matches target_id
+    - target='device': Applied if device_type matches target_id
+    
+    Type determines calculation method:
+    - type='systemic': Uses multiplier (applied first)
+    - Other types: Uses additive (applied second)
+    """
     mul = 1.0
     add_v = 0.0
+    
     for e in events or []:
+        # Check target filtering
+        target = e.get("target", "all")
+        target_id = e.get("target_id", "")
+        
+        # Skip if target doesn't match
+        if target == "zone" and zone is not None and str(zone) != str(target_id):
+            continue
+        if target == "player" and player_id is not None and str(player_id) != str(target_id):
+            continue
+        if target == "device" and device_type is not None and str(device_type) != str(target_id):
+            continue
+        # target='all' always applies
+        
+        # Apply event
         t = e.get("type", "systemic")
         if t == "systemic":
             mul *= float(e.get("multiplier", 1.0))
         else:
             add_v += float(e.get("additive", 0.0))
+    
     return price * mul, max(0.0, volume + add_v)
 
 
@@ -629,10 +784,10 @@ def select_events_for_round(events: list[dict], round_num: int) -> list[dict]:
     return active
 
 
-def preview_from_config(cfg: dict, seed: str = "preview", round_num: int | None = None) -> dict:
+def preview_from_config(cfg: dict, seed: str = "preview", round_num: int | None = None, hour_of_day: int | None = None, month_of_year: int | None = None) -> dict:
     # use provided seed consistently across generation
     seeded(seed)
-    supply, demand = generate_curves_from_config(cfg, seed=seed)
+    supply, demand = generate_curves_from_config(cfg, seed=seed, hour_of_day=hour_of_day, month_of_year=month_of_year)
     price, vol = clear_market(supply, demand,
                               price_floor=cfg.get("market", {}).get("price_floor", -500),
                               price_cap=cfg.get("market", {}).get("price_cap", 5000))
@@ -751,9 +906,6 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         else:
             normalized_forecasts[pid] = {'hours': [], 'bids': None}
     
-    # Generate synthetic supply/demand (baseline curves)
-    synthetic_supply, synthetic_demand = generate_curves_from_config(config, seed=seed)
-    
     # Check if multi-bid pricing is enabled (campaign-wide setting)
     # NOTE: This controls the MARKET CLEARING MECHANISM (bid-based vs synthetic)
     # Device-level enable_multi_bid controls INPUT/UI only (3 lots vs 1 implicit bid)
@@ -763,10 +915,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     # Apply only events active for this round
     round_events = select_events_for_round(config.get("events", []), round_num)
     
-    # Extract environment profiles for temporal modulation
-    env = config.get("environment", {})
-    diurnal_profile = env.get("diurnal_profile") or [1.0] * 24
-    seasonal_factors = env.get("seasonal_factors") or [1.0] * 12
+    # Extract time information for device-specific profiles
     start_time = config.get("general", {}).get("start_time", "00:00")
     fake_date = config.get("general", {}).get("fake_date", "2025-01-01")
     month = extract_month(fake_date)
@@ -801,25 +950,25 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     for hour_offset in range(span):
         hour_idx = base_idx + hour_offset
         
-        # Calculate temporal modulation factor (diurnal × seasonal)
+        # Calculate hour of day for device-specific profiles
         hour_of_day = extract_hour_of_day(hour_idx, start_time)
-        f_diurnal = float(diurnal_profile[hour_of_day] if hour_of_day < len(diurnal_profile) else 1.0)
-        f_seasonal = float(seasonal_factors[(month - 1) % len(seasonal_factors)] if len(seasonal_factors) > 0 else 1.0)
-        temporal_factor = max(0.0, f_diurnal * f_seasonal)
         
-        # Apply temporal modulation to DEMAND curves only (Option A: asymmetric)
-        # Supply remains constant (dispatchable units always available)
-        # Demand varies with time (consumer load patterns)
-        synthetic_demand_modulated = [(p, max(0.0, v * temporal_factor)) for (p, v) in synthetic_demand]
+        # Generate supply/demand curves with device-specific hourly and seasonal profiles
+        synthetic_supply, synthetic_demand = generate_curves_from_config(
+            config, 
+            seed=seed, 
+            hour_of_day=hour_of_day, 
+            month_of_year=month
+        )
         
         # Build supply and demand curves for this specific hour
         if enable_bidding:
             supply, supply_bids = build_supply_from_bids(normalized_forecasts, hour_idx, synthetic_supply, config)
-            demand, demand_bids = build_demand_from_bids(normalized_forecasts, hour_idx, synthetic_demand_modulated, config)
+            demand, demand_bids = build_demand_from_bids(normalized_forecasts, hour_idx, synthetic_demand, config)
         else:
             supply = synthetic_supply
             supply_bids = []
-            demand = synthetic_demand_modulated
+            demand = synthetic_demand
             demand_bids = []
         
         # Market clearing for this hour

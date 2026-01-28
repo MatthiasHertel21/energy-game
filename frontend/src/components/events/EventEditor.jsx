@@ -24,8 +24,10 @@ import RangeInput from '../inputs/RangeInput';
  * @param {function} onClose - Callback () => void
  * @param {object} event - Event to edit (null for new event)
  * @param {function} onSave - Callback (eventData) => void
+ * @param {array} playerTypes - Available player types for selection
+ * @param {array} devices - Available devices for device type selection
  */
-export default function EventEditor({ open, onClose, event, onSave }) {
+export default function EventEditor({ open, onClose, event, onSave, playerTypes = [], devices = [] }) {
   const [tab, setTab] = useState(0);
   const [formData, setFormData] = useState({
     name: '',
@@ -125,13 +127,28 @@ export default function EventEditor({ open, onClose, event, onSave }) {
               value={formData.type}
               onChange={(e) => handleChange('type', e.target.value)}
               fullWidth
-              helperText="Systemic affects all players/markets"
+              helperText="Event scope and application method"
             >
-              <MenuItem value="systemic">Systemic</MenuItem>
-              <MenuItem value="player">Player-specific</MenuItem>
-              <MenuItem value="market">Market</MenuItem>
-              <MenuItem value="weather">Weather</MenuItem>
+              <MenuItem value="systemic">Systemic (multiplier, all players)</MenuItem>
+              <MenuItem value="player">Player-specific (additive, one player)</MenuItem>
+              <MenuItem value="market">Market (market rule changes)</MenuItem>
+              <MenuItem value="weather">Weather (solar/wind impact)</MenuItem>
+              <MenuItem value="grid">Grid (ATC/network impact)</MenuItem>
+              <MenuItem value="device">Device (specific device type)</MenuItem>
             </TextField>
+            <Box sx={{ p: 1.5, bgcolor: 'info.lighter', borderRadius: 1, border: 1, borderColor: 'info.light' }}>
+              <Typography variant="caption" fontWeight={600} display="block" gutterBottom>
+                Type Documentation:
+              </Typography>
+              <Typography variant="caption" component="div" sx={{ lineHeight: 1.6 }}>
+                <strong>Systemic:</strong> Uses multiplier, affects entire market (e.g., fuel spike, demand surge)<br />
+                <strong>Player:</strong> Uses additive, affects one player (e.g., plant outage)<br />
+                <strong>Market:</strong> Changes market rules or parameters<br />
+                <strong>Weather:</strong> Weather-related impacts on renewables<br />
+                <strong>Grid:</strong> Grid congestion, ATC reduction, line trips<br />
+                <strong>Device:</strong> Targets specific device types (e.g., battery degradation)
+              </Typography>
+            </Box>
           </Stack>
         )}
 
@@ -191,35 +208,85 @@ export default function EventEditor({ open, onClose, event, onSave }) {
 
         {tab === 2 && (
           <Stack spacing={2}>
+            <Box sx={{ p: 1.5, bgcolor: 'warning.lighter', borderRadius: 1, border: 1, borderColor: 'warning.light', mb: 2 }}>
+              <Typography variant="caption" fontWeight={600} display="block" gutterBottom>
+                Type vs. Target:
+              </Typography>
+              <Typography variant="caption" component="div" sx={{ lineHeight: 1.6 }}>
+                <strong>Type</strong> defines the <em>scope</em> (systemic/player/grid/etc.) and <em>calculation method</em> (multiplier/additive).<br />
+                <strong>Target</strong> defines <em>who/what</em> is affected (all/zone/player/device).<br />
+                Example: Type=systemic + Target=all = market-wide fuel spike
+              </Typography>
+            </Box>
             <TextField
               select
               label="Target"
               value={formData.target}
               onChange={(e) => handleChange('target', e.target.value)}
               fullWidth
-              helperText="What does this event affect?"
+              helperText="Who or what does this event affect?"
             >
               <MenuItem value="all">All players/zones</MenuItem>
               <MenuItem value="zone">Specific zone</MenuItem>
-              <MenuItem value="player">Specific player</MenuItem>
+              <MenuItem value="player">Specific player type</MenuItem>
               <MenuItem value="device">Specific device type</MenuItem>
             </TextField>
 
-            {formData.target !== 'all' && (
+            {formData.target === 'zone' && (
+              <NumberInput
+                label="Zone Number"
+                value={formData.target_id || 1}
+                onChange={(val) => handleChange('target_id', val)}
+                min={1}
+                max={5}
+                step={1}
+                helperText="Which zone is affected by this event"
+              />
+            )}
+
+            {formData.target === 'player' && (
               <TextField
-                label="Target ID"
+                select
+                label="Player Type"
                 value={formData.target_id}
                 onChange={(e) => handleChange('target_id', e.target.value)}
-                placeholder={
-                  formData.target === 'zone'
-                    ? 'e.g., 1'
-                    : formData.target === 'player'
-                    ? 'e.g., player_1'
-                    : 'e.g., coal'
-                }
                 fullWidth
-                helperText={`Specify the ${formData.target} identifier`}
-              />
+                helperText="Which player type is affected"
+              >
+                {playerTypes.length > 0 ? (
+                  playerTypes.map((pt, idx) => (
+                    <MenuItem key={pt.id || idx} value={pt.id || `ptype_${idx}`}>
+                      {pt.name || `Player Type ${idx + 1}`}
+                    </MenuItem>
+                  ))
+                ) : (
+                  <MenuItem value="" disabled>
+                    No player types defined yet
+                  </MenuItem>
+                )}
+              </TextField>
+            )}
+
+            {formData.target === 'device' && (
+              <TextField
+                select
+                label="Device Type"
+                value={formData.target_id}
+                onChange={(e) => handleChange('target_id', e.target.value)}
+                fullWidth
+                helperText="Which device type is affected"
+              >
+                <MenuItem value="pv">Solar (PV)</MenuItem>
+                <MenuItem value="wind">Wind</MenuItem>
+                <MenuItem value="hydro">Hydro</MenuItem>
+                <MenuItem value="coal">Coal</MenuItem>
+                <MenuItem value="gas">Gas</MenuItem>
+                <MenuItem value="nuclear">Nuclear</MenuItem>
+                <MenuItem value="battery">Battery</MenuItem>
+                <MenuItem value="industrial">Industrial Load</MenuItem>
+                <MenuItem value="household">Household Load</MenuItem>
+                <MenuItem value="agriculture">Agriculture Load</MenuItem>
+              </TextField>
             )}
           </Stack>
         )}

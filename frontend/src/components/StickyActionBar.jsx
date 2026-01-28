@@ -28,13 +28,6 @@ export default function StickyActionBar({
       }}
     >
       <Stack direction="row" spacing={2} justifyContent="center" flexWrap="wrap" useFlexGap>
-        <Button
-          variant="outlined"
-          startIcon={<PlayArrowIcon />}
-          onClick={onValidate}
-        >
-          Validate + Preview
-        </Button>
         {onLoadTemplate ? (
           <Button
             variant="outlined"
