@@ -120,6 +120,8 @@ def validate_config(cfg: dict) -> list[str]:
         else:
             ids = set()
             dev_ids = {d.get("id") for d in (devices or []) if isinstance(d, dict)}
+            device_map = {d.get("id"): d for d in (devices or []) if isinstance(d, dict)}
+            
             for pt in player_types:
                 if not isinstance(pt, dict):
                     errors.append("player_types[] must be objects")
@@ -140,6 +142,17 @@ def validate_config(cfg: dict) -> list[str]:
                     unknown = [x for x in dv if x not in dev_ids]
                     if unknown:
                         errors.append(f"player_types[{tid}].devices unknown: {', '.join(map(str, unknown))}")
+                    
+                    # Validate role: must be pure producer or consumer (no prosumer)
+                    if dv:
+                        player_devices = [device_map.get(dev_id) for dev_id in dv if dev_id in device_map]
+                        from .engine import detect_player_role
+                        role = detect_player_role(player_devices)
+                        if role == 'prosumer':
+                            errors.append(f"player_types[{tid}]: Mixed producer/consumer devices not allowed. Player must be either pure producer OR pure consumer.")
+                        elif role == 'unknown':
+                            errors.append(f"player_types[{tid}]: No valid devices or all devices are storage only.")
+
     
     # Optional storage block: not used by engine anymore, but validate if present to catch config errors in legacy scenarios
     stor = cfg.get("storage", {}) or {}

@@ -216,6 +216,7 @@ class SessionBriefing(Resource):
             "roles": cfg.get("roles", []),
             "player_types": cfg.get("player_types", []),
             "devices": cfg.get("devices", []),
+            "challenges": cfg.get("challenges", []),
         }
         # include allowed types + remaining capacities from Redis if available
         if True:
@@ -544,7 +545,9 @@ class RoundResults(Resource):
                 "mcp": r.data.get("mcp"),
                 "volume": r.data.get("volume"),
                 "bid_dispatch": r.bid_dispatch,  # Include lot dispatch tracking
-                "hourly_breakdown": kpis.get("hourly_breakdown", [])  # Include detailed hourly breakdown
+                "hourly_breakdown": kpis.get("hourly_breakdown", []),  # Include detailed hourly breakdown
+                "challenge_result": r.data.get("challenge_result"),  # Challenge evaluation for this round
+                "player_role": r.data.get("player_role")  # Player role (producer/consumer)
             }
             
             # Calculate DA/ID breakdown for this player
@@ -706,6 +709,16 @@ class FinalResults(Resource):
             player_totals[pid]["dispatched_mwh"] += float(kpis.get("dispatched_mwh", 0))
             player_totals[pid]["rounds"] += 1
             
+            # Collect challenge results from each round
+            if "challenge_history" not in player_totals[pid]:
+                player_totals[pid]["challenge_history"] = []
+            challenge_result = r.data.get("challenge_result")
+            if challenge_result:
+                player_totals[pid]["challenge_history"].append({
+                    "round": r.round_num,
+                    "result": challenge_result
+                })
+            
             # Aggregate bid dispatch data across rounds
             if r.bid_dispatch:
                 if pid not in player_bid_aggregates:
@@ -779,7 +792,8 @@ class FinalResults(Resource):
                 "total_curtailment": round(totals["curtailment"], 2),
                 "total_dispatched_mwh": round(totals["dispatched_mwh"], 2),
                 "total_score": round(total_score, 2),
-                "rounds_played": totals["rounds"]
+                "rounds_played": totals["rounds"],
+                "challenge_history": totals.get("challenge_history", [])
             }
             
             ranking.append(player_data)

@@ -12,6 +12,8 @@ import { createDeviceFromPreset, duplicateDevice, DEVICE_PRESETS } from '../comp
 import EventsList from '../components/events/EventsList'
 import EventEditor from '../components/events/EventEditor'
 import ProfileEditorModal from '../components/ProfileEditorModal'
+import ChallengesList from '../components/challenges/ChallengesList'
+import ChallengeEditor from '../components/challenges/ChallengeEditor'
 import api from '../services/api'
 import * as d3 from 'd3'
 import ReactMarkdown from 'react-markdown'
@@ -42,7 +44,7 @@ const defaultConfig = {
   environment: { seed: 'preview', actual_noise_pct: 5 },
   events: [],
   devices: [],
-  scoring: { weights: { profit: 0.6, imbalance: 0.3, curtailment: 0.1 } },
+  challenges: [],
 }
 
 console.info('[KSE] Editor version', KSE_EDITOR_VERSION)
@@ -288,6 +290,10 @@ export default function KSE(){
   const [eventEditorOpen, setEventEditorOpen] = useState(false)
   const [editingEvent, setEditingEvent] = useState(null)
   const [editingEventIndex, setEditingEventIndex] = useState(null)
+  // Challenge editor
+  const [challengeEditorOpen, setChallengeEditorOpen] = useState(false)
+  const [editingChallenge, setEditingChallenge] = useState(null)
+  const [editingChallengeIndex, setEditingChallengeIndex] = useState(null)
   // Template dialog
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false)
   const [templates, setTemplates] = useState([])
@@ -347,7 +353,7 @@ export default function KSE(){
 
   // URL hash ↔ tab sync for deep-linking and back/forward
   useEffect(()=>{
-    const map = ['#kse-desc','#kse-general','#kse-market','#kse-grid','#kse-events','#kse-ptypes','#kse-scoring']
+    const map = ['#kse-desc','#kse-general','#kse-market','#kse-grid','#kse-events','#kse-ptypes','#kse-challenges']
     const applyHash = ()=>{
       const h = window.location.hash
       const idx = map.indexOf(h)
@@ -362,7 +368,7 @@ export default function KSE(){
   },[])
 
   useEffect(()=>{
-    const map = ['#kse-desc','#kse-general','#kse-market','#kse-grid','#kse-events','#kse-ptypes','#kse-scoring']
+    const map = ['#kse-desc','#kse-general','#kse-market','#kse-grid','#kse-events','#kse-ptypes','#kse-challenges']
     const h = map[tab]
     if (h) {
       try { window.history.replaceState(null, '', h) } catch(_) {}
@@ -472,9 +478,7 @@ export default function KSE(){
     if(zones<1 || zones>5) errs.push('Zones must be 1–5')
     if(!cfg.general.forecast_horizon_hours || cfg.general.forecast_horizon_hours<=0) errs.push('forecast_horizon_hours must be > 0')
     if(cfg.general.forecast_horizon_hours && cfg.general.horizon_hours && Number(cfg.general.forecast_horizon_hours) < Number(cfg.general.horizon_hours)) errs.push('forecast_horizon_hours must be >= horizon_hours')
-    const w = cfg.scoring.weights
-    const sum = (w.profit||0)+(w.imbalance||0)+(w.curtailment||0)
-    if(Math.abs(sum-1.0)>1e-6) errs.push('Scoring weights must sum to 1.0')
+    // Removed scoring.weights validation (replaced by challenges)
     const h = cfg.general.horizon_hours, sp = cfg.general.round_span_hours, r = cfg.general.rounds
     if(sp<=0 || Math.floor(h/sp)!==r) errs.push('horizon ÷ round_span must equal rounds')
     setErrors(errs)
@@ -706,7 +710,7 @@ export default function KSE(){
       { match: 'Zones must be 1–5', el: refZones, tab: 3 },
       { match: 'forecast_horizon_hours must be > 0', el: refForecastH, tab: 1 },
       { match: 'forecast_horizon_hours must be >= horizon_hours', el: refForecastH, tab: 1 },
-      { match: 'Scoring weights must sum to 1.0', el: refWeights, tab: 6 },
+      // Removed scoring weights validation (replaced by challenges)
       { match: 'horizon ÷ round_span must equal rounds', el: refRoundSpan, tab: 1 },
     ]
     const m = map.find(m => text.includes(m.match))
@@ -726,7 +730,7 @@ export default function KSE(){
       case 3: focusEl(refZones); break
       case 4: focusEl(refAddEvent); break
       case 5: focusEl(refAddPlayerType); break
-      case 6: focusEl(refWeights); break
+      // case 6: Challenges tab - no specific focus element
       default: break
     }
   }, [tab])
@@ -781,7 +785,7 @@ export default function KSE(){
           <Tab id="kse-tab-3" aria-controls="kse-panel-3" label="Grid" role="tab" aria-selected={tab===3} />
           <Tab id="kse-tab-4" aria-controls="kse-panel-4" label="Events" role="tab" aria-selected={tab===4} />
           <Tab id="kse-tab-5" aria-controls="kse-panel-5" label="Player Types" role="tab" aria-selected={tab===5} />
-          <Tab id="kse-tab-6" aria-controls="kse-panel-6" label="Scoring" role="tab" aria-selected={tab===6} />
+          <Tab id="kse-tab-6" aria-controls="kse-panel-6" label="Challenges" role="tab" aria-selected={tab===6} />
         </Tabs>
         <Stack direction="row" spacing={2} sx={{ mt:2 }}>
           <Box sx={{ flex: 1 }}>
@@ -1649,28 +1653,28 @@ export default function KSE(){
             </Stack>
           )}
           {tab===6 && (
-            <Stack id="kse-panel-6" role="tabpanel" aria-labelledby="kse-tab-6" direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Weight for Profit KPI"
-                  tooltip="Weights must sum to 1.0 across Profit, Imbalance, and Curtailment. Higher weight increases influence on final score."
-                />
-                <TextField inputRef={refWeights} type="number" label="Profit" value={cfg.scoring.weights.profit} onChange={e=>update(['scoring','weights','profit'], Number(e.target.value))}/>
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Weight for Imbalance Cost KPI"
-                  tooltip="Part of scoring weights that must sum to 1.0. Penalizes deviations settled in balancing market."
-                />
-                <TextField type="number" label="Imbalance" value={cfg.scoring.weights.imbalance} onChange={e=>update(['scoring','weights','imbalance'], Number(e.target.value))}/>
-              </Stack>
-              <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-                <InfoLabel
-                  title="Weight for Curtailment KPI"
-                  tooltip="Part of scoring weights that must sum to 1.0. Reflects losses due to congestion/curtailment."
-                />
-                <TextField type="number" label="Curtailment" value={cfg.scoring.weights.curtailment} onChange={e=>update(['scoring','weights','curtailment'], Number(e.target.value))}/>
-              </Stack>
+            <Stack id="kse-panel-6" role="tabpanel" aria-labelledby="kse-tab-6" spacing={2}>
+              <ChallengesList
+                challenges={cfg.challenges || []}
+                onAdd={() => {
+                  setEditingChallenge(null);
+                  setEditingChallengeIndex(null);
+                  setChallengeEditorOpen(true);
+                }}
+                onEdit={(index) => {
+                  // Create a deep copy to ensure editability
+                  const challengeCopy = JSON.parse(JSON.stringify(cfg.challenges[index]));
+                  setEditingChallenge(challengeCopy);
+                  setEditingChallengeIndex(index);
+                  setChallengeEditorOpen(true);
+                }}
+                onDelete={(index) => {
+                  setCfg(prev => ({
+                    ...prev,
+                    challenges: prev.challenges.filter((_, i) => i !== index)
+                  }));
+                }}
+              />
             </Stack>
           )}
           {/* Preview tab removed (merged) */}
@@ -1731,6 +1735,37 @@ export default function KSE(){
           })
         }}
       />
+
+      {/* Challenge Editor Modal */}
+      <ChallengeEditor
+        open={challengeEditorOpen}
+        onClose={() => {
+          setChallengeEditorOpen(false)
+          setEditingChallenge(null)
+          setEditingChallengeIndex(null)
+        }}
+        challenge={editingChallenge}
+        onSave={(challengeData) => {
+          setCfg((prev) => {
+            const n = structuredClone(prev)
+            if (!n.challenges) n.challenges = []
+            
+            if (editingChallengeIndex !== null) {
+              // Editing existing challenge
+              n.challenges[editingChallengeIndex] = challengeData
+            } else {
+              // Creating new challenge
+              n.challenges.push(challengeData)
+            }
+            
+            return n
+          })
+          setChallengeEditorOpen(false)
+          setEditingChallenge(null)
+          setEditingChallengeIndex(null)
+        }}
+      />
+
       {/* Import/Export Modal */}
       <Dialog open={ioOpen} onClose={()=> setIoOpen(false)} fullWidth maxWidth="md" aria-label="Scenario Import Export">
         <DialogTitle>Scenario Import / Export</DialogTitle>

@@ -1403,3 +1403,190 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             print(f"[ENGINE] No bid_dispatch: enable_bidding={enable_bidding}, tracking_empty={not bid_dispatch_tracking}")
     
     return result
+
+
+# ============================================
+# CHALLENGE SYSTEM
+# ============================================
+
+def detect_player_role(devices: List[dict]) -> str:
+    """
+    Detect player role based on devices.
+    Returns: 'producer', 'consumer', or 'prosumer'
+    Prosumer is treated as invalid (must be pure producer or consumer).
+    """
+    if not devices:
+        return 'unknown'
+    
+    generator_count = 0
+    load_count = 0
+    
+    for device in devices:
+        device_type = (device.get('type') or '').lower()
+        category = device.get('category', '').lower()
+        
+        # Infer category from type if not explicitly set
+        if not category:
+            if device_type in ['coal', 'gas', 'hydro', 'nuclear', 'solar', 'wind', 'pv']:
+                category = 'generator'
+            elif 'load' in device_type:
+                category = 'load'
+        
+        if category in ['generator', 'renewable']:
+            generator_count += 1
+        elif category == 'load':
+            load_count += 1
+        # battery/storage doesn't count
+    
+    if generator_count > 0 and load_count > 0:
+        return 'prosumer'  # Mixed - not allowed
+    elif generator_count > 0:
+        return 'producer'
+    elif load_count > 0:
+        return 'consumer'
+    else:
+        return 'unknown'
+
+
+def evaluate_challenges(challenges: List[dict], player_kpis: dict, role: str, round_num: int = None, all_round_kpis: List[dict] = None) -> dict:
+    """
+    Evaluate challenges for a player.
+    
+    Args:
+        challenges: List of challenge definitions from config
+        player_kpis: KPIs for current round (from round_kpis)
+        role: 'producer' or 'consumer'
+        round_num: Current round number (for per_round challenges)
+        all_round_kpis: List of all previous round KPIs (for cumulative metrics)
+    
+    Returns:
+        {
+            "results": [{"challenge_id": str, "name": str, "passed": bool, "actual": float, "target": float, "points": int}],
+            "total_points": int,
+            "max_points": int,
+            "score": float,
+            "passed": bool
+        }
+    """
+    if not challenges:
+        return {"results": [], "total_points": 0, "max_points": 0, "score": 100, "passed": True}
+    
+    results = []
+    total_points = 0
+    max_points = 0
+    all_required_passed = True
+    
+    # Prepare cumulative KPIs if needed
+    cumulative_kpis = {}
+    if all_round_kpis:
+        # Sum up all rounds
+        cumulative_kpis = {
+            "total_profit": sum(r.get("profit_zar", 0) for r in all_round_kpis),
+            "total_revenue": sum(r.get("revenue_zar", 0) for r in all_round_kpis),
+            "total_cost": sum(r.get("variable_cost_zar", 0) + r.get("imbalance_cost_zar", 0) for r in all_round_kpis),
+            "total_imbalance": sum(abs(r.get("planned_mwh", 0) - r.get("actual_mwh", 0)) for r in all_round_kpis),
+            "total_curtailment": sum(r.get("curtailment_cost_zar", 0) / 1000 for r in all_round_kpis),  # Approximate MWh from cost
+            "total_dispatched": sum(r.get("dispatched_mwh", 0) for r in all_round_kpis),
+            "avg_profit_per_round": sum(r.get("profit_zar", 0) for r in all_round_kpis) / len(all_round_kpis) if all_round_kpis else 0,
+        }
+    
+    for challenge in challenges:
+        challenge_id = challenge.get("id", "challenge_" + str(len(results)))
+        name = challenge.get("name", "Challenge")
+        metric = challenge.get("metric")
+        operator = challenge.get("operator", ">=")
+        target = float(challenge.get("target", 0))
+        required = challenge.get("required", False)
+        points = int(challenge.get("points", 0))
+        per_round = challenge.get("per_round", False)
+        applicable_to = challenge.get("applicable_to", ["producer", "consumer"])
+        
+        # Check if challenge applies to this role
+        if isinstance(applicable_to, str):
+            applicable_to = [applicable_to]
+        if "all" not in applicable_to and role not in applicable_to:
+            continue  # Skip this challenge
+        
+        max_points += points
+        
+        # Get actual value from KPIs
+        actual_value = None
+        
+        # Round-level metrics
+        if metric == "round_profit":
+            actual_value = player_kpis.get("profit_zar", 0)
+        elif metric == "round_revenue":
+            actual_value = player_kpis.get("revenue_zar", 0)
+        elif metric == "round_cost":
+            actual_value = player_kpis.get("variable_cost_zar", 0) + player_kpis.get("imbalance_cost_zar", 0)
+        elif metric == "round_imbalance":
+            actual_value = abs(player_kpis.get("planned_mwh", 0) - player_kpis.get("actual_mwh", 0))
+        elif metric == "round_dispatched":
+            actual_value = player_kpis.get("dispatched_mwh", 0)
+        
+        # Cumulative metrics (require all_round_kpis)
+        elif metric in cumulative_kpis:
+            actual_value = cumulative_kpis[metric]
+        
+        # Producer-specific
+        elif metric == "curtailment_rate" and role == "producer":
+            dispatched = player_kpis.get("dispatched_mwh", 0)
+            planned = player_kpis.get("planned_mwh", 1)  # avoid div by zero
+            actual_value = max(0, (planned - dispatched) / planned * 100) if planned > 0 else 0
+        
+        # Consumer-specific
+        elif metric == "procurement_cost" and role == "consumer":
+            actual_value = player_kpis.get("variable_cost_zar", 0) + player_kpis.get("imbalance_cost_zar", 0)
+        elif metric == "demand_coverage" and role == "consumer":
+            planned = player_kpis.get("planned_mwh", 1)
+            actual = player_kpis.get("actual_mwh", 0)
+            actual_value = (actual / planned * 100) if planned > 0 else 0
+        
+        if actual_value is None:
+            # Unknown metric, skip
+            continue
+        
+        # Evaluate condition
+        passed = False
+        if operator == ">=":
+            passed = actual_value >= target
+        elif operator == "<=":
+            passed = actual_value <= target
+        elif operator == "==":
+            passed = abs(actual_value - target) < 0.01
+        elif operator == "range":
+            # target should be [min, max]
+            if isinstance(target, list) and len(target) == 2:
+                passed = target[0] <= actual_value <= target[1]
+        
+        # Award points if passed
+        earned_points = points if passed else 0
+        total_points += earned_points
+        
+        # Track required challenges
+        if required and not passed:
+            all_required_passed = False
+        
+        results.append({
+            "challenge_id": challenge_id,
+            "name": name,
+            "metric": metric,
+            "operator": operator,
+            "target": target,
+            "actual": round(actual_value, 2),
+            "passed": passed,
+            "required": required,
+            "points": earned_points,
+            "max_points": points,
+            "per_round": per_round
+        })
+    
+    score = (total_points / max_points * 100) if max_points > 0 else 100
+    
+    return {
+        "results": results,
+        "total_points": total_points,
+        "max_points": max_points,
+        "score": round(score, 1),
+        "passed": all_required_passed
+    }

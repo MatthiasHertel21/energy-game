@@ -49,6 +49,135 @@ const toNumber = (value, fallback = 0) => {
   const num = Number(value)
   return Number.isFinite(num) ? num : fallback
 }
+
+// Market Supply/Demand Curves Component
+function MarketCurves({ cfg }) {
+  const ref = useRef(null)
+  
+  useEffect(() => {
+    if (!cfg?.market || !ref.current) return
+    
+    const svg = d3.select(ref.current)
+    svg.selectAll('*').remove()
+    
+    const M = { top: 16, right: 16, bottom: 32, left: 52 }
+    const W = 320 - M.left - M.right
+    const H = 180 - M.top - M.bottom
+    const g = svg.attr('width', 320).attr('height', 180).append('g').attr('transform', `translate(${M.left},${M.top})`)
+
+    const baseP = Number(cfg.market.base_price || 1000)
+    const baseV = Number(cfg.market.base_volume_mwh || 2000)
+    const mix = cfg.market?.generator_mix || { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150 }
+    
+    const seedStr = cfg.environment?.seed || 'step'
+    const seedNum = seedStr.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+    const rng = d3.randomLcg((seedNum % 2147483647) / 2147483647)
+
+    const capJitter = Math.max(0, Math.min(0.5, Number(cfg.market?.random_capacity_pct || 0) / 100))
+    const priceJitter = Math.max(0, Math.min(0.5, Number(cfg.market?.random_price_pct || 0) / 100))
+
+    const COST = {
+      pv: [0, 50],
+      wind: [50, 150],
+      hydro: [50, 200],
+      nuclear: [200, 400],
+      coal: [400, 700],
+      gas: [700, 1200],
+    }
+
+    // Build SUPPLY
+    const distArr = Object.entries(mix)
+    const totalBlocksSupply = distArr.reduce((s, [, v]) => s + Math.max(0, Number(v) || 0), 0) || 1
+    let sBlocks = []
+    distArr.forEach(([type, pct]) => {
+      const n = Math.max(0, Math.round(Number(pct || 0)))
+      if (!n) return
+      const vol = baseV * (Number(pct || 0) / totalBlocksSupply)
+      const avg = vol / n
+      const [pMin, pMax] = COST[type] || [baseP - 500, baseP + 500]
+      for (let i = 0; i < n; i++) {
+        const qJ = 1 + (rng() - 0.5) * 2 * capJitter
+        const basePrice = pMin + rng() * (pMax - pMin)
+        const pJ = 1 + (rng() - 0.5) * 2 * priceJitter
+        sBlocks.push({ q: Math.max(0, avg * qJ), p: basePrice * pJ })
+      }
+    })
+    const sSum = sBlocks.reduce((s, b) => s + b.q, 0) || 1
+    const floor = Number(cfg.market.price_floor ?? -Infinity)
+    const cap = Number(cfg.market.price_cap ?? Infinity)
+    sBlocks.forEach(b => { b.q = (b.q / sSum) * baseV; b.p = Math.min(cap, Math.max(floor, b.p)) })
+    const supply = sBlocks.sort((a, b) => a.p - b.p)
+
+    // Build DEMAND
+    const cmix = cfg.market?.consumer_mix || { industrial: 400, household: 500, agriculture: 100 }
+    const cArr = Object.entries(cmix)
+    const totalBlocksDemand = cArr.reduce((s, [, v]) => s + Math.max(0, Number(v) || 0), 0) || 1
+    let dBlocks = []
+    cArr.forEach(([ctype, pct]) => {
+      const n = Math.max(0, Math.round(Number(pct || 0)))
+      if (!n) return
+      const vol = baseV * (Number(pct || 0) / totalBlocksDemand)
+      for (let i = 0; i < n; i++) {
+        const t = n > 1 ? i / (n - 1) : 0
+        let wtpBase = baseP + 400 - 800 * Math.pow(t, 2)
+        if (ctype === 'industrial') wtpBase += 100
+        if (ctype === 'agriculture') wtpBase -= 100
+        const p = Math.min(cap, Math.max(floor, wtpBase * (1 + (rng() - 0.5) * 2 * priceJitter * 0.5)))
+        const q = Math.max(0, (vol / n) * (1 + (rng() - 0.5) * 2 * capJitter))
+        dBlocks.push({ q, p })
+      }
+    })
+    const dSum = dBlocks.reduce((s, b) => s + b.q, 0) || 1
+    dBlocks.forEach(b => { b.q = (b.q / dSum) * baseV })
+    const demand = dBlocks.sort((a, b) => b.p - a.p)
+
+    // Cumulative
+    const cum = (arr) => {
+      let acc = 0
+      return arr.map(({ q, p }) => ({ x0: acc, x1: (acc += q), p }))
+    }
+    const sCum = cum(supply)
+    const dCum = cum(demand)
+    const xMax = Math.max(d3.sum(supply, (d) => d.q), d3.sum(demand, (d) => d.q)) || baseV
+
+    const x = d3.scaleLinear().domain([0, xMax]).range([0, W]).clamp(true)
+    const allPrices = [...supply.map(d => d.p), ...demand.map(d => d.p)]
+    const minP = d3.min(allPrices)
+    const maxP = d3.max(allPrices)
+    const pad = (maxP - minP) * 0.05
+    const y = d3.scaleLinear().domain([minP - pad, maxP + pad]).nice().range([H, 0]).clamp(true)
+
+    // Axes
+    g.append('g').attr('transform', `translate(0,${H})`).call(d3.axisBottom(x).ticks(4))
+    g.append('g').call(d3.axisLeft(y).ticks(5))
+    g.append('text').attr('x', W / 2).attr('y', H + 28).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 9).text('Volume (MWh)')
+    g.append('text').attr('transform', 'rotate(-90)').attr('x', -H / 2).attr('y', -40).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 9).text('Price (ZAR/MWh)')
+
+    // Step paths
+    const toStep = (arr) => {
+      const pts = []
+      arr.forEach(({ x0, x1, p }) => {
+        pts.push([x(x0), y(p)])
+        pts.push([x(x1), y(p)])
+      })
+      return pts
+    }
+    const sPts = toStep(sCum)
+    const dPts = toStep(dCum)
+
+    g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2)
+    g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', '#c62828').attr('stroke-width', 2)
+
+    // Legend
+    const legend = g.append('g').attr('transform', `translate(${W - 80}, 5)`)
+    legend.append('line').attr('x1', 0).attr('x2', 15).attr('y1', 0).attr('y2', 0).attr('stroke', '#2e7d32').attr('stroke-width', 2)
+    legend.append('text').attr('x', 18).attr('y', 4).attr('font-size', 9).attr('fill', '#666').text('Supply')
+    legend.append('line').attr('x1', 0).attr('x2', 15).attr('y1', 12).attr('y2', 12).attr('stroke', '#c62828').attr('stroke-width', 2)
+    legend.append('text').attr('x', 18).attr('y', 16).attr('font-size', 9).attr('fill', '#666').text('Demand')
+  }, [cfg])
+
+  return <svg ref={ref} width={320} height={180} style={{ border: '1px solid #eee', background: '#fff' }} />
+}
 const clampValue = (val, min = 0, max = Number.POSITIVE_INFINITY) => {
   if (!Number.isFinite(max)) return Math.max(min, val)
   if (max <= min) return Math.max(min, val)
@@ -218,7 +347,7 @@ const getDeviceMaxCapability = (device = {}) => {
   return 0
 }
 
-function TimerAndClock({ timeRemaining, fakeDate, startTime, currentRound, roundSpan }) {
+function TimerAndClock({ timeRemaining, fakeDate, startTime, currentRound, roundSpan, visibleEvents = [] }) {
   const minutes = Math.floor(timeRemaining / 60)
   const seconds = timeRemaining % 60
   const isWarning = timeRemaining <= 30 && timeRemaining > 0
@@ -1929,6 +2058,7 @@ export default function Player() {
             startTime={cfg.general.start_time} 
             currentRound={cfg.current_round}
             roundSpan={cfg.general.round_span_hours}
+            visibleEvents={visibleEvents}
           />
 
           <Card sx={{ mt: 2 }}>
@@ -2043,6 +2173,25 @@ export default function Player() {
                   Waiting for market data...
                 </Typography>
               ) : null}
+            </CardContent>
+          </Card>
+
+          {/* Market Supply/Demand Curve */}
+          <Card sx={{ mt: 2 }}>
+            <CardContent>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                <Typography variant="subtitle2">Market Structure</Typography>
+                <Tooltip 
+                  arrow 
+                  title="Supply and demand curves show the market structure at the start of this round. The intersection point determines the Market Clearing Price (MCP)."
+                  placement="left"
+                >
+                  <IconButton size="small" aria-label="Market structure info">
+                    <InfoOutlined fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+              <MarketCurves cfg={cfg} />
             </CardContent>
           </Card>
 

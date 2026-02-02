@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Box, Stack, Typography, Grid, Paper, TextField, Button, List, ListItem, ListItemText, Divider, Switch, FormControlLabel, IconButton, Select, MenuItem, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material'
-import { ArrowUpward, ArrowDownward, Delete } from '@mui/icons-material'
+import { ArrowUpward, ArrowDownward, Delete, Edit as EditIcon, Add as AddIcon } from '@mui/icons-material'
 import api from '../services/api'
 import EmptyState from './EmptyState'
 import InfoLabel from './InfoLabel'
+import { useNavigate } from 'react-router-dom'
 
 export default function DesignerCampaignsTab({ createOpen, setCreateOpen }){
   const [campaigns, setCampaigns] = useState(null)
@@ -13,6 +14,7 @@ export default function DesignerCampaignsTab({ createOpen, setCreateOpen }){
   const [creating, setCreating] = useState({ name:'', description:'' })
   const [assignScenarioId, setAssignScenarioId] = useState('')
   const [uploading, setUploading] = useState(false)
+  const navigate = useNavigate()
 
   const load = async ()=>{
     setLoading(true)
@@ -194,6 +196,13 @@ export default function DesignerCampaignsTab({ createOpen, setCreateOpen }){
               </Select>
               </Box>
               <Button onClick={assign} variant="outlined">Add</Button>
+              <Button 
+                onClick={() => navigate('/kse')} 
+                variant="outlined" 
+                startIcon={<AddIcon />}
+              >
+                Create New Scenario
+              </Button>
             </Stack>
             {(mapping.length===0) ? (
               <EmptyState title="No scenarios" message="Assign scenarios to this campaign" />
@@ -207,6 +216,9 @@ export default function DesignerCampaignsTab({ createOpen, setCreateOpen }){
                       <ListItemText primary={m.name} secondary={`Order ${idx+1}`} />
                       <FormControlLabel control={<Switch checked={!!m.solo_enabled} onChange={(e)=> toggleFlag(m.scenario_id, 'solo_enabled', e.target.checked)} />} label="Solo" />
                       <FormControlLabel control={<Switch checked={!!m.cohort_enabled} onChange={(e)=> toggleFlag(m.scenario_id, 'cohort_enabled', e.target.checked)} />} label="Cohort" />
+                      <IconButton onClick={()=> navigate(`/kse?id=${m.scenario_id}`)} aria-label="edit" color="primary">
+                        <EditIcon />
+                      </IconButton>
                       <IconButton onClick={()=> remove(m.scenario_id)} aria-label="remove"><Delete /></IconButton>
                     </Stack>
                   </Paper>

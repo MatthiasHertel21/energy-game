@@ -12,7 +12,7 @@ import {
   CircularProgress,
   Stack
 } from '@mui/material'
-import { ArrowBack as BackIcon, PlayArrow as PlayIcon } from '@mui/icons-material'
+import { ArrowBack as BackIcon, PlayArrow as PlayIcon, Flag as ChallengeIcon } from '@mui/icons-material'
 import api from '../services/api'
 
 export default function Briefing() {
@@ -64,6 +64,46 @@ export default function Briefing() {
   const grid = data.grid || {}
   const isSolo = session?.mode === 'isolated_per_player'
   const hasSelectedType = data.selected_type !== undefined && data.selected_type !== null
+  const challenges = data.challenges || []
+
+  // Metric display names
+  const metricNames = {
+    'total_profit': 'Total Profit',
+    'round_profit': 'Round Profit',
+    'total_revenue': 'Total Revenue',
+    'round_revenue': 'Round Revenue',
+    'total_cost': 'Total Cost',
+    'round_cost': 'Round Cost',
+    'total_dispatched': 'Total Dispatched Energy',
+    'round_dispatched': 'Round Dispatched Energy',
+    'total_curtailment': 'Total Curtailment',
+    'round_curtailment': 'Round Curtailment',
+    'total_curtailment_rate': 'Total Curtailment Rate',
+    'round_curtailment_rate': 'Round Curtailment Rate',
+    'total_procurement_cost': 'Total Procurement Cost',
+    'round_procurement_cost': 'Round Procurement Cost',
+    'total_demand_coverage': 'Total Demand Coverage',
+    'round_demand_coverage': 'Round Demand Coverage',
+    'total_imbalance': 'Total Imbalance Cost',
+    'round_imbalance': 'Round Imbalance Cost'
+  }
+
+  const operatorSymbols = {
+    '>=': '≥',
+    '<=': '≤',
+    '==': '='
+  }
+
+  const formatTarget = (metric, target) => {
+    if (metric.includes('rate')) return `${target}%`
+    if (metric.includes('profit') || metric.includes('revenue') || metric.includes('cost') || metric.includes('procurement')) {
+      return `${target.toLocaleString()} ZAR`
+    }
+    if (metric.includes('dispatched') || metric.includes('curtailment') || metric.includes('coverage') || metric.includes('imbalance')) {
+      return `${target.toLocaleString()} MWh`
+    }
+    return target.toLocaleString()
+  }
 
   return (
     <Container maxWidth="md" sx={{ mt: 4, mb: 4 }}>
@@ -260,6 +300,55 @@ export default function Briefing() {
         </Box>
 
         <Divider sx={{ my: 3 }} />
+
+        {challenges.length > 0 && (
+          <>
+            <Box sx={{ mb: 3 }}>
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <ChallengeIcon color="warning" /> Challenges
+              </Typography>
+              <Typography variant="body2" color="text.secondary" paragraph>
+                Complete these challenges to maximize your score!
+              </Typography>
+              <Stack spacing={2}>
+                {challenges.map((challenge, idx) => (
+                  <Paper key={idx} variant="outlined" sx={{ p: 2, bgcolor: 'background.default' }}>
+                    <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
+                      {challenge.required && (
+                        <Chip label="Required" color="error" size="small" />
+                      )}
+                      {challenge.per_round && (
+                        <Chip label="Per Round" color="info" size="small" />
+                      )}
+                      <Box sx={{ flexGrow: 1, minWidth: 200 }}>
+                        <Typography variant="subtitle2" fontWeight="bold">
+                          {challenge.name}
+                        </Typography>
+                        {challenge.description && (
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            {challenge.description}
+                          </Typography>
+                        )}
+                        <Typography variant="body2" sx={{ mt: 0.5, fontFamily: 'monospace' }}>
+                          {metricNames[challenge.metric] || challenge.metric}{' '}
+                          {operatorSymbols[challenge.operator] || challenge.operator}{' '}
+                          <strong>{formatTarget(challenge.metric, challenge.target)}</strong>
+                        </Typography>
+                      </Box>
+                      <Chip 
+                        label={`${challenge.points} pts`} 
+                        color="success" 
+                        variant="outlined"
+                        sx={{ fontWeight: 'bold' }}
+                      />
+                    </Stack>
+                  </Paper>
+                ))}
+              </Stack>
+            </Box>
+            <Divider sx={{ my: 3 }} />
+          </>
+        )}
 
         <Box sx={{ mb: 3 }}>
           <Typography variant="h6" gutterBottom>

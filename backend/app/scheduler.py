@@ -273,12 +273,59 @@ def run_rounds(session_id: int, app=None):
                 bid_dispatch = res.get("bid_dispatch", {})
                 hourly_results = res.get("hourly_results", [])
                 print(f"[SCHEDULER] Got bid_dispatch from engine: {type(bid_dispatch)}, empty={not bid_dispatch}, keys={list(bid_dispatch.keys()) if bid_dispatch else 'N/A'}")
+                
+                # Evaluate challenges per player
+                challenges = (sc.config or {}).get("challenges", [])
+                player_types_cfg = (sc.config or {}).get("player_types", [])
+                devices_cfg = (sc.config or {}).get("devices", [])
+                
                 for pid, kp in (res.get("round_kpis") or {}).items():
+                    # Determine player role based on their player type devices
+                    player_role = 'unknown'
+                    try:
+                        # Find player's selected type
+                        from .models import SessionPlayerType
+                        spt = SessionPlayerType.query.filter_by(session_id=s.id, user_id=pid).first()
+                        if spt and spt.type_id:
+                            # Find player type config
+                            pt_cfg = next((pt for pt in player_types_cfg if pt.get("id") == spt.type_id), None)
+                            if pt_cfg:
+                                # Get devices for this player type
+                                device_ids = pt_cfg.get("devices", [])
+                                player_devices = [d for d in devices_cfg if d.get("id") in device_ids]
+                                from .engine import detect_player_role
+                                player_role = detect_player_role(player_devices)
+                    except Exception as e:
+                        print(f"[SCHEDULER] Failed to detect role for player {pid}: {e}")
+                    
+                    # Get all previous round results for cumulative metrics
+                    previous_results = Result.query.filter_by(
+                        session_id=s.id, 
+                        player_id=pid
+                    ).filter(Result.round_num < current).all()
+                    
+                    all_round_kpis = [r.data.get("kpis", {}) for r in previous_results if r.data]
+                    all_round_kpis.append(kp)  # Include current round
+                    
+                    # Evaluate challenges
+                    challenge_result = None
+                    if challenges and player_role in ['producer', 'consumer']:
+                        from .engine import evaluate_challenges
+                        challenge_result = evaluate_challenges(
+                            challenges=challenges,
+                            player_kpis=kp,
+                            role=player_role,
+                            round_num=current,
+                            all_round_kpis=all_round_kpis
+                        )
+                    
                     data = {
                         "kpis": kp,
                         "mcp": res["mcp"],
                         "volume": res["volume"],
                         "hourly_results": hourly_results,
+                        "challenge_result": challenge_result,  # NEW: Challenge evaluation
+                        "player_role": player_role,  # Store for reference
                     }
                     # Include bid dispatch info if available
                     player_bid_dispatch = bid_dispatch.get(pid) if bid_dispatch else None

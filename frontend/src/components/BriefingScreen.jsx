@@ -19,7 +19,8 @@ import {
   CheckCircle as CheckIcon,
   EmojiEvents as GoalIcon,
   Timer as TimerIcon,
-  Groups as PlayersIcon
+  Groups as PlayersIcon,
+  Flag as ChallengeIcon
 } from '@mui/icons-material';
 import api from '../services/api';
 import TermTooltip from './TermTooltip';
@@ -62,6 +63,48 @@ export default function BriefingScreen({ session, scenario, onStart }) {
     <>Reduce curtailment costs through efficient electricity usage</>,
     <>Maximize your total score across all rounds</>
   ];
+
+  // Extract challenges from scenario config
+  const challenges = scenario?.config?.challenges || [];
+  
+  // Metric display names
+  const metricNames = {
+    'total_profit': 'Total Profit',
+    'round_profit': 'Round Profit',
+    'total_revenue': 'Total Revenue',
+    'round_revenue': 'Round Revenue',
+    'total_cost': 'Total Cost',
+    'round_cost': 'Round Cost',
+    'total_dispatched': 'Total Dispatched Energy',
+    'round_dispatched': 'Round Dispatched Energy',
+    'total_curtailment': 'Total Curtailment',
+    'round_curtailment': 'Round Curtailment',
+    'total_curtailment_rate': 'Total Curtailment Rate',
+    'round_curtailment_rate': 'Round Curtailment Rate',
+    'total_procurement_cost': 'Total Procurement Cost',
+    'round_procurement_cost': 'Round Procurement Cost',
+    'total_demand_coverage': 'Total Demand Coverage',
+    'round_demand_coverage': 'Round Demand Coverage',
+    'total_imbalance': 'Total Imbalance Cost',
+    'round_imbalance': 'Round Imbalance Cost'
+  };
+
+  const operatorSymbols = {
+    '>=': '≥',
+    '<=': '≤',
+    '==': '='
+  };
+
+  const formatTarget = (metric, target) => {
+    if (metric.includes('rate')) return `${target}%`;
+    if (metric.includes('profit') || metric.includes('revenue') || metric.includes('cost') || metric.includes('procurement')) {
+      return `${target.toLocaleString()} ZAR`;
+    }
+    if (metric.includes('dispatched') || metric.includes('curtailment') || metric.includes('coverage') || metric.includes('imbalance')) {
+      return `${target.toLocaleString()} MWh`;
+    }
+    return target.toLocaleString();
+  };
 
   return (
     <Box sx={{ p: 3, maxWidth: 900, mx: 'auto' }}>
@@ -120,6 +163,54 @@ export default function BriefingScreen({ session, scenario, onStart }) {
               ))}
             </List>
           </Box>
+
+          {/* Challenges */}
+          {challenges.length > 0 && (
+            <Box>
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <ChallengeIcon color="warning" /> Challenges
+              </Typography>
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                <Typography variant="body2" fontWeight="bold">
+                  Complete these challenges to succeed!
+                </Typography>
+              </Alert>
+              <Stack spacing={1}>
+                {challenges.map((challenge, idx) => (
+                  <Paper key={idx} variant="outlined" sx={{ p: 2, bgcolor: 'background.default' }}>
+                    <Stack direction="row" spacing={2} alignItems="center">
+                      {challenge.required && (
+                        <Chip label="Required" color="error" size="small" />
+                      )}
+                      {challenge.per_round && (
+                        <Chip label="Per Round" color="info" size="small" />
+                      )}
+                      <Box sx={{ flexGrow: 1 }}>
+                        <Typography variant="subtitle2" fontWeight="bold">
+                          {challenge.name}
+                        </Typography>
+                        {challenge.description && (
+                          <Typography variant="caption" color="text.secondary">
+                            {challenge.description}
+                          </Typography>
+                        )}
+                        <Typography variant="body2" sx={{ mt: 0.5, fontFamily: 'monospace' }}>
+                          {metricNames[challenge.metric] || challenge.metric}{' '}
+                          {operatorSymbols[challenge.operator] || challenge.operator}{' '}
+                          <strong>{formatTarget(challenge.metric, challenge.target)}</strong>
+                        </Typography>
+                      </Box>
+                      <Chip 
+                        label={`${challenge.points} pts`} 
+                        color="success" 
+                        variant="outlined"
+                      />
+                    </Stack>
+                  </Paper>
+                ))}
+              </Stack>
+            </Box>
+          )}
 
           {/* Scoring Info */}
           <Alert severity="info" icon={<GoalIcon />}>

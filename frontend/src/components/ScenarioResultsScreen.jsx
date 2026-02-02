@@ -27,7 +27,9 @@ import {
   Assessment as DetailsIcon,
   ExpandMore as ExpandIcon,
   CheckCircle as CheckIcon,
-  Bolt as EnergyIcon
+  Bolt as EnergyIcon,
+  Flag as ChallengeIcon,
+  Cancel as CancelIcon
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
@@ -78,6 +80,12 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
 
   const { my_cumulative, final_ranking, round_history, bid_dispatch_aggregate } = results;
   const myFinalRank = final_ranking.findIndex(r => r.player_id === my_cumulative.player_id) + 1;
+  const challengeHistory = my_cumulative?.challenge_history || [];
+  
+  // Calculate total challenge points earned
+  const totalChallengePoints = challengeHistory.reduce((sum, h) => sum + (h.result?.total_points || 0), 0);
+  const maxChallengePoints = challengeHistory.reduce((sum, h) => sum + (h.result?.max_points || 0), 0);
+  const challengesPassed = challengeHistory.filter(h => h.result?.passed).length;
 
   return (
     <Paper sx={{ p: 4 }}>
@@ -155,6 +163,103 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
             </Grid>
           </Grid>
         </Box>
+
+        {/* Challenge Summary */}
+        {challengeHistory.length > 0 && (
+          <Box>
+            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <ChallengeIcon color="warning" />
+              Challenge Summary
+            </Typography>
+            <Paper sx={{ p: 3, bgcolor: 'rgba(255, 152, 0, 0.05)' }}>
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={12} sm={4}>
+                  <Card>
+                    <CardContent>
+                      <Typography variant="caption" color="text.secondary">Total Challenge Points</Typography>
+                      <Typography variant="h5" color="success.main">
+                        {totalChallengePoints} / {maxChallengePoints}
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <Card>
+                    <CardContent>
+                      <Typography variant="caption" color="text.secondary">Rounds Passed</Typography>
+                      <Typography variant="h5" color="primary.main">
+                        {challengesPassed} / {challengeHistory.length}
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <Card>
+                    <CardContent>
+                      <Typography variant="caption" color="text.secondary">Success Rate</Typography>
+                      <Typography variant="h5" color={challengesPassed === challengeHistory.length ? 'success.main' : 'warning.main'}>
+                        {challengeHistory.length > 0 ? Math.round((challengesPassed / challengeHistory.length) * 100) : 0}%
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              </Grid>
+              
+              <Typography variant="subtitle2" gutterBottom sx={{ mt: 2 }}>
+                Per-Round Challenge Results
+              </Typography>
+              <Stack spacing={1}>
+                {challengeHistory.map((historyItem, idx) => (
+                  <Paper key={idx} variant="outlined" sx={{ p: 2 }}>
+                    <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between" flexWrap="wrap">
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        {historyItem.result?.passed ? (
+                          <CheckIcon color="success" />
+                        ) : (
+                          <CancelIcon color="error" />
+                        )}
+                        <Typography variant="body2" fontWeight="bold">
+                          Round {historyItem.round}
+                        </Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                        <Typography variant="body2" color="text.secondary">
+                          {historyItem.result?.total_points || 0} / {historyItem.result?.max_points || 0} points
+                        </Typography>
+                        <Chip 
+                          label={historyItem.result?.passed ? 'Passed' : 'Failed'}
+                          size="small"
+                          color={historyItem.result?.passed ? 'success' : 'default'}
+                        />
+                      </Box>
+                    </Stack>
+                    {historyItem.result?.results && historyItem.result.results.length > 0 && (
+                      <Box sx={{ mt: 1, pl: 4 }}>
+                        <Grid container spacing={1}>
+                          {historyItem.result.results.map((challenge, cIdx) => (
+                            <Grid item xs={12} sm={6} md={4} key={cIdx}>
+                              <Typography 
+                                variant="caption" 
+                                sx={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  gap: 0.5,
+                                  color: challenge.passed ? 'success.main' : 'text.secondary'
+                                }}
+                              >
+                                {challenge.passed ? '✓' : '✗'} {challenge.name}
+                              </Typography>
+                            </Grid>
+                          ))}
+                        </Grid>
+                      </Box>
+                    )}
+                  </Paper>
+                ))}
+              </Stack>
+            </Paper>
+          </Box>
+        )}
 
         {/* Aggregated Lot Dispatch Overview */}
         {bid_dispatch_aggregate && Object.keys(bid_dispatch_aggregate).length > 0 && (

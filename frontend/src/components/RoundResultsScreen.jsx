@@ -29,7 +29,10 @@ import {
   Warning as WarningIcon,
   Bolt as EnergyIcon,
   NavigateNext as NextIcon,
-  ExpandMore as ExpandMoreIcon
+  ExpandMore as ExpandMoreIcon,
+  Flag as ChallengeIcon,
+  CheckCircle as CheckIcon,
+  Cancel as CancelIcon
 } from '@mui/icons-material';
 import api from '../services/api';
 import TermTooltip from './TermTooltip';
@@ -257,6 +260,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
   const hasLotBreakdown = my_result?.bid_dispatch && Object.keys(my_result.bid_dispatch).length > 0;
   const hasDailyBreakdown = my_result?.da_id_breakdown?.daily_summary?.length > 0;
   const hasHourlyBreakdown = Array.isArray(my_result?.hourly_breakdown) && my_result.hourly_breakdown.length > 0;
+  const challengeResult = my_result?.challenge_result;
 
   // Hourly breakdown calculations
   const isConsumer = my_result.profit < 0;
@@ -338,6 +342,76 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
             )}
           </Grid>
         </Box>
+
+        {/* Challenge Progress */}
+        {challengeResult && (
+          <Box>
+            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <ChallengeIcon color="warning" />
+              Challenge Progress
+            </Typography>
+            <Stack spacing={2}>
+              <Paper sx={{ p: 2, bgcolor: challengeResult.passed ? 'rgba(76, 175, 80, 0.08)' : 'rgba(255, 152, 0, 0.08)' }}>
+                <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between" flexWrap="wrap">
+                  <Box>
+                    <Typography variant="body2" color="text.secondary">
+                      Round Score
+                    </Typography>
+                    <Typography variant="h5" color={challengeResult.passed ? 'success.main' : 'warning.main'}>
+                      {challengeResult.total_points} / {challengeResult.max_points} points
+                    </Typography>
+                  </Box>
+                  <Chip 
+                    icon={challengeResult.passed ? <CheckIcon /> : <WarningIcon />}
+                    label={challengeResult.passed ? 'All Required Challenges Met' : 'Some Challenges Incomplete'}
+                    color={challengeResult.passed ? 'success' : 'warning'}
+                    sx={{ py: 2 }}
+                  />
+                </Stack>
+              </Paper>
+              
+              <Grid container spacing={1}>
+                {challengeResult.results.map((challenge, idx) => (
+                  <Grid item xs={12} sm={6} md={4} key={idx}>
+                    <Paper 
+                      variant="outlined" 
+                      sx={{ 
+                        p: 1.5, 
+                        bgcolor: challenge.passed ? 'rgba(76, 175, 80, 0.05)' : 'inherit',
+                        borderColor: challenge.passed ? 'success.main' : 'divider'
+                      }}
+                    >
+                      <Stack direction="row" spacing={1} alignItems="flex-start">
+                        {challenge.passed ? (
+                          <CheckIcon color="success" sx={{ fontSize: 20, mt: 0.25 }} />
+                        ) : (
+                          <CancelIcon color="disabled" sx={{ fontSize: 20, mt: 0.25 }} />
+                        )}
+                        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                          <Typography variant="caption" fontWeight="bold" noWrap>
+                            {challenge.name}
+                          </Typography>
+                          <Typography variant="caption" display="block" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: '0.7rem' }}>
+                            {challenge.actual !== undefined && challenge.actual !== null
+                              ? `${challenge.actual.toLocaleString()} / ${challenge.target.toLocaleString()}`
+                              : 'N/A'
+                            }
+                          </Typography>
+                          {challenge.required && (
+                            <Chip label="Required" size="small" color="error" sx={{ mt: 0.5, height: 16, fontSize: '0.65rem' }} />
+                          )}
+                        </Box>
+                        <Typography variant="caption" fontWeight="bold" color={challenge.passed ? 'success.main' : 'text.secondary'}>
+                          {challenge.points_earned}/{challenge.points}
+                        </Typography>
+                      </Stack>
+                    </Paper>
+                  </Grid>
+                ))}
+              </Grid>
+            </Stack>
+          </Box>
+        )}
 
         {/* DA/ID Market Breakdown */}
         {my_result?.da_id_breakdown?.has_baseline && (
