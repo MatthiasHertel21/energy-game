@@ -347,104 +347,31 @@ const getDeviceMaxCapability = (device = {}) => {
   return 0
 }
 
-function TimerAndClock({ timeRemaining, fakeDate, startTime, currentRound, roundSpan, visibleEvents = [] }) {
+function TimerAndClock({ timeRemaining }) {
   const minutes = Math.floor(timeRemaining / 60)
   const seconds = timeRemaining % 60
   const isWarning = timeRemaining <= 30 && timeRemaining > 0
 
-  // Calculate current simulation time based on round and start time
-  const simulationTime = useMemo(() => {
-    if (!startTime || !currentRound) return ''
-    try {
-      const [h, m] = startTime.split(':').map(Number)
-      const totalHours = h + (currentRound - 1) * roundSpan
-      const days = Math.floor(totalHours / 24)
-      const hours = totalHours % 24
-      return `${String(hours).padStart(2, '0')}:${String(m).padStart(2, '0')} ${days > 0 ? `(+${days}d)` : ''}`
-    } catch (_) {
-      return startTime
-    }
-  }, [startTime, currentRound, roundSpan])
-
-  const displayDate = useMemo(() => {
-    if (!fakeDate || !currentRound) return fakeDate
-    try {
-      const date = new Date(fakeDate)
-      const daysToAdd = Math.floor(((currentRound - 1) * roundSpan) / 24)
-      date.setDate(date.getDate() + daysToAdd)
-      return date.toLocaleDateString('en-ZA', { year: 'numeric', month: 'short', day: 'numeric' })
-    } catch (_) {
-      return fakeDate
-    }
-  }, [fakeDate, currentRound, roundSpan])
+  if (timeRemaining === null) return null
 
   return (
     <Box
       sx={{
         textAlign: 'center',
-        p: 2,
-        backgroundColor: isWarning ? 'warning.light' : '#f5f5f5',
-        borderRadius: 2,
-        border: isWarning ? '2px solid' : 'none',
-        borderColor: 'warning.main',
+        p: 1.5,
+        backgroundColor: isWarning ? '#d32f2f' : '#1976d2',
+        borderRadius: 1,
+        boxShadow: 3,
+        minWidth: 120,
         transition: 'all 0.3s'
       }}
     >
-      {timeRemaining !== null && (
-        <Box sx={{ mb: 2 }}>
-          <Typography variant="h4" sx={{ fontWeight: 'bold', color: isWarning ? 'warning.dark' : 'primary.dark' }}>
-            {String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}
-          </Typography>
-          <Typography variant="caption" sx={{ color: isWarning ? 'warning.dark' : 'text.secondary' }}>
-            {isWarning ? 'Time is running out!' : 'Time remaining'}
-          </Typography>
-        </Box>
-      )}
-      <Box sx={{ borderTop: timeRemaining !== null ? '1px solid #ddd' : 'none', pt: timeRemaining !== null ? 2 : 0 }}>
-        <Typography
-          variant="overline"
-          sx={{
-            color: 'text.secondary',
-            letterSpacing: 1,
-            textTransform: 'uppercase',
-            display: 'block',
-            mb: 1
-          }}
-        >
-          Scenario date/time
-        </Typography>
-        {displayDate && (
-          <Typography variant="h6" sx={{ color: 'text.primary', fontWeight: 600, mb: 0.5 }}>
-            {displayDate}
-          </Typography>
-        )}
-        <Typography variant="h5" sx={{ fontWeight: 'bold', color: 'primary.main', mb: visibleEvents.length > 0 ? 2 : 0 }}>
-          {simulationTime || '—'}
-        </Typography>
-        
-        {/* Active Events */}
-        {visibleEvents.length > 0 && (
-          <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid #ddd' }}>
-            <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 1, display: 'block', mb: 1 }}>
-              Active Events
-            </Typography>
-            <Stack spacing={1}>
-              {visibleEvents.map(event => (
-                <Box key={event.id} sx={{ p: 1, bgcolor: 'warning.lighter', borderRadius: 1, border: '1px solid', borderColor: 'warning.main' }}>
-                  <Typography variant="caption" sx={{ fontWeight: 600, color: 'warning.dark', display: 'block' }}>
-                    {event.name}
-                  </Typography>
-                  {event.description && (
-                    <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.7rem' }}>
-                      {event.description}
-                    </Typography>
-                  )}
-                </Box>
-              ))}
-            </Stack>
-          </Box>
-        )}
-      </Box>
+      <Typography variant="h5" sx={{ fontWeight: 'bold', color: '#ffffff', mb: 0.5 }}>
+        {String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}
+      </Typography>
+      <Typography variant="caption" sx={{ color: '#ffffff', opacity: 0.9, fontSize: '0.7rem' }}>
+        {isWarning ? 'Time running out!' : 'Time remaining'}
+      </Typography>
     </Box>
   )
 }
@@ -1987,61 +1914,6 @@ export default function Player() {
           }}>Select</Button>
         </DialogActions>
       </Dialog>
-      <Box sx={{ mb: 2 }}>
-        <Typography variant="h4">
-          {cfg.campaign_name || 'Active Campaign'}
-        </Typography>
-        <Typography variant="subtitle1" color="text.secondary">
-          {cfg.scenario_name ? `Scenario: ${cfg.scenario_name}` : 'Scenario'} • Round {cfg.current_round}
-        </Typography>
-      </Box>
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
-        <Button size="small" startIcon={<BriefingIcon />} onClick={()=> navigate(`/briefing/${sessionId}`)}>
-          Briefing
-        </Button>
-        {cfg.current_round > 1 && (
-          <Button 
-            size="small" 
-            variant="outlined"
-            onClick={() => setStatus('round_results')}
-          >
-            View Last Round Results
-          </Button>
-        )}
-        <Tooltip
-          arrow
-          title={
-            mode === 'isolated_per_player'
-              ? 'Solo Mode: You have your own private market. Your decisions only affect your own results.'
-              : 'Shared Market: All players trade in the same market. Your decisions affect market prices and other players.'
-          }
-        >
-          <Chip 
-            label={mode === 'isolated_per_player' ? 'Solo' : 'Shared Market'}
-            size="small"
-            color={mode === 'isolated_per_player' ? 'default' : 'primary'}
-            variant="outlined"
-          />
-        </Tooltip>
-        {selectedType && (
-          <Tooltip arrow title={(() => {
-            const typeInfo = playerTypes.find(pt=> pt.id === selectedType)
-            if (!typeInfo) return selectedType
-            const devices = typeDevices.map(did => {
-              const dev = scenarioDevices.find(d => d.id === did)
-              return dev ? `${dev.name || `${dev.id} (no device name)`} (${dev.type})` : did
-            }).join(', ')
-            return `${typeInfo.name} • Devices: ${devices || 'none'}`
-          })()}>
-            <Chip 
-              label={playerTypes.find(pt=> pt.id === selectedType)?.name || selectedType} 
-              size="small" 
-              color="secondary"
-            />
-          </Tooltip>
-        )}
-        <Box sx={{ flexGrow: 1 }} />
-      </Stack>
 
       {/* Event Notifications */}
       <EventNotification 
@@ -2049,51 +1921,113 @@ export default function Player() {
         onDismiss={handleDismissEvent}
       />
 
+      {/* Fixed Timer Top Right */}
+      <Box sx={{ position: 'fixed', top: 16, right: 16, zIndex: 1300 }}>
+        <TimerAndClock timeRemaining={timeRemaining} />
+      </Box>
+
       <Grid container spacing={3}>
         {/* Left: Timer and KPIs */}
         <Grid item xs={12} md={4}>
-          <TimerAndClock 
-            timeRemaining={timeRemaining}
-            fakeDate={cfg.general.fake_date} 
-            startTime={cfg.general.start_time} 
-            currentRound={cfg.current_round}
-            roundSpan={cfg.general.round_span_hours}
-            visibleEvents={visibleEvents}
-          />
 
-          <Card sx={{ mt: 2 }}>
+          <Card sx={{ mt: 0 }}>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Session Info
-              </Typography>
-              <Stack spacing={1} sx={{ mt: 1 }}>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+                <Typography variant="h6">
+                  Session Info
+                </Typography>
+                <Button size="small" startIcon={<BriefingIcon />} onClick={()=> navigate(`/briefing/${sessionId}`)}>
+                  Briefing
+                </Button>
+              </Stack>
+              <Stack spacing={1}>
                 {[
                   { label: 'Campaign', value: cfg.campaign_name, optional: true },
-                  { label: 'Scenario', value: cfg.scenario_name || '—' },
-                  {
-                    label: 'Status',
+                  { 
                     value: (
-                      <Chip
-                        label={status}
-                        color={(status === 'running' || status === 'round_active') ? 'success' : 'default'}
-                        size="small"
-                      />
-                    )
+                      <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
+                        <Typography variant="body2">{cfg.scenario_name || '—'}</Typography>
+                        <Typography variant="body2" color="text.secondary">•</Typography>
+                        <Chip
+                          label={mode === 'isolated_per_player' ? 'Solo' : 'Shared'}
+                          size="small"
+                          color={mode === 'isolated_per_player' ? 'default' : 'primary'}
+                          sx={{ height: 20 }}
+                        />
+                        <Typography variant="body2" color="text.secondary">•</Typography>
+                        <Typography variant="body2">R{cfg.current_round ?? '—'}</Typography>
+                      </Stack>
+                    ),
+                    noLabel: true
                   },
-                  { label: 'Round', value: cfg.current_round ?? '—' },
-                  { label: 'Forecast Horizon', value: `${cfg.general.forecast_horizon_hours}h` },
-                  { label: 'Locked until', value: Number.isFinite(lockedUntil) ? `h${lockedUntil}` : '—' }
-                ].map(({ label, value, optional }) => {
+                  {
+                    value: (
+                      <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
+                        <Chip
+                          label={status}
+                          color={(status === 'running' || status === 'round_active') ? 'success' : 'default'}
+                          size="small"
+                          sx={{ height: 20 }}
+                        />
+                        {selectedType && (
+                          <>
+                            <Typography variant="body2" color="text.secondary">•</Typography>
+                            <Chip
+                              label={playerTypes.find(pt=> pt.id === selectedType)?.name || selectedType}
+                              size="small"
+                              color="secondary"
+                              sx={{ height: 20 }}
+                            />
+                          </>
+                        )}
+                      </Stack>
+                    ),
+                    noLabel: true
+                  },
+                  { 
+                    label: 'Scenario Date/Time', 
+                    value: (() => {
+                      try {
+                        if (!cfg.general.start_time || !cfg.current_round) return '—'
+                        const [h, m] = cfg.general.start_time.split(':').map(Number)
+                        const totalHours = h + (cfg.current_round - 1) * cfg.general.round_span_hours
+                        const days = Math.floor(totalHours / 24)
+                        const hours = totalHours % 24
+                        const time = `${String(hours).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+                        
+                        if (cfg.general.fake_date) {
+                          const date = new Date(cfg.general.fake_date)
+                          const daysToAdd = Math.floor(((cfg.current_round - 1) * cfg.general.round_span_hours) / 24)
+                          date.setDate(date.getDate() + daysToAdd)
+                          const dateStr = date.toLocaleDateString('en-ZA', { year: 'numeric', month: 'short', day: 'numeric' })
+                          return `${dateStr}, ${time}`
+                        }
+                        return `${time}${days > 0 ? ` (+${days}d)` : ''}`
+                      } catch (_) {
+                        return cfg.general.start_time || '—'
+                      }
+                    })()
+                  }
+                ].map(({ label, value, optional, fullWidth, noLabel }) => {
                   if (optional && !value) return null
                   const renderedValue = React.isValidElement(value) ? value : (
                     <Typography variant="body2">{value}</Typography>
                   )
+                  
+                  if (noLabel) {
+                    return (
+                      <Box key={Math.random()}>
+                        {renderedValue}
+                      </Box>
+                    )
+                  }
+                  
                   return (
                     <Box
                       key={label}
-                      sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                      sx={{ display: 'flex', justifyContent: 'space-between', flexDirection: fullWidth ? 'column' : 'row', alignItems: fullWidth ? 'flex-start' : 'center' }}
                     >
-                      <Typography variant="body2" color="text.secondary">
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: fullWidth ? 0.5 : 0 }}>
                         {label}
                       </Typography>
                       {renderedValue}
@@ -2110,22 +2044,23 @@ export default function Player() {
             </CardContent>
           </Card>
 
-          {/* Live KPIs Placeholder */}
-          <Card sx={{ mt: 2 }}>
-            <CardContent>
-              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-                <Typography variant="h6">Live KPIs</Typography>
-                <Tooltip
-                  title={
-                    'Market results update after each round.\n\nMCP (Market Clearing Price): The price in ZAR/MWh where supply meets demand.\n\nVolume: Total energy traded in MWh during the round.\n\nThe charts below show the trend across all rounds.'
-                  }
-                  placement="left"
-                >
-                  <IconButton size="small" aria-label="Live KPIs info">
-                    <InfoOutlined fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-              </Stack>
+          {/* MCPs last round - only show after round 1 */}
+          {cfg.current_round > 1 && (
+            <Card sx={{ mt: 2 }}>
+              <CardContent>
+                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                  <Typography variant="h6">MCPs last round</Typography>
+                  <Tooltip
+                    title={
+                      'Market results from the previous round.\n\nMCP (Market Clearing Price): The price in ZAR/MWh where supply meets demand.\n\nVolume: Total energy traded in MWh during the round.'
+                    }
+                    placement="left"
+                  >
+                    <IconButton size="small" aria-label="MCPs last round info">
+                      <InfoOutlined fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </Stack>
               {live ? (
                         <Stack spacing={1.5}>
                   <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
@@ -2168,13 +2103,14 @@ export default function Player() {
                     </Box>
                   )}
                 </Stack>
-              ) : cfg.current_round === 1 ? (
+              ) : (
                 <Typography variant="body2" color="text.secondary">
                   Waiting for market data...
                 </Typography>
-              ) : null}
-            </CardContent>
-          </Card>
+              )}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Market Supply/Demand Curve */}
           <Card sx={{ mt: 2 }}>
@@ -2195,16 +2131,18 @@ export default function Player() {
             </CardContent>
           </Card>
 
-          {/* MCP and Volume Charts */}
-          <Card sx={{ mt: 2 }}>
-            <CardContent>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>MCP last round</Typography>
-              <svg ref={mcpRef} width="100%" height={160} style={{ border: '1px solid #eee' }} />
+          {/* MCP and Volume Charts - only show after round 1 */}
+          {cfg.current_round > 1 && (
+            <Card sx={{ mt: 2 }}>
+              <CardContent>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>MCP last round</Typography>
+                <svg ref={mcpRef} width="100%" height={160} style={{ border: '1px solid #eee' }} />
 
-              <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>Volume last round</Typography>
-              <svg ref={volRef} width="100%" height={160} style={{ border: '1px solid #eee' }} />
-            </CardContent>
-          </Card>
+                <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>Volume last round</Typography>
+                <svg ref={volRef} width="100%" height={160} style={{ border: '1px solid #eee' }} />
+              </CardContent>
+            </Card>
+          )}
 
           {/* My Devices */}
           {((selectedType && typeDevices.length>0) || (Array.isArray(scenarioDevices)&&scenarioDevices.length>0)) && (
@@ -2241,22 +2179,22 @@ export default function Player() {
 
         {/* Right: Forecast Editor */}
         <Grid item xs={12} md={8}>
-          <Paper sx={{ p: 3 }}>
+          <Box>
 
             {(timeRemaining === 0 || submitted) && (
-              <Alert severity="warning" sx={{ mt: 2, mb: 2 }}>
+              <Alert severity="warning" sx={{ mb: 2 }}>
                 {submitted ? 'Forecast submitted. Waiting for round results...' : 'Time is up! You can no longer submit this round.'}
               </Alert>
             )}
             {(allowedTypes.length>0 && !selectedType) && (
-              <Alert severity="info" sx={{ mt: 2, mb: 2 }}>
+              <Alert severity="info" sx={{ mb: 2 }}>
                 Please select your player type to continue.
               </Alert>
             )}
 
             {(allowedTypes.length === 0 || (selectedType && typeDevices.length>0)) ? (
               allowedTypes.length > 0 ? (
-                <Stack spacing={3} sx={{ mt:2 }}>
+                <Stack spacing={3}>
                   {typeDevices.map(did=> {
                   const deviceDef = scenarioDevices.find(d=> d.id === did)
                   const deviceType = deviceDef?.type || 'unknown'
@@ -2782,7 +2720,7 @@ export default function Player() {
                 </span>
               </Tooltip>
             </Stack>
-          </Paper>
+          </Box>
         </Grid>
       </Grid>
       </>
