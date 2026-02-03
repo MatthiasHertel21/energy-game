@@ -80,7 +80,7 @@ class PreviewHourly(Resource):
         preview_date = request.json.get("preview_date")
         preview_time = request.json.get("preview_time")
         
-        mcp = []
+        smp = []
         vol = []
         
         # Determine start hour and month
@@ -118,6 +118,6 @@ class PreviewHourly(Resource):
             supply = base_supply
             demand = base_demand
             p, v = clear_market(supply, demand, price_floor=price_floor, price_cap=price_cap)
-            mcp.append(round(p, 1))
+            smp.append(round(p, 1))
             vol.append(round(v, 3))
-        return {"hours": hours, "mcp": mcp, "volume": vol}, HTTPStatus.OK
+        return {"hours": hours, "smp": smp, "volume": vol}, HTTPStatus.OK

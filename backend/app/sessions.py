@@ -352,8 +352,8 @@ class SessionStatusMatrix(Resource):
             )
             rounds_map = {}
             for r in rows:
-                rm = rounds_map.setdefault(r.round_num, {"round": r.round_num, "mcp": None, "volume": None, "players": []})
-                rm["mcp"] = rm["mcp"] or (r.data or {}).get("mcp")
+                rm = rounds_map.setdefault(r.round_num, {"round": r.round_num, "smp": None, "volume": None, "players": []})
+                rm["smp"] = rm["smp"] or (r.data or {}).get("smp")
                 rm["volume"] = rm["volume"] or (r.data or {}).get("volume")
                 rm["players"].append({"player_id": r.player_id, "kpis": (r.data or {}).get("kpis", {})})
             out = [rounds_map[k] for k in sorted(rounds_map.keys())]
@@ -542,7 +542,7 @@ class RoundResults(Resource):
                 "imbalance": imbalance,
                 "curtailment": curtailment,
                 "total_score": round(total_score, 2),
-                "mcp": r.data.get("mcp"),
+                "smp": r.data.get("smp"),
                 "volume": r.data.get("volume"),
                 "bid_dispatch": r.bid_dispatch,  # Include lot dispatch tracking
                 "hourly_breakdown": kpis.get("hourly_breakdown", []),  # Include detailed hourly breakdown
@@ -553,12 +553,12 @@ class RoundResults(Resource):
             # Calculate DA/ID breakdown for this player
             da_hours = da_baseline_by_player.get(r.player_id, {}).get("aggregate", [])
             current_hours = current_by_player.get(r.player_id, [])
-            base_mcp = float(r.data.get("mcp", 0) or 450)
+            base_mcp = float(r.data.get("smp", 0) or 450)
             
             # Price differentiation: DA trades at stable price, ID at premium/discount
             # id_price_spread_percent: positive = ID more expensive (buying penalty), negative = ID discount
             id_price_spread = config.get("id_price_spread_percent", 0)  # Default: same price
-            da_price = base_mcp  # DA market clears at MCP
+            da_price = base_mcp  # DA market clears at SMP
             id_price = base_mcp * (1 + id_price_spread / 100)  # ID market has spread
             
             # Sum volumes WITH sign: positive = producer (sells), negative = consumer (buys)
@@ -740,7 +740,7 @@ class FinalResults(Resource):
                         agg = player_bid_aggregates[pid][device_id][lot_label]
                         agg["mw_offered"] += lot_data.get("mw_offered", 0)
                         agg["mw_dispatched"] += lot_data.get("mw_dispatched", 0)
-                        agg["total_revenue"] += lot_data.get("mw_dispatched", 0) * lot_data.get("mcp", 0)
+                        agg["total_revenue"] += lot_data.get("mw_dispatched", 0) * lot_data.get("smp", 0)
                         if lot_data.get("mw_offered", 0) > 0:
                             agg["rounds_offered"] += 1
         

@@ -219,9 +219,9 @@ class Result(db.Model):
     bid_dispatch = db.Column(db.JSON, nullable=True)  # NEW: Per-bid dispatch tracking
     # Structure: {
     #   'device_id_1': {
-    #     'A': {'mw_offered': 200, 'mw_dispatched': 200, 'price_bid': 350, 'mcp': 450},
-    #     'B': {'mw_offered': 150, 'mw_dispatched': 80, 'price_bid': 400, 'mcp': 450},
-    #     'C': {'mw_offered': 100, 'mw_dispatched': 0, 'price_bid': 480, 'mcp': 450}
+    #     'A': {'mw_offered': 200, 'mw_dispatched': 200, 'price_bid': 350, 'smp': 450},
+    #     'B': {'mw_offered': 150, 'mw_dispatched': 80, 'price_bid': 400, 'smp': 450},
+    #     'C': {'mw_offered': 100, 'mw_dispatched': 0, 'price_bid': 480, 'smp': 450}
     #   }
     # }
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)

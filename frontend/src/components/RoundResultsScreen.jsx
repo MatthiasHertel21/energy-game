@@ -75,17 +75,17 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
     return '#64b5f6';
   };
 
-  const getStatusLabel = (dispatchPct, bidPrice, mcp) => {
+  const getStatusLabel = (dispatchPct, bidPrice, smp) => {
     if (dispatchPct >= 99) return '✓ Full';
     if (dispatchPct > 0) return `${dispatchPct.toFixed(0)}% Part`;
-    if (bidPrice > mcp) return '✗ Too expensive';
+    if (bidPrice > smp) return '✗ Too expensive';
     return '✗ Not needed';
   };
 
-  const getStatusColor = (dispatchPct, bidPrice, mcp) => {
+  const getStatusColor = (dispatchPct, bidPrice, smp) => {
     if (dispatchPct >= 99) return 'success';
     if (dispatchPct > 0) return 'warning';
-    if (bidPrice > mcp) return 'error';
+    if (bidPrice > smp) return 'error';
     return 'default';
   };
 
@@ -98,7 +98,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
     const dispatched = lotData.mw_dispatched || 0;
     const dispatchPct = offered > 0 ? ((dispatched / offered) * 100) : 0;
     const bidPrice = lotData.price_bid || 0;
-    const mcp = lotData.mcp || 0;
+    const smp = lotData.smp || 0;
 
     return (
       <TableRow key={lotLabel}>
@@ -115,7 +115,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
         </TableCell>
         <TableCell align="right">{formatInt(bidPrice)}</TableCell>
         <TableCell align="right" sx={{ fontWeight: 600, color: dispatched > 0 ? 'success.main' : 'text.disabled' }}>
-          {dispatched > 0 ? formatInt(mcp) : '-'}
+          {dispatched > 0 ? formatInt(smp) : '-'}
         </TableCell>
         <TableCell align="right">{formatInt(offered)}</TableCell>
         <TableCell align="right" sx={{ fontWeight: 600 }}>
@@ -124,9 +124,9 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
         <TableCell align="right">{Math.round(dispatchPct)}%</TableCell>
         <TableCell align="right">
           <Chip
-            label={getStatusLabel(dispatchPct, bidPrice, mcp)}
+            label={getStatusLabel(dispatchPct, bidPrice, smp)}
             size="small"
-            color={getStatusColor(dispatchPct, bidPrice, mcp)}
+            color={getStatusColor(dispatchPct, bidPrice, smp)}
           />
         </TableCell>
       </TableRow>
@@ -267,8 +267,8 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
   const totalDispatchedMW = hasHourlyBreakdown 
     ? my_result.hourly_breakdown.reduce((sum, h) => sum + h.dispatched_mw, 0)
     : 0;
-  const weightedMCP = totalDispatchedMW > 0
-    ? my_result.hourly_breakdown.reduce((sum, h) => sum + (h.mcp * h.dispatched_mw), 0) / totalDispatchedMW
+  const weightedSMP = totalDispatchedMW > 0
+    ? my_result.hourly_breakdown.reduce((sum, h) => sum + (h.smp * h.dispatched_mw), 0) / totalDispatchedMW
     : 0;
 
   return (
@@ -611,7 +611,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                       Object.entries(lots).forEach(([, lotData]) => {
                         totalOffered += lotData.mw_offered || 0;
                         totalDispatched += lotData.mw_dispatched || 0;
-                        totalRevenue += (lotData.mw_dispatched || 0) * (lotData.mcp || 0);
+                        totalRevenue += (lotData.mw_dispatched || 0) * (lotData.smp || 0);
                       });
 
                       const dispatchRate = totalOffered > 0 ? (totalDispatched / totalOffered * 100) : 0;
@@ -658,7 +658,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                               )}
 
                               <Typography variant="caption" color="text.secondary" textAlign="right">
-                                <TermTooltip term="MCP">Market Clearing Price (MCP)</TermTooltip>: <strong>{formatCurrency(my_result.mcp)}</strong>
+                                <TermTooltip term="SMP">System Marginal Price (SMP)</TermTooltip>: <strong>{formatCurrency(my_result.smp)}</strong>
                               </Typography>
                             </Stack>
                           </CardContent>
@@ -720,7 +720,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                       <TableHead>
                         <TableRow>
                           <TableCell>Hour</TableCell>
-                          <TableCell align="right"><TermTooltip term="MCP">MCP</TermTooltip> (<TermTooltip term="ZAR">ZAR</TermTooltip>/<TermTooltip term="MWh">MWh</TermTooltip>)</TableCell>
+                          <TableCell align="right"><TermTooltip term="SMP">SMP</TermTooltip> (<TermTooltip term="ZAR">ZAR</TermTooltip>/<TermTooltip term="MWh">MWh</TermTooltip>)</TableCell>
                           <TableCell align="right">Planned (<TermTooltip term="MWh">MWh</TermTooltip>)</TableCell>
                           <TableCell align="right"><TermTooltip term="Dispatch">Dispatched</TermTooltip> (<TermTooltip term="MWh">MWh</TermTooltip>)</TableCell>
                           {!isConsumer && <TableCell align="right">Actual (MWh)</TableCell>}
@@ -735,7 +735,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                         {my_result.hourly_breakdown.map((hour, idx) => (
                           <TableRow key={idx} sx={{ '&:nth-of-type(odd)': { backgroundColor: 'action.hover' } }}>
                             <TableCell>{hour.hour}</TableCell>
-                            <TableCell align="right">{formatInt(hour.mcp)}</TableCell>
+                            <TableCell align="right">{formatInt(hour.smp)}</TableCell>
                             <TableCell align="right">{formatInt(hour.planned_mw)}</TableCell>
                             <TableCell align="right">{formatInt(hour.dispatched_mw)}</TableCell>
                             {!isConsumer && <TableCell align="right">{formatInt(hour.actual_mw)}</TableCell>}
@@ -757,7 +757,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                         <TableRow sx={{ backgroundColor: 'action.selected', fontWeight: 'bold' }}>
                           <TableCell sx={{ fontWeight: 'bold' }}>Total</TableCell>
                           <TableCell align="right" sx={{ fontWeight: 'bold' }}>
-                            {formatInt(weightedMCP)}
+                            {formatInt(weightedSMP)}
                           </TableCell>
                           <TableCell align="right" sx={{ fontWeight: 'bold' }}>
                             {formatInt(my_result.hourly_breakdown.reduce((sum, h) => sum + h.planned_mw, 0))}
@@ -799,7 +799,7 @@ export default function RoundResultsScreen({ sessionId, round, mode = 'shared_ma
                   <Alert severity="info" sx={{ mt: 2 }}>
                     <Typography variant="caption">
                       {isConsumer ? (
-                        <><strong>Explanation:</strong> Planned = your demand forecast, <TermTooltip term="Dispatch">Dispatched</TermTooltip> = energy you purchased at <TermTooltip term="MCP">MCP</TermTooltip>.
+                        <><strong>Explanation:</strong> Planned = your demand forecast, <TermTooltip term="Dispatch">Dispatched</TermTooltip> = energy you purchased at <TermTooltip term="SMP">SMP</TermTooltip>.
                         <TermTooltip term="Imbalance">Imbalance</TermTooltip> = |Dispatched - Actual consumption| (deviation penalty for over/under consumption).</>
                       ) : (
                         <><strong>Explanation:</strong> Planned = your offered energy, <TermTooltip term="Dispatch">Dispatched</TermTooltip> = accepted by market, Actual = what you delivered.

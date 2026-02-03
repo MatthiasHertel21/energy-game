@@ -402,7 +402,7 @@ npm run cypress:run
 1. **Analytics:** Add Sentry error tracking (already configured)
 2. **Performance:** Implement code splitting with React.lazy()
 3. **Mobile:** Responsive breakpoints for <768px screens
-4. **Advanced Charts:** Combined MCP+Volume chart, zoom controls
+4. **Advanced Charts:** Combined SMP+Volume chart, zoom controls
 5. **Branding:** Custom landing page with marketing copy
 6. **i18n:** Multi-language support (en/de/fr)
 

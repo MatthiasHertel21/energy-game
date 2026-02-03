@@ -365,7 +365,7 @@ After MCP is determined:
 
 ### Step 4: Market Clearing Algorithm
 
-The engine finds the Market Clearing Price (MCP) where supply meets demand.
+The engine finds the System Marginal Price (MCP) where supply meets demand.
 
 **Algorithm:**
 
@@ -1156,7 +1156,7 @@ def validate_forecast_constraints(device, forecast_mw):
 
 ## Mathematical Formulas Summary
 
-### Market Clearing Price (MCP)
+### System Marginal Price (MCP)
 
 $$
 \text{MCP} = \max(\text{price\_floor}, \min(\text{price\_cap}, \text{intersection\_price}))

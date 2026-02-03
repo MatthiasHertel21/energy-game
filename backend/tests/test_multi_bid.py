@@ -137,16 +137,16 @@ class TestTrackBidDispatch:
             {'price': 400, 'quantity': 200, 'player_id': 1, 'device_id': 'dev1', 'bid_label': 'B'}
         ]
         synthetic = []
-        mcp = 500
+        smp = 500
         volume = 300  # Exactly covers both bids
         
-        tracking = track_bid_dispatch(supply_bids, mcp, volume, synthetic)
+        tracking = track_bid_dispatch(supply_bids, smp, volume, synthetic)
         
         assert 1 in tracking
         assert 'dev1' in tracking[1]
         assert tracking[1]['dev1']['A']['mw_dispatched'] == 100
         assert tracking[1]['dev1']['B']['mw_dispatched'] == 200
-        assert tracking[1]['dev1']['A']['mcp'] == 500
+        assert tracking[1]['dev1']['A']['smp'] == 500
     
     def test_partial_dispatch(self):
         """Only part of second bid dispatched"""
@@ -155,24 +155,24 @@ class TestTrackBidDispatch:
             {'price': 400, 'quantity': 200, 'player_id': 1, 'device_id': 'dev1', 'bid_label': 'B'}
         ]
         synthetic = []
-        mcp = 400
+        smp = 400
         volume = 150  # Only 100 from A + 50 from B
         
-        tracking = track_bid_dispatch(supply_bids, mcp, volume, synthetic)
+        tracking = track_bid_dispatch(supply_bids, smp, volume, synthetic)
         
         assert tracking[1]['dev1']['A']['mw_dispatched'] == 100  # Full
         assert tracking[1]['dev1']['B']['mw_dispatched'] == 50   # Partial
     
     def test_no_dispatch_price_too_high(self):
-        """Bid price above MCP = not dispatched"""
+        """Bid price above SMP = not dispatched"""
         supply_bids = [
             {'price': 600, 'quantity': 100, 'player_id': 1, 'device_id': 'dev1', 'bid_label': 'A'}
         ]
         synthetic = []
-        mcp = 500
+        smp = 500
         volume = 1000
         
-        tracking = track_bid_dispatch(supply_bids, mcp, volume, synthetic)
+        tracking = track_bid_dispatch(supply_bids, smp, volume, synthetic)
         
         # Should be empty - bid too expensive
         assert tracking == {}
@@ -183,10 +183,10 @@ class TestTrackBidDispatch:
             {'price': 800, 'quantity': 100, 'player_id': 1, 'device_id': 'dev1', 'bid_label': 'A'}
         ]
         synthetic = [(600, 500), (700, 50)]  # Only 550 MW total synthetic
-        mcp = 800
+        smp = 800
         volume = 600  # 500 from first synthetic + 50 from second + 50 from player
         
-        tracking = track_bid_dispatch(supply_bids, mcp, volume, synthetic)
+        tracking = track_bid_dispatch(supply_bids, smp, volume, synthetic)
         
         # Player bid should be partially dispatched (50 out of 100)
         assert tracking[1]['dev1']['A']['mw_dispatched'] == 50
@@ -206,23 +206,23 @@ class TestMarketClearingIntegration:
         ]
         demand = [(1000, 400)]  # High willingness to pay
         
-        mcp, volume = clear_market(supply, demand)
+        smp, volume = clear_market(supply, demand)
         
-        # MCP should be where supply meets demand
+        # SMP should be where supply meets demand
         # All 3 bids should clear (total 400 MW)
         assert volume == 400
-        assert mcp == 800  # Price of most expensive dispatched bid
+        assert smp == 800  # Price of most expensive dispatched bid
     
     def test_uniform_pricing(self):
-        """All dispatched bids receive same MCP"""
+        """All dispatched bids receive same SMP"""
         # This is a behavioral test - would need Result objects to verify
-        # But the principle is: even if you bid at 300, you get MCP (e.g., 800)
+        # But the principle is: even if you bid at 300, you get SMP (e.g., 800)
         supply = [(300, 100), (500, 100), (800, 100)]
         demand = [(1000, 250)]
     
-        mcp, volume = clear_market(supply, demand)
+        smp, volume = clear_market(supply, demand)
     
         # 250 MW demand satisfied by first 2.5 bids (100 @ 300, 100 @ 500, 50 @ 800)
         assert volume == 250
-        # MCP = marginal bid price (last dispatched = 800)
-        assert mcp == 800
+        # SMP = marginal bid price (last dispatched = 800)
+        assert smp == 800

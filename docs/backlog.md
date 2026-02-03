@@ -313,9 +313,9 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
 31) KSE – Marktvorschau als Stufenkurven (UC-17)
 - Problem: Vorschau zeigt geglättete Linien; Markt sollte als Angebots-/Nachfrage-Stufen (Merit-Order) visualisiert werden.
 - Action:
-  - Frontend: `KSE.jsx` – Step-Darstellung (Quantity×Price), Achsenbeschriftung, Legende (Supply/Demand/MCP).
+  - Frontend: `KSE.jsx` – Step-Darstellung (Quantity×Price), Achsenbeschriftung, Legende (Supply/Demand/SMP).
   - Parameter: Teilnehmerzahl, Gesamtvolumen, Gruppenverteilung (Producer/Consumer) – zufällige Verteilung innerhalb der Gruppen, Seed für Reproduzierbarkeit.
-  - MCP: horizontale Linie aus Engine-Preview.
+  - SMP: horizontale Linie aus Engine-Preview.
 - Status: ✅ Implemented (Sprint 14)
 - Acceptance: Stufen sichtbar, Achsen korrekt beschriftet, Legende vorhanden; Teilnehmerzahl/Gruppen wirken auf Kurvenform.
 
@@ -362,7 +362,7 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
 - Problem: Fragmentierte Eingaben; Visualisierung getrennt von Parametern; hoher Navigationsaufwand.
 - Action:
   - Frontend: Neue kombinierte Ansicht „Market & Preview“ in `KSE.jsx`.
-    - Layout: Zweispaltig – links Parameter (Sektionen: Market Basics, Constraints, Environment), rechts sticky Preview‑Panel (Step‑Kurven, MCP, ggf. Zeitreihe). Grid: sm=12, md=6/6; max content width lg.
+    - Layout: Zweispaltig – links Parameter (Sektionen: Market Basics, Constraints, Environment), rechts sticky Preview‑Panel (Step‑Kurven, SMP, ggf. Zeitreihe). Grid: sm=12, md=6/6; max content width lg.
     - Live‑Update der Preview bei Parameteränderung (debounced 250–500ms).
     - Entfernt die separaten Tabs „Market“, „Environment“, „Preview“.
   - Tests/Docs: E2E‑Anpassungen; Hilfe‑Texte je Sektion.
@@ -379,7 +379,7 @@ Each WB item contains deliverables/acceptance in the original request; scope to 
     - Getrennte Parameter pro Typ: `capacity_variability_pct` und `marginal_cost_variability_pct` (jeweils 0–100%).
     - Quelle Seed: `campaign.seed` (Kampagnenkontext maßgeblich). Fallback für KSE‑Preview möglich (lokaler Preview‑Seed, beeinflusst nicht die Simulation).
   - Frontend (`KSE.jsx`): Je Typ zwei Felder „Capacity variability (%)“ und „Marginal cost variability (%)“, Default 0%; Tooltip erklärt Reproduzierbarkeit über Kampagnen‑Seed.
-  - Preview reflektiert Streuung (breitere Stufen/rauschigere Merit‑Order, MCP stabil).
+  - Preview reflektiert Streuung (breitere Stufen/rauschigere Merit‑Order, SMP stabil).
 - Acceptance:
   - Gleicher Seed ⇒ identische generierte Teilnehmer; anderer Seed ⇒ andere, aber innerhalb des Bereichs liegende Werte.
   - Variabilität 0% ⇒ identische Teilnehmer (Status quo).
@@ -769,7 +769,7 @@ PT3) Player: Pre-Session Type Selection
 
 ### KSE-9) Preview Buttons: Align & Icons (Issue #11)
 - **Severity**: Low
-- **Problem**: "Preview MCP" and "Hourly Preview" buttons not aligned consistently
+- **Problem**: "Preview SMP" and "Hourly Preview" buttons not aligned consistently
 - **Action**:
   - Right-align both buttons
   - Convert to IconButtons (Reload/Calculate icons)
@@ -788,7 +788,7 @@ PT3) Player: Pre-Session Type Selection
 - **Action**:
   - Click on chart opens modal/dialog
   - Large chart view
-  - Tabular data below (MCP/Volume/Steps)
+  - Tabular data below (SMP/Volume/Steps)
   - A11y: ESC closes, focus trap
 - **Files**: `frontend/src/pages/KSE.jsx` (Market&Preview tab)
 - **Acceptance**:

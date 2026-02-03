@@ -90,7 +90,7 @@ for bid_label, bid_info in lots.items():
             'mw_offered': 0.0,        # ← Korrekter Key
             'mw_dispatched': 0.0,
             'price_bid': bid_info.get('price_bid', 0.0),
-            'mcp': bid_info.get('mcp', 0.0),
+            'smp': bid_info.get('smp', 0.0),
         }
     # Beide Werte akkumulieren
     bid_dispatch_tracking[...]['mw_offered'] += bid_info.get('mw_offered', 0.0)
@@ -101,7 +101,7 @@ for bid_label, bid_info in lots.items():
 - [backend/app/engine.py](../backend/app/engine.py#L978-L996)
   - Zeile 991: `'mw_bid'` → `'mw_offered'`
   - Zeile 994: `'price'` → `'price_bid'`
-  - Zeile 995: Neue Zeile für `'mcp'`
+  - Zeile 995: Neue Zeile für `'smp'`
   - Zeile 997: Neue Zeile für `mw_offered` Akkumulation
   - Zeile 996: Existierende `mw_dispatched` Akkumulation (unverändert)
 
@@ -165,7 +165,7 @@ def test_bid_dispatch_accumulation():
     hour_bid_dispatch = {
         1: {  # player_id
             'dev1': {  # device_id
-                'A': {'mw_offered': 600, 'mw_dispatched': 100, 'price_bid': 500, 'mcp': 800}
+                'A': {'mw_offered': 600, 'mw_dispatched': 100, 'price_bid': 500, 'smp': 800}
             }
         }
     }
@@ -185,7 +185,7 @@ def test_bid_dispatch_accumulation():
                             'mw_offered': 0.0,
                             'mw_dispatched': 0.0,
                             'price_bid': bid_info.get('price_bid', 0.0),
-                            'mcp': bid_info.get('mcp', 0.0),
+                            'smp': bid_info.get('smp', 0.0),
                         }
                     bid_dispatch_tracking[player_id][device_id][bid_label]['mw_offered'] += bid_info.get('mw_offered', 0.0)
                     bid_dispatch_tracking[player_id][device_id][bid_label]['mw_dispatched'] += bid_info.get('mw_dispatched', 0.0)

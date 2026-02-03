@@ -85,11 +85,11 @@ for round_num in range(1, 5):
     
     start_hour = (round_num - 1) * 6
     end_hour = start_hour + 5
-    hourly_mcps = [h['mcp'] for h in result['hourly_results']]
+    hourly_mcps = [h['smp'] for h in result['hourly_results']]
     
     print(f"\nRound {round_num} (Hours {start_hour:2d}-{end_hour:2d}):")
-    print(f"  Average MCP: {result['mcp']:7.1f} ZAR/MWh")
-    print(f"  Hourly MCPs: {', '.join(f'{mcp:.1f}' for mcp in hourly_mcps)}")
+    print(f"  Average SMP: {result['smp']:7.1f} ZAR/MWh")
+    print(f"  Hourly MCPs: {', '.join(f'{smp:.1f}' for smp in hourly_mcps)}")
 
 print("\n\n" + "="*80)
 print("SCENARIO 2: WITH Temporal Profiles (Variable demand)")
@@ -107,18 +107,18 @@ for round_num in range(1, 5):
     
     start_hour = (round_num - 1) * 6
     end_hour = start_hour + 5
-    hourly_mcps = [h['mcp'] for h in result['hourly_results']]
+    hourly_mcps = [h['smp'] for h in result['hourly_results']]
     
     print(f"\nRound {round_num} (Hours {start_hour:2d}-{end_hour:2d}):")
-    print(f"  Average MCP: {result['mcp']:7.1f} ZAR/MWh")
-    print(f"  Hourly MCPs: {', '.join(f'{mcp:.1f}' for mcp in hourly_mcps)}")
+    print(f"  Average SMP: {result['smp']:7.1f} ZAR/MWh")
+    print(f"  Hourly MCPs: {', '.join(f'{smp:.1f}' for smp in hourly_mcps)}")
 
 print("\n\n" + "="*80)
 print("CONCLUSION:")
 print("="*80)
-print("✓ WITHOUT temporal profiles: MCP stays constant (flat demand)")
-print("✓ WITH temporal profiles: MCP varies by time of day (demand peaks/valleys)")
-print("\nIf user sees constant MCP:")
+print("✓ WITHOUT temporal profiles: SMP stays constant (flat demand)")
+print("✓ WITH temporal profiles: SMP varies by time of day (demand peaks/valleys)")
+print("\nIf user sees constant SMP:")
 print("1. Check diurnal_profile in scenario config")
 print("2. Ensure it's not [1.0, 1.0, 1.0, ...] (flat)")
 print("3. Use realistic profile like:")

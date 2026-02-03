@@ -308,7 +308,7 @@ Status: OPEN
 Severity: Low
 
 Beschreibung:
-„Preview MCP“ und „Hourly Preview“ rechtsbündig ausrichten; als IconButtons (Reload/Calculate) mit Tooltips.
+„Preview SMP“ und „Hourly Preview“ rechtsbündig ausrichten; als IconButtons (Reload/Calculate) mit Tooltips.
 
 Akzeptanzkriterien:
 - Konsistente Ausrichtung und Icons; gleiche Höhe
@@ -321,7 +321,7 @@ Status: OPEN
 Severity: Low
 
 Beschreibung:
-Klick auf Diagramm öffnet Dialog (Modal) mit großem Chart; unterhalb tabellarische Daten (z. B. MCP/Volume/Steps).
+Klick auf Diagramm öffnet Dialog (Modal) mit großem Chart; unterhalb tabellarische Daten (z. B. SMP/Volume/Steps).
 
 Akzeptanzkriterien:
 - Modal öffnet/schließt; A11y (ESC, Fokus‑Trap); Tabelle unterhalb

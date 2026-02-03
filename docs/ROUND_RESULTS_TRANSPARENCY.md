@@ -31,7 +31,7 @@ Multi-Player Scenario (Midday):
 - ✅ Subject to imbalance costs (consumption varies with noise)
 - ✅ Exempt from curtailment costs (less demand met = no penalty)
 - ✅ `actual_mwh` = `dispatched_mwh` with consumption noise applied
-- ✅ Bids processed in demand curve (dispatched if price >= MCP)
+- ✅ Bids processed in demand curve (dispatched if price >= SMP)
 - ✅ Default willingness-to-pay: Lot A: 1200, Lot B: 1000, Lot C: 800 ZAR/MWh
 
 **Generators** (all other device types):
@@ -39,7 +39,7 @@ Multi-Player Scenario (Midday):
 - ✅ Subject to imbalance costs (dispatched ≠ actual)
 - ✅ Subject to curtailment costs (planned > dispatched)
 - ✅ `actual_mwh` constrained by availability envelope
-- ✅ Bids processed in supply curve (dispatched if price <= MCP)
+- ✅ Bids processed in supply curve (dispatched if price <= SMP)
 
 **Code Reference:** [engine.py](../backend/app/engine.py#L930-L980)
 
@@ -65,7 +65,7 @@ Each player's `round_kpis` now includes a `hourly_breakdown` array with per-hour
       "hourly_breakdown": [
         {
           "hour": 0,
-          "mcp": 978.9,
+          "smp": 978.9,
           "planned_mw": 100.0,
           "dispatched_mw": 100.0,
           "actual_mw": 0.0,
@@ -87,15 +87,15 @@ Each player's `round_kpis` now includes a `hourly_breakdown` array with per-hour
 | Field | Description | Formula |
 |-------|-------------|---------|
 | `hour` | Hour index (0-23) | `round_num * span + offset` |
-| `mcp` | Market Clearing Price | Hourly equilibrium price |
+| `smp` | System Marginal Price | Hourly equilibrium price |
 | `planned_mw` | Planned generation | Sum of device forecasts |
 | `dispatched_mw` | Market-accepted | From bid dispatch |
 | `actual_mw` | Delivered | `dispatched × availability` |
-| `revenue_zar` | Revenue/Expense | `dispatched × mcp` (negative for consumers) |
+| `revenue_zar` | Revenue/Expense | `dispatched × smp` (negative for consumers) |
 | `imbalance_mwh` | Deviation from dispatch | `abs(actual - dispatched)` |
 | `imbalance_cost_zar` | Imbalance penalty | Over: `imbalance × 1200`, Under: `imbalance × 800` |
 | `curtailment_mwh` | Not dispatched | `planned - dispatched` (generators only) |
-| `curtailment_cost_zar` | Opportunity cost | `curtailment × mcp` (informational) |
+| `curtailment_cost_zar` | Opportunity cost | `curtailment × smp` (informational) |
 
 ### Verification
 
@@ -108,9 +108,9 @@ sum(h['imbalance_cost_zar'] for h in hourly_breakdown) == round_kpis['imbalance_
 
 ---
 
-## 3. MCP Variation Across Rounds
+## 3. SMP Variation Across Rounds
 
-### Why MCP Might Appear Constant
+### Why SMP Might Appear Constant
 
 **Root Cause:** Scenario uses **flat temporal profiles**
 
@@ -127,18 +127,18 @@ sum(h['imbalance_cost_zar'] for h in hourly_breakdown) == round_kpis['imbalance_
 
 #### Scenario 1: WITHOUT Temporal Profiles (Flat)
 ```
-Round 1 (Hours  0- 5): MCP = 978.9 ZAR/MWh (constant)
-Round 2 (Hours  6-11): MCP = 978.9 ZAR/MWh (constant)
-Round 3 (Hours 12-17): MCP = 978.9 ZAR/MWh (constant)
-Round 4 (Hours 18-23): MCP = 978.9 ZAR/MWh (constant)
+Round 1 (Hours  0- 5): SMP = 978.9 ZAR/MWh (constant)
+Round 2 (Hours  6-11): SMP = 978.9 ZAR/MWh (constant)
+Round 3 (Hours 12-17): SMP = 978.9 ZAR/MWh (constant)
+Round 4 (Hours 18-23): SMP = 978.9 ZAR/MWh (constant)
 ```
 
 #### Scenario 2: WITH Temporal Profiles (Variable)
 ```
-Round 1 (Hours  0- 5): MCP = 936.8 ZAR/MWh (night low)
-Round 2 (Hours  6-11): MCP = 988.1 ZAR/MWh (morning ramp)
-Round 3 (Hours 12-17): MCP = 1014.0 ZAR/MWh (midday peak)
-Round 4 (Hours 18-23): MCP = 995.2 ZAR/MWh (evening)
+Round 1 (Hours  0- 5): SMP = 936.8 ZAR/MWh (night low)
+Round 2 (Hours  6-11): SMP = 988.1 ZAR/MWh (morning ramp)
+Round 3 (Hours 12-17): SMP = 1014.0 ZAR/MWh (midday peak)
+Round 4 (Hours 18-23): SMP = 995.2 ZAR/MWh (evening)
 ```
 
 ### Solution: Configure Realistic Temporal Profiles
@@ -166,7 +166,7 @@ Round 4 (Hours 18-23): MCP = 995.2 ZAR/MWh (evening)
 1. Open scenario config in Admin UI
 2. Navigate to Environment Settings
 3. Check `diurnal_profile` array
-4. If all values are `1.0`, MCP will be constant
+4. If all values are `1.0`, SMP will be constant
 5. Apply realistic profile to see variation
 
 ---
@@ -184,7 +184,7 @@ Round 1 (Night):
   Dispatched:   600.0 MWh (market accepted bid)
   Actual:         5.0 MWh (availability = 0%, noise adds ~5 MWh)
   
-  Revenue:      587,340 ZAR (dispatched × MCP)
+  Revenue:      587,340 ZAR (dispatched × SMP)
   Imbalance:    476,000 ZAR (595 MWh × 800 ZAR/MWh)
   Curtailment:        0 ZAR (all bids accepted)
   Profit:       111,340 ZAR (revenue - costs)
@@ -192,7 +192,7 @@ Round 1 (Night):
 
 ### Hourly Breakdown
 ```
-Hour  MCP     Planned  Dispatch  Actual  Imbalance  Revenue    Imb.Cost
+Hour  SMP     Planned  Dispatch  Actual  Imbalance  Revenue    Imb.Cost
    0  978.9   100.0    100.0     0.0     100.0      97,890     80,000
    1  978.9   100.0    100.0     0.0     100.0      97,890     80,000
    2  978.9   100.0    100.0     0.0     100.0      97,890     80,000
@@ -226,7 +226,7 @@ TOTAL          600.0    600.0     5.0     595.0     587,340    476,000
 - Bid wind consistently (average ~63% availability)
 - Reduce noise if testing: `"actual_noise_pct": 0`
 
-### Issue 2: MCP Stays Constant
+### Issue 2: SMP Stays Constant
 
 **Check:**
 1. Is `diurnal_profile` flat (all 1.0)?
@@ -236,7 +236,7 @@ TOTAL          600.0    600.0     5.0     595.0     587,340    476,000
 - Apply realistic temporal profiles (see section 3)
 - Verify in scenario config: `environment.diurnal_profile`
 
-### Issue 3: Consumer Bid Below MCP Still Gets Dispatched
+### Issue 3: Consumer Bid Below SMP Still Gets Dispatched
 
 **Check:**
 1. Was consumer bid processed in **supply** curve instead of **demand** curve?
@@ -244,8 +244,8 @@ TOTAL          600.0    600.0     5.0     595.0     587,340    476,000
 
 **Solution:**
 - ✅ **FIXED (v1.1):** Consumers now correctly filtered from supply curve
-- Consumers with bid price >= MCP get 100% dispatch
-- Consumers with bid price < MCP get 0% dispatch
+- Consumers with bid price >= SMP get 100% dispatch
+- Consumers with bid price < SMP get 0% dispatch
 
 ### Issue 4: Consumer Showing Zero Imbalance in Hourly Breakdown
 
@@ -299,7 +299,7 @@ POST /api/sessions/{session_id}/play-round
 {
   "status": "success",
   "result": {
-    "mcp": 1014.0,
+    "smp": 1014.0,
     "volume": 32335.0,
     "round_kpis": {
       "1": {
@@ -314,7 +314,7 @@ POST /api/sessions/{session_id}/play-round
         "hourly_breakdown": [
           {
             "hour": 12,
-            "mcp": 1063.2,
+            "smp": 1063.2,
             "planned_mw": 100.0,
             "dispatched_mw": 100.0,
             "actual_mw": 92.0,
@@ -329,7 +329,7 @@ POST /api/sessions/{session_id}/play-round
       }
     },
     "hourly_results": [
-      {"hour_idx": 12, "hour_offset": 0, "mcp": 1063.2, "volume": 5450.0},
+      {"hour_idx": 12, "hour_offset": 0, "smp": 1063.2, "volume": 5450.0},
       // ... 5 more hours
     ]
   }
@@ -350,7 +350,7 @@ POST /api/sessions/{session_id}/play-round
 ## Changelog
 
 **v1.1 (2025-12-19)**
-- 🐛 **CRITICAL FIX:** Consumers now correctly filtered from supply curve (dispatched only if bid >= MCP)
+- 🐛 **CRITICAL FIX:** Consumers now correctly filtered from supply curve (dispatched only if bid >= SMP)
 - 🐛 **FIX:** Consumer actual values now tracked per device in hourly breakdown
 - 🐛 **FIX:** Hourly imbalance calculation now matches total KPI logic (up_price=1200, down_price=800)
 - ✨ Updated consumer logic: Now subject to imbalance costs with consumption noise
@@ -361,5 +361,5 @@ POST /api/sessions/{session_id}/play-round
 - Initial documentation
 - Added hourly breakdown to `round_kpis`
 - Confirmed player-specific cost attribution
-- Explained MCP variation with temporal profiles
+- Explained SMP variation with temporal profiles
 - Added troubleshooting checklist

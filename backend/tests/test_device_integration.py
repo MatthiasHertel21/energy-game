@@ -95,7 +95,7 @@ class TestEngineRunRoundWithDevices:
         )
         
         # Should complete without errors
-        assert "mcp" in result
+        assert "smp" in result
         assert "volume" in result
         assert "round_kpis" in result
         assert 1 in result["round_kpis"]
@@ -130,7 +130,7 @@ class TestEngineRunRoundWithDevices:
             mode="shared_market"
         )
         
-        assert "mcp" in result
+        assert "smp" in result
         assert "volume" in result
         assert len(result["round_kpis"]) == 3
 
@@ -236,7 +236,7 @@ class TestDeviceIntegrationWorkflow:
             mode="shared_market"
         )
         
-        assert "mcp" in result
+        assert "smp" in result
         assert 1 in result["round_kpis"]
         assert 2 in result["round_kpis"]
     

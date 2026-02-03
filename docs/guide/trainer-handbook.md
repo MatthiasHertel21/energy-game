@@ -259,7 +259,7 @@ After session creation:
 ├──────────────────────┼─────────────────────────────────────────┤
 │                      │                                         │
 │  Type Distribution   │        Market Charts                    │
-│  (Pie Chart)         │        (MCP, Volume)                    │
+│  (Pie Chart)         │        (SMP, Volume)                    │
 │                      │                                         │
 ├──────────────────────┴─────────────────────────────────────────┤
 │  Aggregated KPIs Table                                         │
@@ -312,7 +312,7 @@ Bar chart shows:
 
 ### 5.6 Market Charts
 
-**MCP over Rounds:**
+**SMP over Rounds:**
 - Green line
 - Shows price development
 - Tooltips with values
@@ -349,7 +349,7 @@ Chronological list of all events:
 |------------|---------|
 | Session | "Session started", "Round 3 ended" |
 | Player | "player@email.com joined", "Forecast submitted" |
-| Market | "MCP = 450 ZAR/MWh", "Clearing completed" |
+| Market | "SMP = 450 ZAR/MWh", "Clearing completed" |
 
 **Filters:**
 - By event type
@@ -426,7 +426,7 @@ Complete evaluation:
 |---------|---------|
 | **Summary KPIs** | Aggregated over all rounds |
 | **Round Table** | Details per round |
-| **Trend Charts** | Profit, MCP, Volume over time |
+| **Trend Charts** | Profit, SMP, Volume over time |
 | **Market Breakdown** | DA vs ID Volume/Revenue |
 | **Cohort Comparison** | Player vs average |
 
@@ -470,7 +470,7 @@ New feature (Sprint 24):
 
 - Submitted forecasts of all players
 - Market clearing results
-- MCP and volume
+- SMP and volume
 - Active events
 
 ### 8.4 Overlays
@@ -514,7 +514,7 @@ New feature (Sprint 24):
 | **Show leaderboard** | Motivation, comparison |
 | **Interview top performers** | "What was your strategy?" |
 | **Discuss mistakes** | "What went wrong for Player X?" |
-| **Explain market dynamics** | Discuss MCP development |
+| **Explain market dynamics** | Discuss SMP development |
 | **Analyze DA vs ID** | Who planned well? |
 
 ### 9.4 Common Situations

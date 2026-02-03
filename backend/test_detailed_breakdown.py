@@ -65,7 +65,7 @@ print(f"  Total Curtailment:  {kpis['curtailment_cost_zar']:12,.0f} ZAR")
 print(f"  Total Profit:       {kpis['profit_zar']:12,.0f} ZAR")
 
 print(f"\n{'='*120}")
-print(f"{'Hour':<6} {'MCP':>8} {'Planned':>9} {'Dispatch':>9} {'Actual':>9} {'Imbal.':>9} {'Revenue':>12} {'Imbal.Cost':>12} {'Curtail':>9}")
+print(f"{'Hour':<6} {'SMP':>8} {'Planned':>9} {'Dispatch':>9} {'Actual':>9} {'Imbal.':>9} {'Revenue':>12} {'Imbal.Cost':>12} {'Curtail':>9}")
 print(f"{'':>6} {'ZAR/MWh':>8} {'MW':>9} {'MW':>9} {'MW':>9} {'MWh':>9} {'ZAR':>12} {'ZAR':>12} {'Cost ZAR':>9}")
 print(f"{'='*120}")
 
@@ -78,7 +78,7 @@ for hour_data in kpis['hourly_breakdown']:
     total_imb_cost += hour_data['imbalance_cost_zar']
     total_curt_cost += hour_data['curtailment_cost_zar']
     
-    print(f"{hour_data['hour']:6d} {hour_data['mcp']:8.1f} {hour_data['planned_mw']:9.1f} "
+    print(f"{hour_data['hour']:6d} {hour_data['smp']:8.1f} {hour_data['planned_mw']:9.1f} "
           f"{hour_data['dispatched_mw']:9.1f} {hour_data['actual_mw']:9.1f} "
           f"{hour_data['imbalance_mwh']:9.1f} {hour_data['revenue_zar']:12,.0f} "
           f"{hour_data['imbalance_cost_zar']:12,.0f} {hour_data['curtailment_cost_zar']:9,.0f}")

@@ -270,12 +270,12 @@ const getDefaultBidPrices = (device) => {
   
   if (variableCost <= 0) {
     // Fallback defaults for devices without cost data
-    // For consumers (loads): bid slightly above expected MCP (~1000)
+    // For consumers (loads): bid slightly above expected SMP (~1000)
     // Strategy: A=high (always get), B=medium (usually get), C=low (marginal)
     if (deviceType.includes('load')) {
-      return { A: 1300, B: 1150, C: 1050 }  // Consumers bid above MCP, Baseload highest
+      return { A: 1300, B: 1150, C: 1050 }  // Consumers bid above SMP, Baseload highest
     }
-    // For generators: bid around/below expected MCP to get dispatched
+    // For generators: bid around/below expected SMP to get dispatched
     return { A: 850, B: 950, C: 1100 }
   }
   // When varCost is provided, check if consumer or generator
@@ -945,7 +945,7 @@ export default function Player() {
             
             // Populate series with historical rounds
             if (Array.isArray(rounds) && rounds.length > 0) {
-              setSeries(rounds.map(r => ({ r: r.round, mcp: r.mcp, volume: r.volume })))
+              setSeries(rounds.map(r => ({ r: r.round, smp: r.smp, volume: r.volume })))
             }
             
             // Populate hourlySeries with historical hourly data
@@ -976,7 +976,7 @@ export default function Player() {
   // Live market_cleared events and WebSocket
   const [live, setLive] = useState(null)
   const [series, setSeries] = useState([])
-  const mcpRef = useRef(null)
+  const smpRef = useRef(null)
   const volRef = useRef(null)
   const localTimerRef = useRef(null)
   const autoSubmitRef = useRef(false)
@@ -1054,8 +1054,8 @@ export default function Player() {
 
     s.on('market_cleared', (p) => {
       if (p && Number(p.session_id) === Number(sessionId)) {
-        setLive({ mcp: p.mcp, volume: p.volume, round: p.round })
-        setSeries((prev) => [...prev, { r: p.round, mcp: p.mcp, volume: p.volume }])
+        setLive({ smp: p.smp, volume: p.volume, round: p.round })
+        setSeries((prev) => [...prev, { r: p.round, smp: p.smp, volume: p.volume }])
         if (Array.isArray(p.hourly_results) && p.hourly_results.length > 0) {
           setHourlySeries((prev) => {
             const map = new Map(prev.map((entry) => [entry.hour_idx ?? entry.hour_offset ?? 0, entry]))
@@ -1150,8 +1150,8 @@ export default function Player() {
     sLegacy.on('round_end', (p)=>{ if (Number(p?.session_id)===Number(sessionId)) { setTimeRemaining(0); try{ sessionStorage.setItem(`emsg_timer_${sessionId}`, JSON.stringify({ t: Date.now(), rem: 0 })) }catch(_){ } } })
     sLegacy.on('market_cleared', (p)=>{
       if (p && Number(p.session_id)===Number(sessionId)){
-        setLive({ mcp: p.mcp, volume: p.volume, round: p.round })
-        setSeries(prev=> [...prev, { r:p.round, mcp:p.mcp, volume:p.volume }])
+        setLive({ smp: p.smp, volume: p.volume, round: p.round })
+        setSeries(prev=> [...prev, { r:p.round, smp:p.smp, volume:p.volume }])
       }
     })
     sLegacy.on('event_triggered', (p)=>{ if (p && Number(p.session_id)===Number(sessionId)){
@@ -1440,9 +1440,9 @@ export default function Player() {
       .style('display','none')
       .style('z-index','9999')
 
-    // Draw MCP chart
-    if (mcpRef.current) {
-      const svg = d3.select(mcpRef.current)
+    // Draw SMP chart
+    if (smpRef.current) {
+      const svg = d3.select(smpRef.current)
       svg.selectAll('*').remove()
       const M = { top: 10, right: 14, bottom: 40, left: 50 }
       const W = 420 - M.left - M.right
@@ -1462,8 +1462,8 @@ export default function Player() {
       const y = d3
         .scaleLinear()
         .domain([
-          d3.min(hourlyChartData, (d) => d.mcp) ?? 0,
-          d3.max(hourlyChartData, (d) => d.mcp) ?? 1
+          d3.min(hourlyChartData, (d) => d.smp) ?? 0,
+          d3.max(hourlyChartData, (d) => d.smp) ?? 1
         ])
         .nice()
         .range([H, 0])
@@ -1471,7 +1471,7 @@ export default function Player() {
       const line = d3
         .line()
         .x((d) => xValue(d))
-        .y((d) => y(d.mcp))
+        .y((d) => y(d.smp))
       // gridlines
       g.append('g')
         .attr('class', 'grid')
@@ -1501,15 +1501,15 @@ export default function Player() {
         .append('circle')
         .attr('class','point')
         .attr('cx', (d)=> xValue(d))
-        .attr('cy', d=> y(d.mcp))
+        .attr('cy', d=> y(d.smp))
         .attr('r', 3)
         .attr('fill', '#2e7d32')
-        .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`${d.label}: ${d.mcp} ZAR/MWh`) })
+        .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`${d.label}: ${d.smp} ZAR/MWh`) })
   .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
   .on('mouseleave', ()=> { tooltip.style('display','none') })
       // axis labels
       g.append('text').attr('x', W/2).attr('y', H+30).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Simulation Time')
-      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('MCP (ZAR/MWh)')
+      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('SMP (ZAR/MWh)')
     }
 
     // Draw Volume chart
@@ -1581,7 +1581,7 @@ export default function Player() {
       g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Volume (MWh)')
     }
     return ()=> { try { tooltip.remove() } catch(_){} }
-  }, [hourlyChartData, mcpRef.current, volRef.current, cfg.general.start_time])
+  }, [hourlyChartData, smpRef.current, volRef.current, cfg.general.start_time])
 
   const onChange = (i, val) => setHours((prev) => prev.map((v, idx) => (idx === i ? Number(val) : v)))
   const onDeviceChange = (did, i, val) => {
@@ -2052,7 +2052,7 @@ export default function Player() {
                   <Typography variant="h6">MCPs last round</Typography>
                   <Tooltip
                     title={
-                      'Market results from the previous round.\n\nMCP (Market Clearing Price): The price in ZAR/MWh where supply meets demand.\n\nVolume: Total energy traded in MWh during the round.'
+                      'Market results from the previous round.\n\nMCP (System Marginal Price): The price in ZAR/MWh where supply meets demand.\n\nVolume: Total energy traded in MWh during the round.'
                     }
                     placement="left"
                   >
@@ -2064,23 +2064,23 @@ export default function Player() {
               {live ? (
                         <Stack spacing={1.5}>
                   <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                    <Typography variant="body2" color="text.secondary">MCP (Round {live.round})</Typography>
-                    <Chip size="small" color="primary" label={`${live.mcp} ZAR/MWh`} />
+                    <Typography variant="body2" color="text.secondary">SMP (Round {live.round})</Typography>
+                    <Chip size="small" color="primary" label={`${live.smp} ZAR/MWh`} />
                   </Stack>
                   <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
                     <Typography variant="body2" color="text.secondary">Volume</Typography>
                     <Chip size="small" color="secondary" label={`${live.volume} MWh`} />
                   </Stack>
-                  {/* MCP History for bidding */}
+                  {/* SMP History for bidding */}
                   {biddingEnabled && series.length > 0 && (
                     <Box sx={{ mt: 1, pt: 1, borderTop: '1px solid #e0e0e0' }}>
                       <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.5 }}>
                         <Typography variant="caption" color="text.secondary">
-                          MCP History (last 5 rounds):
+                          SMP History (last 5 rounds):
                         </Typography>
                         <Tooltip 
                           arrow 
-                          title="Use past MCPs to inform your bid prices. Bid below expected MCP to ensure dispatch, but avoid bidding too low to maximize profit."
+                          title="Use past MCPs to inform your bid prices. Bid below expected SMP to ensure dispatch, but avoid bidding too low to maximize profit."
                           placement="right"
                         >
                           <InfoOutlined sx={{ fontSize: 14, color: 'text.secondary', cursor: 'help' }} />
@@ -2090,7 +2090,7 @@ export default function Player() {
                         {series.slice(-5).map(s => (
                           <Chip 
                             key={s.r}
-                            label={`R${s.r}: ${s.mcp}`}
+                            label={`R${s.r}: ${s.smp}`}
                             size="small"
                             variant="outlined"
                             sx={{ fontSize: '10px', height: 20 }}
@@ -2098,7 +2098,7 @@ export default function Player() {
                         ))}
                       </Stack>
                       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, fontStyle: 'italic' }}>
-                        Avg: {series.length > 0 ? Math.round(series.reduce((sum, s) => sum + s.mcp, 0) / series.length) : 0} ZAR/MWh
+                        Avg: {series.length > 0 ? Math.round(series.reduce((sum, s) => sum + s.smp, 0) / series.length) : 0} ZAR/MWh
                       </Typography>
                     </Box>
                   )}
@@ -2119,7 +2119,7 @@ export default function Player() {
                 <Typography variant="subtitle2">Market Structure</Typography>
                 <Tooltip 
                   arrow 
-                  title="Supply and demand curves show the market structure at the start of this round. The intersection point determines the Market Clearing Price (MCP)."
+                  title="Supply and demand curves show the market structure at the start of this round. The intersection point determines the System Marginal Price (SMP)."
                   placement="left"
                 >
                   <IconButton size="small" aria-label="Market structure info">
@@ -2131,12 +2131,12 @@ export default function Player() {
             </CardContent>
           </Card>
 
-          {/* MCP and Volume Charts - only show after round 1 */}
+          {/* SMP and Volume Charts - only show after round 1 */}
           {cfg.current_round > 1 && (
             <Card sx={{ mt: 2 }}>
               <CardContent>
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>MCP last round</Typography>
-                <svg ref={mcpRef} width="100%" height={160} style={{ border: '1px solid #eee' }} />
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>SMP last round</Typography>
+                <svg ref={smpRef} width="100%" height={160} style={{ border: '1px solid #eee' }} />
 
                 <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>Volume last round</Typography>
                 <svg ref={volRef} width="100%" height={160} style={{ border: '1px solid #eee' }} />
@@ -2258,7 +2258,7 @@ export default function Player() {
                         })() && (
                           <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
                             <Typography variant="caption" color="text.secondary" sx={{ mb: 2, display: 'block' }}>
-                              Set three different price levels and quantity curves (in MW). Lower prices dispatch first. All dispatched energy receives the Market Clearing Price (MCP). Enter power per hour - e.g., 600 MW for 6 hours means 600 in each hour.
+                              Set three different price levels and quantity curves (in MW). Lower prices dispatch first. All dispatched energy receives the System Marginal Price (SMP). Enter power per hour - e.g., 600 MW for 6 hours means 600 in each hour.
                             </Typography>
                             
                             {/* Price Inputs */}

@@ -293,7 +293,7 @@ export default function Evaluation(){
                     </TableCell>
                     <TableCell align="right">Total (<TermTooltip term="MWh">MWh</TermTooltip>)</TableCell>
                     <TableCell align="right">Total Revenue</TableCell>
-                    <TableCell align="right">Avg <TermTooltip term="MCP">MCP</TermTooltip></TableCell>
+                    <TableCell align="right">Avg <TermTooltip term="SMP">SMP</TermTooltip></TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>

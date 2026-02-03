@@ -51,7 +51,7 @@ class LeaderboardMarketBreakdown(Resource):
     This endpoint computes:
     - DA Volume: Total MWh from Round 1 (DA baseline) forecasts
     - ID Delta: Difference between final position and DA baseline
-    - Revenue attribution based on MCP
+    - Revenue attribution based on SMP
     """
     @jwt_required()
     def get(self, sid: int):
@@ -99,17 +99,17 @@ class LeaderboardMarketBreakdown(Resource):
             if f.is_da_baseline or f.round_num == 1:
                 da_baseline[pid] = parse_devices(f.data)
         
-        # Get average MCP from results
+        # Get average SMP from results
         avg_mcp = 0.0
         mcp_count = 0
         for r in results:
             if r.data:
-                # MCP can be in result data directly or in kpis
-                mcp = r.data.get('mcp', 0)
-                if mcp:
-                    avg_mcp += mcp
+                # SMP can be in result data directly or in kpis
+                smp = r.data.get('smp', 0)
+                if smp:
+                    avg_mcp += smp
                     mcp_count += 1
-        avg_mcp = avg_mcp / mcp_count if mcp_count > 0 else 450.0  # Default MCP
+        avg_mcp = avg_mcp / mcp_count if mcp_count > 0 else 450.0  # Default SMP
         
         # Compute market breakdown per player
         breakdown = []
@@ -140,7 +140,7 @@ class LeaderboardMarketBreakdown(Resource):
             # ID delta is the difference
             id_delta_mwh = final_volume_mwh - da_volume_mwh
             
-            # Revenue attribution (simplified: DA gets base volume * MCP, ID gets delta * MCP)
+            # Revenue attribution (simplified: DA gets base volume * SMP, ID gets delta * SMP)
             # In reality, this would be more complex with different prices
             da_revenue_zar = da_volume_mwh * avg_mcp
             id_revenue_zar = id_delta_mwh * avg_mcp

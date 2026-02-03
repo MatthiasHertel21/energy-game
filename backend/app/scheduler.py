@@ -321,7 +321,7 @@ def run_rounds(session_id: int, app=None):
                     
                     data = {
                         "kpis": kp,
-                        "mcp": res["mcp"],
+                        "smp": res["smp"],
                         "volume": res["volume"],
                         "hourly_results": hourly_results,
                         "challenge_result": challenge_result,  # NEW: Challenge evaluation
@@ -359,7 +359,7 @@ def run_rounds(session_id: int, app=None):
                 payload = {
                     "session_id": s.id,
                     "round": current,
-                    "mcp": res["mcp"],
+                    "smp": res["smp"],
                     "volume": res["volume"],
                     "kpis": res.get("round_kpis"),
                     "hourly_results": res.get("hourly_results", []),

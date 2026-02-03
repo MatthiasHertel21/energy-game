@@ -250,7 +250,7 @@ Acceptance Criteria (erfüllt):
 - Hauptablauf:
    1) Round Results: Profit "ZAR 1,234.56", Imbalance/Curtailment "1,234.56 MWh"
    2) Leaderboard: "Profit (ZAR)" Spalte, alle Werte formatiert
-   3) Live KPIs: MCP/Volume mit Separatoren
+   3) Live KPIs: SMP/Volume mit Separatoren
 
 Formatierungs-Standards:
 - Locale: en-ZA, Currency: ZAR, Thousands: `,`, Decimal: `.`

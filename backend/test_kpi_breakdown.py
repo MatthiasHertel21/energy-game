@@ -60,7 +60,7 @@ print("\nHourly Breakdown:")
 for hr in result1['hourly_results']:
     hour_of_day = hr['hour_idx'] % 24
     avail = engine.SOLAR_AVAILABILITY[hour_of_day]
-    print(f"  Hour {hr['hour_idx']:2d}: MCP={hr['mcp']:7.1f} ZAR/MWh, Vol={hr['volume']:7.1f} MWh, Solar Avail={avail:.2f}")
+    print(f"  Hour {hr['hour_idx']:2d}: SMP={hr['smp']:7.1f} ZAR/MWh, Vol={hr['volume']:7.1f} MWh, Solar Avail={avail:.2f}")
 
 kpis = result1['round_kpis'][1]
 print(f"\nRound KPIs:")
@@ -68,14 +68,14 @@ print(f"  Planned:     {kpis['planned_mwh']:8.1f} MWh  (6 hours × 100 MW)")
 print(f"  Dispatched:  {kpis['dispatched_mwh']:8.1f} MWh  (accepted by market)")
 print(f"  Actual:      {kpis['actual_mwh']:8.1f} MWh  (delivered with availability constraint)")
 print(f"\nFinancial Breakdown:")
-print(f"  Revenue:            {kpis['revenue_zar']:12,.0f} ZAR  (dispatched × MCP)")
+print(f"  Revenue:            {kpis['revenue_zar']:12,.0f} ZAR  (dispatched × SMP)")
 print(f"  Imbalance Cost:     {kpis['imbalance_cost_zar']:12,.0f} ZAR  (dispatched - actual) × imbalance_price")
-print(f"  Curtailment Cost:   {kpis['curtailment_cost_zar']:12,.0f} ZAR  (planned - dispatched) × MCP")
+print(f"  Curtailment Cost:   {kpis['curtailment_cost_zar']:12,.0f} ZAR  (planned - dispatched) × SMP")
 print(f"  Congestion Revenue: {kpis['congestion_revenue_zar']:12,.0f} ZAR")
 print(f"  Profit:             {kpis['profit_zar']:12,.0f} ZAR  (revenue - costs)")
 
 print(f"\nManual Verification:")
-avg_mcp = result1['mcp']
+avg_mcp = result1['smp']
 dispatched = kpis['dispatched_mwh']
 actual = kpis['actual_mwh']
 imbalance = dispatched - actual
@@ -98,7 +98,7 @@ print("\nHourly Breakdown:")
 for hr in result2['hourly_results']:
     hour_of_day = hr['hour_idx'] % 24
     avail = engine.SOLAR_AVAILABILITY[hour_of_day]
-    print(f"  Hour {hr['hour_idx']:2d}: MCP={hr['mcp']:7.1f} ZAR/MWh, Vol={hr['volume']:7.1f} MWh, Solar Avail={avail:.2f}")
+    print(f"  Hour {hr['hour_idx']:2d}: SMP={hr['smp']:7.1f} ZAR/MWh, Vol={hr['volume']:7.1f} MWh, Solar Avail={avail:.2f}")
 
 kpis2 = result2['round_kpis'][1]
 print(f"\nRound KPIs:")

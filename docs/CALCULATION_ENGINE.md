@@ -89,14 +89,14 @@ From the scenario's `config` object:
 
 1. **For each hour** in the round (determined by `round_span_hours`):
    - Generate or collect supply/demand curves for that specific hour
-   - Execute market clearing algorithm → produces hourly MCP and volume
+   - Execute market clearing algorithm → produces hourly SMP and volume
    - Track dispatch quantities per player per hour
    - Calculate hourly costs and revenues
 
 2. **Aggregate results** across all hours:
    - Sum planned, dispatched, and actual MWh across hours
    - Sum revenues, costs, and profits across hours
-   - Calculate average MCP across all hours
+   - Calculate average SMP across all hours
    - Store hourly results for detailed analysis
 
 #### Example: Round with 4 Hours
@@ -120,12 +120,12 @@ for hour_offset in range(4):
     # Store hourly result
     hourly_results.append({
         'hour_idx': hour_idx,
-        'mcp': mcp_hour,
+        'smp': mcp_hour,
         'volume': volume_hour
     })
 
 # Final round results
-avg_mcp = mean([h['mcp'] for h in hourly_results])
+avg_mcp = mean([h['smp'] for h in hourly_results])
 total_volume = sum([h['volume'] for h in hourly_results])
 ```
 
@@ -305,7 +305,7 @@ dispatched_bids = []
 
 # During market clearing loop, track accepted bids
 for bid in supply_bids:
-    if bid['price'] <= mcp:
+    if bid['price'] <= smp:
         dispatched_quantity = min(bid['quantity'], remaining_demand)
         dispatched_bids.append({
             'player_id': bid['player_id'],
@@ -314,7 +314,7 @@ for bid in supply_bids:
             'quantity_offered': bid['quantity'],
             'quantity_dispatched': dispatched_quantity,
             'price_bid': bid['price'],
-            'mcp': mcp
+            'smp': smp
         })
         remaining_demand -= dispatched_quantity
 ```
@@ -345,7 +345,7 @@ Consumers (devices with `type` containing "load") submit bids representing their
 |--------|-------------------|-------------------|
 | **Bid Meaning** | Minimum price to sell | Maximum price to buy |
 | **Curve** | Added to supply curve | Added to demand curve |
-| **Dispatch Rule** | Dispatched if `bid_price <= MCP` | Dispatched if `bid_price >= MCP` |
+| **Dispatch Rule** | Dispatched if `bid_price <= SMP` | Dispatched if `bid_price >= SMP` |
 | **Revenue** | Positive (earn money) | Negative (pay money) |
 | **Default Prices** | Low (e.g., 50-400 ZAR/MWh) | High (e.g., 800-1200 ZAR/MWh) |
 
@@ -355,17 +355,17 @@ Consumers (devices with `type` containing "load") submit bids representing their
 
 #### Consumer Dispatch Logic
 
-After MCP is determined:
-- Consumer bids with `price >= MCP` → **100% dispatched** (willing to pay)
-- Consumer bids with `price < MCP` → **0% dispatched** (not willing to pay)
+After SMP is determined:
+- Consumer bids with `price >= SMP` → **100% dispatched** (willing to pay)
+- Consumer bids with `price < SMP` → **0% dispatched** (not willing to pay)
 
-**No merit order:** All consumers willing to pay MCP get fully satisfied, independent of supply availability.
+**No merit order:** All consumers willing to pay SMP get fully satisfied, independent of supply availability.
 
 ---
 
 ### Step 4: Market Clearing Algorithm
 
-The engine finds the Market Clearing Price (MCP) where supply meets demand.
+The engine finds the System Marginal Price (SMP) where supply meets demand.
 
 **Algorithm:**
 
@@ -378,7 +378,7 @@ def clear_market(supply, demand, price_floor=-500, price_cap=5000):
     i = j = 0
     cumulative_supply = 0.0
     cumulative_demand = 0.0
-    mcp = 0.0
+    smp = 0.0
     
     # Iterate through both curves simultaneously
     while i < len(s) and j < len(d):
@@ -392,7 +392,7 @@ def clear_market(supply, demand, price_floor=-500, price_cap=5000):
             cumulative_demand += traded_volume
             
             # Market clearing price is the supply price (or demand price if higher)
-            mcp = max(price_supply, min(price_demand, price_supply))
+            smp = max(price_supply, min(price_demand, price_supply))
             
             # Update remaining volumes
             volume_supply -= traded_volume
@@ -413,7 +413,7 @@ def clear_market(supply, demand, price_floor=-500, price_cap=5000):
             i += 1
     
     # Apply price bounds
-    price = max(price_floor, min(price_cap, mcp))
+    price = max(price_floor, min(price_cap, smp))
     volume = round(min(cumulative_supply, cumulative_demand), 3)
     
     return round(price, 1), volume
@@ -423,8 +423,8 @@ def clear_market(supply, demand, price_floor=-500, price_cap=5000):
 
 ```python
 # Given curves above
-mcp, volume = clear_market(supply_curve, demand_curve)
-# Result: mcp = 1000.0 ZAR/MWh, volume = 12500 MWh
+smp, volume = clear_market(supply_curve, demand_curve)
+# Result: smp = 1000.0 ZAR/MWh, volume = 12500 MWh
 ```
 
 ---
@@ -517,7 +517,7 @@ def apply_events(price, volume, events):
 **Example:**
 
 ```python
-# Before events: mcp = 1000 ZAR/MWh, volume = 12500 MWh
+# Before events: smp = 1000 ZAR/MWh, volume = 12500 MWh
 # Events: Heat Wave (multiplier=1.5), Outage (additive=-2000)
 
 final_price = 1000 * 1.5 = 1500 ZAR/MWh
@@ -684,7 +684,7 @@ Revenue is calculated from dispatched energy at the market clearing price.
 ### Formula
 
 ```
-Revenue (ZAR) = Dispatched_MWh × MCP
+Revenue (ZAR) = Dispatched_MWh × SMP
 ```
 
 **Rounding:** Rounded to nearest ZAR (no decimals).
@@ -693,7 +693,7 @@ Revenue (ZAR) = Dispatched_MWh × MCP
 
 ```python
 dispatched_mwh = 4848
-mcp = 1500  # ZAR/MWh
+smp = 1500  # ZAR/MWh
 
 revenue = 4848 * 1500 = 7,272,000 ZAR
 ```
@@ -849,7 +849,7 @@ congestion_ratio = 340 / 4848 = 0.0701
 
 ```python
 total_curtailment = market_curtailment + grid_curtailment
-curtailment_cost = total_curtailment * mcp
+curtailment_cost = total_curtailment * smp
 ```
 
 **Example:**
@@ -869,14 +869,14 @@ curtailment_cost = 1492 * 1500 = 2,238,000 ZAR
 Players may earn revenue from congestion when grid is constrained.
 
 ```python
-congestion_revenue = dispatched_mwh * mcp * congestion_ratio
+congestion_revenue = dispatched_mwh * smp * congestion_ratio
 ```
 
 **Example:**
 
 ```python
 dispatched = 4848 MWh
-mcp = 1500 ZAR/MWh
+smp = 1500 ZAR/MWh
 congestion_ratio = 0.0701
 
 congestion_revenue = 4848 * 1500 * 0.0701 = 509,821 ZAR
@@ -922,7 +922,7 @@ Profit = Revenue - Imbalance_Cost - Curtailment_Cost + Congestion_Revenue
       "hourly_breakdown": [
         {
           "hour": 12,
-          "mcp": 1063.2,
+          "smp": 1063.2,
           "planned_mw": 100.0,
           "dispatched_mw": 100.0,
           "actual_mw": 92.0,
@@ -944,15 +944,15 @@ Profit = Revenue - Imbalance_Cost - Curtailment_Cost + Congestion_Revenue
 | Field | Unit | Description |
 |-------|------|-------------|
 | `hour` | 0-23 | Hour of day |
-| `mcp` | ZAR/MWh | Market clearing price for this hour |
+| `smp` | ZAR/MWh | Market clearing price for this hour |
 | `planned_mw` | MW | Sum of device forecasts |
 | `dispatched_mw` | MW | Market-accepted dispatch |
 | `actual_mw` | MW | Delivered (with availability constraints) |
-| `revenue_zar` | ZAR | `dispatched_mw × mcp` |
+| `revenue_zar` | ZAR | `dispatched_mw × smp` |
 | `imbalance_mwh` | MWh | `dispatched_mw - actual_mw` (if > 0) |
 | `imbalance_cost_zar` | ZAR | `imbalance_mwh × 800` (down_price) |
 | `curtailment_mwh` | MWh | `planned_mw - dispatched_mw` (if > 0) |
-| `curtailment_cost_zar` | ZAR | `curtailment_mwh × mcp` |
+| `curtailment_cost_zar` | ZAR | `curtailment_mwh × smp` |
 
 ### Verification
 
@@ -967,7 +967,7 @@ assert sum(h['imbalance_cost_zar'] for h in hourly_breakdown) == round_kpis['imb
 
 1. **Debugging:** Verify calculations per hour
 2. **Strategy:** Identify which hours are profitable/costly
-3. **Education:** Understand how MCP variation affects revenue
+3. **Education:** Understand how SMP variation affects revenue
 4. **Analytics:** Export hourly data for external analysis
 
 **See:** [Round Results Transparency Guide](./ROUND_RESULTS_TRANSPARENCY.md) for detailed examples
@@ -1033,7 +1033,7 @@ mcp_base, volume_base = clear_market(supply, demand)
 # Round 3: Heat Wave is active (round 3-4)
 events = [{"multiplier": 1.5}]
 
-mcp = 1000 * 1.5 = 1500 ZAR/MWh
+smp = 1000 * 1.5 = 1500 ZAR/MWh
 volume = 12500 MWh
 ```
 
@@ -1156,10 +1156,10 @@ def validate_forecast_constraints(device, forecast_mw):
 
 ## Mathematical Formulas Summary
 
-### Market Clearing Price (MCP)
+### System Marginal Price (SMP)
 
 $$
-\text{MCP} = \max(\text{price\_floor}, \min(\text{price\_cap}, \text{intersection\_price}))
+\text{SMP} = \max(\text{price\_floor}, \min(\text{price\_cap}, \text{intersection\_price}))
 $$
 
 Where intersection_price is found by iterating supply/demand curves.
@@ -1189,7 +1189,7 @@ $$
 ### Revenue
 
 $$
-\text{Revenue} = \text{dispatched} \times \text{MCP}
+\text{Revenue} = \text{dispatched} \times \text{SMP}
 $$
 
 ### Imbalance Cost
@@ -1208,13 +1208,13 @@ $$
 ### Curtailment Cost
 
 $$
-\text{Curtailment\_Cost} = (\text{market\_curtailment} + \text{grid\_curtailment}) \times \text{MCP}
+\text{Curtailment\_Cost} = (\text{market\_curtailment} + \text{grid\_curtailment}) \times \text{SMP}
 $$
 
 ### Congestion Revenue
 
 $$
-\text{Congestion\_Revenue} = \text{dispatched} \times \text{MCP} \times \text{congestion\_ratio}
+\text{Congestion\_Revenue} = \text{dispatched} \times \text{SMP} \times \text{congestion\_ratio}
 $$
 
 $$
@@ -1275,8 +1275,8 @@ When reviewing calculations, verify:
 
 - ✅ Supply/demand curves are monotonic (supply ascending, demand descending)
 - ✅ Consumer devices excluded from supply curve (only in demand curve)
-- ✅ Generator bids dispatched if price <= MCP, consumer bids if price >= MCP
-- ✅ MCP is within [price_floor, price_cap]
+- ✅ Generator bids dispatched if price <= SMP, consumer bids if price >= SMP
+- ✅ SMP is within [price_floor, price_cap]
 - ✅ Dispatch factor ≤ 1.0
 - ✅ Actual generation/consumption ≥ 0
 - ✅ Curtailment ≥ 0 (generators only)
@@ -1373,7 +1373,7 @@ The `id_price_spread_percent` parameter adds realism by differentiating DA and I
 | `+8` | ID 8% more expensive | Penalty for late adjustments |
 | `-5` | ID 5% cheaper | Incentive for ID trading |
 
-Example with 8% spread and MCP = 450 ZAR/MWh:
+Example with 8% spread and SMP = 450 ZAR/MWh:
 - DA Price: 450 ZAR/MWh
 - ID Price: 486 ZAR/MWh (+8%)
 

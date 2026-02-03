@@ -49,7 +49,7 @@ const defaultConfig = {
 
 console.info('[KSE] Editor version', KSE_EDITOR_VERSION)
 
-function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMcp=true, svgRef }){
+function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSmp=true, svgRef }){
   // Step supply/demand preview with axes and legend
   const ref = svgRef ?? useRef(null)
   useEffect(() => {
@@ -175,12 +175,12 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMc
     if (showSupply) g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2)
     if (showDemand) g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', '#c62828').attr('stroke-width', 2)
 
-    // Compute MCP as intersection of supply and demand curves
-    let mcpVal = Number(preview?.mcp)
-    let mcpQty = null
+    // Compute SMP as intersection of supply and demand curves
+    let smpVal = Number(preview?.smp)
+    let smpQty = null
     
     // Find intersection point by scanning through cumulative curves
-    if (showMcp && sCum.length > 0 && dCum.length > 0) {
+    if (showSmp && sCum.length > 0 && dCum.length > 0) {
       // Convert to continuous functions for intersection search
       let sIdx = 0, dIdx = 0
       let qCur = 0
@@ -199,31 +199,31 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMc
         
         // Intersection occurs when supply crosses above demand
         if (sPrice >= dPrice) {
-          mcpVal = (sPrice + dPrice) / 2  // Average of the two prices at intersection
-          mcpQty = q
+          smpVal = (sPrice + dPrice) / 2  // Average of the two prices at intersection
+          smpQty = q
           foundIntersection = true
         }
       }
     }
     
-    if (showMcp && !Number.isNaN(mcpVal)) {
-      const mcpY = y(mcpVal)
-      const mcpX = mcpQty !== null ? x(mcpQty) : W
+    if (showSmp && !Number.isNaN(smpVal)) {
+      const smpY = y(smpVal)
+      const smpX = smpQty !== null ? x(smpQty) : W
       
-      // Draw horizontal MCP line
+      // Draw horizontal SMP line
       g.append('line')
         .attr('x1', 0)
         .attr('x2', W)
-        .attr('y1', mcpY)
-        .attr('y2', mcpY)
+        .attr('y1', smpY)
+        .attr('y2', smpY)
         .attr('stroke', '#1976d2')
         .attr('stroke-dasharray', '4 4')
       
       // Draw vertical line at intersection point if found
-      if (mcpQty !== null) {
+      if (smpQty !== null) {
         g.append('line')
-          .attr('x1', mcpX)
-          .attr('x2', mcpX)
+          .attr('x1', smpX)
+          .attr('x2', smpX)
           .attr('y1', 0)
           .attr('y2', H)
           .attr('stroke', '#1976d2')
@@ -232,19 +232,19 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMc
         
         // Highlight intersection point
         g.append('circle')
-          .attr('cx', mcpX)
-          .attr('cy', mcpY)
+          .attr('cx', smpX)
+          .attr('cy', smpY)
           .attr('r', 4)
           .attr('fill', '#1976d2')
       }
       
       g.append('text')
         .attr('x', W - 4)
-        .attr('y', mcpY - 4)
+        .attr('y', smpY - 4)
         .attr('text-anchor', 'end')
         .attr('fill', '#1976d2')
         .attr('font-size', 10)
-        .text(`MCP ${mcpVal.toFixed(1)}`)
+        .text(`SMP ${smpVal.toFixed(1)}`)
     }
 
     // Legend
@@ -253,8 +253,8 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showMc
     legend.append('text').attr('x', 14).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('Supply')
     legend.append('rect').attr('x', 70).attr('y', 0).attr('width', 10).attr('height', 10).attr('fill', showDemand ? '#c62828' : '#ccc')
     legend.append('text').attr('x', 84).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('Demand')
-    legend.append('line').attr('x1', 140).attr('x2', 150).attr('y1', 5).attr('y2', 5).attr('stroke', showMcp ? '#1976d2' : '#ccc').attr('stroke-dasharray', '4 4')
-    legend.append('text').attr('x', 156).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('MCP')
+    legend.append('line').attr('x1', 140).attr('x2', 150).attr('y1', 5).attr('y2', 5).attr('stroke', showSmp ? '#1976d2' : '#ccc').attr('stroke-dasharray', '4 4')
+    legend.append('text').attr('x', 156).attr('y', 9).attr('font-size', 10).attr('fill', '#333').text('SMP')
   }, [cfg, preview, groups])
 
   return <svg ref={ref} width={360} height={180} style={{ border: '1px solid #ddd', cursor:'pointer' }} onClick={()=> ref.current && exportPNG(ref.current, 'kse_step.png')} />
@@ -278,7 +278,7 @@ export default function KSE(){
   const [showHourlyGrid, setShowHourlyGrid] = useState(false)
   // Compute hours from config instead of state
   const hours = Number(cfg?.general?.forecast_horizon_hours) || 24
-  const mcpRef = useRef(null)
+  const smpRef = useRef(null)
   const volRef = useRef(null)
   // generator mix now stored in cfg.market.generator_mix
   const [zoneSplit, setZoneSplit] = useState(50)
@@ -315,7 +315,7 @@ export default function KSE(){
   // Step chart toggles + ref
   const [showSupply, setShowSupply] = useState(true)
   const [showDemand, setShowDemand] = useState(true)
-  const [showMcp, setShowMcp] = useState(true)
+  const [showSmp, setShowSmp] = useState(true)
   const stepRef = useRef(null)
   const descInputRef = useRef(null)
   // Refs for validation scroll
@@ -603,25 +603,25 @@ export default function KSE(){
       .style('font-size','12px')
       .style('display','none')
       .style('z-index','9999')
-    // MCP
-    if(mcpRef.current && data?.mcp){
-      const svg = d3.select(mcpRef.current); svg.selectAll('*').remove()
+    // SMP
+    if(smpRef.current && data?.smp){
+      const svg = d3.select(smpRef.current); svg.selectAll('*').remove()
       const M = {top:10,right:10,bottom:24,left:40}, W=360-M.left-M.right, H=120-M.top-M.bottom
   const g = svg.attr('width', 360).attr('height', 120).append('g').attr('transform',`translate(${M.left},${M.top})`)
       const x = d3.scaleLinear().domain([1, h||1]).range([0,W])
-      const y = d3.scaleLinear().domain([d3.min(data.mcp)||0, d3.max(data.mcp)||1]).nice().range([H,0])
+      const y = d3.scaleLinear().domain([d3.min(data.smp)||0, d3.max(data.smp)||1]).nice().range([H,0])
       const line = d3.line().x((_,i)=> x(i+1)).y((d)=> y(d))
   // gridlines
   if (showHourlyGrid) {
     g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
   }
-      g.append('path').datum(data.mcp).attr('fill','none').attr('stroke','#2e7d32').attr('stroke-width',2).attr('d', line)
+      g.append('path').datum(data.smp).attr('fill','none').attr('stroke','#2e7d32').attr('stroke-width',2).attr('d', line)
   g.append('g').attr('transform',`translate(0,${H})`).call(d3.axisBottom(x).ticks(Math.min(h,12)))
   g.append('g').call(d3.axisLeft(y).ticks(4))
       // points + tooltips
       if (showHourlyPoints) {
         g.selectAll('circle.point')
-          .data((data.mcp||[]).map((v,i)=> ({ x:i+1, y:v })))
+          .data((data.smp||[]).map((v,i)=> ({ x:i+1, y:v })))
           .enter()
           .append('circle')
           .attr('class','point')
@@ -635,7 +635,7 @@ export default function KSE(){
       }
   // axis labels
   g.append('text').attr('x', W/2).attr('y', H+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Hour')
-  g.append('text').attr('transform','rotate(-90)').attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('MCP (ZAR/MWh)')
+  g.append('text').attr('transform','rotate(-90)').attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('SMP (ZAR/MWh)')
     }
     // Volume
     if(volRef.current && data?.volume){
@@ -1238,17 +1238,17 @@ export default function KSE(){
               </Stack>
               {/* Right: Sticky Preview */}
               <Box sx={{ width: 380 }}>
-                {/* Auto-updating MCP/Volume preview above chart */}
-                {preview && <Typography sx={{ mb:1 }}>MCP: {preview.mcp} | Volume: {preview.volume}</Typography>}
-                <Curves cfg={cfg} preview={preview} groups={cfg.market?.generator_mix} showSupply={showSupply} showDemand={showDemand} showMcp={showMcp} svgRef={stepRef} />
+                {/* Auto-updating SMP/Volume preview above chart */}
+                {preview && <Typography sx={{ mb:1 }}>SMP: {preview.smp} | Volume: {preview.volume}</Typography>}
+                <Curves cfg={cfg} preview={preview} groups={cfg.market?.generator_mix} showSupply={showSupply} showDemand={showDemand} showSmp={showSmp} svgRef={stepRef} />
                 <Stack spacing={1} sx={{ mt:1 }}>
                   <Stack direction="row" spacing={1} alignItems="center">
                     <FormControlLabel control={<Switch size="small" checked={showSupply} onChange={(_,v)=> setShowSupply(v)} />} label="Supply" />
                     <FormControlLabel control={<Switch size="small" checked={showDemand} onChange={(_,v)=> setShowDemand(v)} />} label="Demand" />
-                    <FormControlLabel control={<Switch size="small" checked={showMcp} onChange={(_,v)=> setShowMcp(v)} />} label="MCP" />
+                    <FormControlLabel control={<Switch size="small" checked={showSmp} onChange={(_,v)=> setShowSmp(v)} />} label="SMP" />
                   </Stack>
-                  <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly MCP</Typography>
-                  <svg ref={mcpRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> mcpRef.current && exportPNG(mcpRef.current, 'kse_hourly_mcp.png')} />
+                  <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly SMP</Typography>
+                  <svg ref={smpRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> smpRef.current && exportPNG(smpRef.current, 'kse_hourly_mcp.png')} />
                   <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly Volume</Typography>
                   <svg ref={volRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> volRef.current && exportPNG(volRef.current, 'kse_hourly_volume.png')} />
                   {/* Points/Grid switches moved below hourly charts */}

@@ -29,9 +29,9 @@ export default function Trainer(){
   const typeDistRef = useRef(null)
   const capRemainRef = useRef(null)
   const devFreqRef = useRef(null)
-  const [series, setSeries] = useState([]) // { r, mcp, volume }
+  const [series, setSeries] = useState([]) // { r, smp, volume }
   const [agg, setAgg] = useState({}) // { player_id: { profit, revenue, imbalance, curtailment, rounds } }
-  const mcpRef = useRef(null)
+  const smpRef = useRef(null)
   const volRef = useRef(null)
   const topRef = useRef(null)
   const [participants, setParticipants] = useState({ participants: [], summary: { total: 0, joined: 0, pending: 0, by_type: {} } })
@@ -67,7 +67,7 @@ export default function Trainer(){
     s.on('tick', p=> setTick(p?.remaining))
     s.on('round_results', p=> {
       loadStatus()
-      if(p?.round && p?.mcp!=null){ setSeries(prev=> [...prev, { r: p.round, mcp: p.mcp, volume: p.volume }]) }
+      if(p?.round && p?.smp!=null){ setSeries(prev=> [...prev, { r: p.round, smp: p.smp, volume: p.volume }]) }
       if(p?.kpis){
         setAgg(prev => {
           const next = { ...prev }

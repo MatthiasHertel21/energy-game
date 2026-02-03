@@ -91,7 +91,7 @@ MVP-kritische UX-Verbesserungen für nahtlosen Student-Flow: Home, Auto-Session,
 - **Improved Layout**: 
   - Grid: Left (Timer + Session Info + Live KPIs), Right (Forecast Editor + Charts)
   - Session Info Card: Status, Round, Forecast Horizon, Locked until
-  - Live KPIs Card: MCP, Volume (Placeholder wenn keine Daten)
+  - Live KPIs Card: SMP, Volume (Placeholder wenn keine Daten)
 - **Submit Logic**: 
   - Disabled wenn `timeRemaining === 0` oder `!isValid` oder `status !== 'active'`
   - Success/Error Toasts via useSnackbar statt lokaler Snackbar
@@ -370,7 +370,7 @@ Tests
   - `clear_market(supply, demand, floor, cap)` – Uniform‑Price Clearing
   - `generate_curves_from_config(cfg)`
   - `apply_events(price, volume, events)` (systemic multiplier, player additive)
-  - `preview_from_config(cfg)` → `{ mcp, volume }`
+  - `preview_from_config(cfg)` → `{ smp, volume }`
   - Zusatz: `compute_idm_delta`, `settle_balancing`, `apply_grid` (vereinfachte Curtailment‑Abschätzung), `storage_update`
 - Tests: `backend/tests/test_engine.py`
 
@@ -417,7 +417,7 @@ Tests
   - Frontend: KSE Export/Import UI (Textarea Import, Export‑Button)
 
 - Replay Mode
-  - API: `GET /api/sessions/:id/replay` (Rundenliste mit MCP/Volume & pro‑Player KPIs)
+  - API: `GET /api/sessions/:id/replay` (Rundenliste mit SMP/Volume & pro‑Player KPIs)
   - Frontend: `src/pages/Replay.jsx` (Slider über Runden, KPI‑Tabelle)
 
 - Comparison Dashboard
@@ -434,7 +434,7 @@ Tests
 ## Charts (D3)
 - Comparison Dashboard: Bar‑Chart (wählbares Metric: Profit/Revenue/Imbalance/Curtailment) in `Comparison.jsx`
 - Export: Dateiname editierbar, Default inkl. Session/Metric; Metric-Auswahl persistiert (localStorage)
-- Replay: MCP‑ und Volume‑Line‑Charts in `Replay.jsx`
+- Replay: SMP‑ und Volume‑Line‑Charts in `Replay.jsx`
 - Export: Dateinamen editierbar, Default inkl. Session‑ID
 - Player Round‑Editor: `src/pages/Player.jsx`
   - 6h Forecast‑Eingabe, Submit
@@ -494,7 +494,7 @@ Tests
 
 ### 2025-11-11
 - Player UX
-  - Countdown timer via socket `tick` events; warning ≤30s. Submit disabled until valid and session running. Snackbar feedback for save/submit. Live MCP/Volume kept.
+  - Countdown timer via socket `tick` events; warning ≤30s. Submit disabled until valid and session running. Snackbar feedback for save/submit. Live SMP/Volume kept.
   - Backend: `/api/sessions/:id` now returns `current_round`; scheduler emits `round_start/tick/round_end` to player namespace `/game/{sessionId}`.
 - Global UI
   - SnackbarProvider added; global API error toasts; 404 NotFound route.

@@ -7,7 +7,7 @@ Delivered
 - KSE: Toolbar + Import/Export Modal (ScenarioIODialog) – Save/Export und Import mit Schema-Version
 - KSE: Description Modal (Markdown + Live-Preview via react-markdown)
 - KSE: Edit Matrix als einheitlicher Toolbar-Trigger (Fullscreen AtcEditor)
-- KSE: Zusammengeführte Market & Preview Ansicht (zweispaltig; links Parameter, rechts Sticky-Preview mit MCP/Volume Charts)
+- KSE: Zusammengeführte Market & Preview Ansicht (zweispaltig; links Parameter, rechts Sticky-Preview mit SMP/Volume Charts)
 - Engine: Seed-Variabilität + Hourly Preview (Diurnal 24, Seasonal 12), Preview-Seed aus config.environment.seed
 - Campaign-Seed: Backend-Integration
   - models.Campaign: neues optionales Feld `seed`

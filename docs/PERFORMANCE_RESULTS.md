@@ -26,7 +26,7 @@
 
 ### Endpoints Tested
 1. **GET /api/health** - Health check (30% traffic weight)
-2. **POST /api/engine/preview** - KSE MCP calculation (20% weight)
+2. **POST /api/engine/preview** - KSE SMP calculation (20% weight)
 3. **POST /api/engine/preview/hourly** - 24h simulation (10% weight)
 4. **GET /api/catalog/campaigns** - Catalog browsing (10% weight)
 5. **GET /api/player/progress** - Player state retrieval (10% weight)

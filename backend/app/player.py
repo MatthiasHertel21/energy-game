@@ -882,7 +882,7 @@ class PlayerResults(Resource):
     def get(self, session_id: int):
         """
         Get all round results for the current player in this session, including hourly_results.
-        Returns MCP, volume, and hourly data for each completed round.
+        Returns SMP, volume, and hourly data for each completed round.
         """
         from .models import Result
         player_id = int(get_jwt_identity())
@@ -899,7 +899,7 @@ class PlayerResults(Resource):
             if result.data:
                 rounds_data.append({
                     "round": result.round_num,
-                    "mcp": result.data.get("mcp", 0),
+                    "smp": result.data.get("smp", 0),
                     "volume": result.data.get("volume", 0),
                 })
                 

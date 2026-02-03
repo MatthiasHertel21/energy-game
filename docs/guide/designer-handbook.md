@@ -201,7 +201,7 @@ The objectives field supports Markdown:
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| **Base Price** | Base MCP (ZAR/MWh) | 1000 |
+| **Base Price** | Base SMP (ZAR/MWh) | 1000 |
 | **Base Volume** | Base volume (MWh) | 20000 |
 | **Price Floor** | Minimum price (ZAR/MWh) | -500 |
 | **Price Cap** | Maximum price (ZAR/MWh) | 5000 |
@@ -211,7 +211,7 @@ The objectives field supports Markdown:
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| **Uniform Price** | All receive MCP | ✓ |
+| **Uniform Price** | All receive SMP | ✓ |
 | **Pro-Rata Ties** | Proportional at price ties | ✓ |
 | **Enable Player Bidding** | Players bid prices | ✗ |
 
@@ -219,8 +219,8 @@ The objectives field supports Markdown:
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| **Balancing Up Price** | Price for under-delivery | 1.5 × MCP |
-| **Balancing Down Price** | Price for over-delivery | 0.5 × MCP |
+| **Balancing Up Price** | Price for under-delivery | 1.5 × SMP |
+| **Balancing Down Price** | Price for over-delivery | 0.5 × SMP |
 
 ### 5.5 DA/ID Price Differentiation (NEW Sprint 24)
 

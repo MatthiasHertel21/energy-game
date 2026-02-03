@@ -169,12 +169,12 @@ Sprint 20 delivered Cypress tests but left Performance Testing and DevOps stabil
 - **Estimate**: 0.25 days
 
 ##### Issue #11 – Preview-Buttons ausrichten & Icons
-- **Action**: Right-align "Preview MCP" and "Hourly Preview"; IconButtons with tooltips
+- **Action**: Right-align "Preview SMP" and "Hourly Preview"; IconButtons with tooltips
 - **Files**: `frontend/src/pages/KSE.jsx` (Market&Preview tab)
 - **Estimate**: 0.25 days
 
 ##### Issue #12 – Chart-Zoom als Modal
-- **Action**: Click chart → modal with large chart + tabular data (MCP/Volume/Steps)
+- **Action**: Click chart → modal with large chart + tabular data (SMP/Volume/Steps)
 - **Files**: `frontend/src/pages/KSE.jsx` (Market&Preview tab)
 - **Acceptance**: Modal opens/closes, A11y (ESC, focus trap)
 - **Estimate**: 0.5 days
@@ -403,7 +403,7 @@ Sprint 20 delivered Cypress tests but left Performance Testing and DevOps stabil
   - #8 Participant split controls
   - #10 Narrow number inputs + helper text cleanup
   - #11 Align preview buttons + icons
-  - #12 Chart zoom modal (MCP/Volume/Steps)
+  - #12 Chart zoom modal (SMP/Volume/Steps)
   - #6 Apply Profiles info dialog
 - Multiplayer smoke tests (shared_market) + MULTIPLAYER_STATUS.md
 - Documentation: README, DEPLOYMENT, QA_CHECKS final polish

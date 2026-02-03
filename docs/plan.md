@@ -70,7 +70,7 @@ Testbare Featureliste (am Sprintende für dich)
 - KSE-Live-Preview: Kurven-Update bei Parametern
 - Trainer: Session starten/pausieren/beenden, Broadcast senden
 - Player: Forecast erfassen und submitten
-- Engine: Sichtbare MCP/Volume-Ergebnisse im Test-Szenario (isolated)
+- Engine: Sichtbare SMP/Volume-Ergebnisse im Test-Szenario (isolated)
 
 Akzeptanzkriterien
 - KSE-Validierung blockt fehlerhafte Konfigurationen verlässlich
@@ -183,8 +183,8 @@ Kommunikation
   - JSON Export/Import (UI + API)
   - Environment Generator (agent-basiert, Gruppen-Shares, Zonensplit)
   - Event-Editor erweitert (Trigger, duration_rounds, target/target_id)
-  - Live-Preview (D3): MCP/Volume über Konfiguration
-  - Hourly Preview: MCP/Volume je Stunde (POST /api/engine/preview/hourly)
+  - Live-Preview (D3): SMP/Volume über Konfiguration
+  - Hourly Preview: SMP/Volume je Stunde (POST /api/engine/preview/hourly)
   - Reference Runs: Upload/Download pro Scenario (API)
   
 - Engine (Simulation)
@@ -204,15 +204,15 @@ Kommunikation
   - Broadcast: POST /api/sessions/:id/broadcast
   - Force Round End: POST /api/sessions/:id/force-round-end
   - Socket.IO Events (/trainer): session_started|paused|resumed|ended, round_start, round_end, tick, message, player_submit
-  - Live-Charts: MCP-Linie (grün), Volume-Linie (blau), Top-Profit-Balken (Top-8), Imbalance-Top-8 (orange), Curtailment-Top-8 (rot)
+  - Live-Charts: SMP-Linie (grün), Volume-Linie (blau), Top-Profit-Balken (Top-8), Imbalance-Top-8 (orange), Curtailment-Top-8 (rot)
   - Export (SVG/PNG) für alle Charts + Reset Charts Button
   
 - Player
   - Full-Forecast: POST/GET /api/player/forecast/full (gesamter forecast_horizon_hours editierbar, keine Rundenbegrenzung)
   - DA/IDM-Freeze: Eingabefelder bis freeze_hours gesperrt
   - Round-Submit: POST /api/player/forecast
-  - Live-MCP/Vol Anzeige aus Socket /game/{sessionId}
-  - Live-Charts: MCP/Volume (D3)
+  - Live-SMP/Vol Anzeige aus Socket /game/{sessionId}
+  - Live-Charts: SMP/Volume (D3)
   
 - Student-Flow
   - Home: My Scenarios (Scenario, Cohort, Status, Next Round, Start)
@@ -245,8 +245,8 @@ Kommunikation
   - Reference-Run-Select: Overlay im Radar, Δ in Tabelle
   
 - Replay-Mode
-  - API: GET /api/sessions/:id/replay (Rundenliste + MCP/Volume + pro-Player KPIs)
-  - Frontend: Replay-Seite mit Slider je Runde, KPI-Tabelle, MCP-Line-Chart (D3), Volume-Line-Chart (D3)
+  - API: GET /api/sessions/:id/replay (Rundenliste + SMP/Volume + pro-Player KPIs)
+  - Frontend: Replay-Seite mit Slider je Runde, KPI-Tabelle, SMP-Line-Chart (D3), Volume-Line-Chart (D3)
   - Export: SVG/PNG für Charts, custom Filename
   
 - Comparison Dashboard
@@ -675,7 +675,7 @@ High-Priority UX-Verbesserungen: AppBar Navigation, Admin Table, Trainer Status 
     - Add: Checkbox "Symmetric Lock" → wenn checked, auto-copy A→B bei Edit von B→A
     - Diagonal-Felder: disabled (ATC[i][i] immer 0)
   - Preview Tab:
-    - Add: Units in Chart-Axis-Labels: "MCP (ZAR/MWh)", "Volume (MWh)"
+    - Add: Units in Chart-Axis-Labels: "SMP (ZAR/MWh)", "Volume (MWh)"
     - Add: Tooltip bei Hover: "Assumptions: uniform price, pro-rata dispatch"
   
 - **Validation Logic:**
@@ -808,7 +808,7 @@ Medium-Priority Polish: Theming, Accessibility, Design Tokens, Dark Mode, Empty 
 - **KSE Preview** (`frontend/src/pages/KSE.jsx`):
   - D3 Chart: Axes mit Labels, Gridlines (stroke-dasharray), Legend (Supply, Demand)
   - Colors: Accessible (WCAG AA Contrast)
-  - Tooltips: bei Hover (MCP, Volume)
+  - Tooltips: bei Hover (SMP, Volume)
   
 - **Player Round** (`frontend/src/pages/Player.jsx`):
   - Sparkline: Area Chart (hours vs forecast_mw)

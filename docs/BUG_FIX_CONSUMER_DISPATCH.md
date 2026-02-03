@@ -15,8 +15,8 @@ This document describes critical bugs found in consumer (load) device handling a
 ## Bug 1: Consumers Added to Supply Curve (CRITICAL)
 
 ### Symptoms
-- Consumer bids with price **below MCP** were dispatched at 100%
-- Consumer bids with price **above MCP** were also dispatched
+- Consumer bids with price **below SMP** were dispatched at 100%
+- Consumer bids with price **above SMP** were also dispatched
 - Market clearing logic completely broken for consumers
 
 ### Root Cause
@@ -37,7 +37,7 @@ This meant consumers were competing in the **supply curve** (sellers) instead of
 
 ### Impact
 - **Incorrect dispatch:** Consumers with low bids got dispatched (should be 0%)
-- **Market distortion:** Supply curve artificially inflated, depressing MCP
+- **Market distortion:** Supply curve artificially inflated, depressing SMP
 - **Revenue errors:** Consumers "earning" revenue instead of paying expenses
 
 ### Fix
@@ -65,13 +65,13 @@ def build_supply_from_bids(player_forecasts, hour_idx, synthetic_supply):
 
 ### Verification
 
-**Test Scenario:** Consumer with 3 bids, MCP = 1,070 ZAR/MWh
+**Test Scenario:** Consumer with 3 bids, SMP = 1,070 ZAR/MWh
 
 | Lot | Bid Price | Offered (MWh) | Expected Dispatch | Actual Dispatch (Before) | Actual Dispatch (After) |
 |-----|-----------|---------------|-------------------|-------------------------|------------------------|
-| A   | 1,200     | 411.2         | 100% (>= MCP)     | 100% ✅                 | 100% ✅                |
-| B   | 1,000     | 359.8         | 0% (< MCP)        | 100% ❌                 | 0% ✅                  |
-| C   | 800       | 257.0         | 0% (< MCP)        | 100% ❌                 | 0% ✅                  |
+| A   | 1,200     | 411.2         | 100% (>= SMP)     | 100% ✅                 | 100% ✅                |
+| B   | 1,000     | 359.8         | 0% (< SMP)        | 100% ❌                 | 0% ✅                  |
+| C   | 800       | 257.0         | 0% (< SMP)        | 100% ❌                 | 0% ✅                  |
 
 ---
 
@@ -229,7 +229,7 @@ elif imbalance_h < 0:  # Under-delivery/consumption
 
 1. **Consumer Dispatch Validation:**
    - Create player with only load devices
-   - Submit bids above and below typical MCP (1000-1100)
+   - Submit bids above and below typical SMP (1000-1100)
    - Verify: High bids → 100% dispatch, Low bids → 0% dispatch
 
 2. **Hourly Breakdown Accuracy:**

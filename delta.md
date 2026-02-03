@@ -17,7 +17,7 @@ Code references use project paths like `frontend/src/...`.
 
 Stand 11.11.2025:
 - Home / My Scenarios: Implementiert (`/home`, Sessions‑Liste mit CTA Briefing/Start)
-- Round Editor: Countdown, Validierung, Snackbar, Live‑MCP/Vol implementiert. Freeze‑Lock vorhanden. Weitere KPIs folgen.
+- Round Editor: Countdown, Validierung, Snackbar, Live‑SMP/Vol implementiert. Freeze‑Lock vorhanden. Weitere KPIs folgen.
 - Scenario Briefing: Implementiert (Basis‑Layout, Details iterativ)
 - Evaluation Report: Implementiert (`/evaluation`) – Tabelle + Radar/Export (Basis)
 - Replay Mode: Implementiert (`/replay`) – Slider + KPI‑Tabelle, Test instabil
@@ -26,7 +26,7 @@ Stand 11.11.2025:
 ## 2) Trainer App
 
 Stand 11.11.2025:
-- Live Session Control erweitert: Status‑Tabelle (Players×Runden), Countdown, Broadcast, Charts (MCP, Volume, Top Profit, Imbalance/Curtailment), Reset.
+- Live Session Control erweitert: Status‑Tabelle (Players×Runden), Countdown, Broadcast, Charts (SMP, Volume, Top Profit, Imbalance/Curtailment), Reset.
 - Controls: Disabled States bei fehlender Session.
 - Comparison Dashboard: Implementiert (Basis) unter `/comparison`
 - Offene Punkte: Session‑Meta (Name/Cohort) prominenter, Cohort Overview/Detail UI, Reference Runs (S3), Player Detail, Trainer Settings, Fast‑Forward (post‑MVP)

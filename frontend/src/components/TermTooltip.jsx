@@ -5,7 +5,7 @@ const termDefinitions = {
   'DA': 'Day-Ahead Market: Trading happens one day before delivery',
   'ID': 'Intraday Market: Trading happens on the same day for adjustments',
   'IDM': 'Intraday Market: Trading happens on the same day for adjustments',
-  'MCP': 'Market Clearing Price: The price at which supply equals demand',
+  'SMP': 'System Marginal Price: The price at which supply equals demand',
   'Balancing': 'Balancing costs occur when actual delivery differs from contracted position',
   'Imbalance': 'The difference between your contracted position and actual delivery',
   'Dispatch': 'The actual amount of electricity allocated to your generation unit',

@@ -169,7 +169,7 @@ class ExportPDF(Resource):
         c.setFillColor(colors.black)
         for r in Result.query.filter_by(session_id=sid).order_by(Result.round_num, Result.player_id).all():
             k = r.data.get("kpis", {}) if r.data else {}
-            line = f"Round {r.round_num} | Player {r.player_id} | MCP: {r.data.get('mcp', 'N/A')} | Volume: {r.data.get('volume', 'N/A')} | Profit: {int(k.get('profit_zar', 0)):,} ZAR"
+            line = f"Round {r.round_num} | Player {r.player_id} | SMP: {r.data.get('smp', 'N/A')} | Volume: {r.data.get('volume', 'N/A')} | Profit: {int(k.get('profit_zar', 0)):,} ZAR"
             c.drawString(50, y, line)
             y -= 4*mm
             if y < 30*mm:

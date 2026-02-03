@@ -5,7 +5,7 @@ import api from '../services/api'
 import * as d3 from 'd3'
 import { exportPNG, exportSVG } from '../utils/exportSvg'
 
-const LineChart = forwardRef(function LineChart({ rounds, metric='mcp', color='#2e7d32', width=640, height=200 }, ref) {
+const LineChart = forwardRef(function LineChart({ rounds, metric='smp', color='#2e7d32', width=640, height=200 }, ref) {
   useEffect(()=>{
     if(!ref?.current) return
     const data = rounds.map((r,i)=> ({ i:i+1, y: r[metric] }))
@@ -37,9 +37,9 @@ export default function Replay(){
   const [data, setData] = useState({ rounds: [] })
   const sid = params.get('session')
   const [idx, setIdx] = useState(0)
-  const mcpRef = useRef(null)
+  const smpRef = useRef(null)
   const volRef = useRef(null)
-  const [fileMcp, setFileMcp] = useState('replay_mcp')
+  const [fileSmp, setFileMcp] = useState('replay_mcp')
   const [fileVol, setFileVol] = useState('replay_volume')
   useEffect(()=>{
     const load = async ()=>{
@@ -59,21 +59,21 @@ export default function Replay(){
   return (
     <Paper sx={{ p:2 }}>
       <Typography variant="h5" gutterBottom>Replay</Typography>
-      <Typography variant="body2">Session {sid} • Scenario: {data.session?.scenario} • MCP series</Typography>
+      <Typography variant="body2">Session {sid} • Scenario: {data.session?.scenario} • SMP series</Typography>
       <Stack sx={{ mt:2 }}>
         <Slider min={0} max={Math.max(0,(data.rounds?.length||1)-1)} value={idx} onChange={(_,v)=>setIdx(v)} marks={marks} step={1} valueLabelDisplay="auto"/>
       </Stack>
-  <Typography variant="subtitle1" sx={{ mt:2 }} data-testid="replay-mcp-title">MCP over rounds</Typography>
+  <Typography variant="subtitle1" sx={{ mt:2 }} data-testid="replay-smp-title">SMP over rounds</Typography>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb:1 }}>
         <div style={{ width: 12, height: 12, background: '#2e7d32', marginRight: 6 }} />
-        <Typography variant="caption">MCP</Typography>
+        <Typography variant="caption">SMP</Typography>
         <span style={{ flex: 1 }} />
         <Typography variant="caption" sx={{ mr:1 }}>Export:</Typography>
-        <input style={{ width: 180 }} value={fileMcp} onChange={e=>setFileMcp(e.target.value)} />
-        <button onClick={()=> exportSVG(mcpRef.current, `${fileMcp||'replay_mcp'}.svg`)}>SVG</button>
-        <button onClick={()=> exportPNG(mcpRef.current, `${fileMcp||'replay_mcp'}.png`)}>PNG</button>
+        <input style={{ width: 180 }} value={fileSmp} onChange={e=>setFileMcp(e.target.value)} />
+        <button onClick={()=> exportSVG(smpRef.current, `${fileSmp||'replay_mcp'}.svg`)}>SVG</button>
+        <button onClick={()=> exportPNG(smpRef.current, `${fileSmp||'replay_mcp'}.png`)}>PNG</button>
       </Stack>
-      {(data.rounds && data.rounds.length>0) && <LineChart ref={mcpRef} rounds={data.rounds||[]} metric="mcp" color="#2e7d2" />}
+      {(data.rounds && data.rounds.length>0) && <LineChart ref={smpRef} rounds={data.rounds||[]} metric="smp" color="#2e7d2" />}
       <Typography variant="subtitle1" sx={{ mt:2 }} data-testid="replay-volume-title">Volume over rounds</Typography>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb:1 }}>
         <div style={{ width: 12, height: 12, background: '#1976d2', marginRight: 6 }} />
@@ -88,7 +88,7 @@ export default function Replay(){
   {(!data.rounds || data.rounds.length===0) && <Typography variant="body2" sx={{ mt:2 }}>No replay data.</Typography>}
       {round && (
         <>
-          <Typography sx={{ mt:2 }}>Round {round.round} • MCP {round.mcp} • Volume {round.volume}</Typography>
+          <Typography sx={{ mt:2 }}>Round {round.round} • SMP {round.smp} • Volume {round.volume}</Typography>
           <Table size="small" sx={{ mt:1 }}>
             <TableHead>
               <TableRow>

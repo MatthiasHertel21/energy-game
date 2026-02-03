@@ -204,7 +204,7 @@ The KSE is the **core tool for Designers** to create and customize content. It i
      - **Session Info Card**: Campaign and Scenario names as separate rows
      - **Timer**: Countdown with progress bar
      - **Forecast Editor**: Device-specific or aggregate depending on mode
-     - **Live KPIs**: Market Clearing Price (MCP in ZAR/MWh), Volume (MWh), all formatted with thousands separators
+     - **Live KPIs**: System Marginal Price (SMP in ZAR/MWh), Volume (MWh), all formatted with thousands separators
    - **Duration**: 300s default (configurable via `round_duration_seconds`)
    - **Pause/Freeze**: Trainer can freeze shared sessions (timer stops, no countdown)
    - **Submit**: Players submit forecasts for current round
@@ -327,16 +327,16 @@ config: {
 
 ## **2.1 Market Clearing (Uniform Price)**
 
-The market clears by finding the **intersection** of aggregated **supply** and **demand** curves. Supply is sorted ascending by price, demand descending by WTP. The MCP is the price where cumulative supply equals demand.
+The market clears by finding the **intersection** of aggregated **supply** and **demand** curves. Supply is sorted ascending by price, demand descending by WTP. The SMP is the price where cumulative supply equals demand.
 
 **Formula**:  
 ```
-MCP = min { p | Σ Supply(p) ≥ Σ Demand(p) }  
-Cleared Volume = min(Supply at MCP, Demand at MCP)  
+SMP = min { p | Σ Supply(p) ≥ Σ Demand(p) }  
+Cleared Volume = min(Supply at SMP, Demand at SMP)  
 ```
 
 **Ties**: Pro-rata allocation (volume shared proportionally).  
-**Clamping**: MCP < -500 = -500; MCP > +5,000 = +5,000.  
+**Clamping**: SMP < -500 = -500; SMP > +5,000 = +5,000.  
 **Precision**: Price 1 decimal, Volume 3 decimals, Financial 0 decimals.  
 **Negative Prices**: Allowed if configured (default YES).
 
@@ -371,9 +371,9 @@ Bid C: 150 MW @ 480 ZAR/MWh (peak, expensive)
 
 **Revenue** (Uniform Pricing):  
 ```
-Revenue = Total_Dispatched_MW × MCP
+Revenue = Total_Dispatched_MW × SMP
 ```
-All dispatched MWh receive the same MCP regardless of bid price.
+All dispatched MWh receive the same SMP regardless of bid price.
 
 **Costs**:  
 ```
@@ -392,7 +392,7 @@ Profit = Revenue - Fuel_Cost - Imbalance_Cost - Curtailment_Cost + Congestion_Re
 - Bid C: `variable_cost × 1.5` (premium)  
 
 **Player Information**:  
-- Historical MCP from previous rounds (chart)  
+- Historical SMP from previous rounds (chart)  
 - Expected demand range (min-max, not exact curve)  
 - Own dispatch rates from previous rounds  
 
@@ -405,14 +405,14 @@ Profit = Revenue - Fuel_Cost - Imbalance_Cost - Curtailment_Cost + Congestion_Re
 
 ## **2.2 Day-Ahead vs. Intraday**
 
-**Day-Ahead**: Full forecast ≥6h ahead; clears at uniform MCP.  
-**Intraday**: Deltas to DA <6h ahead; clears at uniform MCP on adjusted volume.  
+**Day-Ahead**: Full forecast ≥6h ahead; clears at uniform SMP.  
+**Intraday**: Deltas to DA <6h ahead; clears at uniform SMP on adjusted volume.  
 **No block bids or bilateral contracts** (not supported).  
 
 **Formula for Intraday Delta**:  
 ```
 IDM Input = Current Forecast − DA Locked Forecast  
-IDM MCP = min { p | Σ Delta Supply(p) ≥ Σ Delta Demand(p) }  
+IDM SMP = min { p | Σ Delta Supply(p) ≥ Σ Delta Demand(p) }  
 ```
 
 ---
@@ -598,7 +598,7 @@ def run_simulation(scenario_id, round_num, player_inputs, config):
         supply.extend(player_supply)
     
     # Clearing
-    mcp, volume = clear_market(supply, demand, config)
+    smp, volume = clear_market(supply, demand, config)
     
     # Grid
     net = compute_net(config['zones'], supply, demand)
@@ -611,7 +611,7 @@ def run_simulation(scenario_id, round_num, player_inputs, config):
     profit = revenue - fuel - imbalance - curtailment
     
     # Results
-    results = {'mcp': round(mcp, 1), 'volume': round(volume, 3), 'profit': round(profit, 0)}
+    results = {'smp': round(smp, 1), 'volume': round(volume, 3), 'profit': round(profit, 0)}
     db.save_results(scenario_id, round_num, results)
     
     return results

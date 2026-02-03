@@ -81,7 +81,7 @@
 
 8. **Preview Tab** (lines 412-444)
    - ✅ Quick preview (POST /api/engine/preview)
-   - ✅ Hourly preview (POST /api/engine/preview/hourly) mit MCP/Volume D3 charts
+   - ✅ Hourly preview (POST /api/engine/preview/hourly) mit SMP/Volume D3 charts
    - ✅ Export as SVG für Preview-Charts implementiert (2025-11-14)
 
 ### ✅ Field Help + Tooltips (concept.md requirement)
@@ -104,9 +104,9 @@
 
 ### ✅ Implementiert (backend/app/engine.py)
 1. **Uniform Price Clearing** (lines 15-88)
-   - ✅ clear_market(): supply ascending, demand descending, MCP = intersection
+   - ✅ clear_market(): supply ascending, demand descending, SMP = intersection
    - ✅ Pro-rata allocation for ties
-   - ✅ Clamping: MCP ∈ [floor, cap]
+   - ✅ Clamping: SMP ∈ [floor, cap]
    - ✅ Precision: Price 1 decimal, Volume 3 decimals, Financial 0 decimals
    - ✅ Negative prices allowed (config.market.price_floor default -500)
 
@@ -200,7 +200,7 @@ Hinweis: Forecast bleibt aggregiert pro Player; pro‑Device Dispatch folgt in e
 3. **Live-Monitoring** (frontend/src/pages/Trainer.jsx)
    - ✅ Countdown-Anzeige (tick)
    - ✅ Statusmatrix: GET /api/sessions/:id/status (Spieler × Runde → submitted)
-   - ✅ Aggregierte Live-Charts: MCP-Line (grün), Volume-Line (blau), Top-Profit-Balken, Imbalance-Top-8, Curtailment-Top-8
+   - ✅ Aggregierte Live-Charts: SMP-Line (grün), Volume-Line (blau), Top-Profit-Balken, Imbalance-Top-8, Curtailment-Top-8
    - ✅ Export (SVG/PNG) für Charts + Reset Charts Button
    - ✅ Event-Log (session_started, paused, resumed, ended, message, player_submit, round_results)
 
@@ -229,8 +229,8 @@ Hinweis: Forecast bleibt aggregiert pro Player; pro‑Device Dispatch folgt in e
    - ✅ DA/IDM-Freeze: Eingabefelder bis lock_h=(current_round-1)×round_span+freeze_hours gesperrt
    - ✅ Save Full Forecast: POST /api/player/forecast/full (round_num=0)
    - ✅ Submit Current Round: POST /api/player/forecast (aktuelles Fenster)
-   - ✅ Live-MCP/Vol Anzeige aus Socket /game/{sessionId}
-   - ✅ Live-Charts: MCP/Volume (D3)
+   - ✅ Live-SMP/Vol Anzeige aus Socket /game/{sessionId}
+   - ✅ Live-Charts: SMP/Volume (D3)
    - ✅ InfoLabel tooltips für Inputs
 
 4. **Evaluation** (frontend/src/pages/Evaluation.jsx)
@@ -243,7 +243,7 @@ Hinweis: Forecast bleibt aggregiert pro Player; pro‑Device Dispatch folgt in e
 5. **Replay** (frontend/src/pages/Replay.jsx)
    - ✅ GET /api/sessions/:id/replay
    - ✅ Slider je Runde, KPI-Tabelle
-   - ✅ MCP-Line-Chart + Volume-Line-Chart (D3), Export (SVG/PNG), custom Filename
+   - ✅ SMP-Line-Chart + Volume-Line-Chart (D3), Export (SVG/PNG), custom Filename
    - ⚠️ E2E-Test instabil (geskippt in CI, UI funktional)
 
 ---
@@ -338,9 +338,9 @@ Hinweis: Forecast bleibt aggregiert pro Player; pro‑Device Dispatch folgt in e
 
 2. **Result Structure** (concept R1)
    - ✅ Hourly time-series per round (backend/app/models.py Result.data JSONB)
-   - ✅ Format: rounds → hours → da_qty_mwh, mcp, volume, etc.
+   - ✅ Format: rounds → hours → da_qty_mwh, smp, volume, etc.
    - ✅ kpis_round aggregiert (profit_zar, imbalance_cost, etc.)
-   - ⚠️ **Precision**: Code nutzt round(profit, 0), round(mcp, 1), round(volume, 3) – konform zu concept
+   - ⚠️ **Precision**: Code nutzt round(profit, 0), round(smp, 1), round(volume, 3) – konform zu concept
 
 3. **Validation** (backend/app/kse.py validate endpoint)
    - ✅ Strict checks vor save/activation

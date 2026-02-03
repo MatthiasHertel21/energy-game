@@ -31,9 +31,9 @@ config = {
 
 forecasts = {1: [100] * 24}
 
-print("\n=== Testing MCP Variation with Temporal Profiles ===")
+print("\n=== Testing SMP Variation with Temporal Profiles ===")
 
-# Test 4 rounds to see MCP variation
+# Test 4 rounds to see SMP variation
 for round_num in range(1, 5):
     result = engine.run_round(
         session_id=1,
@@ -50,7 +50,7 @@ for round_num in range(1, 5):
     
     print(f"\nRound {round_num} (hours {hours[0]}-{hours[-1]}):")
     print(f"  Temporal factors: {[f'{f:.2f}' for f in factors]}")
-    print(f"  MCPs: {[h['mcp'] for h in result['hourly_results']]}")
-    print(f"  Average MCP: {result['mcp']:.1f} ZAR/MWh")
+    print(f"  MCPs: {[h['smp'] for h in result['hourly_results']]}")
+    print(f"  Average SMP: {result['smp']:.1f} ZAR/MWh")
     print(f"  Volume: {result['volume']:.1f} MWh")
 

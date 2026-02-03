@@ -83,7 +83,7 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
 
     i = j = 0
     cum_s = cum_d = 0.0
-    mcp = 0.0
+    smp = 0.0
     marginal_supply_price = 0.0  # Track the last supply price that was dispatched
     
     while i < len(s) and j < len(d):
@@ -96,7 +96,7 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
             cum_d += take
             v_s -= take
             v_d -= take
-            # Set MCP to the supply price of the marginal unit (uniform pricing)
+            # Set SMP to the supply price of the marginal unit (uniform pricing)
             marginal_supply_price = p_s
             if abs(v_s) < 1e-9:
                 i += 1
@@ -110,8 +110,8 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
             # no overlap at this step; advance the cheaper side
             i += 1
 
-    mcp = marginal_supply_price
-    price = max(price_floor, min(price_cap, mcp))
+    smp = marginal_supply_price
+    price = max(price_floor, min(price_cap, smp))
     vol = round(min(cum_s, cum_d), 3)
     return round(price, 1), vol
 
@@ -569,14 +569,14 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
     return combined_demand, demand_bids
 
 
-def track_bid_dispatch(supply_bids: List[dict], mcp: float, volume: float, 
+def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float, 
                        synthetic_supply: List[Tuple[float, float]]) -> Dict[int, Dict[str, Dict[str, dict]]]:
     """
     Track which player bids were dispatched during market clearing.
     
     Args:
         supply_bids: List of bid metadata from build_supply_from_bids
-        mcp: Market clearing price
+        smp: Market clearing price
         volume: Total cleared volume
         synthetic_supply: Synthetic supply curve
     
@@ -606,7 +606,7 @@ def track_bid_dispatch(supply_bids: List[dict], mcp: float, volume: float,
             'mw_offered': bid['quantity'],
             'mw_dispatched': 0.0,  # Will be updated if dispatched
             'price_bid': bid['price'],
-            'mcp': mcp
+            'smp': smp
         }
     
     # Simulate dispatch
@@ -616,7 +616,7 @@ def track_bid_dispatch(supply_bids: List[dict], mcp: float, volume: float,
         if remaining_demand <= 0:
             break
         
-        if price > mcp:
+        if price > smp:
             break  # Too expensive
         
         if player_id is None:
@@ -634,14 +634,14 @@ def track_bid_dispatch(supply_bids: List[dict], mcp: float, volume: float,
     return dispatch_tracking
 
 
-def track_demand_dispatch(demand_bids: List[dict], mcp: float, volume: float,
+def track_demand_dispatch(demand_bids: List[dict], smp: float, volume: float,
                           synthetic_demand: List[Tuple[float, float]]) -> Dict[int, Dict[str, Dict[str, dict]]]:
     """
     Track which consumer bids were served during market clearing.
     
     Args:
         demand_bids: List of demand bid metadata from build_demand_from_bids
-        mcp: Market clearing price
+        smp: Market clearing price
         volume: Total cleared volume
         synthetic_demand: Synthetic demand curve
     
@@ -655,7 +655,7 @@ def track_demand_dispatch(demand_bids: List[dict], mcp: float, volume: float,
     
     all_demand = sorted(all_demand, key=lambda x: x[0], reverse=True)
     
-    print(f"[DEMAND_DISPATCH_DEBUG] MCP={mcp:.1f}, volume={volume:.1f}, total_demand_bids={len(all_demand)}")
+    print(f"[DEMAND_DISPATCH_DEBUG] SMP={smp:.1f}, volume={volume:.1f}, total_demand_bids={len(all_demand)}")
     
     # Initialize dispatch tracking with ALL bids (including 0% dispatched)
     dispatch_tracking = {}
@@ -673,16 +673,16 @@ def track_demand_dispatch(demand_bids: List[dict], mcp: float, volume: float,
             'mw_offered': bid['quantity'],
             'mw_dispatched': 0.0,  # Will be updated if dispatched
             'price_bid': bid['price'],
-            'mcp': mcp
+            'smp': smp
         }
     
-    # Dispatch consumer bids based on willingness-to-pay vs MCP
+    # Dispatch consumer bids based on willingness-to-pay vs SMP
     # Note: We don't track remaining_supply because player bids compete with synthetic demand
-    # in market clearing, but for tracking purposes we only check if their WTP >= MCP
+    # in market clearing, but for tracking purposes we only check if their WTP >= SMP
     
     for idx, (price, quantity, player_id, device_id, bid_label) in enumerate(all_demand):
-        if price < mcp:
-            print(f"[DEMAND_DISPATCH_DEBUG] #{idx}: price {price:.1f} < mcp {mcp:.1f}, not served")
+        if price < smp:
+            print(f"[DEMAND_DISPATCH_DEBUG] #{idx}: price {price:.1f} < smp {smp:.1f}, not served")
             # Don't break - continue checking other bids (they might have higher prices)
             if player_id is not None:
                 # Mark as not served
@@ -694,8 +694,8 @@ def track_demand_dispatch(demand_bids: List[dict], mcp: float, volume: float,
             print(f"[DEMAND_DISPATCH_DEBUG] #{idx}: Synthetic demand, price={price:.1f}, qty={quantity:.1f}, served")
             continue
         
-        # Player consumer bid with WTP >= MCP - fully served
-        print(f"[DEMAND_DISPATCH_DEBUG] #{idx}: Player {player_id}, device={device_id}, lot={bid_label}, price={price:.1f} >= mcp {mcp:.1f}, qty={quantity:.1f}, SERVED")
+        # Player consumer bid with WTP >= SMP - fully served
+        print(f"[DEMAND_DISPATCH_DEBUG] #{idx}: Player {player_id}, device={device_id}, lot={bid_label}, price={price:.1f} >= smp {smp:.1f}, qty={quantity:.1f}, SERVED")
         
         dispatch_tracking[player_id][device_id][bid_label]['mw_dispatched'] = round(quantity, 3)
     
@@ -795,7 +795,7 @@ def preview_from_config(cfg: dict, seed: str = "preview", round_num: int | None 
     if round_num is not None:
         events = select_events_for_round(events, int(round_num))
     price, vol = apply_events(price, vol, events)
-    return {"mcp": round(price, 1), "volume": round(vol, 3)}
+    return {"smp": round(price, 1), "volume": round(vol, 3)}
 
 
 # Additional S2 features (simplified implementations)
@@ -890,7 +890,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     - Dict with 'hours' and optional 'bids' keys
     
     Returns:
-        Dict with mcp, volume, round_kpis, hourly_results, and optionally bid_dispatch
+        Dict with smp, volume, round_kpis, hourly_results, and optionally bid_dispatch
     """
     span = int(config.get("general", {}).get("round_span_hours", 6))
     base_idx = (round_num - 1) * span
@@ -1180,7 +1180,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         if device_id in per_device_hourly_actual:
                             per_device_hourly_actual[device_id][hour_offset] = device_actual_with_noise
             
-            # Revenue/Expense: Uniform MCP for all dispatched MWh
+            # Revenue/Expense: Uniform SMP for all dispatched MWh
             # Generators earn revenue (positive), Consumers pay expenses (negative)
             if is_consumer:
                 revenue = -round(dispatched * price, 0)  # Negative = expense
@@ -1229,7 +1229,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         hourly_results.append({
             "hour_idx": hour_idx,
             "hour_offset": hour_offset,
-            "mcp": round(price, 1),
+            "smp": round(price, 1),
             "volume": round(vol, 3),
         })
         
@@ -1248,14 +1248,14 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             'mw_offered': 0.0,
                             'mw_dispatched': 0.0,
                             'price_bid': bid_info.get('price_bid', 0.0),
-                            'mcp': bid_info.get('mcp', 0.0),
+                            'smp': bid_info.get('smp', 0.0),
                         }
                     # Accumulate both offered and dispatched quantities over all hours
                     bid_dispatch_tracking[player_id][device_id][bid_label]['mw_offered'] += bid_info.get('mw_offered', 0.0)
                     bid_dispatch_tracking[player_id][device_id][bid_label]['mw_dispatched'] += bid_info.get('mw_dispatched', 0.0)
     
-    # Calculate average MCP and total volume across all hours
-    avg_mcp = sum(h['mcp'] for h in hourly_results) / len(hourly_results) if hourly_results else 0.0
+    # Calculate average SMP and total volume across all hours
+    avg_mcp = sum(h['smp'] for h in hourly_results) / len(hourly_results) if hourly_results else 0.0
     total_volume = sum(h['volume'] for h in hourly_results)
     
     # Debug: Check state before building per-player KPIs
@@ -1278,7 +1278,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         for h_idx, hour_result in enumerate(hourly_results):
             hour_detail = {
                 "hour": hour_result["hour_idx"],
-                "mcp": hour_result["mcp"],
+                "smp": hour_result["smp"],
                 "planned_mw": 0.0,
                 "dispatched_mw": 0.0,
                 "actual_mw": 0.0,
@@ -1326,7 +1326,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 hour_detail["actual_mw"] += actual_h
                 
                 # Revenue for this hour
-                hour_detail["revenue_zar"] += dispatched_h * hour_result["mcp"]
+                hour_detail["revenue_zar"] += dispatched_h * hour_result["smp"]
                 
                 # Check if consumer
                 # Find device in config to check type
@@ -1353,7 +1353,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     curtailment_h = planned_h - dispatched_h
                     if curtailment_h > 0:
                         hour_detail["curtailment_mwh"] += curtailment_h
-                        hour_detail["curtailment_cost_zar"] += curtailment_h * hour_result["mcp"]  # Informational: potential revenue
+                        hour_detail["curtailment_cost_zar"] += curtailment_h * hour_result["smp"]  # Informational: potential revenue
             
             hourly_breakdown.append(hour_detail)
         
@@ -1383,7 +1383,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         }
 
     result = {
-        "mcp": round(avg_mcp, 1),
+        "smp": round(avg_mcp, 1),
         "volume": round(total_volume, 3),
         "round_kpis": per_player,
         "hourly_results": hourly_results,

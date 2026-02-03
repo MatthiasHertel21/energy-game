@@ -67,7 +67,7 @@ High priority (P1)
 8) KSE – Scenario Editor usability
 - Issue: Validation surfaced as a summary only; matrix editing lacks guides; events are minimal.
 - Change:
-  - Field-level validation hints; disable Save until valid. Add column/row headers for ATC, symmetric lock. Clarify Preview MCP output (units, assumptions).
+  - Field-level validation hints; disable Save until valid. Add column/row headers for ATC, symmetric lock. Clarify Preview SMP output (units, assumptions).
 - Acceptance:
   - Users can fix invalid fields without hunting; ATC feels safe and clear.
 

@@ -78,7 +78,7 @@ result = engine.run_round(
 )
 
 print(f"\nMarket Results:")
-print(f"  Average MCP: {result['mcp']:7.1f} ZAR/MWh")
+print(f"  Average SMP: {result['smp']:7.1f} ZAR/MWh")
 print(f"  Total Volume: {result['volume']:8.1f} MWh")
 
 print(f"\n{'='*90}")
@@ -119,7 +119,7 @@ result2 = engine.run_round(
 )
 
 print(f"\nMarket Results:")
-print(f"  Average MCP: {result2['mcp']:7.1f} ZAR/MWh")
+print(f"  Average SMP: {result2['smp']:7.1f} ZAR/MWh")
 print(f"  Total Volume: {result2['volume']:8.1f} MWh")
 
 print(f"\n{'='*90}")

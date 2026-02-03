@@ -253,9 +253,9 @@ The **Day-Ahead Gate Closure** (typically hour 12) separates:
 - **Before**: All trades count as Day-Ahead
 - **After**: All trades count as Intraday
 
-### 6.3 MCP (Market Clearing Price)
+### 6.3 SMP (System Marginal Price)
 
-The **Market Clearing Price** is determined by supply and demand intersection:
+The **System Marginal Price** is determined by supply and demand intersection:
 
 ```
 Price
@@ -263,7 +263,7 @@ Price
   │         Supply
   │        ╱
   │       ╱
-  │──────●────── MCP
+  │──────●────── SMP
   │     ╱ ╲
   │    ╱   Demand
   │   ╱
@@ -443,7 +443,7 @@ After all rounds:
 
 | Term | Definition |
 |------|------------|
-| **MCP** | Market Clearing Price - uniform price for all |
+| **SMP** | System Marginal Price - uniform price for all |
 | **DA** | Day-Ahead - main planning market |
 | **ID** | Intraday - short-term adjustment market |
 | **Imbalance** | Difference between forecast and actual |

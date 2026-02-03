@@ -5,7 +5,7 @@ Status: Closed
 Branch: feature/catalog-campaigns
 
 ## Completed
-- KSE: Monotone step-curves + MCP line; legend toggles (Supply/Demand/MCP)
+- KSE: Monotone step-curves + SMP line; legend toggles (Supply/Demand/SMP)
 - KSE: Inline ATC editor (symmetric) verified
 - KSE: Player Types two‑column layout + Advanced section
 - KSE: ValidationPanel click‑to‑scroll (core anchors)
