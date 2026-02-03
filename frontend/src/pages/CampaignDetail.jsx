@@ -105,13 +105,7 @@ export default function CampaignDetail(){
     
     if (session && !isCompleted && !forceNew) {
       // Continue existing non-completed session
-      if (session.status === 'created' || session.status === 'briefing') {
-        // Go to briefing for new sessions
-        navigate(`/briefing/${session.id}`)
-      } else {
-        // Continue active session
-        navigate(`/player?sessionId=${session.id}`)
-      }
+      navigate(`/player?sessionId=${session.id}`)
       return
     }
     
@@ -121,7 +115,7 @@ export default function CampaignDetail(){
       const { data:resp } = await api.post('/api/player/solo-sessions', body)
       if(window.__showSnack) window.__showSnack('Solo session started', 'success')
       if (resp && resp.session_id) {
-        navigate(`/briefing/${resp.session_id}`)
+        navigate(`/player?sessionId=${resp.session_id}`)
       } else {
         navigate('/player')
       }
