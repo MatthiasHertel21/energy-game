@@ -376,10 +376,10 @@ export default function Trainer(){
             }}
           >
             <Typography variant="h5" gutterBottom sx={{ fontWeight: 500 }}>
-              🚧 In Entwicklung
+              🚧 Under Development
             </Typography>
             <Typography variant="body1" color="text.secondary">
-              Der Session Control Screen ist noch nicht vollständig implementiert
+              The Session Control Screen is not yet fully implemented
             </Typography>
           </Paper>
         </Box>
