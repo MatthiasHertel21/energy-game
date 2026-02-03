@@ -305,7 +305,7 @@ def generate_curves_from_config(cfg: dict, seed: Optional[str] = None, hour_of_d
 
 def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int, 
                            synthetic_supply: List[Tuple[float, float]], 
-                           config: dict) -> Tuple[List[Tuple[float, float]], List[dict]]:
+                           config: dict, round_events: list = None) -> Tuple[List[Tuple[float, float]], List[dict]]:
     """
     Merge player bids with synthetic supply curve for market clearing.
     Includes both multi-bid devices (3 lots) and classic devices (implicit single bid at marginal cost).
@@ -315,6 +315,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
         hour_idx: Hour index within the round (0-based)
         synthetic_supply: Base supply curve from config
         config: Scenario configuration
+        round_events: List of active events for this round (optional)
     
     Returns:
         Tuple of (combined_supply_curve, bid_metadata_list)
@@ -357,6 +358,20 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
             if 'load' in device_type:
                 continue
             
+            # Check if any event affects this device's capacity
+            capacity_multiplier = 1.0
+            if round_events:
+                for event in round_events:
+                    event_target = event.get("target", "all")
+                    event_target_id = event.get("target_id", "")
+                    
+                    # Check if event targets this specific device
+                    if event_target == "device" and str(event_target_id) == str(device_id):
+                        capacity_multiplier *= float(event.get("multiplier", 1.0))
+                    # Check if event targets this device type
+                    elif event_target == "device" and str(event_target_id) == str(device_type):
+                        capacity_multiplier *= float(event.get("multiplier", 1.0))
+            
             device_bidding_enabled = device.get('enable_multi_bid')
             
             # Use device-level setting if specified, otherwise fall back to global
@@ -375,7 +390,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                     if hour_idx >= len(hours):
                         continue
                     
-                    quantity = float(hours[hour_idx])
+                    quantity = float(hours[hour_idx]) * capacity_multiplier
                     price = float(bid.get('price', 0))
                     
                     if quantity > 0:
@@ -401,7 +416,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                 if not device_forecast or hour_idx >= len(device_forecast):
                     continue
                 
-                quantity = float(device_forecast[hour_idx])
+                quantity = float(device_forecast[hour_idx]) * capacity_multiplier
                 price = float(device.get('cost_per_mwh_zar', 0))
                 
                 if quantity > 0:
@@ -435,7 +450,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
 
 def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                            synthetic_demand: List[Tuple[float, float]],
-                           config: dict) -> Tuple[List[Tuple[float, float]], List[dict]]:
+                           config: dict, round_events: list = None) -> Tuple[List[Tuple[float, float]], List[dict]]:
     """
     Merge player demand bids with synthetic demand curve for market clearing.
     Includes both multi-bid consumer devices (3 lots with WTP) and classic consumer devices (implicit WTP).
@@ -445,6 +460,7 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
         hour_idx: Hour index within the round (0-based)
         synthetic_demand: Base demand curve from config
         config: Scenario configuration
+        round_events: List of active events for this round (optional)
     
     Returns:
         Tuple of (combined_demand_curve, bid_metadata_list)
@@ -963,8 +979,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         
         # Build supply and demand curves for this specific hour
         if enable_bidding:
-            supply, supply_bids = build_supply_from_bids(normalized_forecasts, hour_idx, synthetic_supply, config)
-            demand, demand_bids = build_demand_from_bids(normalized_forecasts, hour_idx, synthetic_demand, config)
+            supply, supply_bids = build_supply_from_bids(normalized_forecasts, hour_idx, synthetic_supply, config, round_events)
+            demand, demand_bids = build_demand_from_bids(normalized_forecasts, hour_idx, synthetic_demand, config, round_events)
         else:
             supply = synthetic_supply
             supply_bids = []
