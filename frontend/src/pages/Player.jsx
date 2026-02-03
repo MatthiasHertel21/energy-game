@@ -1101,7 +1101,9 @@ export default function Player() {
 
     s.on('briefing', async (p) => {
       if (Number(p?.session_id) === Number(sessionId)) {
-        setStatus('briefing')
+        // Only set status to briefing if not already in briefing
+        // This prevents showing the briefing screen twice
+        setStatus(prev => prev === 'briefing' ? prev : 'briefing')
         try {
           const { data } = await api.get(`/api/sessions/${sessionId}`)
           setCfg(prev => ({
