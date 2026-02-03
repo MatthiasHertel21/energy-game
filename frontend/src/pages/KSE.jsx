@@ -1248,7 +1248,7 @@ export default function KSE(){
                     <FormControlLabel control={<Switch size="small" checked={showSmp} onChange={(_,v)=> setShowSmp(v)} />} label="SMP" />
                   </Stack>
                   <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly SMP</Typography>
-                  <svg ref={smpRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> smpRef.current && exportPNG(smpRef.current, 'kse_hourly_mcp.png')} />
+                  <svg ref={smpRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> smpRef.current && exportPNG(smpRef.current, 'kse_hourly_smp.png')} />
                   <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly Volume</Typography>
                   <svg ref={volRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> volRef.current && exportPNG(volRef.current, 'kse_hourly_volume.png')} />
                   {/* Points/Grid switches moved below hourly charts */}
