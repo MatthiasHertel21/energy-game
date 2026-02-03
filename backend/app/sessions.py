@@ -542,7 +542,7 @@ class RoundResults(Resource):
                 "imbalance": imbalance,
                 "curtailment": curtailment,
                 "total_score": round(total_score, 2),
-                "smp": r.data.get("smp"),
+                "smp": r.data.get("smp", r.data.get("mcp")),
                 "volume": r.data.get("volume"),
                 "bid_dispatch": r.bid_dispatch,  # Include lot dispatch tracking
                 "hourly_breakdown": kpis.get("hourly_breakdown", []),  # Include detailed hourly breakdown
@@ -553,7 +553,7 @@ class RoundResults(Resource):
             # Calculate DA/ID breakdown for this player
             da_hours = da_baseline_by_player.get(r.player_id, {}).get("aggregate", [])
             current_hours = current_by_player.get(r.player_id, [])
-            base_mcp = float(r.data.get("smp", 0) or 450)
+            base_mcp = float(r.data.get("smp", r.data.get("mcp", 0)) or 450)
             
             # Price differentiation: DA trades at stable price, ID at premium/discount
             # id_price_spread_percent: positive = ID more expensive (buying penalty), negative = ID discount

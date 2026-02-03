@@ -359,7 +359,7 @@ def run_rounds(session_id: int, app=None):
                 payload = {
                     "session_id": s.id,
                     "round": current,
-                    "smp": res["smp"],
+                    "smp": res.get("smp", res.get("mcp", 0)),
                     "volume": res["volume"],
                     "kpis": res.get("round_kpis"),
                     "hourly_results": res.get("hourly_results", []),
