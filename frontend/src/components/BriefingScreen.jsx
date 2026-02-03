@@ -61,7 +61,7 @@ export default function BriefingScreen({ session, scenario, onStart }) {
     <>Submit accurate demand forecasts each round</>,
     <>Minimize <TermTooltip term="Imbalance">imbalance</TermTooltip> penalties by staying close to actual consumption</>,
     <>Reduce curtailment costs through efficient electricity usage</>,
-    <>Maximize your total score across all rounds</>
+    <>Complete all challenges to succeed</>
   ];
 
   // Extract challenges from scenario config
@@ -211,19 +211,6 @@ export default function BriefingScreen({ session, scenario, onStart }) {
               </Stack>
             </Box>
           )}
-
-          {/* Scoring Info */}
-          <Alert severity="info" icon={<GoalIcon />}>
-            <Typography variant="body2" fontWeight="bold">
-              Scoring System
-            </Typography>
-            <Typography variant="body2">
-              Your total score is calculated from:
-              • Profit from <TermTooltip term="DA">day-ahead market</TermTooltip>
-              • <TermTooltip term="Imbalance">Imbalance</TermTooltip> penalties (minimized)
-              • Curtailment costs (minimized)
-            </Typography>
-          </Alert>
 
           {isSolo && (
             <Alert severity="success">
