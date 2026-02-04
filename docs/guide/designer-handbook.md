@@ -370,50 +370,226 @@ They provide a fast visual check of your environment, but the **actual game simu
 
 ## 8. Tab: Events
 
-### 8.1 Event Types
+### 8.1 Event Type System
 
-| Type | Description | Example |
-|------|-------------|---------|
-| **Outage** | Capacity outage | "Koeberg Outage" |
-| **Demand Spike** | Demand increase | "Cold Snap" |
-| **Price Shock** | Price change | "Carbon Tax" |
-| **Weather** | Weather event | "Cloudy Day" |
-| **Grid** | Grid disturbance | "Line Trip" |
+**CRITICAL CONCEPT:** The `type` field determines which calculation method is used:
 
-### 8.2 Create Event
+| Type | Calculation | Use Case | Example |
+|------|-------------|----------|----------|
+| **systemic** | Multiplier (×) | Market-wide price changes | Fuel spike (×1.2) |
+| **weather** | Additive (+/-) OR Capacity (×) | Weather impacts on renewables | Windflaute (×0.3 capacity) |
+| **player** | Additive (+/-) | Player-specific events | Plant outage (-1000 MW) |
+| **market** | Additive (+/-) | Market rule changes | Carbon tax (+50 ZAR/MWh) |
+| **grid** | Additive (+/-) | Grid disturbances | Line trip (-500 MW) |
+| **device** | Additive (+/-) OR Capacity (×) | Device-specific impacts | Battery degradation |
 
-| Field | Description | Example |
-|-------|-------------|---------|
-| **Name** | Event name | "Koeberg Unit 1 Outage" |
-| **Description** | Description for briefing | "Unplanned maintenance..." |
-| **Type** | Event type | Outage |
-| **Scope** | Systemic / Player | Systemic |
+**Only `systemic` uses multiplier for price/volume. All others use additive values.**
 
-### 8.3 Trigger Conditions
+### 8.2 Event Configuration Fields
 
-| Trigger | Description | Example |
-|---------|-------------|---------|
-| **Round** | At specific round | Round 3 |
-| **Probability** | Random with probability | 30% |
-| **Time** | At specific simulation time | Hour 18 |
+#### Basic Information
 
-### 8.4 Duration & Impact
+| Field | Required | Description | Example |
+|-------|----------|-------------|----------|
+| **Name** | Yes | Event display name | "Windflaute" |
+| **Description** | No | Player briefing text | "Low wind conditions reduce generation..." |
+| **Type** | Yes | Calculation method (see 8.1) | "weather" |
+| **Key** | No | Unique identifier for prob events | "windflaute" |
 
-| Field | Description | Example |
-|-------|-------------|---------|
-| **Duration (rounds)** | Number of active rounds | 2 |
-| **Duration (hours)** | Number of active hours | 6 |
-| **Impact Type** | Multiplier (×) or Offset (±) | × |
-| **Impact Value** | Value of change | 0.5 (= 50%) |
+#### Trigger Configuration
 
-### 8.5 Target Specification
+| Field | Required | Description | Example |
+|-------|----------|-------------|----------|
+| **Trigger Type** | Yes | When event activates | "round" or "prob" |
+| **Trigger Value** | Yes | Round number (round) or probability 0-1 (prob) | 3 or 0.2 (20%) |
+| **Duration Rounds** | Yes | How many rounds event is active | 1 |
 
-| Target | Description | Example |
-|--------|-------------|---------|
-| **All** | Affects all participants | "System-wide outage" |
-| **Zone** | Affects one zone | "Zone A blackout" |
-| **Type** | Affects device type | "All coal plants" |
-| **Device** | Affects specific device | "Koeberg Unit 1" |
+**Trigger Type Details:**
+- **round**: Activates at specific round for N rounds
+  - `trigger_value=3, duration_rounds=2` → Active in rounds 3 and 4
+- **prob**: Random activation each round based on probability
+  - `trigger_value=0.3` → 30% chance per round (deterministic hash-based)
+
+#### Target Configuration
+
+| Field | Required | Description | Example |
+|-------|----------|-------------|----------|
+| **Target** | Yes | What is affected | "all", "zone", "player", "device" |
+| **Target ID** | Conditional | Specific entity identifier | "wind", "solar", "123" |
+
+**Target Behavior:**
+- **all**: Affects entire market, no target_id needed
+- **zone**: Affects one zone, target_id = zone number ("1", "2")
+- **player**: Affects one player, target_id = player ID ("123")
+- **device**: Affects device(s), target_id = device ID or device type ("wind", "coal")
+
+#### Impact Configuration
+
+| Field | Used By | Description | Example |
+|-------|---------|-------------|----------|
+| **Multiplier** | systemic (price), all types (capacity) | Multiplication factor | 1.5 (150%), 0.3 (30%) |
+| **Additive** | weather, player, market, grid, device | Add/subtract value | -1000 (reduce 1000 MW) |
+
+### 8.3 Event Application - Two Phases
+
+#### Phase 1: Capacity Reduction (Before Market Clearing)
+
+Events with `target="device"` and `multiplier` reduce device capacity **before bidding**:
+
+```json
+{
+  "name": "Windflaute",
+  "type": "weather",
+  "target": "device",
+  "target_id": "wind",
+  "multiplier": 0.3,
+  "trigger_type": "prob",
+  "trigger_value": 0.2
+}
+```
+
+**Effect:** All wind devices bid at 30% capacity
+- Wind farm normally: 100 MW bid
+- During event: 30 MW bid (70 MW unavailable)
+- **Revenue reduced because less energy is sold**
+
+#### Phase 2: Price/Volume Adjustment (After Market Clearing)
+
+Events modify final market price and volume:
+
+| Type | Effect |
+|------|--------|
+| **systemic** | Multiplies price by `multiplier` |
+| **All others** | Adds `additive` to volume |
+
+```json
+{
+  "name": "Heat Wave",
+  "type": "systemic",
+  "target": "all",
+  "multiplier": 1.5,
+  "trigger_type": "round",
+  "trigger_value": 3
+}
+```
+
+**Effect:** Market clearing price multiplied by 1.5×
+- Cleared at 1000 ZAR/MWh → Final SMP = 1500 ZAR/MWh
+
+### 8.4 Common Event Patterns
+
+#### Pattern 1: Weather Event (Capacity Reduction)
+
+**Goal:** Reduce renewable generation during bad weather
+
+```json
+{
+  "name": "Cloudy Day",
+  "description": "Heavy cloud cover reduces solar generation to 20% capacity",
+  "type": "weather",
+  "target": "device",
+  "target_id": "solar",
+  "multiplier": 0.2,
+  "trigger_type": "prob",
+  "trigger_value": 0.15,
+  "duration_rounds": 1,
+  "key": "schlechtwetter"
+}
+```
+
+#### Pattern 2: Plant Outage (Capacity Reduction)
+
+**Goal:** Specific device goes offline
+
+```json
+{
+  "name": "Koeberg Unit 1 Outage",
+  "description": "Unplanned maintenance takes Unit 1 offline",
+  "type": "device",
+  "target": "device",
+  "target_id": "nuclear_1",
+  "multiplier": 0.0,
+  "trigger_type": "round",
+  "trigger_value": 2,
+  "duration_rounds": 2
+}
+```
+
+#### Pattern 3: Fuel Spike (Price Multiplier)
+
+**Goal:** Increase market price due to fuel costs
+
+```json
+{
+  "name": "Diesel Price Spike",
+  "description": "Global oil shortage increases fuel costs 50%",
+  "type": "systemic",
+  "target": "all",
+  "multiplier": 1.5,
+  "trigger_type": "round",
+  "trigger_value": 3,
+  "duration_rounds": 2
+}
+```
+
+#### Pattern 4: Player-Specific Event
+
+**Goal:** Affect one player's operations
+
+```json
+{
+  "name": "Grid Connection Failure",
+  "description": "Your grid connection is partially disrupted",
+  "type": "player",
+  "target": "player",
+  "target_id": "123",
+  "multiplier": 0.7,
+  "trigger_type": "round",
+  "trigger_value": 4,
+  "duration_rounds": 1
+}
+```
+
+### 8.5 Testing Events
+
+**Capacity Events (target="device"):**
+1. Create event with `multiplier < 1.0`
+2. Target device type ("wind", "solar", "coal")
+3. Run scenario and check:
+   - Device dispatch reduced proportionally
+   - Revenue reduced (less MWh sold)
+   - Zero multiplier = zero revenue
+
+**Price Events (type="systemic"):**
+1. Create event with `multiplier > 1.0` or `< 1.0`
+2. Target "all"
+3. Run scenario and check:
+   - Final SMP multiplied correctly
+   - All player revenues affected proportionally
+
+### 8.6 Common Mistakes
+
+❌ **Wrong:** Setting `type="weather"` with only `multiplier`
+- Weather events use additive unless targeting device capacity
+- For capacity reduction, must have `target="device"` + `target_id`
+
+❌ **Wrong:** Expecting `type="player"` to use multiplier
+- Only `type="systemic"` uses multiplier for price/volume
+- Use `multiplier` for capacity reduction instead
+
+❌ **Wrong:** Not setting `target` and `target_id` for device events
+- Events without proper target affect nothing
+- Must specify `target="device"` and `target_id="wind"`
+
+✅ **Correct:** Weather event reducing wind capacity
+```json
+{
+  "type": "weather",
+  "target": "device",
+  "target_id": "wind",
+  "multiplier": 0.3
+}
+```
 
 ### 8.6 Pre-Warning
 

@@ -435,6 +435,23 @@ After market clearing, configured events modify the price and/or volume.
 
 ### Event Types
 
+### Event Type Classification
+
+Events have a **type** field that determines HOW they are calculated:
+
+| Type | Calculation Method | Used For | Example |
+|------|-------------------|----------|----------|
+| **systemic** | Uses `multiplier` | Market-wide price/volume changes | Fuel spike (×1.2), Renewable surge (×0.8) |
+| **weather** | Uses `additive` | Weather impacts | Cloudy day (+0 MW reduction via capacity) |
+| **player** | Uses `additive` | Player-specific impacts | Plant outage (-1000 MW) |
+| **market** | Uses `additive` | Market rule changes | Carbon tax (+50 ZAR/MWh) |
+| **grid** | Uses `additive` | Grid disturbances | Line trip (-500 MW) |
+| **device** | Uses `additive` | Device-specific impacts | Battery degradation (×0.95 via capacity) |
+
+**CRITICAL:** Only `type="systemic"` uses **multiplier**. All other types use **additive**.
+
+### Event Trigger Types
+
 #### 1. **Round-Based Events**
 Triggered for specific rounds with duration.
 
@@ -445,6 +462,7 @@ Triggered for specific rounds with duration.
   "trigger_value": 3,           // Start at round 3
   "duration_rounds": 2,         // Active for rounds 3 and 4
   "multiplier": 1.5,            // Price multiplied by 1.5
+  "target": "all",              // Affects entire market
   "name": "Heat Wave"
 }
 ```
@@ -463,12 +481,14 @@ Randomly triggered each round based on probability.
 
 ```json
 {
-  "type": "systemic",
+  "type": "weather",
   "trigger_type": "prob",
   "trigger_value": 0.3,         // 30% chance per round
-  "multiplier": 0.8,            // Price multiplied by 0.8
-  "key": "renewable_surge",
-  "name": "Renewable Energy Surge"
+  "multiplier": 0.3,            // 30% capacity (Windflaute)
+  "target": "device",           // Affects specific devices
+  "target_id": "wind",          // Wind turbines
+  "key": "windflaute",
+  "name": "Wind Drought"
 }
 ```
 
@@ -482,46 +502,170 @@ if random_value < trigger_value:
     apply_event()
 ```
 
-#### 3. **Additive Events**
-Modify volume instead of price.
+### Event Target Filtering
 
+Events can target specific entities:
+
+| Target | Target ID | Effect | Example |
+|--------|-----------|--------|----------|
+| **all** | _(none)_ | Affects entire market | System-wide fuel spike |
+| **zone** | Zone number ("1", "2") | Affects one zone | Regional blackout |
+| **player** | Player ID ("123") | Affects one player's devices | Player-specific outage |
+| **device** | Device ID or type ("coal", "wind", "solar") | Affects device type | Wind drought, Solar cloudy day |
+
+**Target Matching Logic:**
+```python
+for event in round_events:
+    target = event.get("target", "all")
+    target_id = event.get("target_id", "")
+    
+    if target == "all":
+        apply = True
+    elif target == "zone" and zone == target_id:
+        apply = True
+    elif target == "player" and player_id == target_id:
+        apply = True
+    elif target == "device":
+        # Matches device ID OR device type (case-insensitive)
+        if target_id == device_id.lower() or target_id == device_type.lower():
+            apply = True
+```
+
+### Event Application - Two Phases
+
+Events are applied in **two distinct phases**:
+
+#### Phase 1: Device Capacity Reduction (BEFORE Market Clearing)
+
+During bid curve construction, events reduce device capacity using `multiplier`:
+
+```python
+def build_supply_from_bids(forecasts, hour_idx, synthetic_supply, config, round_events):
+    for device in devices:
+        capacity_multiplier = 1.0
+        
+        # Apply all matching events
+        for event in round_events:
+            if event_matches_device(event, device):
+                capacity_multiplier *= event.get("multiplier", 1.0)
+        
+        # Reduce bid quantity by event multiplier
+        quantity = base_quantity * capacity_multiplier
+        supply_bids.append((price, quantity))
+```
+
+**Example - Windflaute:**
 ```json
 {
-  "type": "additive",
-  "trigger_type": "round",
-  "trigger_value": 5,
-  "additive": -2000,            // Reduce volume by 2000 MWh
-  "name": "Transmission Outage"
+  "type": "weather",
+  "target": "device",
+  "target_id": "wind",
+  "multiplier": 0.3,  // 30% capacity
+  "name": "Wind Drought"
 }
 ```
 
-### Event Application Formula
+```python
+# Before event: Wind device bids 100 MW @ 50 ZAR/MWh
+# After event: Wind device bids 30 MW @ 50 ZAR/MWh (70 MW unavailable)
+# Result: Wind revenue = 30 MW × SMP (not 100 MW)
+```
+
+**Multiple Events Multiply:**
+```python
+# Event 1: multiplier = 0.5 (50% capacity)
+# Event 2: multiplier = 0.6 (60% capacity)
+# Total capacity: 0.5 × 0.6 = 0.3 (30% capacity)
+```
+
+#### Phase 2: Price/Volume Adjustment (AFTER Market Clearing)
+
+After market clearing, events modify final SMP and volume:
 
 ```python
-def apply_events(price, volume, events):
-    price_multiplier = 1.0
-    volume_additive = 0.0
+def apply_events(price, volume, events, player_id=None, zone=None, device_type=None):
+    """
+    Apply events to cleared market price and volume.
+    
+    Type determines calculation:
+    - type='systemic': Uses multiplier (applied first)
+    - Other types: Uses additive (applied second)
+    """
+    mul = 1.0
+    add_v = 0.0
     
     for event in events:
-        if event.type == "systemic":
-            price_multiplier *= event.multiplier
-        elif event.type == "additive":
-            volume_additive += event.additive
+        # Filter by target
+        target = event.get("target", "all")
+        target_id = event.get("target_id", "")
+        
+        # Skip if target doesn't match
+        if target == "zone" and zone != target_id:
+            continue
+        if target == "player" and player_id != target_id:
+            continue
+        if target == "device" and device_type != target_id:
+            continue
+        
+        # Apply event
+        event_type = event.get("type", "systemic")
+        if event_type == "systemic":
+            mul *= float(event.get("multiplier", 1.0))
+        else:
+            add_v += float(event.get("additive", 0.0))
     
-    final_price = price * price_multiplier
-    final_volume = max(0.0, volume + volume_additive)
-    
-    return final_price, final_volume
+    return price * mul, max(0.0, volume + add_v)
 ```
 
 **Example:**
 
 ```python
-# Before events: mcp = 1000 ZAR/MWh, volume = 12500 MWh
-# Events: Heat Wave (multiplier=1.5), Outage (additive=-2000)
+# Before events: SMP = 1000 ZAR/MWh, volume = 12500 MWh
+# Event 1 (systemic): multiplier = 1.5 (Heat Wave)
+# Event 2 (player): additive = -2000 (Transmission Outage)
+
+# Phase 2 calculation:
+mul = 1.0 * 1.5 = 1.5  # systemic multiplier
+add_v = 0 + (-2000) = -2000  # additive
 
 final_price = 1000 * 1.5 = 1500 ZAR/MWh
 final_volume = max(0, 12500 - 2000) = 10500 MWh
+```
+
+### Complete Event Example
+
+**Scenario: Windflaute (Wind Drought)**
+
+```json
+{
+  "name": "Windflaute",
+  "description": "Low wind conditions reduce wind power generation to 30% capacity",
+  "type": "weather",
+  "trigger_type": "prob",
+  "trigger_value": 0.2,
+  "duration_rounds": 1,
+  "target": "device",
+  "target_id": "wind",
+  "multiplier": 0.3,
+  "key": "windflaute"
+}
+```
+
+**Effect:**
+1. **Phase 1 (Capacity):** All wind devices bid at 30% capacity
+   - Wind farm: 100 MW → 30 MW available
+   - Merit order includes only 30 MW of wind capacity
+   - Clearing price may increase due to reduced supply
+
+2. **Phase 2 (Price/Volume):** No effect (type="weather" uses additive=0)
+   - Final SMP unchanged by event (market determines price)
+   - Volume unchanged (already reflected in reduced bids)
+
+**Revenue Impact:**
+```python
+# Without event: 100 MW × 500 ZAR/MWh = 50,000 ZAR
+# With event: 30 MW × 800 ZAR/MWh = 24,000 ZAR
+# (Higher SMP due to scarcity, but lower volume = lower revenue)
 ```
 
 ---
