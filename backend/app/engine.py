@@ -358,34 +358,6 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
             if 'load' in device_type:
                 continue
             
-            # Check if any event affects this device's capacity
-            capacity_multiplier = 1.0
-            if round_events:
-                for event in round_events:
-                    event_target = event.get("target", "all")
-                    event_target_id = str(event.get("target_id", "")).lower()
-                    
-                    # Check if event should be applied
-                    apply_event = False
-                    
-                    if event_target == "all":
-                        apply_event = True
-                    elif event_target == "device":
-                        # Check if event targets this specific device
-                        if event_target_id == str(device_id).lower():
-                            apply_event = True
-                        # Check if event targets this device type
-                        elif event_target_id == device_type:
-                            apply_event = True
-                    elif event_target == "player":
-                        # Check if event targets this player
-                        if event_target_id == str(player_id).lower():
-                            apply_event = True
-                    # Note: zone filtering would require zone info per device
-                    
-                    if apply_event:
-                        capacity_multiplier *= float(event.get("multiplier", 1.0))
-            
             device_bidding_enabled = device.get('enable_multi_bid')
             
             # Use device-level setting if specified, otherwise fall back to global
@@ -404,7 +376,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                     if hour_idx >= len(hours):
                         continue
                     
-                    quantity = float(hours[hour_idx]) * capacity_multiplier
+                    quantity = float(hours[hour_idx])
                     price = float(bid.get('price', 0))
                     
                     if quantity > 0:
@@ -430,7 +402,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                 if not device_forecast or hour_idx >= len(device_forecast):
                     continue
                 
-                quantity = float(device_forecast[hour_idx]) * capacity_multiplier
+                quantity = float(device_forecast[hour_idx])
                 price = float(device.get('cost_per_mwh_zar', 0))
                 
                 if quantity > 0:
@@ -517,34 +489,6 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
             if 'load' not in device_type:
                 continue
             
-            # Check if any event affects this device's capacity
-            capacity_multiplier = 1.0
-            if round_events:
-                for event in round_events:
-                    event_target = event.get("target", "all")
-                    event_target_id = str(event.get("target_id", "")).lower()
-                    
-                    # Check if event should be applied
-                    apply_event = False
-                    
-                    if event_target == "all":
-                        apply_event = True
-                    elif event_target == "device":
-                        # Check if event targets this specific device
-                        if event_target_id == str(device_id).lower():
-                            apply_event = True
-                        # Check if event targets this device type
-                        elif event_target_id == device_type:
-                            apply_event = True
-                    elif event_target == "player":
-                        # Check if event targets this player
-                        if event_target_id == str(player_id).lower():
-                            apply_event = True
-                    # Note: zone filtering would require zone info per device
-                    
-                    if apply_event:
-                        capacity_multiplier *= float(event.get("multiplier", 1.0))
-            
             device_bidding_enabled = device.get('enable_multi_bid')
             
             # Use device-level setting if specified, otherwise fall back to global
@@ -563,7 +507,7 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                     if hour_idx >= len(hours):
                         continue
                     
-                    quantity = float(hours[hour_idx]) * capacity_multiplier
+                    quantity = float(hours[hour_idx])
                     price = float(bid.get('price', 0))  # Willingness-to-pay
                     
                     if quantity > 0:
@@ -1219,12 +1163,43 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 max_available = dispatched * min_availability
                 actual = min(dispatched, max_available)
             
-            # Add noise on top of envelope-constrained actual (only for generators - consumers already have noise)
+            # Apply events to actual delivery (creates imbalance penalties)
+            # Events reduce actual delivery AFTER dispatch is committed
+            event_multiplier = 1.0
+            if round_events and not is_consumer:  # Only for generators
+                for event in round_events:
+                    event_target = event.get("target", "all")
+                    event_target_id = str(event.get("target_id", "")).lower()
+                    
+                    apply_event = False
+                    
+                    if event_target == "all":
+                        apply_event = True
+                    elif event_target == "player":
+                        if event_target_id == str(pid).lower():
+                            apply_event = True
+                    elif event_target == "device" and enable_bidding and pid in hour_bid_dispatch:
+                        # Check if any of player's devices match the event target
+                        for device_id in hour_bid_dispatch[pid].keys():
+                            device = next((d for d in devices_cfg if d.get("id") == device_id), None)
+                            if device:
+                                device_type = device.get('type', '').lower()
+                                if event_target_id == str(device_id).lower() or event_target_id == device_type:
+                                    apply_event = True
+                                    break
+                    
+                    if apply_event:
+                        event_multiplier *= float(event.get("multiplier", 1.0))
+            
+            # Apply event reduction to actual
+            actual = actual * event_multiplier
+            
+            # Add noise on top of event-reduced actual (only for generators - consumers already have noise)
             if not is_consumer:
                 noise = random.uniform(-frac, frac) * max(1.0, actual)
                 actual = max(0.0, actual + noise)
                 
-                # Update per-device actual with noise applied (proportionally)
+                # Update per-device actual with event and noise applied (proportionally)
                 if enable_bidding and pid in hour_bid_dispatch:
                     for device_id, device_dispatch in hour_bid_dispatch[pid].items():
                         device_dispatched = sum(bid_info.get('mw_dispatched', 0.0) for bid_info in device_dispatch.values())
