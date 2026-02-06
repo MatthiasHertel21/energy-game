@@ -44,6 +44,8 @@ export default function Trainer(){
   const [comparisonLoading, setComparisonLoading] = useState(false)
   const [comparisonMetric, setComparisonMetric] = useState('profit_zar')
   const comparisonChartRef = useRef(null)
+  const [cohortMembers, setCohortMembers] = useState([])
+  const [membersLoading, setMembersLoading] = useState(false)
 
   // Shared market trainer UI enabled
   const isDisabled = false
@@ -155,6 +157,30 @@ export default function Trainer(){
     const t = setInterval(load, 5000)
     return ()=> clearInterval(t)
   },[cohortId])
+
+  // Load cohort members when cohortId changes
+  useEffect(() => {
+    const loadMembers = async () => {
+      if (!cohortId) {
+        setCohortMembers([])
+        return
+      }
+      setMembersLoading(true)
+      try {
+        const { data } = await api.get(`/api/trainer/cohort/${cohortId}/members`)
+        setCohortMembers(data.members || [])
+      } catch (err) {
+        console.error('Failed to load cohort members:', err)
+        setCohortMembers([])
+      } finally {
+        setMembersLoading(false)
+      }
+    }
+    loadMembers()
+    // Refresh every 10 seconds
+    const interval = setInterval(loadMembers, 10000)
+    return () => clearInterval(interval)
+  }, [cohortId])
 
   // Auto refresh participants/status every 5s when a session is active
   useEffect(()=>{
@@ -522,66 +548,99 @@ export default function Trainer(){
         </Stack>
       </Paper>
 
-      {/* Presence Panel - integrated with player/type info */}
+      {/* Cohort Members Panel - shows all members with statistics */}
       <Paper variant="outlined" sx={{ p:2, mt:2, flex:1 }}>
           <Stack direction="row" alignItems="center" spacing={1} sx={{ mb:1 }}>
-            <Typography variant="subtitle1">Online now</Typography>
+            <Typography variant="subtitle1">Cohort Members</Typography>
+            <Chip label={`${cohortMembers.length} members`} size="small" />
             <span style={{ flex:1 }} />
-            <TextField size="small" label="Filter Cohort" value={presenceFilters.cohort} onChange={e=> setPresenceFilters(f=> ({...f, cohort: e.target.value}))} sx={{ width: 140 }} />
-            <TextField size="small" label="Filter Campaign" value={presenceFilters.campaign} onChange={e=> setPresenceFilters(f=> ({...f, campaign: e.target.value}))} sx={{ width: 160 }} />
-            <TextField size="small" label="Filter Scenario" value={presenceFilters.scenario} onChange={e=> setPresenceFilters(f=> ({...f, scenario: e.target.value}))} sx={{ width: 160 }} />
             <Button size="small" onClick={async()=>{
+              if (!cohortId) return
+              setMembersLoading(true)
               try{
-                const qs = cohortId ? `?cohort_id=${encodeURIComponent(cohortId)}` : ''
-                const { data } = await api.get(`/api/trainer/presence${qs}`)
-                setPresence(data || { users: [] })
+                const { data } = await api.get(`/api/trainer/cohort/${cohortId}/members`)
+                setCohortMembers(data.members || [])
               }catch(_){ /* ignore */ }
+              finally { setMembersLoading(false) }
             }}>Refresh</Button>
           </Stack>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Email</TableCell>
-                <TableCell>Cohort</TableCell>
-                <TableCell>Campaign</TableCell>
-                <TableCell>Scenario</TableCell>
-                <TableCell>Player Type</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell>Last seen</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {presence.users
-                .filter(u=> !presenceFilters.campaign || String(u.campaign_name||'').toLowerCase().includes(presenceFilters.campaign.toLowerCase()))
-                .filter(u=> !presenceFilters.scenario || String(u.scenario_name||'').toLowerCase().includes(presenceFilters.scenario.toLowerCase()))
-                .map(u=> {
-                  const participantInfo = participants.participants.find(p=> p.user_id === u.user_id)
-                  const playerTypeId = participantInfo?.selected_type || '—'
-                  const playerTypeName = (()=>{
-                    const rec = (brief?.player_types||[]).find(t=> t.id === playerTypeId)
-                    return rec?.name || playerTypeId
-                  })()
-                  const playerStatusRaw = participantInfo?.status || u.status || '—'
-                  const isPlaying = playerStatusRaw === 'playing'
-                  const isConnected = playerStatusRaw === 'joined'
-                  const playerStatus = isPlaying ? 'playing' : isConnected ? 'connected' : playerStatusRaw
-                  const bgColor = isPlaying ? '#e8f5e9' : isConnected ? '#fffde7' : 'transparent'
+          {membersLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+              <Typography variant="body2" color="text.secondary">Loading members...</Typography>
+            </Box>
+          ) : (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Email</TableCell>
+                  <TableCell>Name</TableCell>
+                  <TableCell>Role</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell align="right">Played</TableCell>
+                  <TableCell align="right">Completed</TableCell>
+                  <TableCell>Current Session</TableCell>
+                  <TableCell>Last Activity</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {cohortMembers.map(member => {
+                  const statusColors = {
+                    playing: 'success',
+                    briefing: 'info',
+                    paused: 'warning',
+                    online: 'primary',
+                    recent: 'default',
+                    inactive: 'default'
+                  }
+                  const bgColors = {
+                    playing: '#e8f5e9',
+                    briefing: '#e3f2fd',
+                    paused: '#fff3e0',
+                    online: '#f3e5f5',
+                    recent: 'transparent',
+                    inactive: 'transparent'
+                  }
                   return (
-                    <TableRow key={`${u.user_id}-${u.session_id||'none'}`} sx={{ bgcolor: bgColor }}>
-                      <TableCell>{u.email || '—'}</TableCell>
-                      <TableCell>{u.cohort_name || '—'}</TableCell>
-                      <TableCell>{u.campaign_name || '—'}</TableCell>
-                      <TableCell>{u.scenario_name || '—'}</TableCell>
-                      <TableCell>{playerTypeName}</TableCell>
+                    <TableRow key={member.user_id} sx={{ bgcolor: bgColors[member.status] || 'transparent' }}>
+                      <TableCell>{member.email}</TableCell>
+                      <TableCell>{member.name || '—'}</TableCell>
                       <TableCell>
-                        <Chip label={playerStatus} size="small" color={isPlaying ? 'success' : isConnected ? 'warning' : 'default'} />
+                        <Chip label={member.role} size="small" variant="outlined" />
                       </TableCell>
-                      <TableCell>{u.last_seen ? new Date(u.last_seen).toLocaleTimeString() : '—'}</TableCell>
+                      <TableCell>
+                        <Chip 
+                          label={member.status} 
+                          size="small" 
+                          color={statusColors[member.status] || 'default'}
+                        />
+                      </TableCell>
+                      <TableCell align="right">{member.total_scenarios_played}</TableCell>
+                      <TableCell align="right">{member.completed_scenarios}</TableCell>
+                      <TableCell>
+                        {member.active_session ? (
+                          <Stack spacing={0.5}>
+                            <Typography variant="caption" sx={{ fontWeight: 500 }}>
+                              {member.active_session.campaign_name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {member.active_session.scenario_name} (R{member.active_session.current_round})
+                            </Typography>
+                          </Stack>
+                        ) : '—'}
+                      </TableCell>
+                      <TableCell>
+                        {member.last_activity ? (
+                          <Typography variant="caption">
+                            {new Date(member.last_activity).toLocaleString()}
+                          </Typography>
+                        ) : '—'}
+                      </TableCell>
                     </TableRow>
                   )
                 })}
-            </TableBody>
-          </Table>
+              </TableBody>
+            </Table>
+          )}
         </Paper>
         
       <Typography variant="subtitle1" sx={{ mt:2 }}>Events</Typography>
