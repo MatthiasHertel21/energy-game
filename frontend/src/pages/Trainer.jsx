@@ -11,13 +11,12 @@ import DocsFab from '../components/DocsFab'
 
 export default function Trainer(){
   const [searchParams] = useSearchParams()
-  const [cohortId, setCohortId] = useState(searchParams.get('cohort') || '1')
+  const cohortId = searchParams.get('cohort') || '1'
   const [campaignId, setCampaignId] = useState('')
   const [scenarioId, setScenarioId] = useState('')
   const [sessionId, setSessionId] = useState(null)
   // Presence panel state
   const [presence, setPresence] = useState({ users: [] })
-  const [presenceFilters, setPresenceFilters] = useState({ cohort: '', campaign: '', scenario: '' })
   const [log, setLog] = useState([])
   const [message, setMessage] = useState('')
   const [tick, setTick] = useState(null)
@@ -35,7 +34,6 @@ export default function Trainer(){
   const volRef = useRef(null)
   const topRef = useRef(null)
   const [participants, setParticipants] = useState({ participants: [], summary: { total: 0, joined: 0, pending: 0, by_type: {} } })
-  const [cohorts, setCohorts] = useState([])
   const [campaigns, setCampaigns] = useState([])
   const [campScenarios, setCampScenarios] = useState([])
   const [sessionInfo, setSessionInfo] = useState(null)
@@ -90,19 +88,7 @@ export default function Trainer(){
     return ()=> s.close()
   },[])
 
-  // Load cohorts on mount
-  useEffect(()=>{
-    const loadData = async ()=>{
-      try{
-        const cohortRes = await api.get('/api/cohorts')
-        setCohorts(cohortRes.data || [])
-        if(cohortRes.data?.length > 0) setCohortId(String(cohortRes.data[0].id))
-      }catch(err){
-        console.error('Failed to load cohorts:', err)
-      }
-    }
-    loadData()
-  },[])
+  // Cohort comes from URL parameter - no need to load all cohorts
 
   // When cohort changes: check active session and load campaigns visible for cohort
   useEffect(()=>{
@@ -411,23 +397,12 @@ export default function Trainer(){
         </Box>
       )}
       
-      {/* Start New Scenario Section - with Cohort -> Campaign -> Scenario selection */}
+      {/* Start New Scenario Section - Campaign and Scenario selection */}
       <Paper variant="outlined" sx={{ p:2, mb:2 }}>
-        <Typography variant="subtitle1" gutterBottom>Start New Scenario</Typography>
+        <Typography variant="subtitle1" gutterBottom>Start New Scenario for Cohort {cohortId}</Typography>
         <Stack spacing={1.5}>
-          {/* First row: Cohort, Campaign, Scenario, Mode, Player Types */}
+          {/* First row: Campaign, Scenario */}
           <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-end">
-            <Stack spacing={0.5} sx={{ minWidth: 180 }}>
-              <InfoLabel title="Cohort" tooltip="Select the cohort whose players will participate." />
-              <Select size="small" value={cohortId} onChange={e=>setCohortId(e.target.value)} displayEmpty disabled={!!sessionId}>
-                {cohorts.length === 0 && <MenuItem value="">Loading...</MenuItem>}
-                {cohorts.map(c => (
-                  <MenuItem key={c.id} value={String(c.id)}>
-                    {c.name || `Cohort ${c.id}`}
-                  </MenuItem>
-                ))}
-              </Select>
-            </Stack>
             <Stack spacing={0.5} sx={{ minWidth: 200 }}>
               <InfoLabel title="Campaign" tooltip="Select a campaign available for this cohort." />
               <Select size="small" value={campaignId} onChange={e=>setCampaignId(e.target.value)} displayEmpty disabled={!!sessionId || campaigns.length===0}>
