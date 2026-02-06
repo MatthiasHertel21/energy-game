@@ -45,8 +45,8 @@ export default function Trainer(){
   const [comparisonMetric, setComparisonMetric] = useState('profit_zar')
   const comparisonChartRef = useRef(null)
 
-  // Disabled overlay for work in progress
-  const isDisabled = true
+  // Shared market trainer UI enabled
+  const isDisabled = false
 
   useEffect(()=>{
     const s = io('/trainer', { path: '/socket.io', transports: ['websocket','polling'], forceNew: true })
