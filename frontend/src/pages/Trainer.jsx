@@ -554,7 +554,6 @@ export default function Trainer(){
               {presence.users
                 .filter(u=> !presenceFilters.campaign || String(u.campaign_name||'').toLowerCase().includes(presenceFilters.campaign.toLowerCase()))
                 .filter(u=> !presenceFilters.scenario || String(u.scenario_name||'').toLowerCase().includes(presenceFilters.scenario.toLowerCase()))
-                .filter(u=> u.role !== 'trainer') // Hide trainers from list
                 .map(u=> {
                   const participantInfo = participants.participants.find(p=> p.user_id === u.user_id)
                   const playerTypeId = participantInfo?.selected_type || '—'
