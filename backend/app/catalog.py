@@ -3,7 +3,7 @@ from flask_restx import Namespace, Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from .extensions import db
-from .models import Campaign, CampaignScenario, Scenario, PlayerProgress, PlayerProgressStatus, CohortCampaign, CohortMember
+from .models import Campaign, CampaignScenario, Scenario, PlayerProgress, PlayerProgressStatus, CohortCampaign, CohortMember, User, Role
 
 
 ns = Namespace("catalog", description="Player catalog of published campaigns")
@@ -14,27 +14,39 @@ class CampaignList(Resource):
     @jwt_required()
     def get(self):
         uid = int(get_jwt_identity())
+        user = User.query.get(uid)
+        
         # Optional filters
         from flask import request as _rq
         cohort_id = _rq.args.get('cohort_id', type=int)
         only_active = str(_rq.args.get('active', '0')).lower() in ('1','true','yes')
         for_me = str(_rq.args.get('for_me', '0')).lower() in ('1','true','yes')
 
-        q = Campaign.query.filter_by(published=True)
-        # Filter by cohort mapping (visible[/active])
-        if cohort_id:
-            q = q.join(CohortCampaign, CohortCampaign.campaign_id == Campaign.id, isouter=False).\
-                filter(CohortCampaign.cohort_id == cohort_id, CohortCampaign.visible == True)
-            if only_active:
-                q = q.filter(CohortCampaign.active == True)
-        elif for_me:
-            # campaigns visible for any cohort the user belongs to
-            # user cohorts
-            sub = db.session.query(CohortMember.cohort_id).filter(CohortMember.user_id == uid).subquery()
-            q = q.join(CohortCampaign, CohortCampaign.campaign_id == Campaign.id, isouter=False).\
-                filter(CohortCampaign.cohort_id.in_(sub), CohortCampaign.visible == True)
-            if only_active:
-                q = q.filter(CohortCampaign.active == True)
+        # Designers, trainers, and admins can see all campaigns (published + unpublished)
+        # Regular players only see published campaigns
+        has_designer_rights = user and user.role in (Role.designer, Role.trainer, Role.admin)
+        
+        if has_designer_rights:
+            q = Campaign.query
+        else:
+            q = Campaign.query.filter_by(published=True)
+            
+        # Cohort filtering only applies to regular players, not designers/trainers/admins
+        if not has_designer_rights:
+            # Filter by cohort mapping (visible[/active])
+            if cohort_id:
+                q = q.join(CohortCampaign, CohortCampaign.campaign_id == Campaign.id, isouter=False).\
+                    filter(CohortCampaign.cohort_id == cohort_id, CohortCampaign.visible == True)
+                if only_active:
+                    q = q.filter(CohortCampaign.active == True)
+            elif for_me:
+                # campaigns visible for any cohort the user belongs to
+                # user cohorts
+                sub = db.session.query(CohortMember.cohort_id).filter(CohortMember.user_id == uid).subquery()
+                q = q.join(CohortCampaign, CohortCampaign.campaign_id == Campaign.id, isouter=False).\
+                    filter(CohortCampaign.cohort_id.in_(sub), CohortCampaign.visible == True)
+                if only_active:
+                    q = q.filter(CohortCampaign.active == True)
 
         rows = q.order_by(Campaign.id.desc()).all()
         out = []
@@ -48,6 +60,7 @@ class CampaignList(Resource):
                 "cover_image_url": c.cover_image_url,
                 "scenarios_count": total,
                 "progress": {"completed": completed, "total": total},
+                "published": c.published,  # Add published status for frontend
             })
         return out, HTTPStatus.OK
 
@@ -57,7 +70,15 @@ class CampaignDetail(Resource):
     @jwt_required()
     def get(self, cid: int):
         uid = int(get_jwt_identity())
-        c = Campaign.query.filter_by(id=cid, published=True).first_or_404()
+        user = User.query.get(uid)
+        
+        # Designers/trainers/admins can see unpublished campaigns
+        has_designer_rights = user and user.role in (Role.designer, Role.trainer, Role.admin)
+        
+        if has_designer_rights:
+            c = Campaign.query.filter_by(id=cid).first_or_404()
+        else:
+            c = Campaign.query.filter_by(id=cid, published=True).first_or_404()
         mappings = (
             db.session.query(CampaignScenario, Scenario)
             .join(Scenario, Scenario.id == CampaignScenario.scenario_id)

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef } from 'react'
 import * as d3 from 'd3'
 
 /**
@@ -15,7 +15,10 @@ import * as d3 from 'd3'
  * - freezeHours: number (hours locked after DAM)
  * - startTime: string (HH:MM) used to annotate the current clock time
  * - daBaseline: number[] (optional: Day-Ahead baseline for comparison)
+ * - committedPosition: number[] (optional: Current committed position for ID area visualization)
  * - hourStatus: string[] (optional: per-hour status: "locked", "da", "id", "future")
+ * - daCommittedStart: number (optional: first hour of DA committed range)
+ * - daCommittedEnd: number (optional: last hour+1 of DA committed range)
  */
 export default function ForecastChartEditor({
   hours = [],
@@ -31,7 +34,11 @@ export default function ForecastChartEditor({
   dayAheadGateHour = 12,
   startTime = '00:00',
   daBaseline = null,
-  hourStatus = []
+  committedPosition = null,
+  hourStatus = [],
+  totalRounds = null,
+  daCommittedStart = -1,
+  daCommittedEnd = -1
 }){
   const ref = useRef(null)
   const dragStateRef = useRef({ index: null, engaged: false })
@@ -47,7 +54,7 @@ export default function ForecastChartEditor({
     svg.selectAll('*').remove()
     svg.style('touch-action', 'none')
 
-    const W = 700, H = 320
+    const W = 700, H = 420
     const M = { top: 16, right: 20, bottom: 36, left: 46 }
     const iw = W - M.left - M.right
     const ih = H - M.top - M.bottom
@@ -68,22 +75,22 @@ export default function ForecastChartEditor({
       const minLoadPct = deviceParams.min_load_pct || 0
       const minPower = (minLoadPct / 100) * maxPower
       
-      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0' })
-      if (minPower > 0) refLines.push({ value: minPower, label: `Min Load (${minLoadPct}%)`, color: '#f57c00', dash: '4,2' })
+      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0', tooltip: `Maximum power output capacity: ${maxPower.toFixed(1)} MW` })
+      if (minPower > 0) refLines.push({ value: minPower, label: `Min Load (${minLoadPct}%)`, color: '#f57c00', dash: '4,2', tooltip: `Minimum stable load: ${minPower.toFixed(1)} MW (${minLoadPct}% of max power)` })
     } else if (['solar', 'wind'].includes(deviceTypeNorm)) {
       // Renewables: max_power, expected output
       const maxPower = deviceParams.max_power_mw || deviceParams.capacity_mw || 0
       const capFactor = deviceParams.capacity_factor_pct || 0
       const expected = (capFactor / 100) * maxPower
       
-      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0' })
-      if (expected > 0) refLines.push({ value: expected, label: `Expected (${capFactor}% CF)`, color: '#388e3c', dash: '5,3' })
+      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0', tooltip: `Maximum power output capacity: ${maxPower.toFixed(1)} MW` })
+      if (expected > 0) refLines.push({ value: expected, label: `Expected (${capFactor}% CF)`, color: '#388e3c', dash: '5,3', tooltip: `Expected output based on ${capFactor}% Capacity Factor (CF): ${expected.toFixed(1)} MW` })
     } else if (deviceTypeNorm === 'battery') {
       // Battery: +/- power rating
       const powerMw = deviceParams.power_mw || deviceParams.power_rating_mw || 0
       if (powerMw > 0) {
-        refLines.push({ value: powerMw, label: 'Max Charge', color: '#388e3c', dash: '3,0' })
-        refLines.push({ value: -powerMw, label: 'Max Discharge', color: '#c62828', dash: '3,0' })
+        refLines.push({ value: powerMw, label: 'Max Charge', color: '#388e3c', dash: '3,0', tooltip: `Maximum charging power: ${powerMw.toFixed(1)} MW` })
+        refLines.push({ value: -powerMw, label: 'Max Discharge', color: '#c62828', dash: '3,0', tooltip: `Maximum discharging power: ${powerMw.toFixed(1)} MW` })
       }
     } else if (deviceTypeNorm.includes('load')) {
       // Load devices: baseline, peak, DR capacity
@@ -92,10 +99,11 @@ export default function ForecastChartEditor({
       const drCapacity = deviceParams.demand_response_capacity_mw || 0
       const drmCapable = deviceParams.drm_capable
       
-      if (peak > 0) refLines.push({ value: peak, label: 'Peak Load', color: '#d32f2f', dash: '3,0' })
-      if (baseline > 0) refLines.push({ value: baseline, label: 'Baseline', color: '#1976d2', dash: '4,2' })
+      if (peak > 0) refLines.push({ value: peak, label: 'Peak Load', color: '#d32f2f', dash: '3,0', tooltip: `Peak load consumption: ${peak.toFixed(1)} MW` })
+      if (baseline > 0) refLines.push({ value: baseline, label: 'Baseline', color: '#1976d2', dash: '4,2', tooltip: `Baseline load consumption: ${baseline.toFixed(1)} MW` })
       if (drmCapable && drCapacity > 0 && baseline > drCapacity) {
-        refLines.push({ value: baseline - drCapacity, label: 'DR Minimum', color: '#fbc02d', dash: '5,3' })
+        const drMin = baseline - drCapacity
+        refLines.push({ value: drMin, label: 'DR Minimum', color: '#fbc02d', dash: '5,3', tooltip: `Demand Response minimum: ${drMin.toFixed(1)} MW (baseline minus ${drCapacity.toFixed(1)} MW DR capacity)` })
       }
     }
     
@@ -151,6 +159,207 @@ export default function ForecastChartEditor({
     // grid
     g.append('g').call(d3.axisLeft(y).ticks(6).tickSize(-iw).tickFormat('')).selectAll('line').attr('stroke', '#e0e0e0')
     
+    // Group consecutive hours by status
+    const statusRanges = []
+    if (Array.isArray(hourStatus) && hourStatus.length > 0) {
+      let currentStatus = hourStatus[0]
+      let rangeStart = 0
+      
+      for (let i = 1; i <= hourStatus.length; i++) {
+        if (i === hourStatus.length || hourStatus[i] !== currentStatus) {
+          statusRanges.push({ status: currentStatus, start: rangeStart, end: i })
+          if (i < hourStatus.length) {
+            currentStatus = hourStatus[i]
+            rangeStart = i
+          }
+        }
+      }
+    } else {
+      // Fallback if no hourStatus provided (e.g., Round 1)
+      const isRound1 = Number(currentRound) === 1
+      if (isRound1) {
+        statusRanges.push({ status: 'da', start: 0, end: n })
+      } else {
+        const lockedHour = (() => {
+          const normalized = Number(lockedUntil)
+          if (Number.isFinite(normalized) && normalized >= 0) {
+            return Math.min(n, normalized)
+          }
+          return 0
+        })()
+        if (lockedHour > 0) {
+          statusRanges.push({ status: 'locked', start: 0, end: lockedHour })
+        }
+        if (lockedHour < n) {
+          statusRanges.push({ status: 'id', start: lockedHour, end: n })
+        }
+      }
+    }
+    
+    // Market phase backgrounds based on hourStatus from backend
+    // Five possible phases: locked (settled), id (intraday), da (day-ahead), da_r1 (R1 special), forecast
+    
+    // Create hatch patterns for committed positions
+    const defs = svg.append('defs')
+    
+    // DAM hatch pattern: Yellow / (45 degrees)
+    const damHatchPattern = defs.append('pattern')
+      .attr('id', 'dam-committed-hatch')
+      .attr('patternUnits', 'userSpaceOnUse')
+      .attr('width', 6)
+      .attr('height', 6)
+      .attr('patternTransform', 'rotate(45)')
+    damHatchPattern.append('rect')
+      .attr('width', 6)
+      .attr('height', 6)
+      .attr('fill', '#FDD835')
+      .attr('opacity', 0.15)
+    damHatchPattern.append('line')
+      .attr('x1', 0).attr('y1', 0)
+      .attr('x2', 0).attr('y2', 6)
+      .attr('stroke', '#FDD835')
+      .attr('stroke-width', 2)
+      .attr('opacity', 0.4)
+    
+    // IDM hatch pattern: Orange \ (-45 degrees)
+    const idmHatchPattern = defs.append('pattern')
+      .attr('id', 'idm-committed-hatch')
+      .attr('patternUnits', 'userSpaceOnUse')
+      .attr('width', 6)
+      .attr('height', 6)
+      .attr('patternTransform', 'rotate(-45)')
+    idmHatchPattern.append('rect')
+      .attr('width', 6)
+      .attr('height', 6)
+      .attr('fill', '#FB8C00')
+      .attr('opacity', 0.15)
+    idmHatchPattern.append('line')
+      .attr('x1', 0).attr('y1', 0)
+      .attr('x2', 0).attr('y2', 6)
+      .attr('stroke', '#FB8C00')
+      .attr('stroke-width', 2)
+      .attr('opacity', 0.4)
+    
+    // Color and label mapping for each phase
+    // Colors match timeline (lighter versions): DAM=Light Yellow, IDM=Light Orange, Past=Light Grey, Forecast=Light Blue
+    const phaseConfig = {
+      locked: { color: '#F5F5F5', opacity: 0.60, label: 'Settled', textColor: '#757575' },
+      id: { color: '#FFE0B2', opacity: 0.50, label: 'Intraday Market', textColor: '#E65100' },
+      da: { color: '#FFF9C4', opacity: 0.50, label: 'Day-Ahead Market', textColor: '#F57F17' },
+      da_r1: { color: '#B2EBF2', opacity: 0.50, label: 'Day-Ahead (R1)', textColor: '#00ACC1' },
+      forecast: { color: '#E3F2FD', opacity: 0.35, label: 'Forecast', textColor: '#1565C0' }
+    }
+    
+    // Draw background rectangles for each phase
+    statusRanges.forEach(range => {
+      const config = phaseConfig[range.status] || phaseConfig.future
+      const xStart = x(Math.max(1, range.start + 1))
+      const xEnd = x(Math.min(n + 1, range.end + 1))
+      const width = xEnd - xStart
+      
+      if (width > 5) {  // Only draw if visible
+        g.append('rect')
+          .attr('x', xStart)
+          .attr('y', 0)
+          .attr('width', width)
+          .attr('height', ih)
+          .attr('fill', config.color)
+          .attr('opacity', config.opacity)
+          .style('pointer-events', 'none')
+      }
+    })
+    
+    // Add hatching for committed positions
+    // 1. DAM committed area (yellow / hatch)
+    if (daCommittedStart >= 0 && daCommittedEnd > daCommittedStart) {
+      const damXStart = x(Math.max(1, daCommittedStart + 1))
+      const damXEnd = x(Math.min(n + 1, daCommittedEnd + 1))
+      const damWidth = damXEnd - damXStart
+      
+      if (damWidth > 0.5) {
+        g.append('rect')
+          .attr('x', damXStart)
+          .attr('y', 0)
+          .attr('width', damWidth)
+          .attr('height', ih)
+          .attr('fill', 'url(#dam-committed-hatch)')
+          .style('pointer-events', 'none')
+      }
+    }
+    
+    // 2. IDM committed area (orange \ hatch)
+    // Find all hours with status "id" - these are committed ID positions (exclude locked)
+    if (Array.isArray(hourStatus)) {
+      let idStart = -1
+      for (let i = 0; i < hourStatus.length; i++) {
+        const isId = hourStatus[i] === 'id'
+        const isLocked = hourStatus[i] === 'locked'
+        
+        if (isId && !isLocked && idStart === -1) {
+          // Start of ID range
+          idStart = i
+        } else if ((!isId || isLocked) && idStart !== -1) {
+          // End of ID range
+          const idXStart = x(Math.max(1, idStart + 1))
+          const idXEnd = x(Math.min(n + 1, i + 1))
+          const idWidth = idXEnd - idXStart
+          
+          if (idWidth > 0.5) {
+            g.append('rect')
+              .attr('x', idXStart)
+              .attr('y', 0)
+              .attr('width', idWidth)
+              .attr('height', ih)
+              .attr('fill', 'url(#idm-committed-hatch)')
+              .style('pointer-events', 'none')
+          }
+          
+          idStart = -1
+        }
+      }
+      
+      // Handle last range if it extends to the end
+      if (idStart !== -1) {
+        const idXStart = x(Math.max(1, idStart + 1))
+        const idXEnd = x(Math.min(n + 1, hourStatus.length + 1))
+        const idWidth = idXEnd - idXStart
+        
+        if (idWidth > 0.5) {
+          g.append('rect')
+            .attr('x', idXStart)
+            .attr('y', 0)
+            .attr('width', idWidth)
+            .attr('height', ih)
+            .attr('fill', 'url(#idm-committed-hatch)')
+            .style('pointer-events', 'none')
+        }
+      }
+    }
+    
+    // Draw separator lines between market phases
+    for (let i = 1; i < statusRanges.length; i++) {
+      const xSeparator = x(statusRanges[i].start + 1)
+      const nextStatus = statusRanges[i].status
+      
+      // Color separator based on the phase it leads into
+      let strokeColor = '#424242' // Default gray
+      if (nextStatus === 'id') {
+        strokeColor = '#FB8C00' // Orange for IDM
+      } else if (nextStatus === 'da' || nextStatus === 'da_r1') {
+        strokeColor = '#FDD835' // Yellow for DAM
+      }
+      
+      g.append('line')
+        .attr('x1', xSeparator)
+        .attr('x2', xSeparator)
+        .attr('y1', 0)
+        .attr('y2', ih)
+        .attr('stroke', strokeColor)
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '4,4')
+        .style('pointer-events', 'none')
+    }
+    
     // Temporal markers (NOW, market gates, day boundaries)
     const parsedStart = String(startTime || '00:00').split(':')
     const startHour = Number(parsedStart[0]) || 0
@@ -187,19 +396,39 @@ export default function ForecastChartEditor({
     
     if (currentSimHour >= 0) {
       const nowX = hourToX(currentSimHour)
+      
+      // Glow effect
       g.append('line')
         .attr('x1', nowX)
         .attr('x2', nowX)
-        .attr('y1', 0)
-        .attr('y2', ih)
-        .attr('stroke', '#e91e63')
-        .attr('stroke-width', 2.5)
-        .attr('opacity', 0.85)
+        .attr('y1', -10)
+        .attr('y2', ih + 4)
+        .attr('stroke', '#FF5252')
+        .attr('stroke-width', 3)
+        .attr('opacity', 0.3)
+      
+      // Main line
+      g.append('line')
+        .attr('x1', nowX)
+        .attr('x2', nowX)
+        .attr('y1', -10)
+        .attr('y2', ih + 4)
+        .attr('stroke', '#D32F2F')
+        .attr('stroke-width', 2)
+        .attr('opacity', 1)
+      
+      // Pointer triangle at top
+      g.append('polygon')
+        .attr('points', `${nowX - 5},-10 ${nowX + 5},-10 ${nowX},-2`)
+        .attr('fill', '#D32F2F')
+        .attr('stroke', '#B71C1C')
+        .attr('stroke-width', 1)
+      
       g.append('text')
         .attr('x', nowX - 6)
         .attr('y', ih - 12)
         .attr('text-anchor', 'end')
-        .attr('fill', '#e91e63')
+        .attr('fill', '#D32F2F')
         .attr('font-size', 11)
         .attr('font-weight', 'bold')
         .text('NOW')
@@ -207,45 +436,12 @@ export default function ForecastChartEditor({
         .attr('x', nowX + 6)
         .attr('y', ih - 12)
         .attr('text-anchor', 'start')
-        .attr('fill', '#e91e63')
+        .attr('fill', '#D32F2F')
         .attr('font-size', 10)
         .text(formatClock(Math.floor(currentSimHour)))
     }
 
-    // Day-Ahead gate closure marker: next upcoming DA gate based on configured hour-of-day
-    const gateHourOfDay = Number.isFinite(Number(dayAheadGateHour))
-      ? Math.max(0, Math.min(23, Number(dayAheadGateHour)))
-      : 12
-    const nextDaGateAbs = (() => {
-      const todayGate = currentDayIndex * 24 + gateHourOfDay
-      if (todayGate > currentAbsHour) return todayGate
-      return (currentDayIndex + 1) * 24 + gateHourOfDay
-    })()
-    const nextDaGateRel = nextDaGateAbs - startHour
-    if (nextDaGateRel >= 0 && nextDaGateRel <= n) {
-      const daGateX = hourToX(nextDaGateRel)
-      g.append('line')
-        .attr('x1', daGateX)
-        .attr('x2', daGateX)
-        .attr('y1', 0)
-        .attr('y2', ih)
-        .attr('stroke', '#1565c0')
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '4,2')
-        .append('title')
-        .text('Next Day-Ahead gate closure')
-
-      const gateClockLabel = formatClock(Math.floor(nextDaGateRel))
-      g.append('text')
-        .attr('x', daGateX + 6)
-        .attr('y', 28)
-        .attr('text-anchor', 'start')
-        .attr('fill', '#1565c0')
-        .attr('font-size', 10)
-        .attr('font-weight', 'bold')
-        .style('cursor', 'default')
-        .text(`DA Gate ${gateClockLabel}`)
-    }
+    // Day-Ahead gate marker removed per user request (marker clutter)
     
     if (lockedLineHour > 0 && lockedLineHour < n) {
       const gateX = hourToX(lockedLineHour)
@@ -259,34 +455,14 @@ export default function ForecastChartEditor({
         .attr('stroke-dasharray', '5,5')
       
       const leftLabel = currentSimHour >= lockedLineHour ? 'Past' : 'Locked'
-      const leftShort = currentSimHour >= lockedLineHour ? 'P' : 'L'
-      const leftTooltip = currentSimHour >= lockedLineHour ? 'Past (Already delivered)' : 'Locked (IDM gate closed)'
+      const leftTooltip = currentSimHour >= lockedLineHour 
+        ? 'Past hours - Energy already delivered, cannot be modified' 
+        : 'Locked - Intraday gate closed, modifications no longer accepted'
       
       const rightLabel = currentSimHour >= lockedLineHour ? 'Intraday' : 'Next Market'
-      const rightShort = currentSimHour >= lockedLineHour ? 'IDM' : 'NM'
-      const rightTooltip = currentSimHour >= lockedLineHour ? 'Intraday Market' : 'Next Market (Editable)'
-      
-      g.append('text')
-        .attr('x', gateX - 6)
-        .attr('y', 14)
-        .attr('text-anchor', 'end')
-        .attr('fill', '#ff9800')
-        .attr('font-size', 10)
-        .attr('font-weight', 'bold')
-        .style('cursor', 'help')
-        .text(leftShort)
-        .append('title').text(leftTooltip)
-      
-      g.append('text')
-        .attr('x', gateX + 6)
-        .attr('y', 14)
-        .attr('text-anchor', 'start')
-        .attr('fill', '#2196f3')
-        .attr('font-size', 10)
-        .attr('font-weight', 'bold')
-        .style('cursor', 'help')
-        .text(rightShort)
-        .append('title').text(rightTooltip)
+      const rightTooltip = currentSimHour >= lockedLineHour 
+        ? 'Intraday Market - Hours still open for ID adjustments' 
+        : 'Next Market - Hours available for forecast editing before gate closure'
     }
     
     if (nextDayBoundaryHour > 0 && nextDayBoundaryHour < n) {
@@ -295,9 +471,17 @@ export default function ForecastChartEditor({
       const leftLabel = describeDayDelta(0)
       const rightLabel = describeDayDelta(dayDeltaRight)
       
-      // Shorten labels for space efficiency
-      const leftShort = leftLabel === 'Today' ? 'TD' : leftLabel === 'Tomorrow' ? 'TM' : leftLabel.substring(0, 2)
-      const rightShort = rightLabel === 'Today' ? 'TD' : rightLabel === 'Tomorrow' ? 'TM+' : rightLabel.substring(0, 3)
+      const leftTooltip = leftLabel === 'Today' 
+        ? 'Today - Current calendar day' 
+        : leftLabel === 'Tomorrow' 
+        ? 'Tomorrow - Next calendar day' 
+        : `${leftLabel} - Calendar day boundary`
+      
+      const rightTooltip = rightLabel === 'Today' 
+        ? 'Today - Current calendar day' 
+        : rightLabel === 'Tomorrow' 
+        ? 'Tomorrow+ - Day after tomorrow and beyond' 
+        : `${rightLabel} - Future calendar day`
       
       g.append('line')
         .attr('x1', dayX)
@@ -307,57 +491,9 @@ export default function ForecastChartEditor({
         .attr('stroke', '#9c27b0')
         .attr('stroke-width', 2)
         .attr('stroke-dasharray', '5,5')
-      
-      g.append('text')
-        .attr('x', dayX - 6)
-        .attr('y', 14)
-        .attr('text-anchor', 'end')
-        .attr('fill', '#2196f3')
-        .attr('font-size', 10)
-        .attr('font-weight', 'bold')
-        .style('cursor', 'help')
-        .text(leftShort)
-        .append('title').text(leftLabel)
-      
-      g.append('text')
-        .attr('x', dayX + 6)
-        .attr('y', 14)
-        .attr('text-anchor', 'start')
-        .attr('fill', '#9c27b0')
-        .attr('font-size', 10)
-        .attr('font-weight', 'bold')
-        .style('cursor', 'help')
-        .text(rightShort)
-        .append('title').text(rightLabel)
     }
     
-    // Draw locked zone (striped pattern for hours already executed)
-    if (lockedLineHour > 0) {
-      const lockedX = hourToX(lockedLineHour)
-      
-      // Create striped pattern for locked zone
-      const defs = svg.select('defs').empty() ? svg.append('defs') : svg.select('defs')
-      const pattern = defs.append('pattern')
-        .attr('id', 'locked-stripes')
-        .attr('patternUnits', 'userSpaceOnUse')
-        .attr('width', 8)
-        .attr('height', 8)
-        .attr('patternTransform', 'rotate(45)')
-      pattern.append('rect')
-        .attr('width', 4)
-        .attr('height', 8)
-        .attr('fill', '#bdbdbd')
-        .attr('opacity', 0.2)
-      
-      g.append('rect')
-        .attr('x', 0)
-        .attr('y', 0)
-        .attr('width', lockedX)
-        .attr('height', ih)
-        .attr('fill', 'url(#locked-stripes)')
-        .style('pointer-events', 'none')
-      // Label removed on request: locked zone is now indicated by grey hatching only
-    }
+    // Locked zone hatching removed per user request - solid grey background from phase backgrounds is sufficient
     
     // Draw ID (Intraday) zone marker - the tradeable window
     if (Array.isArray(hourStatus)) {
@@ -404,56 +540,7 @@ export default function ForecastChartEditor({
       }
     }
     
-    // Draw future zone (not yet tradeable) based on hourStatus
-    const futureStartIdx = Array.isArray(hourStatus) ? hourStatus.findIndex(s => s === 'future') : -1
-    if (futureStartIdx >= 0 && futureStartIdx < n) {
-      const futureX = hourToX(futureStartIdx)
-      
-      // Create dotted pattern for future zone
-      const defs2 = svg.select('defs').empty() ? svg.append('defs') : svg.select('defs')
-      const pattern2 = defs2.append('pattern')
-        .attr('id', 'future-dots')
-        .attr('patternUnits', 'userSpaceOnUse')
-        .attr('width', 10)
-        .attr('height', 10)
-      pattern2.append('circle')
-        .attr('cx', 5)
-        .attr('cy', 5)
-        .attr('r', 1.5)
-        .attr('fill', '#2196f3')
-        .attr('opacity', 0.4)
-      
-      g.append('rect')
-        .attr('x', futureX)
-        .attr('y', 0)
-        .attr('width', iw - futureX)
-        .attr('height', ih)
-        .attr('fill', 'url(#future-dots)')
-        .style('pointer-events', 'none')
-      
-      // Add "FUTURE" label
-      const futureWidth = iw - futureX
-      if (futureWidth > 40) {
-        g.append('text')
-          .attr('x', futureX + futureWidth / 2)
-          .attr('y', 28)
-          .attr('text-anchor', 'middle')
-          .attr('fill', '#2196f3')
-          .attr('font-size', 9)
-          .attr('opacity', 0.8)
-          .text('🔮 FUTURE')
-      }
-      
-      // Draw vertical line at future boundary
-      g.append('line')
-        .attr('x1', futureX)
-        .attr('x2', futureX)
-        .attr('y1', 0)
-        .attr('y2', ih)
-        .attr('stroke', '#2196f3')
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '3,3')
-    }
+    // Remove special future-zone overlay to keep forecast fully editable and visually clean
     
     // Draw DA Baseline and market area fills if provided
     if (daBaseline && Array.isArray(daBaseline) && daBaseline.length > 0) {
@@ -467,7 +554,7 @@ export default function ForecastChartEditor({
         .x(d => x(d.i + 1))
         .y0(ih) // Bottom (X-axis)
         .y1(d => y(d.v))
-        .curve(d3.curveMonotoneX)
+        .curve(d3.curveStepAfter)
       
       g.append('path')
         .datum(extendedBaseline)
@@ -477,15 +564,31 @@ export default function ForecastChartEditor({
       
       // 2. Fill area between DA baseline and current forecast
       // Green = ID buy (current > DA), Red = ID sell (current < DA)
+      // IMPORTANT: Use committedPosition for hours before ID gate, hours for forecast hours
       if (hours && hours.length > 0) {
         const minLen = Math.min(hours.length, daBaseline.length)
+        
+        // Find next ID gate (first hour with status != "id" after current locked hours)
+        let nextIdGateHour = minLen
+        if (Array.isArray(hourStatus)) {
+          const firstIdIdx = hourStatus.findIndex((s, idx) => idx >= lockedUntil && s === 'id')
+          const lastIdIdx = hourStatus.findLastIndex(s => s === 'id')
+          if (firstIdIdx >= 0 && lastIdIdx >= firstIdIdx) {
+            nextIdGateHour = lastIdIdx + 1  // First hour after last "id" status
+          }
+        }
         
         // Create combined data for area between lines
         const combinedData = []
         for (let i = 0; i < minLen; i++) {
+          // For hours before ID gate: use committedPosition if available (shows actual committed ID position)
+          // For hours after ID gate: use current editable forecast (shows planned position)
+          const useCommitted = i < nextIdGateHour && Array.isArray(committedPosition) && i < committedPosition.length
+          const currentValue = useCommitted ? Number(committedPosition[i]) || 0 : Number(hours[i]) || 0
+          
           combinedData.push({
             i,
-            current: Number(hours[i]) || 0,
+            current: currentValue,
             da: Number(daBaseline[i]) || 0
           })
         }
@@ -508,33 +611,35 @@ export default function ForecastChartEditor({
           .x(d => x(d.i + 1))
           .y0(d => y(d.da))
           .y1(d => y(Math.max(d.current, d.da)))
-          .curve(d3.curveMonotoneX)
+          .curve(d3.curveStepAfter)
         
         g.append('path')
           .datum(extendedCombined)
           .attr('fill', '#4caf50')
           .attr('opacity', 0.25)
           .attr('d', idBuyArea)
+          .style('pointer-events', 'none')
         
         // ID Sell area (current < DA) - Red
         const idSellArea = d3.area()
           .x(d => x(d.i + 1))
           .y0(d => y(d.da))
           .y1(d => y(Math.min(d.current, d.da)))
-          .curve(d3.curveMonotoneX)
+          .curve(d3.curveStepAfter)
         
         g.append('path')
           .datum(extendedCombined)
           .attr('fill', '#f44336')
           .attr('opacity', 0.25)
           .attr('d', idSellArea)
+          .style('pointer-events', 'none')
       }
       
       // Draw DA baseline line (dotted grey)
       const baselinePath = d3.line()
         .x(d => x(d.i + 1))
         .y(d => y(d.v))
-        .curve(d3.curveMonotoneX)
+        .curve(d3.curveStepAfter)
       
       g.append('path')
         .datum(extendedBaseline)
@@ -545,53 +650,7 @@ export default function ForecastChartEditor({
         .attr('d', baselinePath)
         .attr('opacity', 0.8)
       
-      // Add legend for market areas
-      const legendY = ih - 8
-      
-      // DA legend
-      g.append('rect')
-        .attr('x', iw - 180)
-        .attr('y', legendY - 8)
-        .attr('width', 12)
-        .attr('height', 12)
-        .attr('fill', '#9e9e9e')
-        .attr('opacity', 0.4)
-      g.append('text')
-        .attr('x', iw - 165)
-        .attr('y', legendY + 2)
-        .attr('fill', '#666')
-        .attr('font-size', '9px')
-        .text('DA')
-      
-      // ID Buy legend
-      g.append('rect')
-        .attr('x', iw - 130)
-        .attr('y', legendY - 8)
-        .attr('width', 12)
-        .attr('height', 12)
-        .attr('fill', '#4caf50')
-        .attr('opacity', 0.5)
-      g.append('text')
-        .attr('x', iw - 115)
-        .attr('y', legendY + 2)
-        .attr('fill', '#4caf50')
-        .attr('font-size', '9px')
-        .text('ID+')
-      
-      // ID Sell legend
-      g.append('rect')
-        .attr('x', iw - 80)
-        .attr('y', legendY - 8)
-        .attr('width', 12)
-        .attr('height', 12)
-        .attr('fill', '#f44336')
-        .attr('opacity', 0.5)
-      g.append('text')
-        .attr('x', iw - 65)
-        .attr('y', legendY + 2)
-        .attr('fill', '#f44336')
-        .attr('font-size', '9px')
-        .text('ID−')
+      // Legends removed per user request (DA, ID+, ID- visual clutter)
     }
     
     // Draw device-specific reference lines
@@ -615,9 +674,7 @@ export default function ForecastChartEditor({
           .attr('fill', ref.color)
           .attr('font-size', '10px')
           .attr('font-weight', 'bold')
-          .style('cursor', 'help')
           .text(ref.label)
-          .append('title').text(`${ref.label}: ${ref.value.toFixed(0)} MW`)
         
         g.append('text')
           .attr('x', 4)
@@ -631,7 +688,7 @@ export default function ForecastChartEditor({
     })
 
     // axes
-    // X-axis with day/time labels
+    // X-axis with day/time labels (Tomorrow removed per user request)
     const xAxis = d3.axisBottom(x).ticks(Math.min(n + 1, 12)).tickFormat((hourNum) => {
       const hourIdx = Math.round(hourNum) - 1
       const totalHours = startHour + hourIdx
@@ -640,7 +697,7 @@ export default function ForecastChartEditor({
       
       // Show day label for first hour of each day or first tick
       if (hourOfDay === 0 || hourIdx === 0) {
-        const dayLabel = dayOffset === 0 ? 'Today' : dayOffset === 1 ? 'Tomorrow' : `Day ${dayOffset + 1}`
+        const dayLabel = dayOffset === 0 ? 'Today' : `Day ${dayOffset + 1}`
         return `${dayLabel}\n${String(hourOfDay).padStart(2, '0')}:00`
       }
       return `${String(hourOfDay).padStart(2, '0')}:00`
@@ -654,7 +711,7 @@ export default function ForecastChartEditor({
     
     g.append('g').call(d3.axisLeft(y).ticks(6))
 
-    const line = d3.line().x((d, i) => x(i + 1)).y((d) => y(d))
+    const line = d3.line().x((d, i) => x(i + 1)).y((d) => y(d)).curve(d3.curveStepAfter)
     lineGenerator = line
 
     // path
@@ -848,9 +905,12 @@ export default function ForecastChartEditor({
     // labels
     g.append('text').attr('x', iw / 2).attr('y', ih + 28).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Hour')
     g.append('text').attr('transform', 'rotate(-90)').attr('x', -ih / 2).attr('y', -36).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Power (MW) per hour')
-  }, [hours, lockedUntil, onChange, maxValue, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, dayAheadGateHour, startTime, daBaseline, hourStatus])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hours, lockedUntil, onChange, maxValue, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, dayAheadGateHour, startTime, daBaseline, hourStatus, totalRounds])
 
   return (
-    <svg ref={ref} role="img" aria-label="Forecast editor chart" style={{ border: '1px solid #eee', borderRadius: 4 }} />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <svg ref={ref} role="img" aria-label="Forecast editor chart" style={{ border: '1px solid #eee', borderRadius: 4 }} />
+    </div>
   )
 }

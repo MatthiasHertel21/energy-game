@@ -1,6 +1,19 @@
 import React, { Suspense, useEffect } from 'react'
 import { Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { AppBar, Toolbar, Typography, Button, Container, Box, CircularProgress, Stack } from '@mui/material'
+import { 
+  Drawer, 
+  List, 
+  ListItem, 
+  ListItemButton, 
+  ListItemIcon, 
+  ListItemText,
+  Typography, 
+  Container, 
+  Box, 
+  CircularProgress, 
+  Stack,
+  Divider
+} from '@mui/material'
 import { 
   AdminPanelSettings as AdminIcon, 
   School as TrainerIcon,
@@ -10,6 +23,7 @@ import {
   LibraryBooks as CatalogIcon,
   Edit as EditIcon,
 } from '@mui/icons-material'
+import { io } from 'socket.io-client'
 const Login = React.lazy(()=> import('./pages/Login'))
 const Register = React.lazy(()=> import('./pages/Register'))
 const AdminUsers = React.lazy(()=> import('./pages/AdminUsers'))
@@ -49,91 +63,194 @@ export default function App({ themeMode, onToggleTheme }) {
   const location = useLocation()
   const navigate = useNavigate()
   
+  // Global socket listener for trainer broadcasts
+  useEffect(() => {
+    if (!user) return
+    
+    const socket = io('/game', { 
+      path: '/socket.io', 
+      transports: ['websocket', 'polling'],
+      auth: { token: localStorage.getItem('access_token') }
+    })
+    
+    socket.on('connect', () => console.log('Global socket connected'))
+    
+    socket.on('trainer_message', (payload) => {
+      if (payload && payload.message) {
+        if (window.__showSnack) {
+          window.__showSnack(`Trainer: ${payload.message}`, 'info')
+        }
+      }
+    })
+    
+    return () => socket.close()
+  }, [user])
+  
   const isActive = (path) => location.pathname === path || location.pathname.startsWith(path + '/')
   
+  const drawerWidth = 200
+  
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <AppBar position="static">
-  <Toolbar sx={{ flexWrap: 'wrap', gap: 1 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexGrow: 1 }}>
-            <img src="/logo.svg" alt="Logo" height={24} />
-            <Typography variant="h6">EMSG Electricity Market Simulation Game</Typography>
+    <Box sx={{ display: 'flex', minHeight: '100vh' }}>
+      {/* Left Sidebar Navigation */}
+      {user && (
+        <Drawer
+          variant="permanent"
+          sx={{
+            width: drawerWidth,
+            flexShrink: 0,
+            '& .MuiDrawer-paper': {
+              width: drawerWidth,
+              boxSizing: 'border-box',
+            },
+          }}
+        >
+          {/* Logo and Title */}
+          <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+            <img src="/logo.svg" alt="Logo" height={36} />
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                fontSize: '0.65rem', 
+                lineHeight: 1.3, 
+                textAlign: 'center',
+                color: 'text.secondary'
+              }}
+            >
+              Electricity Market Simulation Game
+            </Typography>
           </Box>
-          {user ? (
-            <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 0.5 }}>
-              {user.role === 'admin' && (
-                <Button 
-                  size="small"
-                  color={isActive('/admin') ? 'secondary' : 'inherit'} 
-                  component={Link} 
-                  to="/admin"
-                  startIcon={<AdminIcon />}
-                  aria-label="Admin panel"
-                >
-                  Admin
-                </Button>
-              )}
-              {(user.role === 'designer' || user.role === 'admin') && (
-                <Button 
-                  size="small"
-                  color={isActive('/designer') ? 'secondary' : 'inherit'} 
-                  component={Link} 
-                  to="/designer"
-                  startIcon={<EditIcon />}
-                  aria-label="Designer"
-                >
-                  Designer
-                </Button>
-              )}
-              {(user.role === 'trainer' || user.role === 'admin') && (
-                <>
-                  <Button 
-                    size="small"
-                    color={isActive('/trainer') ? 'secondary' : 'inherit'} 
-                    component={Link} 
-                    to="/trainer"
-                    startIcon={<GroupsIcon />}
-                    aria-label="Trainer and cohort management"
-                  >
-                    Trainer
-                  </Button>
-                </>
-              )}
-              {(user.role === 'player' || user.role === 'admin') && (
-                <>
-                  <Button 
-                    size="small"
-                    color={isActive('/home') ? 'secondary' : 'inherit'} 
+          
+          <Divider />
+          
+          {/* Navigation Links */}
+          <List sx={{ flexGrow: 1 }}>
+            {(user.role === 'player' || user.role === 'admin') && (
+              <>
+                <ListItem disablePadding>
+                  <ListItemButton 
                     component={Link} 
                     to="/home"
-                    startIcon={<HomeIcon />}
-                    aria-label="Player home"
+                    selected={isActive('/home')}
                   >
-                    Home
-                  </Button>
-                  <Button 
-                    size="small"
-                    color={isActive('/catalog') ? 'secondary' : 'inherit'} 
+                    <ListItemIcon>
+                      <HomeIcon />
+                    </ListItemIcon>
+                    <ListItemText primary="Home" />
+                  </ListItemButton>
+                </ListItem>
+                <ListItem disablePadding>
+                  <ListItemButton 
                     component={Link} 
                     to="/catalog"
-                    startIcon={<CatalogIcon />}
-                    aria-label="Campaign catalog"
+                    selected={isActive('/catalog')}
                   >
-                    Catalog
-                  </Button>
-                </>
-              )}
+                    <ListItemIcon>
+                      <CatalogIcon />
+                    </ListItemIcon>
+                    <ListItemText primary="Catalog" />
+                  </ListItemButton>
+                </ListItem>
+              </>
+            )}
+            
+            {(user.role === 'designer' || user.role === 'admin') && (
+              <ListItem disablePadding>
+                <ListItemButton 
+                  component={Link} 
+                  to="/designer"
+                  selected={isActive('/designer')}
+                >
+                  <ListItemIcon>
+                    <EditIcon />
+                  </ListItemIcon>
+                  <ListItemText primary="Designer" />
+                </ListItemButton>
+              </ListItem>
+            )}
+            
+            {(user.role === 'trainer' || user.role === 'admin') && (
+              <ListItem disablePadding>
+                <ListItemButton 
+                  component={Link} 
+                  to="/trainer"
+                  selected={isActive('/trainer')}
+                >
+                  <ListItemIcon>
+                    <GroupsIcon />
+                  </ListItemIcon>
+                  <ListItemText primary="Trainer" />
+                </ListItemButton>
+              </ListItem>
+            )}
+            
+            {user.role === 'admin' && (
+              <ListItem disablePadding>
+                <ListItemButton 
+                  component={Link} 
+                  to="/admin"
+                  selected={isActive('/admin')}
+                >
+                  <ListItemIcon>
+                    <AdminIcon />
+                  </ListItemIcon>
+                  <ListItemText primary="Admin" />
+                </ListItemButton>
+              </ListItem>
+            )}
+          </List>
+          
+          <Divider />
+          
+          {/* Theme Toggle and User Menu at bottom */}
+          <Box sx={{ p: 2 }}>
+            <Stack spacing={1}>
               <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />
               <UserMenu />
+            </Stack>
+          </Box>
+        </Drawer>
+      )}
+      
+      {/* Main Content Area */}
+      <Box
+        component="main"
+        sx={{
+          flexGrow: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: '100vh',
+          width: user ? `calc(100% - ${drawerWidth}px)` : '100%'
+        }}
+      >
+        {/* Top Bar for non-logged-in users */}
+        {!user && (
+          <Box 
+            sx={{ 
+              p: 2, 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center',
+              borderBottom: 1,
+              borderColor: 'divider',
+              bgcolor: 'background.paper'
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <img src="/logo.svg" alt="Logo" height={24} />
+              <Typography variant="h6">EMSG Electricity Market Simulation Game</Typography>
             </Box>
-          ) : (
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <Button color="inherit" component={Link} to="/login">Sign In</Button>
-              <Button color="inherit" component={Link} to="/register">Register</Button>
-            </Box>
-          )}
-        </Toolbar>
-      </AppBar>
+            <Stack direction="row" spacing={1}>
+              <ListItemButton component={Link} to="/login" sx={{ borderRadius: 1 }}>
+                <ListItemText primary="Sign In" />
+              </ListItemButton>
+              <ListItemButton component={Link} to="/register" sx={{ borderRadius: 1 }}>
+                <ListItemText primary="Register" />
+              </ListItemButton>
+            </Stack>
+          </Box>
+        )}
+        
       <SnackbarProvider>
         <Container maxWidth="lg" sx={{ mt: 4, mb: 4, flex: 1 }}>
           {/* Force navigate poll for players */}
@@ -260,6 +377,7 @@ export default function App({ themeMode, onToggleTheme }) {
           </Container>
         </Box>
       </SnackbarProvider>
+      </Box>
     </Box>
   )
 }
