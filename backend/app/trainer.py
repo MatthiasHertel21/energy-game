@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from flask import request
-from flask_restx import Namespace, Resource
+from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required
 from sqlalchemy import func
 
@@ -20,6 +20,7 @@ from .models import (
     Campaign,
     PlayerProgress,
     PlayerProgressStatus,
+    SessionPlayerType,
 )
 
 ns = Namespace("trainer", description="Trainer utilities and presence")
@@ -177,9 +178,20 @@ class CohortMembers(Resource):
                 Session.query
                 .filter(
                     Session.cohort_id == cohort_id,
-                    Session.status.in_([SessionStatus.created, SessionStatus.running, SessionStatus.paused])
+                    Session.status.in_(
+                        [
+                            SessionStatus.created,
+                            SessionStatus.briefing,
+                            SessionStatus.running,
+                            SessionStatus.round_active,
+                            SessionStatus.round_closing,
+                            SessionStatus.calculating,
+                            SessionStatus.round_results,
+                            SessionStatus.paused,
+                        ]
+                    )
                 )
-                .order_by(Session.created_at.desc())
+                .order_by(Session.id.desc())
                 .first()
             )
 
@@ -195,29 +207,40 @@ class CohortMembers(Resource):
                     status = "recent"
             
             if active_session:
-                # Check if user is part of this session
-                from .models import Player
-                player = Player.query.filter_by(
+                # Check if user joined this session via session_join activity
+                joined = ActivityLog.query.filter_by(
+                    user_id=user.id,
                     session_id=active_session.id,
-                    user_id=user.id
+                    action_type="session_join",
                 ).first()
-                
-                if player:
-                    if active_session.status == SessionStatus.running:
+
+                if joined:
+                    selected_type = None
+                    try:
+                        sel = SessionPlayerType.query.filter_by(session_id=active_session.id, user_id=user.id).first()
+                        if sel:
+                            selected_type = sel.type_id
+                    except Exception:
+                        selected_type = None
+
+                    if active_session.status in [SessionStatus.running, SessionStatus.round_active, SessionStatus.round_results]:
                         status = "playing"
-                    elif active_session.status == SessionStatus.created:
+                    elif active_session.status in [SessionStatus.created, SessionStatus.briefing]:
                         status = "briefing"
                     elif active_session.status == SessionStatus.paused:
                         status = "paused"
-                    
+                    elif active_session.status in [SessionStatus.round_closing, SessionStatus.calculating]:
+                        status = "waiting"
+
                     scenario = Scenario.query.get(active_session.scenario_id) if active_session.scenario_id else None
                     campaign = Campaign.query.get(scenario.campaign_id) if scenario and scenario.campaign_id else None
-                    
+
                     session_info = {
                         "session_id": active_session.id,
                         "scenario_name": scenario.name if scenario else None,
                         "campaign_name": campaign.name if campaign else None,
                         "current_round": active_session.current_round,
+                        "player_type": selected_type,
                     }
 
             result.append({
@@ -225,6 +248,7 @@ class CohortMembers(Resource):
                 "email": user.email,
                 "name": user.name,
                 "role": user.role.value,
+                "player_type": session_info.get("player_type") if session_info else None,
                 "status": status,
                 "total_scenarios_played": total_played,
                 "completed_scenarios": completed_count,
@@ -238,3 +262,23 @@ class CohortMembers(Resource):
             "members": result,
             "total_members": len(result),
         }, HTTPStatus.OK
+
+
+broadcast_in = ns.model("BroadcastIn", {
+    "message": fields.String(required=True, description="Message to broadcast")
+})
+
+@ns.route("/broadcast")
+class TrainerBroadcast(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    @ns.expect(broadcast_in, validate=True)
+    def post(self):
+        """
+        Broadcast a message to all connected players.
+        """
+        from .extensions import socketio
+        msg = request.json["message"]
+        # Broadcast to all game namespace clients
+        socketio.emit("trainer_message", {"message": msg}, namespace="/game")
+        return {"status": "ok"}, HTTPStatus.OK

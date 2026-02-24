@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, Grid, Accordion, AccordionSummary, AccordionDetails, Tooltip, InputAdornment } from '@mui/material'
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, Grid, Tooltip, InputAdornment } from '@mui/material'
 import { Edit as EditIcon, Add as AddIcon, Visibility as VisibilityIcon } from '@mui/icons-material'
 import InfoLabel from '../components/InfoLabel'
 import NumberInput from '../components/inputs/NumberInput'
@@ -27,7 +26,8 @@ const KSE_EDITOR_VERSION = '1.1.0'
 
 const defaultConfig = {
   version: '1.0.0',
-  general: { horizon_hours: 24, forecast_horizon_hours: 48, freeze_hours: 2, day_ahead_gate_hour: 12, round_span_hours: 6, rounds: 4, round_duration_seconds: 300, description: '' },
+  objectives: '',
+  general: { horizon_hours: 24, forecast_horizon_hours: 48, freeze_hours: 2, day_ahead_gate_hour: 12, id_gate_interval_hours: 4, id_gate_base_hour: 0, day_one_baseline_mode: 'preset', round_span_hours: 6, rounds: 4, round_duration_seconds: 300 },
     market: {
       base_price: 1000,
       base_volume_mwh: 20000,
@@ -40,6 +40,14 @@ const defaultConfig = {
       random_capacity_pct: 10,
       random_price_pct: 10,
     },
+  markets: {
+    dam: {
+      trading: []   // Array of status per round: "on", "market_code", "off"
+    },
+    idm: {
+      trading: []
+    }
+  },
   grid: { zones: 2, atc: [[0,5000],[5000,0]] },
   environment: { seed: 'preview', actual_noise_pct: 5 },
   events: [],
@@ -517,74 +525,111 @@ export default function KSE(){
   }
 
   const save = async ()=>{
-    if(!validate()) return
-    // ensure schema version on save
-    if (!cfg.version) {
-      setCfg(prev => ({ ...prev, version: '1.0.0' }))
-    }
-    // ensure horizon stays consistent on save
     try {
-      setCfg(prev => {
-        const n = structuredClone(prev)
-        const r = Number(n?.general?.rounds || 0)
-        const sp = Number(n?.general?.round_span_hours || 0)
-        if (r > 0 && sp > 0) n.general.horizon_hours = r * sp
-        return n
-      })
-    } catch(_) {}
-    // Normalize player type IDs (required by backend)
-    const norm = structuredClone(cfg)
-    // Convert frontend device shape -> backend schema
-    try{
-      if (Array.isArray(norm.devices)){
-        norm.devices = norm.devices.map(d => {
-          const t = (d.type||'').toLowerCase()
-          const out = { ...d, type: t }
-          if ([ 'coal','gas','hydro','nuclear' ].includes(t)){
-            out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
-            out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
-            if (out.min_load_pct == null) out.min_load_pct = 0
-            if (out.ramp_rate_mw_per_min == null) out.ramp_rate_mw_per_min = 60
-          } else if ([ 'solar','wind' ].includes(t)){
-            out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
-            out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
-            if (out.capacity_factor_pct == null) out.capacity_factor_pct = 30
-          } else if (t === 'battery'){
-            out.capacity_mwh = out.capacity_mwh ?? out.capacity_mw ?? 100
-            out.power_mw = out.power_mw ?? out.power_rating_mw ?? 50
-            out.efficiency_pct = out.efficiency_pct ?? 85
-            out.initial_soc_pct = out.initial_soc_pct ?? 50
-          } else if (t.endsWith('_load')){
-            // baseline_load_mw / peak_load_mw already present from UI
-          }
-          return out
-        })
+      if(!validate()) return
+      // ensure schema version on save
+      if (!cfg.version) {
+        setCfg(prev => ({ ...prev, version: '1.0.0' }))
       }
-    }catch(_){ /* ignore */ }
-    try{
-      const seen = new Set()
-      if (Array.isArray(norm.player_types)){
-        norm.player_types = norm.player_types.map((pt)=>{
-          let id = (pt.id||'').trim()
-          if(!id){
-            id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
-          }
-          // ensure unique
-          while(seen.has(id)){
-            id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
-          }
-          seen.add(id)
-          return { ...pt, id }
+      // ensure horizon stays consistent on save
+      try {
+        setCfg(prev => {
+          const n = structuredClone(prev)
+          const r = Number(n?.general?.rounds || 0)
+          const sp = Number(n?.general?.round_span_hours || 0)
+          if (r > 0 && sp > 0) n.general.horizon_hours = r * sp
+          return n
         })
+      } catch(_) {}
+      // Normalize player type IDs (required by backend)
+      const norm = structuredClone(cfg)
+      // Trading-only market config: drop deprecated clearing arrays
+      try {
+        const markets = norm.markets || {}
+        const sanitizeMarketEntry = (entry) => {
+          if (Array.isArray(entry)) {
+            return { trading: [...entry] }
+          }
+          if (entry && typeof entry === 'object') {
+            const trading = Array.isArray(entry.trading)
+              ? [...entry.trading]
+              : (Array.isArray(entry.clearing) ? [...entry.clearing] : [])
+            return { trading }
+          }
+          return { trading: [] }
+        }
+        norm.markets = {
+          dam: sanitizeMarketEntry(markets.dam),
+          idm: sanitizeMarketEntry(markets.idm)
+        }
+      } catch (_) { /* ignore */ }
+      // Convert frontend device shape -> backend schema
+      try{
+        if (Array.isArray(norm.devices)){
+          norm.devices = norm.devices.map(d => {
+            const t = (d.type||'').toLowerCase()
+            const out = { ...d, type: t }
+            if (out.co2_emissions_kg_per_mwh == null && out.co2_kg_per_mwh != null) {
+              out.co2_emissions_kg_per_mwh = out.co2_kg_per_mwh
+            }
+            if ([ 'coal','gas','hydro','nuclear' ].includes(t)){
+              out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
+              out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
+              out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
+              if (out.min_load_pct == null) out.min_load_pct = 0
+              if (out.ramp_rate_mw_per_min == null) out.ramp_rate_mw_per_min = 60
+            } else if ([ 'solar','wind' ].includes(t)){
+              out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
+              out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
+              out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
+              if (out.capacity_factor_pct == null) out.capacity_factor_pct = 30
+            } else if (t === 'battery'){
+              out.capacity_mwh = out.capacity_mwh ?? out.capacity_mw ?? 100
+              out.power_mw = out.power_mw ?? out.power_rating_mw ?? 50
+              out.efficiency_pct = out.efficiency_pct ?? 85
+              out.initial_soc_pct = out.initial_soc_pct ?? 50
+              out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
+            } else if (t.endsWith('_load')){
+              // baseline_load_mw / peak_load_mw already present from UI
+              out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
+            }
+            return out
+          })
+        }
+      }catch(_){ /* ignore */ }
+      try{
+        const seen = new Set()
+        if (Array.isArray(norm.player_types)){
+          norm.player_types = norm.player_types.map((pt)=>{
+            let id = (pt.id||'').trim()
+            if(!id){
+              id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
+            }
+            // ensure unique
+            while(seen.has(id)){
+              id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
+            }
+            seen.add(id)
+            return { ...pt, id }
+          })
+        }
+      }catch(_){ /* ignore */ }
+      if (scenarioId) {
+        await api.put(`/api/kse/scenarios/${scenarioId}`, { name, config: norm })
+        alert('Saved changes')
+      } else {
+        const { data } = await api.post('/api/kse/scenarios', { name, config: norm })
+        setScenarioId(data?.id)
+        alert(`Saved as #${data?.id || ''}`)
       }
-    }catch(_){ /* ignore */ }
-    if (scenarioId) {
-      await api.put(`/api/kse/scenarios/${scenarioId}`, { name, config: norm })
-      alert('Saved changes')
-    } else {
-      const { data } = await api.post('/api/kse/scenarios', { name, config: norm })
-      setScenarioId(data?.id)
-      alert(`Saved as #${data?.id || ''}`)
+    } catch (err) {
+      console.error('Save error:', err)
+      const errData = err?.response?.data
+      if (errData?.errors && Array.isArray(errData.errors)) {
+        alert(`Validation errors:\\n${errData.errors.join('\\n')}`)
+      } else {
+        alert(`Save failed: ${err?.response?.data?.message || err?.message || 'Unknown error'}`)
+      }
     }
   }
 
@@ -781,11 +826,12 @@ export default function KSE(){
         >
           <Tab id="kse-tab-0" aria-controls="kse-panel-0" label="Description" role="tab" aria-selected={tab===0} />
           <Tab id="kse-tab-1" aria-controls="kse-panel-1" label="General" role="tab" aria-selected={tab===1} />
-          <Tab id="kse-tab-2" aria-controls="kse-panel-2" label="Market" role="tab" aria-selected={tab===2} />
-          <Tab id="kse-tab-3" aria-controls="kse-panel-3" label="Grid" role="tab" aria-selected={tab===3} />
-          <Tab id="kse-tab-4" aria-controls="kse-panel-4" label="Events" role="tab" aria-selected={tab===4} />
-          <Tab id="kse-tab-5" aria-controls="kse-panel-5" label="Player Types" role="tab" aria-selected={tab===5} />
-          <Tab id="kse-tab-6" aria-controls="kse-panel-6" label="Challenges" role="tab" aria-selected={tab===6} />
+          <Tab id="kse-tab-2" aria-controls="kse-panel-2" label="Supply and Demand" role="tab" aria-selected={tab===2} />
+          <Tab id="kse-tab-3" aria-controls="kse-panel-3" label="Markets" role="tab" aria-selected={tab===3} />
+          <Tab id="kse-tab-4" aria-controls="kse-panel-4" label="Grid" role="tab" aria-selected={tab===4} />
+          <Tab id="kse-tab-5" aria-controls="kse-panel-5" label="Events" role="tab" aria-selected={tab===5} />
+          <Tab id="kse-tab-6" aria-controls="kse-panel-6" label="Player Types" role="tab" aria-selected={tab===6} />
+          <Tab id="kse-tab-7" aria-controls="kse-panel-7" label="Challenges" role="tab" aria-selected={tab===7} />
         </Tabs>
         <Stack direction="row" spacing={2} sx={{ mt:2 }}>
           <Box sx={{ flex: 1 }}>
@@ -822,46 +868,6 @@ export default function KSE(){
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                     Set the fictional date/time and the number/length of rounds. Scenario Horizon is computed as Rounds × Round span.
                   </Typography>
-                  <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
-                    <TextField
-                    type="date"
-                    label="Fictional Date"
-                    value={cfg.general.fake_date || ''}
-                    onChange={e=>update(['general','fake_date'], e.target.value)}
-                    InputLabelProps={{ shrink: true }}
-                    size="small"
-                    InputProps={{
-                      endAdornment: (
-                        <InputAdornment position="end">
-                          <Tooltip title="Contextual date for briefings and charts. Not used in simulation." arrow>
-                            <IconButton size="small" tabIndex={-1} aria-label="help">
-                              <VisibilityIcon fontSize="small"/>
-                            </IconButton>
-                          </Tooltip>
-                        </InputAdornment>
-                      )
-                    }}
-                  />
-                    <TextField
-                    type="time"
-                    label="Start Time"
-                    value={cfg.general.start_time || ''}
-                    onChange={e=>update(['general','start_time'], e.target.value)}
-                    InputLabelProps={{ shrink: true }}
-                    size="small"
-                    InputProps={{
-                      endAdornment: (
-                        <InputAdornment position="end">
-                          <Tooltip title="Fictional clock time of hour 1; used for labels." arrow>
-                            <IconButton size="small" tabIndex={-1} aria-label="help">
-                              <VisibilityIcon fontSize="small"/>
-                            </IconButton>
-                          </Tooltip>
-                        </InputAdornment>
-                      )
-                    }}
-                  />
-                  </Stack>
                   <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap' }}>
                     <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
                       <NumberInput
@@ -918,13 +924,78 @@ export default function KSE(){
                     </Box>
                   </Stack>
                 </Paper>
-                {/* Forecast horizon group */}
+                {/* Player Settings group */}
                 <Paper sx={{ p:2 }}>
-                  <Typography variant="subtitle2" sx={{ mb: 1 }}>Forecast Horizon</Typography>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>Player Settings</Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    Player forecast inputs must cover at least the computed scenario horizon.
+                    Configure the player interface: fictional date/time, baseline generation, and forecast horizon.
                   </Typography>
                   <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                    <TextField
+                      type="date"
+                      label="Fictional Date"
+                      value={cfg.general.fake_date || ''}
+                      onChange={e=>update(['general','fake_date'], e.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                      size="small"
+                      sx={{ flex: '1 1 220px', minWidth: 220 }}
+                      InputProps={{
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <Tooltip title="Contextual date for briefings and charts. Not used in simulation." arrow>
+                              <IconButton size="small" tabIndex={-1} aria-label="help">
+                                <VisibilityIcon fontSize="small"/>
+                              </IconButton>
+                            </Tooltip>
+                          </InputAdornment>
+                        )
+                      }}
+                    />
+                    <TextField
+                      type="time"
+                      label="Fictional Start Time"
+                      value={cfg.general.start_time || ''}
+                      onChange={e=>update(['general','start_time'], e.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                      size="small"
+                      sx={{ flex: '1 1 200px', minWidth: 200 }}
+                      InputProps={{
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <Tooltip title="Fictional clock time of hour 1; used for labels." arrow>
+                              <IconButton size="small" tabIndex={-1} aria-label="help">
+                                <VisibilityIcon fontSize="small"/>
+                              </IconButton>
+                            </Tooltip>
+                          </InputAdornment>
+                        )
+                      }}
+                    />
+                    <Box sx={{ flex: '1 1 240px', minWidth: 240 }}>
+                      <TextField
+                        select
+                        size="small"
+                        fullWidth
+                        label="Day 1 Baseline"
+                        value={cfg.general.day_one_baseline_mode ?? 'preset'}
+                        onChange={(e)=>update(['general','day_one_baseline_mode'], e.target.value)}
+                        InputProps={{
+                          endAdornment: (
+                            <InputAdornment position="end">
+                              <Tooltip title="Day 1 position: 'zero' = no DA trading (0 MW), 'preset' = auto-generated position (locked), 'edit_round_one' = players edit Day 1 in Round 1 (DAM opens)" arrow>
+                                <IconButton size="small" tabIndex={-1} aria-label="help">
+                                  <VisibilityIcon fontSize="small"/>
+                                </IconButton>
+                              </Tooltip>
+                            </InputAdornment>
+                          )
+                        }}
+                      >
+                        <MenuItem value="zero">Zero (no DA trading)</MenuItem>
+                        <MenuItem value="preset">Preset (auto-generated, locked)</MenuItem>
+                        <MenuItem value="edit_round_one">Edit Round 1 (DAM opens)</MenuItem>
+                      </TextField>
+                    </Box>
                     <Box sx={{ flex: '1 1 260px', minWidth: 260 }}>
                       <NumberInput
                         label="Forecast Horizon (h)"
@@ -938,30 +1009,6 @@ export default function KSE(){
                         error={fhErr}
                         helperText={fhErr ? 'Must be ≥ Scenario Horizon' : ''}
                         inputRef={refForecastH}
-                      />
-                    </Box>
-                    <Box sx={{ flex: '1 1 240px', minWidth: 240 }}>
-                      <NumberInput
-                        label="IDM Freeze (h)"
-                        value={cfg.general.freeze_hours ?? 2}
-                        onChange={(val)=>update(['general','freeze_hours'], val)}
-                        min={0}
-                        max={Number(cfg.general.round_span_hours||24)}
-                        step={1}
-                        unit="h"
-                        tooltip="Intraday Market gate closure: Hours before delivery when IDM closes. Only affects Intraday trading window. Default: 2h."
-                      />
-                    </Box>
-                    <Box sx={{ flex: '1 1 240px', minWidth: 240 }}>
-                      <NumberInput
-                        label="DA Gate Hour"
-                        value={cfg.general.day_ahead_gate_hour ?? 12}
-                        onChange={(val)=>update(['general','day_ahead_gate_hour'], val)}
-                        min={0}
-                        max={23}
-                        step={1}
-                        unit="h"
-                        tooltip="Day-Ahead market gate closure hour (0-23). Default: 12 = 12:00. In real markets, DA trading closes around noon for next-day delivery."
                       />
                     </Box>
                   </Stack>
@@ -1026,7 +1073,7 @@ export default function KSE(){
                     <Button size="small" onClick={()=>{
                       try{
                         const el = descInputRef.current
-                        const cur = cfg?.general?.description || ''
+                        const cur = cfg?.objectives || ''
                         const hasSel = el && typeof el.selectionStart === 'number' && el.selectionStart !== el.selectionEnd
                         const start = hasSel ? el.selectionStart : 0
                         const end = hasSel ? el.selectionEnd : cur.length
@@ -1037,7 +1084,7 @@ export default function KSE(){
                           .replace(/\s*w:([0-9.]+(?:px|%|em|rem|vw|vh))/gi, '')
                           .replace(/\s*h:([0-9.]+(?:px|%|em|rem|vw|vh))/gi, '')
                         const next = before + cleaned + after
-                        update(['general','description'], next)
+                        update(['objectives'], next)
                         setTimeout(()=>{
                           try{
                             if (el){
@@ -1054,8 +1101,8 @@ export default function KSE(){
               {descMode==='edit' ? (
                 <TextField
                   label="Markdown"
-                  value={cfg?.general?.description || ''}
-                  onChange={(e)=> update(['general','description'], e.target.value)}
+                  value={cfg?.objectives || ''}
+                  onChange={(e)=> update(['objectives'], e.target.value)}
                   onPaste={async (e)=>{
                     try{
                       const items = e.clipboardData && e.clipboardData.items
@@ -1071,7 +1118,7 @@ export default function KSE(){
                       if (images.length===0) return
                       e.preventDefault()
                       const el = descInputRef.current
-                      const start = el?.selectionStart ?? (cfg?.general?.description || '').length
+                      const start = el?.selectionStart ?? (cfg?.objectives || '').length
                       const end = el?.selectionEnd ?? start
                       let insertText = ''
                       for (const file of images){
@@ -1086,9 +1133,9 @@ export default function KSE(){
                           insertText += (insertText? '\n' : '') + `![${hints.join(' ')}](${url})\n`
                         }
                       }
-                      const cur = cfg?.general?.description || ''
+                      const cur = cfg?.objectives || ''
                       const next = cur.slice(0, start) + insertText + cur.slice(end)
-                      update(['general','description'], next)
+                      update(['objectives'], next)
                       setTimeout(()=>{
                         try{ el && el.setSelectionRange(start + insertText.length, start + insertText.length) }catch(_){ }
                       }, 0)
@@ -1117,7 +1164,7 @@ export default function KSE(){
                         return <img {...props} alt={cleanAlt} style={style} />
                       }
                     }}>
-                      {cfg?.general?.description || '*No content*'}
+                      {cfg?.objectives || '*No content*'}
                     </ReactMarkdown>
                   </Box>
                 </Paper>
@@ -1228,6 +1275,29 @@ export default function KSE(){
                   </Stack>
                 </Stack>
 
+                <Typography variant="subtitle2" sx={{ mt: 2 }}>DAM / IDM Market Split</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                  Configure how synthetic supply/demand capacity is split between Day-Ahead Market (DAM) and Intraday Market (IDM).
+                </Typography>
+                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                  <Stack spacing={0.5} sx={{ minWidth: 180 }}>
+                    <InfoLabel title="DAM Capacity (%)" tooltip="Percentage of synthetic supply/demand capacity available in DAM clearing. Default: 90%." showTitle={false} />
+                    <NumberInput label="DAM Capacity" value={cfg.market.dam_synthetic_capacity_pct ?? 90} onChange={(val)=>update(['market','dam_synthetic_capacity_pct'], Number(val)||0)} min={0} max={100} step={5} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 180 }}>
+                    <InfoLabel title="IDM Capacity (%)" tooltip="Percentage of synthetic supply/demand capacity available in IDM clearing. Default: 10%." showTitle={false} />
+                    <NumberInput label="IDM Capacity" value={cfg.market.idm_synthetic_capacity_pct ?? 10} onChange={(val)=>update(['market','idm_synthetic_capacity_pct'], Number(val)||0)} min={0} max={100} step={5} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 180 }}>
+                    <InfoLabel title="IDM Producer Discount (%)" tooltip="Price discount for producers in IDM (lower prices to incentivize sales). Default: 10%." showTitle={false} />
+                    <NumberInput label="IDM Producer Discount" value={cfg.market.idm_price_discount_producer_pct ?? 10} onChange={(val)=>update(['market','idm_price_discount_producer_pct'], Number(val)||0)} min={0} max={50} step={5} unit="%" />
+                  </Stack>
+                  <Stack spacing={0.5} sx={{ minWidth: 180 }}>
+                    <InfoLabel title="IDM Consumer Markup (%)" tooltip="Price markup for consumers in IDM (higher prices, more expensive). Default: 10%." showTitle={false} />
+                    <NumberInput label="IDM Consumer Markup" value={cfg.market.idm_price_markup_consumer_pct ?? 10} onChange={(val)=>update(['market','idm_price_markup_consumer_pct'], Number(val)||0)} min={0} max={50} step={5} unit="%" />
+                  </Stack>
+                </Stack>
+
                 <Typography variant="subtitle2">Environment</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                   <Stack spacing={0.5} sx={{ minWidth: 260 }}>
@@ -1240,22 +1310,12 @@ export default function KSE(){
               <Box sx={{ width: 380 }}>
                 {/* Auto-updating SMP/Volume preview above chart */}
                 {preview && <Typography sx={{ mb:1 }}>SMP: {preview.smp} | Volume: {preview.volume}</Typography>}
-                <Curves cfg={cfg} preview={preview} groups={cfg.market?.generator_mix} showSupply={showSupply} showDemand={showDemand} showSmp={showSmp} svgRef={stepRef} />
+                <Curves cfg={cfg} preview={preview} groups={cfg.market?.generator_mix} showSupply={true} showDemand={true} showSmp={true} svgRef={stepRef} />
                 <Stack spacing={1} sx={{ mt:1 }}>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <FormControlLabel control={<Switch size="small" checked={showSupply} onChange={(_,v)=> setShowSupply(v)} />} label="Supply" />
-                    <FormControlLabel control={<Switch size="small" checked={showDemand} onChange={(_,v)=> setShowDemand(v)} />} label="Demand" />
-                    <FormControlLabel control={<Switch size="small" checked={showSmp} onChange={(_,v)=> setShowSmp(v)} />} label="SMP" />
-                  </Stack>
                   <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly SMP</Typography>
                   <svg ref={smpRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> smpRef.current && exportPNG(smpRef.current, 'kse_hourly_smp.png')} />
                   <Typography variant="caption" sx={{ display:'block', mt:1 }}>Hourly Volume</Typography>
                   <svg ref={volRef} width={360} height={120} style={{ border:'1px solid #eee', cursor:'pointer' }} onClick={()=> volRef.current && exportPNG(volRef.current, 'kse_hourly_volume.png')} />
-                  {/* Points/Grid switches moved below hourly charts */}
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <FormControlLabel control={<Switch size="small" checked={showHourlyPoints} onChange={(_,v)=> setShowHourlyPoints(v)} />} label="Points" />
-                    <FormControlLabel control={<Switch size="small" checked={showHourlyGrid} onChange={(_,v)=> setShowHourlyGrid(v)} />} label="Grid" />
-                  </Stack>
                   {/* Date/Time controls for preview */}
                   <Stack direction="row" spacing={2} alignItems="flex-start" sx={{ mt:1 }}>
                     <Stack spacing={0.5} sx={{ minWidth: 160 }}>
@@ -1273,6 +1333,205 @@ export default function KSE(){
           )}
           {tab===3 && (
             <Stack id="kse-panel-3" role="tabpanel" aria-labelledby="kse-tab-3" spacing={2}>
+              {/* Market Gate Timing group */}
+              <Paper sx={{ p:2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Market Gate Timing</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Define when markets close before delivery.
+                </Typography>
+                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                  <Box sx={{ flex: '1 1 200px', minWidth: 200 }}>
+                    <NumberInput
+                      label="DA Gate Hour"
+                      value={cfg.general.day_ahead_gate_hour ?? 12}
+                      onChange={(val)=>update(['general','day_ahead_gate_hour'], val)}
+                      min={0}
+                      max={23}
+                      step={1}
+                      unit="h"
+                      tooltip="Day-Ahead market gate closure hour (0-23). Default: 12 = 12:00. In real markets, DA trading closes around noon for next-day delivery."
+                    />
+                  </Box>
+                  <Box sx={{ flex: '1 1 200px', minWidth: 200 }}>
+                    <NumberInput
+                      label="ID Gate Base Hour"
+                      value={cfg.general.id_gate_base_hour ?? 0}
+                      onChange={(val)=>update(['general','id_gate_base_hour'], val)}
+                      min={0}
+                      max={23}
+                      step={1}
+                      unit="h"
+                      tooltip="Base hour for ID gate alignment (0-23). Gates occur at this hour plus multiples of the interval. Default: 0 (midnight). Example: Base=0, Interval=4 → gates at 00:00, 04:00, 08:00, etc."
+                    />
+                  </Box>
+                  <Box sx={{ flex: '1 1 200px', minWidth: 200 }}>
+                    <NumberInput
+                      label="ID Gate Interval (h)"
+                      value={cfg.general.id_gate_interval_hours ?? 4}
+                      onChange={(val)=>update(['general','id_gate_interval_hours'], val)}
+                      min={1}
+                      max={24}
+                      step={1}
+                      unit="h"
+                      tooltip="Intraday gate interval: How often ID gates close (e.g., every 4 hours). Default: 4h. Affects when ID trading windows close before delivery."
+                    />
+                  </Box>
+                  <Box sx={{ flex: '1 1 200px', minWidth: 200 }}>
+                    <NumberInput
+                      label="IDM Freeze (h)"
+                      value={cfg.general.freeze_hours ?? 2}
+                      onChange={(val)=>update(['general','freeze_hours'], val)}
+                      min={0}
+                      max={Number(cfg.general.round_span_hours||24)}
+                      step={1}
+                      unit="h"
+                      tooltip="Intraday Market gate closure: Hours before delivery when IDM closes. Only affects Intraday trading window. Default: 2h."
+                    />
+                  </Box>
+                </Stack>
+              </Paper>
+              <Paper sx={{ p: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Market Availability per Round</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Configure <strong>Trading</strong> (bidding allowed) per round for DAM and IDM.
+                  <br/>Clearing is always executed and is no longer configurable.
+                  <br/>• <strong>Gated</strong> (default): Follows SAWEM rules (gate hours, DA cutoff, ID gates)
+                  <br/>• <strong>enabled</strong>: Always trading-active, ignoring gate hours
+                  <br/>• <strong>disabled</strong>: Trading disabled (no bids accepted)
+                </Typography>
+                <Box sx={{ overflowX: 'auto' }}>
+                  {(() => {
+                    const rounds = Number(cfg.general.rounds || 4)
+                    const markets = cfg.markets || { dam: { trading: [] }, idm: { trading: [] } }
+                    
+                    // Normalize legacy format: if dam/idm are arrays, convert to { trading: [] }
+                    const normalizeLegacy = (m) => {
+                      const normalized = {}
+                      for (const [market, value] of Object.entries(m)) {
+                        if (Array.isArray(value)) {
+                          normalized[market] = { trading: [...value] }
+                        } else {
+                          // Trading-only model (fallback to old clearing for migration)
+                          normalized[market] = {
+                            trading: [...(value?.trading || [])],
+                          }
+                          if ((!normalized[market].trading || normalized[market].trading.length === 0) && Array.isArray(value?.clearing)) {
+                            normalized[market].trading = [...value.clearing]
+                          }
+                        }
+                      }
+                      if (!normalized.dam) normalized.dam = { trading: [] }
+                      if (!normalized.idm) normalized.idm = { trading: [] }
+                      return normalized
+                    }
+                    
+                    const normalizedMarkets = normalizeLegacy(markets)
+                    
+                    // Ensure arrays have correct length
+                    const ensureLength = (arr, len, defaultVal = 'market_code') => {
+                      const result = [...(arr || [])]
+                      while (result.length < len) result.push(defaultVal)
+                      return result.slice(0, len)
+                    }
+                    
+                    const damTrading = ensureLength(normalizedMarkets.dam?.trading, rounds)
+                    const idmTrading = ensureLength(normalizedMarkets.idm?.trading, rounds)
+                    
+                    const updateMarket = (marketType, roundIdx, value) => {
+                      setCfg(prev => {
+                        const n = structuredClone(prev)
+                        if (!n.markets) n.markets = { dam: { trading: [] }, idm: { trading: [] } }
+                        
+                        // Ensure trading-only structure
+                        if (!n.markets[marketType] || Array.isArray(n.markets[marketType])) {
+                          n.markets[marketType] = { trading: [] }
+                        }
+                        if (!Array.isArray(n.markets[marketType].trading)) {
+                          n.markets[marketType].trading = []
+                        }
+                        if ('clearing' in n.markets[marketType]) delete n.markets[marketType].clearing
+                        
+                        // Ensure array is long enough
+                        const r = Number(prev.general.rounds || 4)
+                        while (n.markets[marketType].trading.length < r) {
+                          n.markets[marketType].trading.push('market_code')
+                        }
+                        
+                        n.markets[marketType].trading[roundIdx] = value
+                        return n
+                      })
+                    }
+                    
+                    const getStatusColor = (status) => {
+                      switch (status) {
+                        case 'on': return 'success.light'
+                        case 'off': return 'grey.400'
+                        default: return 'info.light'  // market_code
+                      }
+                    }
+                    
+                    const getStatusLabel = (status) => {
+                      switch (status) {
+                        case 'on': return 'enabled'
+                        case 'off': return 'disabled'
+                        default: return 'Gated'
+                      }
+                    }
+                    
+                    return (
+                      <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 600 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ width: 80, padding: 8, textAlign: 'left', borderBottom: '2px solid #ddd' }}>Round</th>
+                            <th style={{ padding: 8, textAlign: 'center', borderBottom: '2px solid #ddd' }}>DAM Trading</th>
+                            <th style={{ padding: 8, textAlign: 'center', borderBottom: '2px solid #ddd' }}>IDM Trading</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Array.from({ length: rounds }, (_, roundIdx) => (
+                            <tr key={roundIdx}>
+                              <td style={{ padding: 8, fontWeight: 600, borderBottom: '1px solid #eee' }}>
+                                {roundIdx + 1}
+                              </td>
+                              {[
+                                { market: 'dam', data: damTrading[roundIdx] },
+                                { market: 'idm', data: idmTrading[roundIdx] }
+                              ].map(({ market, data }, colIdx) => (
+                                <td key={colIdx} style={{ padding: 4, borderBottom: '1px solid #eee' }}>
+                                  <Select
+                                    size="small"
+                                    fullWidth
+                                    value={data || 'market_code'}
+                                    onChange={(e) => updateMarket(market, roundIdx, e.target.value)}
+                                    variant="outlined"
+                                    sx={{
+                                      '& .MuiSelect-select': {
+                                        py: 0.5,
+                                        fontSize: '0.8rem'
+                                      }
+                                    }}
+                                  >
+                                    <MenuItem value="market_code">Gated</MenuItem>
+                                    <MenuItem value="on">Enabled</MenuItem>
+                                    <MenuItem value="off">Disabled</MenuItem>
+                                  </Select>
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )
+                  })()}
+                </Box>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block' }}>
+                  <strong>Note:</strong> Trading controls whether players can submit bids. Clearing is always executed.
+                </Typography>
+              </Paper>
+            </Stack>
+          )}
+          {tab===4 && (
+            <Stack id="kse-panel-4" role="tabpanel" aria-labelledby="kse-tab-4" spacing={2}>
               <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                 <Box sx={{ minWidth: 220 }}>
                   <NumberInput
@@ -1402,8 +1661,8 @@ export default function KSE(){
             </Stack>
           )}
           {/* Environment tab removed (merged) */}
-          {tab===4 && (
-            <Stack id="kse-panel-4" role="tabpanel" aria-labelledby="kse-tab-4" spacing={2}>
+          {tab===5 && (
+            <Stack id="kse-panel-5" role="tabpanel" aria-labelledby="kse-tab-5" spacing={2}>
               <Stack direction="row" justifyContent="space-between" alignItems="center">
                 <Stack spacing={0.5}>
                   <InfoLabel
@@ -1452,8 +1711,8 @@ export default function KSE(){
               />
             </Stack>
           )}
-          {tab===5 && (
-            <Stack id="kse-panel-5" role="tabpanel" aria-labelledby="kse-tab-5" spacing={2}>
+          {tab===6 && (
+            <Stack id="kse-panel-6" role="tabpanel" aria-labelledby="kse-tab-6" spacing={2}>
               <Stack spacing={0.5}>
                 <InfoLabel
                   title="Player Types for this scenario"
@@ -1520,35 +1779,6 @@ export default function KSE(){
                             setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].zone = v; return n })
                           }}
                         />
-                        <Accordion>
-                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>Advanced</AccordionSummary>
-                          <AccordionDetails>
-                            <Stack spacing={2}>
-                              <TextField 
-                                size="small" 
-                                fullWidth 
-                                type="number" 
-                                label="Capacity variability (%)" 
-                                value={pt.capacity_variability_pct ?? 0} 
-                                onChange={e=>{
-                                  const v = e.target.value === '' ? undefined : Number(e.target.value)
-                                  setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].capacity_variability_pct = v; return n })
-                                }}
-                              />
-                              <TextField 
-                                size="small" 
-                                fullWidth 
-                                type="number" 
-                                label="Marginal cost variability (%)" 
-                                value={pt.marginal_cost_variability_pct ?? 0} 
-                                onChange={e=>{
-                                  const v = e.target.value === '' ? undefined : Number(e.target.value)
-                                  setCfg(prev=>{ const n = structuredClone(prev); n.player_types[idx].marginal_cost_variability_pct = v; return n })
-                                }}
-                              />
-                            </Stack>
-                          </AccordionDetails>
-                        </Accordion>
                         <Button 
                           size="small" 
                           color="error" 
@@ -1652,8 +1882,8 @@ export default function KSE(){
               <Button ref={refAddPlayerType} variant="outlined" onClick={()=> setCfg(prev=> { const n=structuredClone(prev); const id=`ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`; n.player_types = [...(n.player_types||[]), { id, name:'', devices:[] }]; return n })}>Add Player Type</Button>
             </Stack>
           )}
-          {tab===6 && (
-            <Stack id="kse-panel-6" role="tabpanel" aria-labelledby="kse-tab-6" spacing={2}>
+          {tab===7 && (
+            <Stack id="kse-panel-7" role="tabpanel" aria-labelledby="kse-tab-7" spacing={2}>
               <ChallengesList
                 challenges={cfg.challenges || []}
                 onAdd={() => {
@@ -1745,6 +1975,7 @@ export default function KSE(){
           setEditingChallengeIndex(null)
         }}
         challenge={editingChallenge}
+        playerTypes={cfg.player_types || []}
         onSave={(challengeData) => {
           setCfg((prev) => {
             const n = structuredClone(prev)
@@ -1796,12 +2027,23 @@ export default function KSE(){
       </Dialog>
 
       {/* Description Modal (Markdown) */}
-      <Dialog open={descOpen} onClose={()=> setDescOpen(false)} fullWidth maxWidth="md" aria-label="Scenario Description">
+      <Dialog open={descOpen} onClose={()=> setDescOpen(false)} fullScreen aria-label="Scenario Description">
         <DialogTitle>Edit Scenario Description (Markdown)</DialogTitle>
-        <DialogContent dividers>
-          <Stack direction={{ xs:'column', md:'row' }} spacing={2}>
-            <TextField label="Markdown" multiline minRows={10} value={descDraft} onChange={e=> setDescDraft(e.target.value)} sx={{ flex: 1 }} />
-            <Paper variant="outlined" sx={{ p:1, flex: 1, overflow:'auto', bgcolor:'background.default' }}>
+        <DialogContent dividers sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <Stack direction={{ xs:'column', md:'row' }} spacing={2} sx={{ flex: 1, minHeight: 0 }}>
+            <TextField
+              label="Markdown"
+              multiline
+              value={descDraft}
+              onChange={e=> setDescDraft(e.target.value)}
+              sx={{
+                flex: 1,
+                minHeight: 0,
+                '& .MuiInputBase-root': { height: '100%', alignItems: 'stretch' },
+                '& textarea': { height: '100% !important', overflow: 'auto' }
+              }}
+            />
+            <Paper variant="outlined" sx={{ p:1, flex: 1, minHeight: 0, overflow:'auto', bgcolor:'background.default' }}>
               <Typography variant="subtitle2" sx={{ mb:1 }}>Preview</Typography>
               <Box sx={{ '& h1,h2,h3':{ mt:1 }, '& p':{ mb:1 } }}>
                 <ReactMarkdown>{descDraft || '*No content*'}</ReactMarkdown>
@@ -1811,7 +2053,7 @@ export default function KSE(){
         </DialogContent>
         <DialogActions>
           <Button onClick={()=> setDescOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={()=> { update(['general','description'], descDraft); setDescOpen(false) }}>Save</Button>
+          <Button variant="contained" onClick={()=> { update(['objectives'], descDraft); setDescOpen(false) }}>Save</Button>
         </DialogActions>
       </Dialog>
 
@@ -1867,7 +2109,7 @@ export default function KSE(){
         onSave={save}
         onValidate={doPreview}
         onImportExport={()=> setIoOpen(true)}
-        onEditDescription={()=> { setDescDraft(cfg?.general?.description || ''); setDescOpen(true) }}
+        onEditDescription={()=> { setDescDraft(cfg?.objectives || ''); setDescOpen(true) }}
         disabled={errors.length>0}
       />
       

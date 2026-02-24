@@ -33,7 +33,7 @@ export default function DidYouKnow() {
 
   if (loading) {
     return (
-      <Container maxWidth="md" sx={{ mt: 4, mb: 4 }}>
+      <Container maxWidth={false} disableGutters sx={{ mt: 4, mb: 6, px: 3 }}>
         <Skeleton variant="text" height={60} sx={{ mb: 3 }} />
         <Skeleton variant="rectangular" height={400} />
       </Container>
@@ -41,16 +41,17 @@ export default function DidYouKnow() {
   }
 
   return (
-    <Container maxWidth="md" sx={{ mt: 4, mb: 4 }}>
-      <Button 
-        startIcon={<BackIcon />} 
-        onClick={() => navigate('/home')} 
-        sx={{ mb: 2 }}
-      >
-        Back to Home
-      </Button>
+    <Container maxWidth={false} disableGutters sx={{ mt: 4, mb: 0, px: 3, height: 'calc(100vh - 96px)', display: 'flex', flexDirection: 'column' }}>
+      <Paper sx={{ p: 3, flex: 1, overflow: 'auto' }}>
+        <Button
+          variant="outlined"
+          startIcon={<BackIcon />} 
+          onClick={() => navigate('/home')} 
+          sx={{ mb: 2 }}
+        >
+          Back to Home
+        </Button>
 
-      <Paper sx={{ p: 4 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
           <Typography variant="h4" gutterBottom>
             {content?.title || 'Did You Know'}

@@ -12,6 +12,7 @@ from reportlab.platypus import Table, TableStyle
 
 from .extensions import db
 from .models import Session, Scenario, Result
+from .kpi_schema import canonicalize_kpis
 
 
 ns = Namespace("export", description="Export JSON/PDF")
@@ -105,7 +106,7 @@ class ExportPDF(Resource):
         )
         agg = {}
         for pid, data in rows:
-            k = data.get("kpis") or {}
+            k = canonicalize_kpis(data.get("kpis") or {})
             a = agg.setdefault(pid, {"profit_zar": 0, "imbalance_cost_zar": 0, "curtailment_cost_zar": 0, "revenue_zar": 0, "rounds": 0})
             a["profit_zar"] += k.get("profit_zar", 0)
             a["imbalance_cost_zar"] += k.get("imbalance_cost_zar", 0)
@@ -168,7 +169,7 @@ class ExportPDF(Resource):
         c.setFont("Helvetica", 9)
         c.setFillColor(colors.black)
         for r in Result.query.filter_by(session_id=sid).order_by(Result.round_num, Result.player_id).all():
-            k = r.data.get("kpis", {}) if r.data else {}
+            k = canonicalize_kpis(r.data.get("kpis", {}) if r.data else {})
             line = f"Round {r.round_num} | Player {r.player_id} | SMP: {r.data.get('smp', 'N/A')} | Volume: {r.data.get('volume', 'N/A')} | Profit: {int(k.get('profit_zar', 0)):,} ZAR"
             c.drawString(50, y, line)
             y -= 4*mm

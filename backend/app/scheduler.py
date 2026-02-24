@@ -1,6 +1,12 @@
 import time
 from typing import Set
 from flask import current_app
+import os
+try:
+    import redis as _redis
+    _redis_client = _redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+except Exception:
+    _redis_client = None
 from .extensions import socketio
 from .models import Session, SessionStatus, Scenario, CohortMember, Forecast, Result, PlayerProgress, PlayerProgressStatus
 from .extensions import db
@@ -10,6 +16,16 @@ from .models import PlayerProgress, Campaign
 
 
 _running: Set[int] = set()
+
+
+def _force_nav(cohort_id: int, url: str):
+    if not _redis_client or not cohort_id or not url:
+        return
+    try:
+        key = f"cohort:{cohort_id}:force_nav"
+        _redis_client.setex(key, 300, url)
+    except Exception:
+        pass
 
 
 def _auto_submit_missing(session_id: int, round_num: int, hours_per_round: int):
@@ -63,6 +79,8 @@ def run_rounds(session_id: int, app=None):
                 # Don't change status, just emit event and wait
                 socketio.emit("briefing", {"session_id": s.id}, namespace="/trainer")
                 socketio.emit("briefing", {"session_id": s.id}, namespace="/game", to=f"session-{s.id}")
+                if s.mode == "shared_market":
+                    _force_nav(s.cohort_id, f"/briefing/{s.id}")
                 # Wait for player/trainer to start Round 1 (manual trigger via /start or /start-briefing endpoint)
                 # In solo mode: player clicks "Start Scenario"
                 # In shared mode: trainer clicks "Start Round 1"
@@ -74,26 +92,67 @@ def run_rounds(session_id: int, app=None):
                 s.status = SessionStatus.round_active
                 db.session.add(s)
                 db.session.commit()
+                if s.mode == "shared_market":
+                    _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
                 
                 socketio.emit("round_start", {"session_id": s.id, "round": current}, namespace="/trainer")
                 socketio.emit("round_start", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
+
+                # Clear stale timer extensions from prior rounds
+                if _redis_client is not None:
+                    try:
+                        _redis_client.delete(f"session:{s.id}:timer_extend_sec")
+                        _redis_client.delete(f"session:{s.id}:force_end_round")
+                    except Exception:
+                        pass
                 
                 # countdown
                 remaining = timer_sec
                 while remaining > 0:
                     time.sleep(1)
-                    remaining -= 1
                     # pause handling
                     s = Session.query.get(s.id)
                     if s and s.status == SessionStatus.paused:
-                        time.sleep(1)
                         continue
                     # Check for frozen state (trainer freeze)
                     if s and s.frozen:
                         # Don't count down timer while frozen
-                        remaining += 1
-                        time.sleep(0.1)
                         continue
+
+                    # Trainer-triggered early round end
+                    if _redis_client is not None:
+                        try:
+                            force_key = f"session:{s.id}:force_end_round"
+                            if _redis_client.get(force_key):
+                                _redis_client.delete(force_key)
+                                remaining = 0
+                        except Exception:
+                            pass
+
+                    # Apply trainer time extension (+seconds) if requested
+                    if _redis_client is not None:
+                        try:
+                            ext_key = f"session:{s.id}:timer_extend_sec"
+                            raw_ext = _redis_client.get(ext_key)
+                            ext = int(raw_ext) if raw_ext is not None else 0
+                            if ext > 0:
+                                remaining += ext
+                                _redis_client.delete(ext_key)
+                                socketio.emit(
+                                    "timer_extended",
+                                    {"session_id": s.id, "seconds": ext, "remaining": remaining},
+                                    namespace="/trainer"
+                                )
+                                socketio.emit(
+                                    "timer_extended",
+                                    {"session_id": s.id, "seconds": ext, "remaining": remaining},
+                                    namespace="/game",
+                                    to=f"session-{s.id}"
+                                )
+                        except Exception:
+                            pass
+
+                    remaining -= 1
                     
                     # In solo mode, check if player has submitted and skip remaining time
                     if s and s.mode == 'isolated_per_player':
@@ -112,6 +171,8 @@ def run_rounds(session_id: int, app=None):
                 s.status = SessionStatus.round_closing
                 db.session.add(s)
                 db.session.commit()
+                if s.mode == "shared_market":
+                    _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
                 socketio.emit("round_closing", {"session_id": s.id, "round": current}, namespace="/trainer")
                 socketio.emit("round_closing", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
                 
@@ -125,6 +186,8 @@ def run_rounds(session_id: int, app=None):
                 s.status = SessionStatus.calculating
                 db.session.add(s)
                 db.session.commit()
+                if s.mode == "shared_market":
+                    _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
                 socketio.emit("calculating", {"session_id": s.id, "round": current}, namespace="/trainer")
                 socketio.emit("calculating", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
                 
@@ -138,12 +201,14 @@ def run_rounds(session_id: int, app=None):
                     # Get bids from current round (not from full forecast)
                     current_round_forecast = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=current).first()
                     current_bids = current_round_forecast.bids if current_round_forecast and current_round_forecast.bids else None
+                    current_devices = (current_round_forecast.data or {}).get("devices", []) if current_round_forecast else []
                     print(f"[SCHEDULER] Player {pid}: has_full={full is not None}, has_current={current_round_forecast is not None}, has_bids={current_bids is not None}")
                     
                     if full and isinstance(full.data, dict):
                         forecast_data = {
                             'hours': list(full.data.get("hours", [])),
-                            'bids': current_bids  # Use bids from current round, not from full forecast
+                            'bids': current_bids,  # Use bids from current round, not from full forecast
+                            'devices': current_devices
                         }
                         forecasts[pid] = forecast_data
                         print(f"[SCHEDULER] Player {pid}: loaded forecast with bids={current_bids is not None}")
@@ -163,7 +228,7 @@ def run_rounds(session_id: int, app=None):
                             for i, val in enumerate(fc_hours):
                                 if start_idx + i < total_hours:
                                     full_horizon[start_idx + i] = val
-                        forecasts[pid] = {'hours': full_horizon, 'bids': current_bids}  # Use bids from current round
+                        forecasts[pid] = {'hours': full_horizon, 'bids': current_bids, 'devices': current_devices}  # Use bids from current round
                         print(f"[SCHEDULER] Player {pid}: built horizon from round forecasts, bids={current_bids is not None}")
                 # DA snapshot (round_num = -1): set on first round if not present, else use for IDM delta
                 if current == 1:
@@ -269,16 +334,45 @@ def run_rounds(session_id: int, app=None):
                 except Exception as e:
                     current_app.logger.warning(f"Failed to emit events: {e}")
                 
-                # persist per-player results
-                bid_dispatch = res.get("bid_dispatch", {})
-                hourly_results = res.get("hourly_results", [])
-                print(f"[SCHEDULER] Got bid_dispatch from engine: {type(bid_dispatch)}, empty={not bid_dispatch}, keys={list(bid_dispatch.keys()) if bid_dispatch else 'N/A'}")
+                # persist per-player results (canonical DAM/IDM contract)
+                engine_bid_dispatch = res.get("bid_dispatch", {}) or {}
+                engine_dam_bid_dispatch = res.get("dam_bid_dispatch", {}) or {}
+                hourly_results = res.get("hourly_results", []) or []
+                device_hourly_details = res.get("device_hourly_details", {}) or {}
+                dam_hourly_results = res.get("dam_hourly_results", []) or []
+                dam_device_hourly_details = res.get("dam_device_hourly_details", {}) or {}
+                print(f"[SCHEDULER] Got bid_dispatch from engine: {type(engine_bid_dispatch)}, empty={not engine_bid_dispatch}, keys={list(engine_bid_dispatch.keys()) if engine_bid_dispatch else 'N/A'}")
+                print(f"[SCHEDULER] Got dam_bid_dispatch from engine: {type(engine_dam_bid_dispatch)}, empty={not engine_dam_bid_dispatch}, keys={list(engine_dam_bid_dispatch.keys()) if engine_dam_bid_dispatch else 'N/A'}")
                 
                 # Evaluate challenges per player
                 challenges = (sc.config or {}).get("challenges", [])
                 player_types_cfg = (sc.config or {}).get("player_types", [])
                 devices_cfg = (sc.config or {}).get("devices", [])
                 
+                def _device_capacity_mw(dev: dict) -> float:
+                    for key in ["max_power_mw", "capacity_mw", "power_mw", "peak_load_mw", "baseline_load_mw", "capacity"]:
+                        val = dev.get(key)
+                        if val is not None:
+                            try:
+                                return float(val)
+                            except Exception:
+                                return 0.0
+                    return 0.0
+
+                def _device_role(dev: dict) -> str:
+                    dtype = (dev.get("type") or "").lower()
+                    category = (dev.get("category") or "").lower()
+                    if not category:
+                        if dtype in ["coal", "gas", "hydro", "nuclear", "solar", "wind", "pv"]:
+                            category = "generator"
+                        elif "load" in dtype:
+                            category = "load"
+                    if category in ["generator", "renewable"]:
+                        return "producer"
+                    if category == "load":
+                        return "consumer"
+                    return "unknown"
+
                 for pid, kp in (res.get("round_kpis") or {}).items():
                     # Determine player role based on their player type devices
                     player_role = 'unknown'
@@ -307,6 +401,19 @@ def run_rounds(session_id: int, app=None):
                     all_round_kpis = [r.data.get("kpis", {}) for r in previous_results if r.data]
                     all_round_kpis.append(kp)  # Include current round
                     
+                    # Compute capacity scaling for shared_market
+                    capacity_scale = 1.0
+                    if s.mode == "shared_market" and player_role in ["producer", "consumer"]:
+                        try:
+                            total_role_capacity = sum(
+                                _device_capacity_mw(d) for d in devices_cfg if _device_role(d) == player_role
+                            )
+                            player_capacity = sum(_device_capacity_mw(d) for d in player_devices)
+                            if total_role_capacity > 0:
+                                capacity_scale = max(0.0, min(1.0, player_capacity / total_role_capacity))
+                        except Exception as e:
+                            print(f"[SCHEDULER] Capacity scale calc failed for player {pid}: {e}")
+
                     # Evaluate challenges
                     challenge_result = None
                     if challenges and player_role in ['producer', 'consumer']:
@@ -316,20 +423,66 @@ def run_rounds(session_id: int, app=None):
                             player_kpis=kp,
                             role=player_role,
                             round_num=current,
-                            all_round_kpis=all_round_kpis
+                            all_round_kpis=all_round_kpis,
+                            capacity_scale=capacity_scale
                         )
                     
                     data = {
                         "kpis": kp,
-                        "smp": res["smp"],
-                        "volume": res["volume"],
+                        "smp": res.get("smp", 0),
+                        "volume": res.get("volume", 0),
                         "hourly_results": hourly_results,
-                        "challenge_result": challenge_result,  # NEW: Challenge evaluation
-                        "player_role": player_role,  # Store for reference
+                        "device_hourly_details": device_hourly_details,
+                        "challenge_result": challenge_result,
+                        "player_role": player_role,
                     }
-                    # Include bid dispatch info if available
-                    player_bid_dispatch = bid_dispatch.get(pid) if bid_dispatch else None
-                    print(f"[SCHEDULER] Player {pid}: bid_dispatch={type(player_bid_dispatch)}, has_data={player_bid_dispatch is not None}")
+
+                    # Pass through round-level metadata from engine
+                    passthrough_keys = [
+                        "idp",
+                        "id_trade_count",
+                        "id_volume_mwh",
+                        "da_baseline_metadata",
+                        "hour_reconciliation",
+                        "baseline_lookup_trace",
+                        "debug_audit_payload",
+                        "no_clearing",
+                        "reason",
+                    ]
+                    for key in passthrough_keys:
+                        if key in res:
+                            data[key] = res.get(key)
+
+                    # Per-player DAM/IDM dispatch slices
+                    player_idm_bid_dispatch = engine_bid_dispatch.get(pid) if isinstance(engine_bid_dispatch, dict) else None
+
+                    player_dam_bid_dispatch = None
+                    if isinstance(engine_dam_bid_dispatch, dict):
+                        # Shape 1: {player_id: {device_id: {A/B/C: [...]}}}
+                        player_dam_bid_dispatch = engine_dam_bid_dispatch.get(pid)
+                        if player_dam_bid_dispatch is None:
+                            player_dam_bid_dispatch = engine_dam_bid_dispatch.get(str(pid))
+
+                        # Shape 2: already player-sliced device map
+                        if player_dam_bid_dispatch is None and engine_dam_bid_dispatch:
+                            sample_value = next(iter(engine_dam_bid_dispatch.values()))
+                            if isinstance(sample_value, dict) and any(isinstance(v, list) for v in sample_value.values()):
+                                player_dam_bid_dispatch = engine_dam_bid_dispatch
+
+                    if player_idm_bid_dispatch is not None:
+                        data["bid_dispatch"] = player_idm_bid_dispatch
+                        data["idm_bid_dispatch"] = player_idm_bid_dispatch
+                        data["idm_hourly_results"] = hourly_results
+                        data["idm_device_hourly_details"] = device_hourly_details
+
+                    if player_dam_bid_dispatch is not None:
+                        data["dam_bid_dispatch"] = player_dam_bid_dispatch
+                        data["dam_hourly_results"] = dam_hourly_results
+                        data["dam_device_hourly_details"] = dam_device_hourly_details
+
+                    # Backward-compatible DB column: prefer IDM bid_dispatch; fallback to DAM if IDM not present
+                    player_bid_dispatch = player_idm_bid_dispatch if player_idm_bid_dispatch is not None else player_dam_bid_dispatch
+                    print(f"[SCHEDULER] Player {pid}: idm_bid_dispatch={player_idm_bid_dispatch is not None}, dam_bid_dispatch={player_dam_bid_dispatch is not None}")
                     r = Result(
                         session_id=s.id, 
                         player_id=pid, 
@@ -338,6 +491,57 @@ def run_rounds(session_id: int, app=None):
                         bid_dispatch=player_bid_dispatch
                     )
                     db.session.add(r)
+                    
+                    # Generate debug log if requested
+                    try:
+                        forecast_for_player = Forecast.query.filter_by(
+                            session_id=s.id,
+                            player_id=pid,
+                            round_num=current
+                        ).first()
+                        if forecast_for_player and forecast_for_player.data and forecast_for_player.data.get("debug_enabled"):
+                            from .debug_logger import get_debug_logger
+                            from .models import User
+                            player_user = User.query.get(pid)
+                            player_email = player_user.email if player_user else "unknown"
+                            player_type_name = pt_cfg.get("name", "unknown") if pt_cfg else "unknown"
+                            
+                            # Prepare inputs
+                            inputs = {
+                                "scenario_config": sc.config,
+                                "devices": player_devices,
+                                "forecast_data": forecast_for_player.bids or {}
+                            }
+                            
+                            # Prepare calculations (engine intermediate results)
+                            calculations = {
+                                "hourly_results": hourly_results
+                            }
+                            
+                            # Prepare results
+                            results = {
+                                "kpis": kp,
+                                "bid_dispatch": player_idm_bid_dispatch or player_bid_dispatch or {},
+                                "dam_bid_dispatch": player_dam_bid_dispatch or {},
+                                "device_hourly_details": device_hourly_details,
+                                "dam_device_hourly_details": dam_device_hourly_details,
+                            }
+                            
+                            logger = get_debug_logger()
+                            debug_file = logger.log_round_calculation(
+                                session_id=s.id,
+                                round_num=current,
+                                scenario_name=sc.name or "unknown",
+                                player_id=pid,
+                                player_email=player_email,
+                                player_type=player_type_name,
+                                inputs=inputs,
+                                calculations=calculations,
+                                results=results
+                            )
+                            print(f"[DEBUG] Generated debug log: {debug_file}")
+                    except Exception as e:
+                        print(f"[DEBUG] Failed to generate debug log for player {pid}: {e}")
                 db.session.commit()
                 # zone flows: assign all players to one zone per config.general.player_zone (default 1)
                 try:
@@ -363,6 +567,8 @@ def run_rounds(session_id: int, app=None):
                     "volume": res["volume"],
                     "kpis": res.get("round_kpis"),
                     "hourly_results": res.get("hourly_results", []),
+                    "dam_hourly_results": res.get("dam_hourly_results", []),
+                    "idm_hourly_results": res.get("idm_hourly_results", res.get("hourly_results", [])),
                 }
                 payload['zone'] = zone_payload
                 socketio.emit("round_results", payload, namespace="/trainer")
@@ -372,6 +578,8 @@ def run_rounds(session_id: int, app=None):
                 s.status = SessionStatus.round_results
                 db.session.add(s)
                 db.session.commit()
+                if s.mode == "shared_market":
+                    _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
                 socketio.emit("round_results_ready", {"session_id": s.id, "round": current}, namespace="/trainer")
                 socketio.emit("round_results_ready", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
                 
@@ -401,8 +609,19 @@ def run_rounds(session_id: int, app=None):
             s.status = SessionStatus.scenario_complete
             db.session.add(s)
             db.session.commit()
+            if s.mode == "shared_market":
+                _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
             socketio.emit("scenario_complete", {"session_id": s.id}, namespace="/trainer")
             socketio.emit("scenario_complete", {"session_id": s.id}, namespace="/game", to=f"session-{s.id}")
+            # End session immediately on scenario completion
+            try:
+                s.status = SessionStatus.ended
+                db.session.add(s)
+                db.session.commit()
+                socketio.emit("session_ended", {"session_id": s.id}, namespace="/trainer")
+                socketio.emit("session_ended", {"session_id": s.id}, namespace="/game", to=f"session-{s.id}")
+            except Exception:
+                pass
             
             # Mark player progress completed for any existing in_progress entries of this scenario
             try:

@@ -31,7 +31,12 @@ export default function MarketPhaseTimeline({
   roundsSummary = [],
   startHour = 0,
   daCommittedStart = -1,
-  daCommittedEnd = -1
+  daCommittedEnd = -1,
+  damBidHours = [],
+  idmBidHours = [],
+  damOpenHours = [],
+  damSpecialHours = [],
+  idmOpenHours = []
 }) {
   const ref = useRef(null)
 
@@ -200,6 +205,25 @@ export default function MarketPhaseTimeline({
       .attr('stroke-width', 2)
       .attr('opacity', 0.5)
 
+    // IDM gate-open overlay pattern (orange stripes)
+    const idmOpenOverlayPattern = defs.append('pattern')
+      .attr('id', 'idm-open-overlay-timeline')
+      .attr('patternUnits', 'userSpaceOnUse')
+      .attr('width', 6)
+      .attr('height', 6)
+      .attr('patternTransform', 'rotate(-45)')
+    idmOpenOverlayPattern.append('rect')
+      .attr('width', 6)
+      .attr('height', 6)
+      .attr('fill', '#FB8C00')
+      .attr('opacity', 0.12)
+    idmOpenOverlayPattern.append('line')
+      .attr('x1', 0).attr('y1', 0)
+      .attr('x2', 0).attr('y2', 6)
+      .attr('stroke', '#E65100')
+      .attr('stroke-width', 2)
+      .attr('opacity', 0.45)
+
     // Draw round separators and labels first (as background)
     // Use provided totalRounds or calculate from hours
     const numRounds = totalRounds !== null ? totalRounds : Math.ceil(hours / roundSpan)
@@ -341,75 +365,101 @@ export default function MarketPhaseTimeline({
       }
     })
 
-    // Add hatching for committed positions (after bars are drawn)
-    // 1. DAM committed area (yellow / hatch)
-    if (daCommittedStart >= 0 && daCommittedEnd > daCommittedStart) {
-      const damXStart = x(Math.max(1, daCommittedStart + 1))
-      const damXEnd = x(Math.min(n + 1, daCommittedEnd + 2))
-      const damWidth = damXEnd - damXStart
-      
-      if (damWidth > 0.5) {
-        g.append('rect')
-          .attr('x', damXStart)
-          .attr('y', marketBarY)
-          .attr('width', damWidth)
-          .attr('height', barHeight)
-          .attr('fill', 'url(#dam-committed-hatch-timeline)')
-          .attr('rx', 3)
-          .style('pointer-events', 'none')
-      }
-    }
-    
-    // 2. IDM committed area (orange \ hatch)
-    // Find all hours with status "id" - these are committed ID positions (exclude locked)
-    if (Array.isArray(hourStatus)) {
-      let idStart = -1
-      for (let i = 0; i < hourStatus.length; i++) {
-        const isId = hourStatus[i] === 'id'
-        const isLocked = hourStatus[i] === 'locked'
-        
-        if (isId && !isLocked && idStart === -1) {
-          // Start of ID range
-          idStart = i
-        } else if ((!isId || isLocked) && idStart !== -1) {
-          // End of ID range
-          const idXStart = x(Math.max(1, idStart + 1))
-          const idXEnd = x(Math.min(n + 1, i + 2))
-          const idWidth = idXEnd - idXStart
-          
-          if (idWidth > 0.5) {
+    // Add open-gate overlays (independent from hour_status priority)
+    const drawGateOverlay = (presenceArray, fill) => {
+      if (!Array.isArray(presenceArray) || presenceArray.length === 0) return
+      let rangeStart = -1
+      for (let i = 0; i < Math.min(presenceArray.length, n); i++) {
+        const isOpen = Boolean(presenceArray[i])
+        if (isOpen && rangeStart === -1) {
+          rangeStart = i
+          continue
+        }
+        if (!isOpen && rangeStart !== -1) {
+          const xStart = x(Math.max(1, rangeStart + 1))
+          const xEnd = x(Math.min(n + 1, i + 1))
+          const width = xEnd - xStart
+          if (width > 0.5) {
             g.append('rect')
-              .attr('x', idXStart)
+              .attr('x', xStart)
               .attr('y', marketBarY)
-              .attr('width', idWidth)
+              .attr('width', width)
               .attr('height', barHeight)
-              .attr('fill', 'url(#idm-committed-hatch-timeline)')
+              .attr('fill', fill)
               .attr('rx', 3)
               .style('pointer-events', 'none')
           }
-          
-          idStart = -1
+          rangeStart = -1
         }
       }
-      
-      // Handle last range if it extends to the end
-      if (idStart !== -1) {
-        const idXStart = x(Math.max(1, idStart + 1))
-        const idXEnd = x(Math.min(n + 1, hourStatus.length + 2))
-        const idWidth = idXEnd - idXStart
-        
-        if (idWidth > 0.5) {
+      if (rangeStart !== -1) {
+        const xStart = x(Math.max(1, rangeStart + 1))
+        const xEnd = x(Math.min(n + 1, Math.min(presenceArray.length, n) + 1))
+        const width = xEnd - xStart
+        if (width > 0.5) {
           g.append('rect')
-            .attr('x', idXStart)
+            .attr('x', xStart)
             .attr('y', marketBarY)
-            .attr('width', idWidth)
+            .attr('width', width)
             .attr('height', barHeight)
-            .attr('fill', 'url(#idm-committed-hatch-timeline)')
+            .attr('fill', fill)
             .attr('rx', 3)
             .style('pointer-events', 'none')
         }
       }
     }
+
+    drawGateOverlay(damOpenHours, 'rgba(253,216,53,0.22)')
+    drawGateOverlay(damSpecialHours, 'rgba(0,188,212,0.32)')
+    drawGateOverlay(idmOpenHours, 'url(#idm-open-overlay-timeline)')
+
+    // Add hatching for hours where bids actually exist
+    const drawBidHatching = (presenceArray, patternId) => {
+      if (!Array.isArray(presenceArray) || presenceArray.length === 0) return
+      let rangeStart = -1
+      for (let i = 0; i < Math.min(presenceArray.length, n); i++) {
+        const hasBid = Boolean(presenceArray[i])
+        if (hasBid && rangeStart === -1) {
+          rangeStart = i
+          continue
+        }
+        if (!hasBid && rangeStart !== -1) {
+          const xStart = x(Math.max(1, rangeStart + 1))
+          const xEnd = x(Math.min(n + 1, i + 1))
+          const width = xEnd - xStart
+          if (width > 0.5) {
+            g.append('rect')
+              .attr('x', xStart)
+              .attr('y', marketBarY)
+              .attr('width', width)
+              .attr('height', barHeight)
+              .attr('fill', `url(#${patternId})`)
+              .attr('rx', 3)
+              .style('pointer-events', 'none')
+          }
+          rangeStart = -1
+        }
+      }
+
+      if (rangeStart !== -1) {
+        const xStart = x(Math.max(1, rangeStart + 1))
+        const xEnd = x(Math.min(n + 1, Math.min(presenceArray.length, n) + 1))
+        const width = xEnd - xStart
+        if (width > 0.5) {
+          g.append('rect')
+            .attr('x', xStart)
+            .attr('y', marketBarY)
+            .attr('width', width)
+            .attr('height', barHeight)
+            .attr('fill', `url(#${patternId})`)
+            .attr('rx', 3)
+            .style('pointer-events', 'none')
+        }
+      }
+    }
+
+    drawBidHatching(damBidHours, 'dam-committed-hatch-timeline')
+    drawBidHatching(idmBidHours, 'idm-committed-hatch-timeline')
 
     // Day indicators below timeline bars (subtle lines with labels)
     const dayIndicatorY = marketBarY + barHeight + 6
@@ -511,10 +561,30 @@ export default function MarketPhaseTimeline({
       .attr('stroke', '#B71C1C')
       .attr('stroke-width', 1)
 
-  }, [hours, hourStatus, currentRound, roundSpan, idGateInterval, idGateBase])
+  }, [
+    hours,
+    hourStatus,
+    currentRound,
+    roundSpan,
+    idGateInterval,
+    idGateBase,
+    damBidHours,
+    idmBidHours,
+    damOpenHours,
+    damSpecialHours,
+    idmOpenHours
+  ])
 
-  const handleClick = () => {
-    try { if (typeof onClickSummary === 'function') onClickSummary() } catch (_) {}
+  const handleClick = (event) => {
+    try {
+      if (!ref.current || typeof onClickSummary !== 'function') return
+      const rect = ref.current.getBoundingClientRect()
+      const x = Math.max(0, event.clientX - rect.left)
+      const w = rect.width || 1
+      const hourIdx = Math.max(0, Math.min(hours - 1, Math.floor((x / w) * hours)))
+      const round = Math.floor(hourIdx / roundSpan) + 1
+      onClickSummary(round, hourIdx)
+    } catch (_) {}
   }
 
   return (

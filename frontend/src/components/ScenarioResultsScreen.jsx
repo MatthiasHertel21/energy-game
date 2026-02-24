@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Paper,
   Typography,
   Stack,
+  Breadcrumbs,
   Button,
   Table,
   TableBody,
@@ -16,32 +17,32 @@ import {
   CardContent,
   Chip,
   CircularProgress,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Divider
+  Divider,
+  ToggleButton,
+  ToggleButtonGroup
 } from '@mui/material';
 import {
-  EmojiEvents as TrophyIcon,
-  Home as HomeIcon,
-  Assessment as DetailsIcon,
-  ExpandMore as ExpandIcon,
-  CheckCircle as CheckIcon,
+  NavigateNext as NextIcon,
+  TrendingUp as RevenueIcon,
+  AccountBalanceWallet as ProfitIcon,
+  Cloud as CO2Icon,
+  EmojiEvents as ChallengeIcon,
   Bolt as EnergyIcon,
-  Flag as ChallengeIcon,
-  Cancel as CancelIcon
+  Home as HomeIcon,
+  ShowChart as ChartIcon
 } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import { getRoleTerminology } from '../utils/roleTerminology';
 
 /**
  * ScenarioResultsScreen - Final cumulative results and ranking
  * Displayed when scenario is complete
  */
-export default function ScenarioResultsScreen({ sessionId, onHome }) {
-  const navigate = useNavigate();
+export default function ScenarioResultsScreen({ sessionId, onHome, scenario, playerRole }) {
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [chartMetric, setChartMetric] = useState('profit');
 
   useEffect(() => {
     if (!sessionId) return;
@@ -50,9 +51,11 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
       try {
         const { data } = await api.get(`/api/sessions/${sessionId}/final-results`);
         setResults(data);
+        setError(null);
         setLoading(false);
       } catch (error) {
         console.error('Failed to fetch final results:', error);
+        setError(error);
         setLoading(false);
       }
     };
@@ -60,11 +63,172 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
     fetchResults();
   }, [sessionId]);
 
+  const handleRetry = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data } = await api.get(`/api/sessions/${sessionId}/final-results`);
+      setResults(data);
+    } catch (err) {
+      console.error('Failed to fetch final results:', err);
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const normalizeNumber = (value) => {
+    const num = Number(value ?? 0);
+    return Number.isFinite(num) ? num : 0;
+  };
+
+  const formatInt = (value) => normalizeNumber(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const formatCurrency = (value) => `ZAR ${formatInt(value)}`;
+  const formatMwh = (value) => `${formatInt(value)} MWh`;
+
+  const safeResults = (results && typeof results === 'object') ? results : {};
+  const { my_cumulative, final_ranking, round_history, total_rounds } = safeResults;
+  const safeRanking = Array.isArray(final_ranking)
+    ? final_ranking.filter((row) => row && typeof row === 'object')
+    : [];
+  const safeMyCumulative = (my_cumulative && typeof my_cumulative === 'object') ? my_cumulative : (safeRanking[0] || null);
+  const myFinalRank = safeMyCumulative
+    ? (safeRanking.findIndex((r) => r?.player_id === safeMyCumulative?.player_id) + 1)
+    : 0;
+
+  const roleHint = (
+    playerRole
+    || safeMyCumulative?.player_role
+    || safeMyCumulative?.type
+    || ''
+  ).toString().toLowerCase();
+
+  const isProducer = roleHint.includes('producer') || roleHint.includes('generator');
+  const isConsumer = roleHint.includes('consumer') || roleHint.includes('buyer');
+  const resolvedIsProducer = isProducer || (!isConsumer);
+  const terms = getRoleTerminology(resolvedIsProducer);
+  const challengeHistory = Array.isArray(safeMyCumulative?.challenge_history) ? safeMyCumulative.challenge_history : [];
+  const totalChallengePoints = challengeHistory.reduce((sum, h) => sum + (h.result?.total_points || 0), 0);
+  const maxChallengePoints = challengeHistory.reduce((sum, h) => sum + (h.result?.max_points || 0), 0);
+  const challengesPassed = challengeHistory.filter(h => h.result?.passed).length;
+
+  const safeRoundHistory = Array.isArray(round_history)
+    ? round_history.filter((row) => row && typeof row === 'object')
+    : [];
+
+  const trendSeries = useMemo(() => {
+    const rows = [...safeRoundHistory].sort((a, b) => Number(a?.round_num || 0) - Number(b?.round_num || 0));
+    return rows.map((r) => ({
+      round: Number(r.round_num || 0),
+      revenue: normalizeNumber(r.revenue_zar),
+      profit: normalizeNumber(r.profit),
+      costs: normalizeNumber(r.total_costs_zar ?? Math.abs(Number(r.revenue_zar ?? 0))),
+      co2: normalizeNumber(r.co2_emissions_kg),
+      dispatched: normalizeNumber(r.dispatched_mwh),
+      planned: normalizeNumber(r.planned_mwh),
+      coverage: normalizeNumber(r.planned_mwh) > 0
+        ? (normalizeNumber(r.dispatched_mwh) / normalizeNumber(r.planned_mwh)) * 100
+        : 0
+    }));
+  }, [safeRoundHistory]);
+
+  const totalsFromHistory = useMemo(() => trendSeries.reduce((acc, row) => {
+    acc.revenue += row.revenue;
+    acc.profit += row.profit;
+    acc.costs += row.costs;
+    acc.co2 += row.co2;
+    acc.dispatched += row.dispatched;
+    acc.planned += row.planned;
+    return acc;
+  }, { revenue: 0, profit: 0, costs: 0, co2: 0, dispatched: 0, planned: 0 }), [trendSeries]);
+
+  const hasHistory = trendSeries.length > 0;
+  const totalRoundsDisplay = Math.max(
+    Number(total_rounds || 0),
+    trendSeries.length,
+    challengeHistory.length
+  );
+  const challengeRoundsDenominator = Math.max(1, totalRoundsDisplay);
+
+  const totalRevenueDisplay = hasHistory ? totalsFromHistory.revenue : normalizeNumber(safeMyCumulative?.total_revenue);
+  const totalProfitDisplay = hasHistory ? totalsFromHistory.profit : normalizeNumber(safeMyCumulative?.total_profit);
+  const totalCo2Display = hasHistory ? totalsFromHistory.co2 : normalizeNumber(safeMyCumulative?.total_co2_emissions);
+  const totalDispatchedDisplay = hasHistory ? totalsFromHistory.dispatched : normalizeNumber(safeMyCumulative?.total_dispatched_mwh);
+  const totalCostsDisplay = hasHistory
+    ? totalsFromHistory.costs
+    : Math.abs(normalizeNumber(safeMyCumulative?.total_revenue));
+  const totalCoverageDisplay = hasHistory
+    ? (totalsFromHistory.planned > 0 ? (totalsFromHistory.dispatched / totalsFromHistory.planned) * 100 : 0)
+    : (normalizeNumber(safeMyCumulative?.total_planned_mwh) > 0
+      ? (normalizeNumber(safeMyCumulative?.total_dispatched_mwh) / normalizeNumber(safeMyCumulative?.total_planned_mwh)) * 100
+      : 0);
+
+  const chartMeta = resolvedIsProducer
+    ? {
+        revenue: { label: 'Revenue (ZAR)', color: '#4caf50', formatter: (v) => formatCurrency(v) },
+        profit: { label: 'Profit (ZAR)', color: '#2196f3', formatter: (v) => formatCurrency(v) },
+        co2: { label: 'CO₂ (kg)', color: '#ff9800', formatter: (v) => `${formatInt(v)} kg` },
+        dispatched: { label: 'Dispatched (MWh)', color: '#9c27b0', formatter: (v) => formatMwh(v) }
+      }
+    : {
+        costs: { label: 'Costs (ZAR)', color: '#4caf50', formatter: (v) => formatCurrency(v) },
+        coverage: { label: 'Coverage (%)', color: '#2196f3', formatter: (v) => `${normalizeNumber(v).toFixed(1)}%` },
+        co2: { label: `${terms.co2ColumnLabel} (kg)`, color: '#ff9800', formatter: (v) => `${formatInt(v)} kg` },
+        dispatched: { label: 'Consumed (MWh)', color: '#9c27b0', formatter: (v) => formatMwh(v) }
+      };
+
+  const fallbackMetric = resolvedIsProducer ? 'revenue' : 'costs';
+  const activeMetric = chartMeta[chartMetric] ? chartMetric : fallbackMetric;
+  const activeChartMeta = chartMeta[activeMetric];
+
+  const chartPoints = useMemo(() => {
+    if (!trendSeries.length) return [];
+    const values = trendSeries.map((row) => normalizeNumber(row[activeMetric]));
+    const maxVal = Math.max(...values, 1);
+    const minVal = Math.min(...values, 0);
+    const range = Math.max(maxVal - minVal, 1);
+    const width = 900;
+    const height = 240;
+    const padX = 48;
+    const padY = 24;
+    const stepX = trendSeries.length > 1 ? (width - padX * 2) / (trendSeries.length - 1) : 0;
+
+    return trendSeries.map((row, idx) => {
+      const value = normalizeNumber(row[activeMetric]);
+      const x = padX + idx * stepX;
+      const y = height - padY - ((value - minVal) / range) * (height - padY * 2);
+      return { ...row, value, x, y };
+    });
+  }, [trendSeries, activeMetric]);
+
+  const chartPath = useMemo(() => {
+    if (!chartPoints.length) return '';
+    return chartPoints
+      .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.y}`)
+      .join(' ');
+  }, [chartPoints]);
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 400 }}>
         <CircularProgress />
       </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Paper sx={{ p: 4, textAlign: 'center' }}>
+        <Stack spacing={2} alignItems="center">
+          <Typography variant="h6">Unable to load scenario results</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Please try again.
+          </Typography>
+          <Button variant="contained" onClick={handleRetry}>
+            Retry
+          </Button>
+        </Stack>
+      </Paper>
     );
   }
 
@@ -78,85 +242,97 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
     );
   }
 
-  const { my_cumulative, final_ranking, round_history, bid_dispatch_aggregate } = results;
-  const myFinalRank = final_ranking.findIndex(r => r.player_id === my_cumulative.player_id) + 1;
-  const challengeHistory = my_cumulative?.challenge_history || [];
-  
-  // Calculate total challenge points earned
-  const totalChallengePoints = challengeHistory.reduce((sum, h) => sum + (h.result?.total_points || 0), 0);
-  const maxChallengePoints = challengeHistory.reduce((sum, h) => sum + (h.result?.max_points || 0), 0);
-  const challengesPassed = challengeHistory.filter(h => h.result?.passed).length;
-
   return (
-    <Paper sx={{ p: 4 }}>
+    <Box sx={{ p: 3, maxWidth: 1200, mx: 'auto' }}>
+      <Paper elevation={3} sx={{ p: 4 }}>
       <Stack spacing={4}>
-        {/* Header with Trophy */}
-        <Box textAlign="center">
-          <TrophyIcon sx={{ fontSize: 80, color: 'gold', mb: 2 }} />
-          <Typography variant="h3" gutterBottom fontWeight="bold">
-            Scenario Complete!
+        <Box>
+          <Breadcrumbs separator={<NextIcon fontSize="small" />} aria-label="breadcrumb">
+            <Typography color="text.secondary" variant="body2">
+              {scenario?.campaign_name || 'Campaign'}
+            </Typography>
+            <Typography color="text.secondary" variant="body2">
+              {scenario?.name || 'Scenario'}
+            </Typography>
+            <Typography color="text.secondary" variant="body2">
+              {safeMyCumulative?.player_type || safeMyCumulative?.type || 'Player Type'}
+            </Typography>
+            <Typography color="primary" variant="body2" fontWeight={600}>
+              Final Results
+            </Typography>
+          </Breadcrumbs>
+        </Box>
+
+        <Box>
+          <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
+            <Typography variant="h4" fontWeight="bold">
+              Scenario Results
+            </Typography>
+            <Chip label={resolvedIsProducer ? 'Producer' : 'Consumer'} color={resolvedIsProducer ? 'primary' : 'secondary'} />
+            <Chip label={myFinalRank > 0 ? `Final Rank #${myFinalRank}` : 'Final Rank n/a'} color="success" variant="outlined" />
+          </Stack>
+          <Typography variant="body1" color="text.secondary">
+            Completed rounds: {totalRoundsDisplay}
           </Typography>
-          <Typography variant="h5" color="text.secondary">
-            Final Ranking: #{myFinalRank}
-          </Typography>
-          {myFinalRank === 1 && (
-            <Chip label="🏆 Winner!" color="warning" sx={{ mt: 2, fontSize: '1.2rem', py: 3, px: 2 }} />
-          )}
-          {myFinalRank === 2 && (
-            <Chip label="🥈 Second Place" color="default" sx={{ mt: 2, fontSize: '1rem', py: 2 }} />
-          )}
-          {myFinalRank === 3 && (
-            <Chip label="🥉 Third Place" color="default" sx={{ mt: 2, fontSize: '1rem', py: 2 }} />
-          )}
         </Box>
 
         <Divider />
 
-        {/* Cumulative KPIs */}
         <Box>
-          <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <CheckIcon color="success" />
-            Your Final Performance
+          <Typography variant="h6" fontWeight={600} gutterBottom>
+            Key Performance Indicators
           </Typography>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
+          <Grid container spacing={3} sx={{ mt: 0.5 }}>
             <Grid item xs={12} sm={6} md={3}>
-              <Card>
+              <Card variant="outlined" sx={{ borderColor: '#2196f3', borderWidth: 2, height: '100%' }}>
                 <CardContent>
-                  <Typography variant="caption" color="text.secondary">
-                    {my_cumulative.total_profit < 0 ? 'Total Expenses' : 'Total Profit'}
-                  </Typography>
-                  <Typography variant="h5" color={my_cumulative.total_profit >= 0 ? 'success.main' : 'error.main'}>
-                    {Math.abs(my_cumulative.total_profit || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ZAR
-                  </Typography>
-                </CardContent>
-              </Card>
-            </Grid>
-            <Grid item xs={12} sm={6} md={3}>
-              <Card>
-                <CardContent>
-                  <Typography variant="caption" color="text.secondary">Total Imbalance</Typography>
-                  <Typography variant="h5" color={Math.abs(my_cumulative.total_imbalance || 0) > 5 ? 'error.main' : 'text.primary'}>
-                    {(my_cumulative.total_imbalance || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} MWh
+                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
+                    <ProfitIcon sx={{ color: '#2196f3' }} />
+                    <Typography variant="subtitle2" color="text.secondary">{resolvedIsProducer ? 'Total Revenue' : 'Total Costs'}</Typography>
+                  </Stack>
+                    <Typography variant="h5" sx={{ fontWeight: 600, color: normalizeNumber(resolvedIsProducer ? totalRevenueDisplay : totalCostsDisplay) >= 0 ? 'success.main' : 'error.main' }}>
+                    {formatCurrency(normalizeNumber(resolvedIsProducer ? totalRevenueDisplay : totalCostsDisplay))}
                   </Typography>
                 </CardContent>
               </Card>
             </Grid>
             <Grid item xs={12} sm={6} md={3}>
-              <Card>
+              <Card variant="outlined" sx={{ borderColor: '#4caf50', borderWidth: 2, height: '100%' }}>
                 <CardContent>
-                  <Typography variant="caption" color="text.secondary">Total Curtailment</Typography>
-                  <Typography variant="h5" color={Math.abs(my_cumulative.total_curtailment || 0) > 1 ? 'warning.main' : 'text.primary'}>
-                    {(my_cumulative.total_curtailment || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} MWh
+                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
+                    <RevenueIcon sx={{ color: '#4caf50' }} />
+                    <Typography variant="subtitle2" color="text.secondary">{resolvedIsProducer ? 'Total Profit' : 'Coverage'}</Typography>
+                  </Stack>
+                  <Typography variant="h5" sx={{ fontWeight: 600, color: '#4caf50' }}>
+                    {resolvedIsProducer
+                      ? formatCurrency(normalizeNumber(totalProfitDisplay))
+                      : `${normalizeNumber(totalCoverageDisplay).toFixed(1)}%`}
                   </Typography>
                 </CardContent>
               </Card>
             </Grid>
             <Grid item xs={12} sm={6} md={3}>
-              <Card>
+              <Card variant="outlined" sx={{ borderColor: '#ff9800', borderWidth: 2, height: '100%' }}>
                 <CardContent>
-                  <Typography variant="caption" color="text.secondary">Final Score</Typography>
-                  <Typography variant="h5" color="primary.main">
-                    {(my_cumulative.total_score || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
+                    <CO2Icon sx={{ color: '#ff9800' }} />
+                    <Typography variant="subtitle2" color="text.secondary">{terms.totalCo2Label}</Typography>
+                  </Stack>
+                  <Typography variant="h5" sx={{ fontWeight: 600, color: '#ff9800' }}>
+                    {formatInt(totalCo2Display)} kg
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <Card variant="outlined" sx={{ borderColor: '#9c27b0', borderWidth: 2, height: '100%' }}>
+                <CardContent>
+                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
+                    <EnergyIcon sx={{ color: '#9c27b0' }} />
+                    <Typography variant="subtitle2" color="text.secondary">{resolvedIsProducer ? 'Total Dispatched' : 'Total Consumed'}</Typography>
+                  </Stack>
+                  <Typography variant="h5" sx={{ fontWeight: 600, color: '#9c27b0' }}>
+                    {formatMwh(totalDispatchedDisplay)}
                   </Typography>
                 </CardContent>
               </Card>
@@ -164,8 +340,62 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
           </Grid>
         </Box>
 
-        {/* Challenge Summary */}
-        {challengeHistory.length > 0 && (
+        <Box>
+          <Typography variant="h6" fontWeight={600} gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <ChartIcon color="primary" /> KPI Development by Round
+          </Typography>
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            <Stack spacing={2}>
+              <ToggleButtonGroup
+                size="small"
+                value={chartMetric}
+                exclusive
+                onChange={(_, value) => value && setChartMetric(value)}
+              >
+                {resolvedIsProducer ? (
+                  <>
+                    <ToggleButton value="revenue">Revenue</ToggleButton>
+                    <ToggleButton value="profit">Profit</ToggleButton>
+                    <ToggleButton value="co2">CO₂</ToggleButton>
+                    <ToggleButton value="dispatched">Dispatched</ToggleButton>
+                  </>
+                ) : (
+                  <>
+                    <ToggleButton value="costs">Costs</ToggleButton>
+                    <ToggleButton value="coverage">Coverage</ToggleButton>
+                    <ToggleButton value="co2">CO₂</ToggleButton>
+                    <ToggleButton value="dispatched">Consumed</ToggleButton>
+                  </>
+                )}
+              </ToggleButtonGroup>
+
+              {chartPoints.length > 0 ? (
+                <>
+                  <Box sx={{ width: '100%', overflowX: 'auto' }}>
+                    <svg viewBox="0 0 900 240" width="100%" height="240" role="img" aria-label="KPI trend by round">
+                      <rect x="0" y="0" width="900" height="240" fill="#fafafa" rx="8" />
+                      <path d="M 48 216 L 852 216" stroke="#e0e0e0" strokeWidth="1" />
+                      <path d={chartPath} stroke={activeChartMeta.color} strokeWidth="3" fill="none" />
+                      {chartPoints.map((p) => (
+                        <g key={p.round}>
+                          <circle cx={p.x} cy={p.y} r="4" fill={activeChartMeta.color} />
+                          <text x={p.x} y="232" fontSize="11" textAnchor="middle" fill="#666">R{p.round}</text>
+                        </g>
+                      ))}
+                    </svg>
+                  </Box>
+                  <Typography variant="body2" color="text.secondary">
+                    Metric: {activeChartMeta.label} • Latest: {activeChartMeta.formatter(chartPoints[chartPoints.length - 1]?.value || 0)}
+                  </Typography>
+                </>
+              ) : (
+                <Typography variant="body2" color="text.secondary">No round history available for chart.</Typography>
+              )}
+            </Stack>
+          </Paper>
+        </Box>
+
+        {challengeHistory.length > 0 ? (
           <Box>
             <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <ChallengeIcon color="warning" />
@@ -188,7 +418,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                     <CardContent>
                       <Typography variant="caption" color="text.secondary">Rounds Passed</Typography>
                       <Typography variant="h5" color="primary.main">
-                        {challengesPassed} / {challengeHistory.length}
+                        {challengesPassed} / {challengeRoundsDenominator}
                       </Typography>
                     </CardContent>
                   </Card>
@@ -205,182 +435,27 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                 </Grid>
               </Grid>
               
-              <Typography variant="subtitle2" gutterBottom sx={{ mt: 2 }}>
-                Per-Round Challenge Results
+              <Typography variant="body2" color="text.secondary">
+                Total challenge points: {totalChallengePoints}/{maxChallengePoints} • Passed rounds: {challengesPassed}/{challengeRoundsDenominator}
               </Typography>
-              <Stack spacing={1}>
-                {challengeHistory.map((historyItem, idx) => (
-                  <Paper key={idx} variant="outlined" sx={{ p: 2 }}>
-                    <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between" flexWrap="wrap">
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        {historyItem.result?.passed ? (
-                          <CheckIcon color="success" />
-                        ) : (
-                          <CancelIcon color="error" />
-                        )}
-                        <Typography variant="body2" fontWeight="bold">
-                          Round {historyItem.round}
-                        </Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                        <Typography variant="body2" color="text.secondary">
-                          {historyItem.result?.total_points || 0} / {historyItem.result?.max_points || 0} points
-                        </Typography>
-                        <Chip 
-                          label={historyItem.result?.passed ? 'Passed' : 'Failed'}
-                          size="small"
-                          color={historyItem.result?.passed ? 'success' : 'default'}
-                        />
-                      </Box>
-                    </Stack>
-                    {historyItem.result?.results && historyItem.result.results.length > 0 && (
-                      <Box sx={{ mt: 1, pl: 4 }}>
-                        <Grid container spacing={1}>
-                          {historyItem.result.results.map((challenge, cIdx) => (
-                            <Grid item xs={12} sm={6} md={4} key={cIdx}>
-                              <Typography 
-                                variant="caption" 
-                                sx={{ 
-                                  display: 'flex', 
-                                  alignItems: 'center', 
-                                  gap: 0.5,
-                                  color: challenge.passed ? 'success.main' : 'text.secondary'
-                                }}
-                              >
-                                {challenge.passed ? '✓' : '✗'} {challenge.name}
-                              </Typography>
-                            </Grid>
-                          ))}
-                        </Grid>
-                      </Box>
-                    )}
-                  </Paper>
-                ))}
-              </Stack>
+            </Paper>
+          </Box>
+        ) : (
+          <Box>
+            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <ChallengeIcon color="warning" />
+              Challenge Summary
+            </Typography>
+            <Paper sx={{ p: 3 }}>
+              <Typography variant="body2" color="text.secondary">
+                No challenges in this scenario.
+              </Typography>
             </Paper>
           </Box>
         )}
 
-        {/* Aggregated Lot Dispatch Overview */}
-        {bid_dispatch_aggregate && Object.keys(bid_dispatch_aggregate).length > 0 && (
-          <Box>
-            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <DetailsIcon color="primary" />
-              Multi-Bid Performance Summary
-            </Typography>
-            <Stack spacing={2}>
-              {Object.entries(bid_dispatch_aggregate).map(([deviceId, lots]) => {
-                let totalOffered = 0;
-                let totalDispatched = 0;
-                let totalRevenue = 0;
-                
-                Object.values(lots).forEach(lotData => {
-                  totalOffered += lotData.mw_offered || 0;
-                  totalDispatched += lotData.mw_dispatched || 0;
-                  totalRevenue += lotData.total_revenue || 0;
-                });
-                
-                const dispatchRate = totalOffered > 0 ? (totalDispatched / totalOffered * 100) : 0;
-                
-                return (
-                  <Card key={deviceId}>
-                    <CardContent>
-                      <Stack spacing={2}>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <Typography variant="subtitle1" fontWeight={600}>
-                            Device {deviceId}
-                          </Typography>
-                          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                            <Typography variant="body2" color="text.secondary">
-                              Avg Dispatch Rate: <strong>{dispatchRate.toFixed(1)}%</strong>
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Total Revenue: <strong>{totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ZAR</strong>
-                            </Typography>
-                          </Box>
-                        </Box>
-                        
-                        <TableContainer>
-                          <Table size="small">
-                            <TableHead>
-                              <TableRow>
-                                <TableCell sx={{ fontWeight: 600 }}>Lot</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Total Offered (MWh)</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Total Dispatched (MWh)</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Dispatch Rate</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Total Revenue (ZAR)</TableCell>
-                                <TableCell align="right" sx={{ fontWeight: 600 }}>Rounds Offered</TableCell>
-                              </TableRow>
-                            </TableHead>
-                            <TableBody>
-                              {Object.entries(lots).map(([lotLabel, lotData]) => {
-                                const offered = lotData.mw_offered || 0;
-                                const dispatched = lotData.mw_dispatched || 0;
-                                const dispatchPct = offered > 0 ? (dispatched / offered * 100) : 0;
-                                const revenue = lotData.total_revenue || 0;
-                                const roundsOffered = lotData.rounds_offered || 0;
-                                
-                                const lotColors = {
-                                  'A': '#64b5f6',
-                                  'B': '#2196f3',
-                                  'C': '#1565c0',
-                                  'CLASSIC': '#757575'  // Gray for classic devices
-                                };
-                                
-                                const lotNames = {
-                                  'A': 'Baseload',
-                                  'B': 'Mid Merit',
-                                  'C': 'Peak Load',
-                                  'CLASSIC': 'Classic'
-                                };
-                                
-                                return (
-                                  <TableRow key={lotLabel}>
-                                    <TableCell>
-                                      <Chip 
-                                        label={lotNames[lotLabel] || `Lot ${lotLabel}`} 
-                                        size="small"
-                                        sx={{ 
-                                          bgcolor: lotColors[lotLabel] || '#64b5f6',
-                                          color: 'white',
-                                          fontWeight: 600
-                                        }}
-                                      />
-                                    </TableCell>
-                                    <TableCell align="right">{offered.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</TableCell>
-                                    <TableCell align="right" sx={{ fontWeight: 600 }}>
-                                      {dispatched.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-                                    </TableCell>
-                                    <TableCell align="right">
-                                      <Chip 
-                                        label={`${dispatchPct.toFixed(1)}%`}
-                                        size="small"
-                                        color={dispatchPct >= 90 ? 'success' : dispatchPct >= 50 ? 'warning' : 'default'}
-                                      />
-                                    </TableCell>
-                                    <TableCell align="right" sx={{ fontWeight: 600, color: 'success.main' }}>
-                                      {revenue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-                                    </TableCell>
-                                    <TableCell align="right">{roundsOffered}</TableCell>
-                                  </TableRow>
-                                );
-                              })}
-                            </TableBody>
-                          </Table>
-                        </TableContainer>
-                      </Stack>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-            </Stack>
-          </Box>
-        )}
-
-        {/* Final Ranking Table */}
         <Box>
-          <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <TrophyIcon color="warning" />
+          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
             Final Leaderboard
           </Typography>
           <TableContainer>
@@ -391,80 +466,100 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
                   <TableCell sx={{ fontWeight: 600 }}>Player</TableCell>
                   <TableCell sx={{ fontWeight: 600 }}>Type</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 600 }}>Total Profit (ZAR)</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 600 }}>Total Imbalance (MWh)</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 600 }}>Total Curtailment (MWh)</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 600 }}>Final Score</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 600 }}>{resolvedIsProducer ? 'Total Revenue (ZAR)' : 'Total Costs (ZAR)'}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 600 }}>{resolvedIsProducer ? 'Total Dispatched (MWh)' : 'Total Consumed (MWh)'}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 600 }}>{resolvedIsProducer ? 'Total CO₂ (kg)' : `${terms.totalCo2Label} (kg)`}</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {final_ranking.map((player, index) => {
-                  const isMe = player.player_id === my_cumulative.player_id;
+                {safeRanking.map((player, index) => {
+                  const isMe = safeMyCumulative && player?.player_id === safeMyCumulative.player_id;
                   return (
                     <TableRow 
-                      key={player.player_id}
+                      key={player?.player_id || `player-${index}`}
                       sx={{ 
                         bgcolor: isMe ? 'action.selected' : 'inherit',
                         fontWeight: isMe ? 600 : 400
                       }}
                     >
                       <TableCell>
-                        {index === 0 && <TrophyIcon sx={{ fontSize: 20, color: 'gold', verticalAlign: 'middle', mr: 0.5 }} />}
-                        {index === 1 && <TrophyIcon sx={{ fontSize: 20, color: 'silver', verticalAlign: 'middle', mr: 0.5 }} />}
-                        {index === 2 && <TrophyIcon sx={{ fontSize: 20, color: '#cd7f32', verticalAlign: 'middle', mr: 0.5 }} />}
                         #{index + 1}
                       </TableCell>
                       <TableCell>
-                        {player.email}
+                        {player?.email || '-'}
                         {isMe && <Chip label="You" size="small" color="primary" sx={{ ml: 1 }} />}
                       </TableCell>
-                      <TableCell>{player.player_type || '-'}</TableCell>
-                      <TableCell align="right">{player.total_profit?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}</TableCell>
-                      <TableCell align="right">{player.total_imbalance?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}</TableCell>
-                      <TableCell align="right">{player.total_curtailment?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}</TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 600 }}>{player.total_score?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}</TableCell>
+                      <TableCell>{player?.player_type || player?.type || '-'}</TableCell>
+                      <TableCell align="right">{formatInt(player?.total_profit)}</TableCell>
+                      <TableCell align="right">{resolvedIsProducer ? formatInt(player?.total_revenue) : formatInt(Math.abs(Number(player?.total_revenue || 0)))}</TableCell>
+                      <TableCell align="right">{formatInt(player?.total_dispatched_mwh)}</TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 600 }}>{formatInt(player?.total_co2_emissions)}</TableCell>
                     </TableRow>
                   );
                 })}
+                {safeRanking.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} align="center" sx={{ color: 'text.secondary' }}>
+                      No ranking data available.
+                    </TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
           </TableContainer>
         </Box>
 
-        {/* Round History Accordion */}
-        {round_history && round_history.length > 0 && (
+        {trendSeries.length > 0 && (
           <Box>
-            <Typography variant="h6" gutterBottom>
+            <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
               Round History
             </Typography>
-            {round_history.map((round, idx) => (
-              <Accordion key={idx}>
-                <AccordionSummary expandIcon={<ExpandIcon />}>
-                  <Typography>
-                    Round {round.round_num} - Score: {(round.total_score || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-                  </Typography>
-                </AccordionSummary>
-                <AccordionDetails>
-                  <Grid container spacing={2}>
-                    <Grid item xs={6} sm={3}>
-                      <Typography variant="caption" color="text.secondary">Profit</Typography>
-                      <Typography variant="body1">{round.profit?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'} ZAR</Typography>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Typography variant="caption" color="text.secondary">Imbalance</Typography>
-                      <Typography variant="body1">{round.imbalance?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'} MWh</Typography>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Typography variant="caption" color="text.secondary">Curtailment</Typography>
-                      <Typography variant="body1">{round.curtailment?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'} MWh</Typography>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Typography variant="caption" color="text.secondary">Dispatched</Typography>
-                      <Typography variant="body1">{round.dispatched_mwh?.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'} MWh</Typography>
-                    </Grid>
-                  </Grid>
-                </AccordionDetails>
-              </Accordion>
-            ))}
+            <TableContainer component={Paper} variant="outlined">
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Round</TableCell>
+                    {resolvedIsProducer ? (
+                      <>
+                        <TableCell align="right">Revenue</TableCell>
+                        <TableCell align="right">Profit</TableCell>
+                        <TableCell align="right">{terms.co2ColumnLabel}</TableCell>
+                        <TableCell align="right">Dispatched</TableCell>
+                      </>
+                    ) : (
+                      <>
+                        <TableCell align="right">Costs</TableCell>
+                        <TableCell align="right">Coverage</TableCell>
+                        <TableCell align="right">{terms.co2ColumnLabel}</TableCell>
+                        <TableCell align="right">Consumed</TableCell>
+                      </>
+                    )}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {trendSeries.map((round) => (
+                    <TableRow key={round.round}>
+                      <TableCell>Round {round.round}</TableCell>
+                      {resolvedIsProducer ? (
+                        <>
+                          <TableCell align="right">{formatCurrency(round.revenue)}</TableCell>
+                          <TableCell align="right">{formatCurrency(round.profit)}</TableCell>
+                          <TableCell align="right">{formatInt(round.co2)} kg</TableCell>
+                          <TableCell align="right">{formatMwh(round.dispatched)}</TableCell>
+                        </>
+                      ) : (
+                        <>
+                          <TableCell align="right">{formatCurrency(round.costs)}</TableCell>
+                          <TableCell align="right">{normalizeNumber(round.coverage).toFixed(1)}%</TableCell>
+                          <TableCell align="right">{formatInt(round.co2)} kg</TableCell>
+                          <TableCell align="right">{formatMwh(round.dispatched)}</TableCell>
+                        </>
+                      )}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
           </Box>
         )}
 
@@ -480,16 +575,9 @@ export default function ScenarioResultsScreen({ sessionId, onHome }) {
           >
             Back to Home
           </Button>
-          <Button
-            variant="outlined"
-            size="large"
-            startIcon={<DetailsIcon />}
-            onClick={() => navigate(`/evaluation?sessionId=${sessionId}`)}
-          >
-            View Detailed Analysis
-          </Button>
         </Stack>
       </Stack>
-    </Paper>
+      </Paper>
+    </Box>
   );
 }

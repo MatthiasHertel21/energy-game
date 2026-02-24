@@ -148,9 +148,7 @@ def validate_config(cfg: dict) -> list[str]:
                         player_devices = [device_map.get(dev_id) for dev_id in dv if dev_id in device_map]
                         from .engine import detect_player_role
                         role = detect_player_role(player_devices)
-                        if role == 'prosumer':
-                            errors.append(f"player_types[{tid}]: Mixed producer/consumer devices not allowed. Player must be either pure producer OR pure consumer.")
-                        elif role == 'unknown':
+                        if role == 'unknown':
                             errors.append(f"player_types[{tid}]: No valid devices or all devices are storage only.")
 
     
@@ -181,6 +179,40 @@ def validate_config(cfg: dict) -> list[str]:
             errors.append("general.player_zone must be integer")
     
     return errors
+
+
+def sanitize_markets_config(cfg: dict) -> dict:
+    """Normalize markets config to trading-only schema.
+
+    Supported inputs:
+    - Legacy array: markets.dam = [..]
+    - Old object: markets.dam = {trading:[..], clearing:[..]}
+    - Current object: markets.dam = {trading:[..]}
+    """
+    if not isinstance(cfg, dict):
+        return cfg
+
+    out = dict(cfg)
+    markets = out.get("markets", {}) or {}
+
+    def _sanitize_entry(entry):
+        if isinstance(entry, list):
+            return {"trading": list(entry)}
+        if isinstance(entry, dict):
+            trading = entry.get("trading")
+            if isinstance(trading, list):
+                return {"trading": list(trading)}
+            legacy_clearing = entry.get("clearing")
+            if isinstance(legacy_clearing, list):
+                return {"trading": list(legacy_clearing)}
+            return {"trading": []}
+        return {"trading": []}
+
+    out["markets"] = {
+        "dam": _sanitize_entry(markets.get("dam", [])),
+        "idm": _sanitize_entry(markets.get("idm", [])),
+    }
+    return out
 
 
 @ns.route("/campaigns")
@@ -408,10 +440,11 @@ class Scenarios(Resource):
             ns.abort(HTTPStatus.FORBIDDEN, f"System limit reached: maximum {Config.MAX_SCENARIOS} scenarios allowed")
         
         data = request.json
-        errors = validate_config(data.get("config", {}))
+        cleaned_config = sanitize_markets_config(data.get("config", {}))
+        errors = validate_config(cleaned_config)
         if errors:
             return {"ok": False, "errors": errors}, HTTPStatus.BAD_REQUEST
-        s = Scenario(name=data["name"], campaign_id=data.get("campaign_id"), config=data["config"])
+        s = Scenario(name=data["name"], campaign_id=data.get("campaign_id"), config=cleaned_config)
         db.session.add(s)
         db.session.commit()
         return {"id": s.id, "name": s.name}, HTTPStatus.CREATED
@@ -560,13 +593,14 @@ class ScenarioItem(Resource):
     @ns.expect(scenario_in, validate=True)
     def put(self, sid: int):
         data = request.json
-        errors = validate_config(data.get("config", {}))
+        cleaned_config = sanitize_markets_config(data.get("config", {}))
+        errors = validate_config(cleaned_config)
         if errors:
             return {"ok": False, "errors": errors}, HTTPStatus.BAD_REQUEST
         s = Scenario.query.get_or_404(sid)
         s.name = data["name"]
         s.campaign_id = data.get("campaign_id")
-        s.config = data["config"]
+        s.config = cleaned_config
         db.session.add(s)
         db.session.commit()
         return {"status": "ok"}
@@ -617,7 +651,7 @@ class ScenarioImport(Resource):
     def post(self):
         data = request.json or {}
         name = data.get("name") or (data.get("config", {}).get("name")) or "Imported Scenario"
-        config = data.get("config") or {}
+        config = sanitize_markets_config(data.get("config") or {})
         errors = validate_config(config)
         if errors:
             return {"ok": False, "errors": errors}, HTTPStatus.BAD_REQUEST

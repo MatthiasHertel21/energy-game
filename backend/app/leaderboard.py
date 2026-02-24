@@ -3,6 +3,7 @@ from flask_jwt_extended import jwt_required
 
 from .extensions import db
 from .models import Result, User, Forecast
+from .kpi_schema import canonicalize_kpis
 
 
 ns = Namespace("leaderboard", description="Leaderboards & KPIs")
@@ -20,7 +21,7 @@ class LeaderboardSession(Resource):
         rows = db.session.query(subq.c.player_id, subq.c.data, User.role, User.email).join(User, User.id == subq.c.player_id).all()
         agg = {}
         for pid, data, role, email in rows:
-            k = data.get("kpis") or {}
+            k = canonicalize_kpis(data.get("kpis") or {})
             entry = agg.setdefault(pid, {
                 "profit_zar": 0, 
                 "imbalance_cost_zar": 0, 

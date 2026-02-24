@@ -3,7 +3,8 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import func
 
 from .extensions import db
-from .models import Session, Scenario, CohortMember, Cohort, SessionStatus, User, Result
+from .models import Session, Scenario, CohortMember, Cohort, SessionStatus, User, Result, SessionPlayerType
+from .kpi_schema import canonicalize_kpis
 import os
 try:
     import redis as _redis
@@ -21,6 +22,7 @@ class MySessions(Resource):
     def get(self):
         uid = int(get_jwt_identity())
         # sessions for cohorts the user is a member of (include completed sessions for replay)
+        from .models import CampaignScenario
         q = (
             db.session.query(Session, Scenario, Cohort)
             .join(Scenario, Scenario.id == Session.scenario_id)
@@ -34,7 +36,8 @@ class MySessions(Resource):
                 SessionStatus.round_active,
                 SessionStatus.round_results,
                 SessionStatus.paused,
-                SessionStatus.scenario_complete
+                SessionStatus.scenario_complete,
+                SessionStatus.ended
             ]))
             .order_by(Session.id.desc())
         )
@@ -52,10 +55,39 @@ class MySessions(Resource):
                 elapsed_rounds = s.current_round - 1
                 next_round_at = (s.started_at + timedelta(hours=elapsed_rounds * round_span_hours)).isoformat()
             
+            # Get campaign_id from CampaignScenario mapping (scenarios may not have campaign_id directly)
+            campaign_id = sc.campaign_id
+            if not campaign_id:
+                cs_mapping = CampaignScenario.query.filter_by(scenario_id=sc.id).first()
+                if cs_mapping:
+                    campaign_id = cs_mapping.campaign_id
+            
+            # Get player type for this user in this session
+            player_type_name = None
+            spt = SessionPlayerType.query.filter_by(session_id=s.id, user_id=uid).first()
+            if spt and spt.type_id:
+                player_types = config.get("player_types", [])
+                for pt in player_types:
+                    if pt.get("id") == spt.type_id:
+                        player_type_name = pt.get("name")
+                        break
+            
+            # Calculate challenge points for this user
+            total_points = 0
+            user_results = Result.query.filter_by(session_id=s.id, player_id=uid).all()
+            for result in user_results:
+                if result.data and "challenge_result" in result.data:
+                    cr = result.data["challenge_result"]
+                    if isinstance(cr, dict) and "challenges" in cr:
+                        for ch_result in cr["challenges"]:
+                            if ch_result.get("achieved"):
+                                total_points += ch_result.get("points", 0)
+            
             out.append({
                 "id": s.id,
                 "scenario_id": s.scenario_id,
                 "scenario_name": sc.name,
+                "campaign_id": campaign_id,
                 "cohort_name": ch.name,
                 "status": s.status.value,
                 "current_round": s.current_round,
@@ -65,6 +97,8 @@ class MySessions(Resource):
                 "started_at": s.started_at.isoformat() if s.started_at else None,
                 "general": general,
                 "market": market,
+                "player_type": player_type_name,
+                "total_points": total_points,
             })
         return out
 
@@ -124,7 +158,7 @@ class MyProfile(Resource):
         
         for r in results:
             if r.data and "kpis" in r.data:
-                kpis = r.data["kpis"]
+                kpis = canonicalize_kpis(r.data["kpis"])
                 total_profit += kpis.get("profit_zar", 0)
                 total_revenue += kpis.get("revenue_zar", 0)
                 total_imbalance += kpis.get("imbalance_cost_zar", 0)
@@ -142,7 +176,8 @@ class MyProfile(Resource):
                 player_profits = {}
                 for res in session_results:
                     if res.data and "kpis" in res.data:
-                        player_profits[res.player_id] = player_profits.get(res.player_id, 0) + res.data["kpis"].get("profit_zar", 0)
+                        kpis = canonicalize_kpis(res.data["kpis"])
+                        player_profits[res.player_id] = player_profits.get(res.player_id, 0) + kpis.get("profit_zar", 0)
                 
                 # Sort by profit
                 sorted_players = sorted(player_profits.items(), key=lambda x: x[1], reverse=True)
@@ -164,7 +199,8 @@ class MyProfile(Resource):
             session_profit = 0
             for result in session_results:
                 if result.data and "kpis" in result.data:
-                    session_profit += result.data["kpis"].get("profit_zar", 0)
+                    kpis = canonicalize_kpis(result.data["kpis"])
+                    session_profit += kpis.get("profit_zar", 0)
             
             recent_sessions.append({
                 "id": s.id,

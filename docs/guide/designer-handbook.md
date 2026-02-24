@@ -662,11 +662,21 @@ Quick creation with predefined templates:
 |-------|-------------|---------|
 | **capacity_mw** | Rated power | 600 |
 | **efficiency** | Efficiency (0-1) | 0.35 |
-| **variable_cost_zar_per_mwh** | Fuel costs | 400 |
+| **variable_cost_zar_per_mwh** | Fuel/operational costs per MWh generated | 400 |
+| **fixed_cost_zar_per_hour** | Fixed hourly costs (independent of dispatch) | 5000 |
+| **co2_emissions_kg_per_mwh** | CO2 emissions per MWh generated (kg) | 950 (coal), 550 (gas), 0 (renewables) |
 | **ramp_up_mw_per_h** | Max. ramp up | 100 |
 | **ramp_down_mw_per_h** | Max. ramp down | 100 |
 | **min_stable_mw** | Minimum partial load | 200 |
 | **start_cost_zar** | Start-up costs | 50000 |
+
+> **Note on Costs:**  
+> - **Variable costs**: Incurred per MWh produced (fuel, operational wear)
+> - **Fixed costs**: Incurred per hour regardless of output (staff, maintenance)  
+> - **Total costs**: Sum of both types used in profit calculation
+
+> **Note on CO2 Tracking:**  
+> CO2 emissions are tracked per device based on actual dispatched energy. Use this to create environmental/sustainability challenges or educational scenarios about clean energy transition.
 
 **Renewable-specific:**
 

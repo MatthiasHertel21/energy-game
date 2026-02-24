@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import * as d3 from 'd3'
 
 /**
@@ -25,6 +25,7 @@ export default function ForecastChartEditor({
   lockedUntil = 0,
   onChange,
   maxValue,
+  effectiveLimitMw = null,
   smoothRadius = 3,
   deviceType = '',
   deviceParams = {},
@@ -33,6 +34,7 @@ export default function ForecastChartEditor({
   freezeHours = 6,
   dayAheadGateHour = 12,
   startTime = '00:00',
+  fakeDate = '',
   daBaseline = null,
   committedPosition = null,
   hourStatus = [],
@@ -42,6 +44,24 @@ export default function ForecastChartEditor({
 }){
   const ref = useRef(null)
   const dragStateRef = useRef({ index: null, engaged: false })
+  const [containerWidth, setContainerWidth] = useState(700)
+
+  useEffect(() => {
+    if (!ref.current) return
+    const parent = ref.current.parentElement
+    const update = () => {
+      const width = parent?.clientWidth || ref.current.clientWidth || 700
+      setContainerWidth(width)
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    if (parent) ro.observe(parent)
+    window.addEventListener('resize', update)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [])
 
   useEffect(() => {
     if (!ref.current) return
@@ -54,16 +74,27 @@ export default function ForecastChartEditor({
     svg.selectAll('*').remove()
     svg.style('touch-action', 'none')
 
-    const W = 700, H = 420
+    const width = Math.max(containerWidth || 700, 260)
+    const H = 420
     const M = { top: 16, right: 20, bottom: 36, left: 46 }
-    const iw = W - M.left - M.right
+    const iw = width - M.left - M.right
     const ih = H - M.top - M.bottom
 
-    const g = svg.attr('width', W).attr('height', H).append('g').attr('transform', `translate(${M.left},${M.top})`)
+    const g = svg.attr('width', width).attr('height', H).append('g').attr('transform', `translate(${M.left},${M.top})`)
 
     const n = Math.max(1, hours.length)
     const seriesMax = Math.max(1, d3.max(hours) || 1)
     const hintedMax = Number.isFinite(Number(maxValue)) ? Number(maxValue) : 0
+    const parsedStart = String(startTime || '00:00').split(':')
+    const startHour = Number(parsedStart[0]) || 0
+    const startMinute = Number(parsedStart[1]) || 0
+    const baseDate = (() => {
+      if (!fakeDate) return null
+      const d = new Date(fakeDate)
+      if (Number.isNaN(d.getTime())) return null
+      d.setHours(startHour, startMinute, 0, 0)
+      return d
+    })()
     
     // Calculate device-specific reference lines
     const deviceTypeNorm = (deviceType || '').toLowerCase()
@@ -71,20 +102,66 @@ export default function ForecastChartEditor({
     
     if (['coal', 'gas', 'hydro', 'nuclear'].includes(deviceTypeNorm)) {
       // Thermal generators: max_power, min_load
-      const maxPower = deviceParams.max_power_mw || deviceParams.capacity_mw || 0
+      const configuredMaxPower = Number(deviceParams.max_power_mw || deviceParams.capacity_mw || 0)
+      const maxPower = Number.isFinite(Number(effectiveLimitMw)) && Number(effectiveLimitMw) > 0
+        ? Number(effectiveLimitMw)
+        : configuredMaxPower
       const minLoadPct = deviceParams.min_load_pct || 0
-      const minPower = (minLoadPct / 100) * maxPower
+      const minPower = (minLoadPct / 100) * configuredMaxPower
       
-      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0', tooltip: `Maximum power output capacity: ${maxPower.toFixed(1)} MW` })
+      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0', tooltip: `Effective maximum available power in this round: ${maxPower.toFixed(1)} MW` })
       if (minPower > 0) refLines.push({ value: minPower, label: `Min Load (${minLoadPct}%)`, color: '#f57c00', dash: '4,2', tooltip: `Minimum stable load: ${minPower.toFixed(1)} MW (${minLoadPct}% of max power)` })
     } else if (['solar', 'wind'].includes(deviceTypeNorm)) {
       // Renewables: max_power, expected output
-      const maxPower = deviceParams.max_power_mw || deviceParams.capacity_mw || 0
+      const configuredMaxPower = Number(deviceParams.max_power_mw || deviceParams.capacity_mw || 0)
+      const maxPower = Number.isFinite(Number(effectiveLimitMw)) && Number(effectiveLimitMw) > 0
+        ? Number(effectiveLimitMw)
+        : configuredMaxPower
       const capFactor = deviceParams.capacity_factor_pct || 0
-      const expected = (capFactor / 100) * maxPower
+      const toFactorArray = (value, expectedLength) => {
+        if (!Array.isArray(value)) return null
+        if (value.length < expectedLength) return null
+        return value.map((item) => {
+          const num = Number(item)
+          return Number.isFinite(num) ? num : 1
+        })
+      }
+      const monthlyFactors = toFactorArray(
+        deviceParams.monthly_factors
+        || deviceParams.seasonal_profile_monthly
+        || deviceParams.availability_profile_monthly,
+        12
+      )
+      const hourlyFactors = toFactorArray(
+        deviceParams.hourly_factors
+        || deviceParams.availability_profile_hourly
+        || deviceParams.solar_profile
+        || deviceParams.wind_profile,
+        24
+      )
+      const currentSimHour = Math.max(0, ((Number(currentRound) || 1) - 1) * (Number(roundSpan) || 1))
+      const totalAbsHour = startHour + currentSimHour
+      const hourOfDay = ((totalAbsHour % 24) + 24) % 24
+      const monthIdx = (() => {
+        if (!baseDate) return null
+        const d = new Date(baseDate.getTime() + currentSimHour * 3600 * 1000)
+        return d.getMonth()
+      })()
+      const monthlyFactor = monthIdx != null && monthlyFactors ? Number(monthlyFactors[monthIdx] || 1) : 1
+      const hourlyFactor = hourlyFactors ? Number(hourlyFactors[hourOfDay] || 1) : 1
+      const expected = (capFactor / 100) * configuredMaxPower * monthlyFactor * hourlyFactor
+      const maxEqualsExpected = Math.abs(expected - maxPower) <= Math.max(0.5, maxPower * 0.01)
       
-      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0', tooltip: `Maximum power output capacity: ${maxPower.toFixed(1)} MW` })
-      if (expected > 0) refLines.push({ value: expected, label: `Expected (${capFactor}% CF)`, color: '#388e3c', dash: '5,3', tooltip: `Expected output based on ${capFactor}% Capacity Factor (CF): ${expected.toFixed(1)} MW` })
+      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0', tooltip: `Effective maximum available power in this round: ${maxPower.toFixed(1)} MW` })
+      if (expected > 0 && !maxEqualsExpected) {
+        refLines.push({
+          value: expected,
+          label: `Expected (KSE)` ,
+          color: '#388e3c',
+          dash: '5,3',
+          tooltip: `Expected output at ${String(hourOfDay).padStart(2, '0')}:00 (month-aware): ${expected.toFixed(1)} MW`
+        })
+      }
     } else if (deviceTypeNorm === 'battery') {
       // Battery: +/- power rating
       const powerMw = deviceParams.power_mw || deviceParams.power_rating_mw || 0
@@ -95,11 +172,14 @@ export default function ForecastChartEditor({
     } else if (deviceTypeNorm.includes('load')) {
       // Load devices: baseline, peak, DR capacity
       const baseline = deviceParams.baseline_load_mw || 0
-      const peak = deviceParams.peak_load_mw || 0
+      const peakConfigured = Number(deviceParams.peak_load_mw || 0)
+      const peak = Number.isFinite(Number(effectiveLimitMw)) && Number(effectiveLimitMw) > 0
+        ? Number(effectiveLimitMw)
+        : peakConfigured
       const drCapacity = deviceParams.demand_response_capacity_mw || 0
       const drmCapable = deviceParams.drm_capable
       
-      if (peak > 0) refLines.push({ value: peak, label: 'Peak Load', color: '#d32f2f', dash: '3,0', tooltip: `Peak load consumption: ${peak.toFixed(1)} MW` })
+      if (peak > 0) refLines.push({ value: peak, label: 'Peak Load', color: '#d32f2f', dash: '3,0', tooltip: `Effective peak demand in this round: ${peak.toFixed(1)} MW` })
       if (baseline > 0) refLines.push({ value: baseline, label: 'Baseline', color: '#1976d2', dash: '4,2', tooltip: `Baseline load consumption: ${baseline.toFixed(1)} MW` })
       if (drmCapable && drCapacity > 0 && baseline > drCapacity) {
         const drMin = baseline - drCapacity
@@ -201,10 +281,14 @@ export default function ForecastChartEditor({
     
     // Create hatch patterns for committed positions
     const defs = svg.append('defs')
+    const patternIdPrefix = `forecast-${Math.random().toString(36).slice(2, 9)}`
+    const damPatternId = `${patternIdPrefix}-dam`
+    const idmPatternId = `${patternIdPrefix}-idm`
+    const damR1PatternId = `${patternIdPrefix}-dam-r1`
     
     // DAM hatch pattern: Yellow / (45 degrees)
     const damHatchPattern = defs.append('pattern')
-      .attr('id', 'dam-committed-hatch')
+      .attr('id', damPatternId)
       .attr('patternUnits', 'userSpaceOnUse')
       .attr('width', 6)
       .attr('height', 6)
@@ -212,18 +296,18 @@ export default function ForecastChartEditor({
     damHatchPattern.append('rect')
       .attr('width', 6)
       .attr('height', 6)
-      .attr('fill', '#FDD835')
-      .attr('opacity', 0.15)
+      .attr('fill', '#FFFBE6')
+      .attr('opacity', 0.95)
     damHatchPattern.append('line')
       .attr('x1', 0).attr('y1', 0)
       .attr('x2', 0).attr('y2', 6)
       .attr('stroke', '#FDD835')
       .attr('stroke-width', 2)
-      .attr('opacity', 0.4)
+      .attr('opacity', 0.25)
     
     // IDM hatch pattern: Orange \ (-45 degrees)
     const idmHatchPattern = defs.append('pattern')
-      .attr('id', 'idm-committed-hatch')
+      .attr('id', idmPatternId)
       .attr('patternUnits', 'userSpaceOnUse')
       .attr('width', 6)
       .attr('height', 6)
@@ -231,23 +315,42 @@ export default function ForecastChartEditor({
     idmHatchPattern.append('rect')
       .attr('width', 6)
       .attr('height', 6)
-      .attr('fill', '#FB8C00')
-      .attr('opacity', 0.15)
+      .attr('fill', '#FFF3E0')
+      .attr('opacity', 0.95)
     idmHatchPattern.append('line')
       .attr('x1', 0).attr('y1', 0)
       .attr('x2', 0).attr('y2', 6)
       .attr('stroke', '#FB8C00')
       .attr('stroke-width', 2)
-      .attr('opacity', 0.4)
+      .attr('opacity', 0.22)
+
+    const damR1HatchPattern = defs.append('pattern')
+      .attr('id', damR1PatternId)
+      .attr('patternUnits', 'userSpaceOnUse')
+      .attr('width', 6)
+      .attr('height', 6)
+      .attr('patternTransform', 'rotate(45)')
+    damR1HatchPattern.append('rect')
+      .attr('width', 6)
+      .attr('height', 6)
+      .attr('fill', '#E0F7FA')
+      .attr('opacity', 0.95)
+    damR1HatchPattern.append('line')
+      .attr('x1', 0).attr('y1', 0)
+      .attr('x2', 0).attr('y2', 6)
+      .attr('stroke', '#00BCD4')
+      .attr('stroke-width', 2)
+      .attr('opacity', 0.2)
     
     // Color and label mapping for each phase
     // Colors match timeline (lighter versions): DAM=Light Yellow, IDM=Light Orange, Past=Light Grey, Forecast=Light Blue
+    // Note: Past hours (locked) should always be grey regardless of their market status
     const phaseConfig = {
-      locked: { color: '#F5F5F5', opacity: 0.60, label: 'Settled', textColor: '#757575' },
-      id: { color: '#FFE0B2', opacity: 0.50, label: 'Intraday Market', textColor: '#E65100' },
-      da: { color: '#FFF9C4', opacity: 0.50, label: 'Day-Ahead Market', textColor: '#F57F17' },
-      da_r1: { color: '#B2EBF2', opacity: 0.50, label: 'Day-Ahead (R1)', textColor: '#00ACC1' },
-      forecast: { color: '#E3F2FD', opacity: 0.35, label: 'Forecast', textColor: '#1565C0' }
+      locked: { fill: '#EEEEEE', opacity: 0.70 },
+      id: { fill: `url(#${idmPatternId})`, opacity: 0.75 },
+      da: { fill: `url(#${damPatternId})`, opacity: 0.75 },
+      da_r1: { fill: `url(#${damR1PatternId})`, opacity: 0.78 },
+      forecast: { fill: '#F3F8FF', opacity: 0.55 }
     }
     
     // Draw background rectangles for each phase
@@ -263,91 +366,22 @@ export default function ForecastChartEditor({
           .attr('y', 0)
           .attr('width', width)
           .attr('height', ih)
-          .attr('fill', config.color)
+          .attr('fill', config.fill)
           .attr('opacity', config.opacity)
           .style('pointer-events', 'none')
       }
     })
     
-    // Add hatching for committed positions
-    // 1. DAM committed area (yellow / hatch)
-    if (daCommittedStart >= 0 && daCommittedEnd > daCommittedStart) {
-      const damXStart = x(Math.max(1, daCommittedStart + 1))
-      const damXEnd = x(Math.min(n + 1, daCommittedEnd + 1))
-      const damWidth = damXEnd - damXStart
-      
-      if (damWidth > 0.5) {
-        g.append('rect')
-          .attr('x', damXStart)
-          .attr('y', 0)
-          .attr('width', damWidth)
-          .attr('height', ih)
-          .attr('fill', 'url(#dam-committed-hatch)')
-          .style('pointer-events', 'none')
-      }
-    }
-    
-    // 2. IDM committed area (orange \ hatch)
-    // Find all hours with status "id" - these are committed ID positions (exclude locked)
-    if (Array.isArray(hourStatus)) {
-      let idStart = -1
-      for (let i = 0; i < hourStatus.length; i++) {
-        const isId = hourStatus[i] === 'id'
-        const isLocked = hourStatus[i] === 'locked'
-        
-        if (isId && !isLocked && idStart === -1) {
-          // Start of ID range
-          idStart = i
-        } else if ((!isId || isLocked) && idStart !== -1) {
-          // End of ID range
-          const idXStart = x(Math.max(1, idStart + 1))
-          const idXEnd = x(Math.min(n + 1, i + 1))
-          const idWidth = idXEnd - idXStart
-          
-          if (idWidth > 0.5) {
-            g.append('rect')
-              .attr('x', idXStart)
-              .attr('y', 0)
-              .attr('width', idWidth)
-              .attr('height', ih)
-              .attr('fill', 'url(#idm-committed-hatch)')
-              .style('pointer-events', 'none')
-          }
-          
-          idStart = -1
-        }
-      }
-      
-      // Handle last range if it extends to the end
-      if (idStart !== -1) {
-        const idXStart = x(Math.max(1, idStart + 1))
-        const idXEnd = x(Math.min(n + 1, hourStatus.length + 1))
-        const idWidth = idXEnd - idXStart
-        
-        if (idWidth > 0.5) {
-          g.append('rect')
-            .attr('x', idXStart)
-            .attr('y', 0)
-            .attr('width', idWidth)
-            .attr('height', ih)
-            .attr('fill', 'url(#idm-committed-hatch)')
-            .style('pointer-events', 'none')
-        }
-      }
-    }
+    // NOTE: Hatching for committed positions removed - Past hours should stay grey
+    // Past hours (locked, da, id) are shown in grey background only
+    // Only future committed positions would show hatching, but for simplicity we removed all hatching
     
     // Draw separator lines between market phases
     for (let i = 1; i < statusRanges.length; i++) {
       const xSeparator = x(statusRanges[i].start + 1)
       const nextStatus = statusRanges[i].status
       
-      // Color separator based on the phase it leads into
-      let strokeColor = '#424242' // Default gray
-      if (nextStatus === 'id') {
-        strokeColor = '#FB8C00' // Orange for IDM
-      } else if (nextStatus === 'da' || nextStatus === 'da_r1') {
-        strokeColor = '#FDD835' // Yellow for DAM
-      }
+      const strokeColor = '#CFD8DC'
       
       g.append('line')
         .attr('x1', xSeparator)
@@ -355,15 +389,12 @@ export default function ForecastChartEditor({
         .attr('y1', 0)
         .attr('y2', ih)
         .attr('stroke', strokeColor)
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '4,4')
+        .attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', '2,4')
         .style('pointer-events', 'none')
     }
     
     // Temporal markers (NOW, market gates, day boundaries)
-    const parsedStart = String(startTime || '00:00').split(':')
-    const startHour = Number(parsedStart[0]) || 0
-    const startMinute = Number(parsedStart[1]) || 0
     const currentSimHour = Math.max(0, ((Number(currentRound) || 1) - 1) * (Number(roundSpan) || 1))
     const lockedLineHour = (() => {
       const normalized = Number(lockedUntil)
@@ -450,9 +481,9 @@ export default function ForecastChartEditor({
         .attr('x2', gateX)
         .attr('y1', 0)
         .attr('y2', ih)
-        .attr('stroke', '#ff9800')
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '5,5')
+        .attr('stroke', '#CFD8DC')
+        .attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', '2,4')
       
       const leftLabel = currentSimHour >= lockedLineHour ? 'Past' : 'Locked'
       const leftTooltip = currentSimHour >= lockedLineHour 
@@ -488,9 +519,9 @@ export default function ForecastChartEditor({
         .attr('x2', dayX)
         .attr('y1', 0)
         .attr('y2', ih)
-        .attr('stroke', '#9c27b0')
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '5,5')
+        .attr('stroke', '#CFD8DC')
+        .attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', '2,4')
     }
     
     // Locked zone hatching removed per user request - solid grey background from phase backgrounds is sufficient
@@ -513,18 +544,18 @@ export default function ForecastChartEditor({
           .attr('x2', idStartX)
           .attr('y1', 0)
           .attr('y2', ih)
-          .attr('stroke', '#4caf50')
-          .attr('stroke-width', 2)
-          .attr('stroke-dasharray', '5,3')
+          .attr('stroke', '#CFD8DC')
+          .attr('stroke-width', 1.5)
+          .attr('stroke-dasharray', '2,4')
         
         g.append('line')
           .attr('x1', idEndX)
           .attr('x2', idEndX)
           .attr('y1', 0)
           .attr('y2', ih)
-          .attr('stroke', '#4caf50')
-          .attr('stroke-width', 2)
-          .attr('stroke-dasharray', '5,3')
+          .attr('stroke', '#CFD8DC')
+          .attr('stroke-width', 1.5)
+          .attr('stroke-dasharray', '2,4')
       }
       
       // Draw DA zone marker (between locked and ID, or after ID and before future)
@@ -581,6 +612,20 @@ export default function ForecastChartEditor({
         // Create combined data for area between lines
         const combinedData = []
         for (let i = 0; i < minLen; i++) {
+          const isIdHour = Array.isArray(hourStatus) ? hourStatus[i] === 'id' : true
+
+          // ID area visualization should only appear in IDM hours.
+          // Outside IDM, force current to DA baseline so no green/red delta is painted.
+          if (!isIdHour) {
+            const daValue = Number(daBaseline[i]) || 0
+            combinedData.push({
+              i,
+              current: daValue,
+              da: daValue
+            })
+            continue
+          }
+
           // For hours before ID gate: use committedPosition if available (shows actual committed ID position)
           // For hours after ID gate: use current editable forecast (shows planned position)
           const useCommitted = i < nextIdGateHour && Array.isArray(committedPosition) && i < committedPosition.length
@@ -688,18 +733,12 @@ export default function ForecastChartEditor({
     })
 
     // axes
-    // X-axis with day/time labels (Tomorrow removed per user request)
+    // X-axis with time labels only (no day labels per user request)
     const xAxis = d3.axisBottom(x).ticks(Math.min(n + 1, 12)).tickFormat((hourNum) => {
       const hourIdx = Math.round(hourNum) - 1
       const totalHours = startHour + hourIdx
-      const dayOffset = Math.floor(totalHours / 24)
       const hourOfDay = ((totalHours % 24) + 24) % 24
       
-      // Show day label for first hour of each day or first tick
-      if (hourOfDay === 0 || hourIdx === 0) {
-        const dayLabel = dayOffset === 0 ? 'Today' : `Day ${dayOffset + 1}`
-        return `${dayLabel}\n${String(hourOfDay).padStart(2, '0')}:00`
-      }
       return `${String(hourOfDay).padStart(2, '0')}:00`
     })
     
@@ -903,10 +942,9 @@ export default function ForecastChartEditor({
     try { g.select('rect.forecast-overlay').raise() } catch(_) {}
 
     // labels
-    g.append('text').attr('x', iw / 2).attr('y', ih + 28).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Hour')
     g.append('text').attr('transform', 'rotate(-90)').attr('x', -ih / 2).attr('y', -36).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Power (MW) per hour')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hours, lockedUntil, onChange, maxValue, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, dayAheadGateHour, startTime, daBaseline, hourStatus, totalRounds])
+  }, [hours, lockedUntil, onChange, maxValue, effectiveLimitMw, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, dayAheadGateHour, startTime, fakeDate, daBaseline, hourStatus, totalRounds, containerWidth])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

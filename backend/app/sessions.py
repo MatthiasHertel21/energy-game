@@ -7,6 +7,7 @@ from .extensions import db, socketio
 from .scheduler import run_rounds
 from .models import Session, SessionStatus, Scenario, Campaign, SessionAllowedType, SessionPlayerType, ActivityLog, User, CohortMember, Forecast
 from .utils import role_required, log_activity
+from .kpi_schema import canonicalize_kpis
 import os, json
 from datetime import datetime
 try:
@@ -68,12 +69,13 @@ class Sessions(Resource):
         emit_trainer("session_started", {"session_id": s.id})
         # start background round timer
         socketio.start_background_task(run_rounds, s.id, current_app._get_current_object())
-        # Optional: force navigate cohort players to briefing
+        # Force navigate cohort players to briefing for shared_market (or if explicitly enabled)
         try:
-            if bool(data.get("force_navigate")) and _redis_client is not None:
+            if (data.get("mode") or "shared_market") == "shared_market" or bool(data.get("force_navigate")):
                 url = f"/briefing/{s.id}"
                 key = f"cohort:{s.cohort_id}:force_nav"
-                _redis_client.setex(key, 300, url)
+                if _redis_client is not None:
+                    _redis_client.setex(key, 300, url)
                 # Inform trainer namespace for visibility
                 emit_trainer("navigate", {"cohort_id": s.cohort_id, "url": url})
         except Exception:
@@ -94,7 +96,18 @@ class ActiveSession(Resource):
             db.session.query(Session)
             .filter(
                 Session.cohort_id == cid,
-                Session.status.in_([SessionStatus.created, SessionStatus.running, SessionStatus.paused]),
+                Session.status.in_(
+                    [
+                        SessionStatus.created,
+                        SessionStatus.briefing,
+                        SessionStatus.running,
+                        SessionStatus.round_active,
+                        SessionStatus.round_closing,
+                        SessionStatus.calculating,
+                        SessionStatus.round_results,
+                        SessionStatus.paused,
+                    ]
+                ),
             )
             .order_by(Session.started_at.desc().nullslast(), Session.id.desc())
             .first()
@@ -127,6 +140,7 @@ class SessionItem(Resource):
         config = (sc.config or {}) if sc else {}
         general = config.get("general", {})
         market = config.get("market", {})
+        markets = config.get("markets", {})  # Per-round market availability
         return {
             "id": s.id,
             "status": s.status.value,
@@ -134,6 +148,7 @@ class SessionItem(Resource):
             "current_round": s.current_round,
             "general": general,
             "market": market,
+            "markets": markets,
             "mode": s.mode,
             "scenario_name": (sc.name if sc else None),
             "campaign_id": campaign.id if campaign else None,
@@ -205,11 +220,15 @@ class SessionBriefing(Resource):
         s = Session.query.get_or_404(sid)
         sc = Scenario.query.get_or_404(s.scenario_id)
         cfg = sc.config or {}
+        campaign = Campaign.query.get(sc.campaign_id) if sc.campaign_id else None
         briefing = {
             "name": sc.name,
             "description": cfg.get("general", {}).get("description", ""),
+            "campaign_name": campaign.name if campaign else None,
+            "campaign_id": campaign.id if campaign else None,
             "general": cfg.get("general", {}),
-            "markets": cfg.get("market", {}),
+            "market": cfg.get("market", {}),      # Market parameters (base_price, etc.)
+            "markets": cfg.get("markets", {}),    # Per-round availability (dam/idm arrays)
             "grid": cfg.get("grid", {}),
             "events": cfg.get("events", []),
             "objectives": cfg.get("objectives", ""),
@@ -370,6 +389,7 @@ class Pause(Resource):
         db.session.add(s)
         db.session.commit()
         emit_trainer("session_paused", {"session_id": s.id})
+        socketio.emit("session_paused", {"session_id": s.id}, namespace="/game", to=f"session-{s.id}")
         return {"status": s.status.value}
 
 
@@ -383,6 +403,7 @@ class Resume(Resource):
         db.session.add(s)
         db.session.commit()
         emit_trainer("session_resumed", {"session_id": s.id})
+        socketio.emit("session_resumed", {"session_id": s.id}, namespace="/game", to=f"session-{s.id}")
         return {"status": s.status.value}
 
 
@@ -404,9 +425,54 @@ class ForceRoundEnd(Resource):
     @jwt_required()
     @role_required("trainer", "admin")
     def post(self, sid: int):
-        # simple event to tell scheduler to skip to end: we set timer to zero by emitting round_end
+        s = Session.query.get_or_404(sid)
+        if s.status not in [SessionStatus.running, SessionStatus.round_active, SessionStatus.paused]:
+            return {"error": "Round can only be ended early while active."}, HTTPStatus.BAD_REQUEST
+
+        if _redis_client is None:
+            return {"error": "Force round end unavailable (Redis not configured)."}, HTTPStatus.SERVICE_UNAVAILABLE
+
+        try:
+            _redis_client.setex(f"session:{sid}:force_end_round", 120, "1")
+        except Exception:
+            return {"error": "Failed to force end round."}, HTTPStatus.INTERNAL_SERVER_ERROR
+
         emit_trainer("round_end", {"session_id": sid, "forced": True})
-        return {"status": "ok"}
+        socketio.emit("round_end", {"session_id": sid, "forced": True}, namespace="/game", to=f"session-{sid}")
+        return {"status": "ok", "forced": True}
+
+
+@ns.route("/<int:sid>/extend-timer")
+class ExtendTimer(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def post(self, sid: int):
+        s = Session.query.get_or_404(sid)
+
+        if s.status not in [SessionStatus.running, SessionStatus.round_active, SessionStatus.paused]:
+            return {"error": "Timer can only be extended during an active round."}, HTTPStatus.BAD_REQUEST
+
+        body = request.json or {}
+        try:
+            seconds = int(body.get("seconds", 60))
+        except Exception:
+            seconds = 60
+
+        seconds = max(1, min(3600, seconds))
+
+        if _redis_client is None:
+            return {"error": "Timer extension unavailable (Redis not configured)."}, HTTPStatus.SERVICE_UNAVAILABLE
+
+        key = f"session:{sid}:timer_extend_sec"
+        try:
+            _redis_client.incrby(key, seconds)
+            _redis_client.expire(key, 7200)
+        except Exception:
+            return {"error": "Failed to extend timer."}, HTTPStatus.INTERNAL_SERVER_ERROR
+
+        emit_trainer("timer_extended", {"session_id": sid, "seconds": seconds})
+        socketio.emit("timer_extended", {"session_id": sid, "seconds": seconds}, namespace="/game", to=f"session-{sid}")
+        return {"status": "ok", "extended_by_seconds": seconds}
 
 
 @ns.route("/<int:sid>/freeze")
@@ -438,6 +504,10 @@ class RoundResults(Resource):
         results = Result.query.filter_by(session_id=sid, round_num=round_num).all()
         if not results:
             return {"error": "No results found for this round"}, HTTPStatus.NOT_FOUND
+        
+        # IMPORTANT: Round results must only reflect data from the requested round.
+        # Do not inject DAM data from other rounds (e.g. round 1) into this payload,
+        # otherwise KPI cards and detailed hourly tables use different data scopes.
         
         # Get session config for scoring weights
         session = Session.query.get_or_404(sid)
@@ -495,16 +565,17 @@ class RoundResults(Resource):
         my_result = None
         
         for r in results:
-            kpis = r.data.get("kpis", {})
+            kpis = canonicalize_kpis(r.data.get("kpis", {}))
             profit = float(kpis.get("profit_zar", 0) or kpis.get("profit", 0))
-            imbalance = float(kpis.get("imbalance_cost_zar", 0) or kpis.get("imbalance", 0))
-            curtailment = float(kpis.get("curtailment_cost_zar", 0) or kpis.get("curtailment", 0))
+            # Use MWh quantities for scoring (not costs), with fallback to cost/cost-based values for old sessions
+            imbalance = float(kpis.get("imbalance_mwh", 0) or kpis.get("imbalance_cost_zar", 0) / 1000 or kpis.get("imbalance", 0))
+            curtailment = float(kpis.get("curtailment_mwh", 0) or kpis.get("curtailment_cost_zar", 0) / 1000 or kpis.get("curtailment", 0))
             
             # Total score (weighted sum, imbalance/curtailment are penalties so negative)
             raw_score = (
                 profit * weights.get("profit", 0.6) -
-                abs(imbalance) * weights.get("imbalance", 0.3) -
-                abs(curtailment) * weights.get("curtailment", 0.1)
+                abs(imbalance) * weights.get("imbalance", 0.3) * 1000 -  # Convert MWh penalty to ZAR scale
+                abs(curtailment) * weights.get("curtailment", 0.1) * 1000  # Convert MWh penalty to ZAR scale
             )
             # Normalize to 0-100 scale (typical profit range: -5M to +5M ZAR)
             # Map -5M → 0, 0 → 50, +5M → 100
@@ -532,6 +603,11 @@ class RoundResults(Resource):
                 except Exception:
                     pass
             
+            raw_bid_dispatch = r.data.get("bid_dispatch")
+            if raw_bid_dispatch is None:
+                # Legacy fallback only when no explicit DAM dispatch is present
+                raw_bid_dispatch = {} if r.data.get("dam_bid_dispatch") is not None else (r.bid_dispatch or {})
+
             player_data = {
                 "player_id": r.player_id,
                 "email": player_email,
@@ -544,10 +620,24 @@ class RoundResults(Resource):
                 "total_score": round(total_score, 2),
                 "smp": r.data.get("smp", r.data.get("mcp")),
                 "volume": r.data.get("volume"),
-                "bid_dispatch": r.bid_dispatch,  # Include lot dispatch tracking
+                "idp": r.data.get("idp"),  # SAWEM Phase 2A: Intra-Day Price
+                "id_volume_mwh": r.data.get("id_volume_mwh", 0),  # SAWEM Phase 2A: ID volume
+                "id_trade_count": r.data.get("id_trade_count", 0),  # SAWEM Phase 2A: ID trade count
+                "bid_dispatch": raw_bid_dispatch,
+                "dam_bid_dispatch": r.data.get("dam_bid_dispatch", {}),
+                "idm_bid_dispatch": r.data.get("idm_bid_dispatch", raw_bid_dispatch),
+                "hourly_results": r.data.get("hourly_results", []),
+                "dam_hourly_results": r.data.get("dam_hourly_results", []),
+                "idm_hourly_results": r.data.get("idm_hourly_results", r.data.get("hourly_results", [])),
                 "hourly_breakdown": kpis.get("hourly_breakdown", []),  # Include detailed hourly breakdown
+                "device_hourly_breakdown": kpis.get("device_hourly_breakdown", {}),  # Per-device hourly breakdown
+                "device_hourly_details": r.data.get("device_hourly_details", r.data.get("dam_device_hourly_details", {})),  # NEW: Device-level CO2/balancing
+                "dam_device_hourly_details": r.data.get("dam_device_hourly_details", {}),
+                "idm_device_hourly_details": r.data.get("idm_device_hourly_details", r.data.get("device_hourly_details", {})),
                 "challenge_result": r.data.get("challenge_result"),  # Challenge evaluation for this round
-                "player_role": r.data.get("player_role")  # Player role (producer/consumer)
+                "player_role": r.data.get("player_role"),  # Player role (producer/consumer)
+                "no_clearing": bool(r.data.get("no_clearing", False)),
+                "no_clearing_reason": r.data.get("reason")
             }
             
             # Calculate DA/ID breakdown for this player
@@ -574,10 +664,24 @@ class RoundResults(Resource):
             is_consumer = current_volume_signed < 0
             
             # Revenue attribution with separate prices
-            # Producer: positive volume = positive revenue (sells electricity)
-            # Consumer: negative volume = negative revenue (pays for electricity)
-            da_revenue = da_volume_signed * da_price
-            id_revenue = id_delta_signed * id_price  # ID delta valued at ID price
+            # Prefer engine settlement metadata so KPI and DA/ID breakdown share the same basis.
+            # Fallback to forecast-based approximation for legacy rows.
+            da_meta_players = (r.data or {}).get("da_baseline_metadata", {}).get("players", {})
+            da_meta = da_meta_players.get(r.player_id) or da_meta_players.get(str(r.player_id)) or {}
+
+            if da_meta:
+                da_volume_signed = float(da_meta.get("da_volume_mwh", da_volume_signed) or 0.0)
+                id_delta_signed = float(da_meta.get("id_delta_mwh", id_delta_signed) or 0.0)
+                current_volume_signed = da_volume_signed + id_delta_signed
+                da_volume_abs = abs(da_volume_signed)
+                current_volume_abs = abs(current_volume_signed)
+                da_revenue = float(da_meta.get("da_revenue_zar", 0.0) or 0.0)
+                id_revenue = float(da_meta.get("id_revenue_zar", 0.0) or 0.0)
+            else:
+                # Producer: positive volume = positive revenue (sells electricity)
+                # Consumer: negative volume = negative revenue (pays for electricity)
+                da_revenue = da_volume_signed * da_price
+                id_revenue = id_delta_signed * id_price  # ID delta valued at ID price
             
             # Hourly breakdown per day (for detailed view)
             hourly_detail = []
@@ -696,16 +800,33 @@ class FinalResults(Resource):
             if pid not in player_totals:
                 player_totals[pid] = {
                     "profit": 0,
+                    "revenue": 0,
+                    "planned_mwh": 0,
+                    "variable_cost": 0,
+                    "fixed_cost": 0,
+                    "imbalance_cost": 0,
+                    "curtailment_cost": 0,
+                    "congestion_revenue": 0,
+                    "co2_emissions": 0,
                     "imbalance": 0,
                     "curtailment": 0,
                     "dispatched_mwh": 0,
                     "rounds": 0
                 }
             
-            kpis = r.data.get("kpis", {})
+            kpis = canonicalize_kpis(r.data.get("kpis", {}))
             player_totals[pid]["profit"] += float(kpis.get("profit_zar", 0))
-            player_totals[pid]["imbalance"] += float(kpis.get("imbalance_cost_zar", 0))
-            player_totals[pid]["curtailment"] += float(kpis.get("curtailment_cost_zar", 0))
+            player_totals[pid]["revenue"] += float(kpis.get("revenue_zar", 0))
+            player_totals[pid]["planned_mwh"] += float(kpis.get("planned_mwh", 0))
+            player_totals[pid]["variable_cost"] += float(kpis.get("variable_cost_zar", 0))
+            player_totals[pid]["fixed_cost"] += float(kpis.get("fixed_cost_zar", 0))
+            player_totals[pid]["imbalance_cost"] += float(kpis.get("imbalance_cost_zar", 0))
+            player_totals[pid]["curtailment_cost"] += float(kpis.get("curtailment_cost_zar", 0))
+            player_totals[pid]["congestion_revenue"] += float(kpis.get("congestion_revenue_zar", 0))
+            player_totals[pid]["co2_emissions"] += float(kpis.get("co2_emissions_kg", 0))
+            # Use MWh quantities (not costs), with fallback for old sessions
+            player_totals[pid]["imbalance"] += float(kpis.get("imbalance_mwh", 0) or kpis.get("imbalance_cost_zar", 0) / 1000)
+            player_totals[pid]["curtailment"] += float(kpis.get("curtailment_mwh", 0) or kpis.get("curtailment_cost_zar", 0) / 1000)
             player_totals[pid]["dispatched_mwh"] += float(kpis.get("dispatched_mwh", 0))
             player_totals[pid]["rounds"] += 1
             
@@ -738,11 +859,38 @@ class FinalResults(Resource):
                             }
                         
                         agg = player_bid_aggregates[pid][device_id][lot_label]
-                        agg["mw_offered"] += lot_data.get("mw_offered", 0)
-                        agg["mw_dispatched"] += lot_data.get("mw_dispatched", 0)
-                        agg["total_revenue"] += lot_data.get("mw_dispatched", 0) * lot_data.get("smp", 0)
-                        if lot_data.get("mw_offered", 0) > 0:
-                            agg["rounds_offered"] += 1
+                        if isinstance(lot_data, list):
+                            # New format: hourly array per lot
+                            offered_sum = 0.0
+                            dispatched_sum = 0.0
+                            revenue_sum = 0.0
+                            has_offer = False
+                            for hour_item in lot_data:
+                                if not isinstance(hour_item, dict):
+                                    continue
+                                offered = float(hour_item.get("mw_offered", 0) or 0)
+                                dispatched = float(hour_item.get("mw_dispatched", 0) or 0)
+                                smp = float(hour_item.get("smp", 0) or 0)
+                                offered_sum += offered
+                                dispatched_sum += dispatched
+                                revenue_sum += dispatched * smp
+                                if offered > 0:
+                                    has_offer = True
+                            agg["mw_offered"] += offered_sum
+                            agg["mw_dispatched"] += dispatched_sum
+                            agg["total_revenue"] += revenue_sum
+                            if has_offer:
+                                agg["rounds_offered"] += 1
+                        elif isinstance(lot_data, dict):
+                            # Legacy format: single dict per lot
+                            offered = float(lot_data.get("mw_offered", 0) or 0)
+                            dispatched = float(lot_data.get("mw_dispatched", 0) or 0)
+                            smp = float(lot_data.get("smp", 0) or 0)
+                            agg["mw_offered"] += offered
+                            agg["mw_dispatched"] += dispatched
+                            agg["total_revenue"] += dispatched * smp
+                            if offered > 0:
+                                agg["rounds_offered"] += 1
         
         # Build final ranking
         ranking = []
@@ -788,6 +936,14 @@ class FinalResults(Resource):
                 "email": player_email,
                 "type": player_type,
                 "total_profit": round(totals["profit"], 2),
+                "total_revenue": round(totals["revenue"], 2),
+                "total_planned_mwh": round(totals["planned_mwh"], 2),
+                "total_variable_cost": round(totals["variable_cost"], 2),
+                "total_fixed_cost": round(totals["fixed_cost"], 2),
+                "total_imbalance_cost": round(totals["imbalance_cost"], 2),
+                "total_curtailment_cost": round(totals["curtailment_cost"], 2),
+                "total_congestion_revenue": round(totals["congestion_revenue"], 2),
+                "total_co2_emissions": round(totals["co2_emissions"], 2),
                 "total_imbalance": round(totals["imbalance"], 2),
                 "total_curtailment": round(totals["curtailment"], 2),
                 "total_dispatched_mwh": round(totals["dispatched_mwh"], 2),
@@ -811,19 +967,29 @@ class FinalResults(Resource):
         round_history = []
         player_results = Result.query.filter_by(session_id=sid, player_id=player_id).order_by(Result.round_num).all()
         for r in player_results:
-            kpis = r.data.get("kpis", {})
+            kpis = canonicalize_kpis(r.data.get("kpis", {}))
+            # BUG FIX P1-2: Use MWh quantities consistently (not costs) for scoring
+            imbalance_mwh = float(kpis.get("imbalance_mwh", 0) or kpis.get("imbalance_cost_zar", 0) / 1000)
+            curtailment_mwh = float(kpis.get("curtailment_mwh", 0) or kpis.get("curtailment_cost_zar", 0) / 1000)
+            
             raw_round_score = (
                 float(kpis.get("profit_zar", 0)) * weights.get("profit", 0.6) -
-                abs(float(kpis.get("imbalance_cost_zar", 0))) * weights.get("imbalance", 0.3) -
-                abs(float(kpis.get("curtailment_cost_zar", 0))) * weights.get("curtailment", 0.1)
+                abs(imbalance_mwh) * weights.get("imbalance", 0.3) * 1000 -  # Convert MWh penalty to ZAR scale
+                abs(curtailment_mwh) * weights.get("curtailment", 0.1) * 1000  # Convert MWh penalty to ZAR scale
             )
             round_score = max(0, min(100, (raw_round_score / 5000)))
             round_history.append({
                 "round_num": r.round_num,
                 "profit": round(float(kpis.get("profit_zar", 0)), 2),
-                "imbalance": round(float(kpis.get("imbalance_cost_zar", 0)), 2),
-                "curtailment": round(float(kpis.get("curtailment_cost_zar", 0)), 2),
+                "revenue_zar": round(float(kpis.get("revenue_zar", 0)), 2),
+                "total_costs_zar": round(abs(float(kpis.get("revenue_zar", 0))), 2),
+                "co2_emissions_kg": round(float(kpis.get("co2_emissions_kg", 0)), 2),
+                "imbalance_mwh": round(imbalance_mwh, 3),  # Use MWh quantity
+                "imbalance_cost": round(float(kpis.get("imbalance_cost_zar", 0)), 2),  # Also provide cost for reference
+                "curtailment_mwh": round(curtailment_mwh, 3),  # Use MWh quantity
+                "curtailment_cost": round(float(kpis.get("curtailment_cost_zar", 0)), 2),  # Also provide cost for reference
                 "dispatched_mwh": round(float(kpis.get("dispatched_mwh", 0)), 2),
+                "planned_mwh": round(float(kpis.get("planned_mwh", 0)), 2),
                 "total_score": round(round_score, 2)
             })
         
@@ -846,6 +1012,11 @@ class AdvanceRound(Resource):
     def post(self, sid: int):
         """Player signals ready to advance to next round (solo & shared mode)."""
         player_id = int(get_jwt_identity())
+        session = Session.query.get_or_404(sid)
+
+        # In shared_market, advancement is trainer-controlled
+        if session.mode == "shared_market":
+            return {"error": "Trainer will start the next round."}, HTTPStatus.FORBIDDEN
         
         # Mark player as ready in Redis or DB
         if _redis_client:
@@ -853,7 +1024,6 @@ class AdvanceRound(Resource):
             _redis_client.set(ready_key, "1", ex=3600)
         
         # Check if all players are ready
-        session = Session.query.get_or_404(sid)
         members = CohortMember.query.filter_by(cohort_id=session.cohort_id).all()
         member_ids = [m.user_id for m in members]
         
@@ -914,6 +1084,70 @@ class AdvanceRound(Resource):
             "ready_count": ready_count,
             "total_players": len(member_ids)
         }
+
+
+@ns.route("/<int:sid>/advance-round-force")
+class AdvanceRoundForce(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def post(self, sid: int):
+        """Trainer forces advance to next round (shared mode)."""
+        session = Session.query.get_or_404(sid)
+
+        # Clear ready flags
+        if _redis_client:
+            members = CohortMember.query.filter_by(cohort_id=session.cohort_id).all()
+            for m in members:
+                _redis_client.delete(f"session:{sid}:round_ready:{m.user_id}")
+
+        scenario = Scenario.query.get(session.scenario_id)
+        total_rounds = int((scenario.config or {}).get("general", {}).get("rounds", 4))
+        current_round = session.current_round or 1
+
+        if current_round < total_rounds:
+            session.current_round = current_round + 1
+            session.status = SessionStatus.round_active
+            db.session.add(session)
+            db.session.commit()
+
+            socketio.start_background_task(run_rounds, sid, current_app._get_current_object())
+        else:
+            session.status = SessionStatus.scenario_complete
+            db.session.add(session)
+            db.session.commit()
+            socketio.emit("scenario_complete", {"session_id": sid}, namespace="/trainer")
+            socketio.emit("scenario_complete", {"session_id": sid}, namespace="/game", to=f"session-{sid}")
+
+        return {"status": "ok"}
+
+
+@ns.route("/<int:sid>/rewind-round")
+class RewindRound(Resource):
+    @jwt_required()
+    @role_required("trainer", "admin")
+    def post(self, sid: int):
+        """Trainer moves back to previous round results (shared mode)."""
+        session = Session.query.get_or_404(sid)
+        current_round = session.current_round or 1
+        if current_round <= 1:
+            return {"error": "Already at round 1"}, HTTPStatus.BAD_REQUEST
+
+        session.current_round = current_round - 1
+        session.status = SessionStatus.round_results
+        db.session.add(session)
+        db.session.commit()
+
+        socketio.emit("round_results_ready", {"session_id": sid, "round": session.current_round}, namespace="/trainer")
+        socketio.emit("round_results_ready", {"session_id": sid, "round": session.current_round}, namespace="/game", to=f"session-{sid}")
+
+        try:
+            if _redis_client is not None:
+                key = f"cohort:{session.cohort_id}:force_nav"
+                _redis_client.setex(key, 300, f"/player?sessionId={sid}")
+        except Exception:
+            pass
+
+        return {"status": "ok", "current_round": session.current_round}
 
 
 @ns.route("/<int:sid>/start-briefing")

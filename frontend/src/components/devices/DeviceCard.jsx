@@ -222,6 +222,39 @@ export default function DeviceCard({
                   unit="ZAR/MWh"
                   tooltip="Variable cost for each MWh produced by this device. Used as bid price in market clearing."
                 />
+                <NumberInput
+                  label="Fixed cost per hour"
+                  value={device.fixed_cost_zar_per_hour || 0}
+                  onChange={(val) => handleFieldChange('fixed_cost_zar_per_hour', val)}
+                  min={0}
+                  max={1000000}
+                  step={10}
+                  unit="ZAR/h"
+                  tooltip="Fixed operating cost per hour for this device."
+                />
+                
+                {/* CO2 Footprint */}
+                <NumberInput
+                  label="CO2 Footprint"
+                  value={device.co2_emissions_kg_per_mwh !== undefined
+                    ? device.co2_emissions_kg_per_mwh
+                    : (device.co2_kg_per_mwh !== undefined ? device.co2_kg_per_mwh : (() => {
+                    const type = device.type?.toLowerCase();
+                    if (type === 'coal') return 950;
+                    if (type === 'gas') return 450;
+                    if (type === 'nuclear') return 12;
+                    if (type === 'hydro') return 24;
+                    if (type === 'solar' || type === 'pv') return 40;
+                    if (type === 'wind') return 11;
+                    return 0;
+                  })())}
+                  onChange={(val) => handleFieldChange('co2_emissions_kg_per_mwh', val)}
+                  min={0}
+                  max={2000}
+                  step={10}
+                  unit="kg/MWh"
+                  tooltip="Carbon dioxide emissions per MWh generated. Used for environmental impact calculations."
+                />
                 
                 {/* Multi-Bid Setting */}
                 <FormControlLabel
@@ -272,6 +305,16 @@ export default function DeviceCard({
                   step={5}
                   unit="MW"
                   tooltip="Maximum MW this load can reliably reduce on request (flexible demand). Must not exceed peak load."
+                />
+                <NumberInput
+                  label="Fixed cost per hour"
+                  value={device.fixed_cost_zar_per_hour || 0}
+                  onChange={(val) => handleFieldChange('fixed_cost_zar_per_hour', val)}
+                  min={0}
+                  max={1000000}
+                  step={10}
+                  unit="ZAR/h"
+                  tooltip="Fixed operating cost per hour for this load."
                 />
                 
                 <NumberInput
@@ -335,20 +378,6 @@ export default function DeviceCard({
                   unit="MW"
                 />
                 <RangeInput
-                  label="Efficiency"
-                  value={device.efficiency_pct || 90}
-                  onChange={(val) => handleFieldChange('efficiency_pct', val)}
-                  min={50}
-                  max={100}
-                  step={5}
-                  unit="%"
-                  marks={[
-                    { value: 50, label: '50%' },
-                    { value: 75, label: '75%' },
-                    { value: 100, label: '100%' },
-                  ]}
-                />
-                <RangeInput
                   label="Initial State of Charge"
                   value={device.initial_soc_pct || 50}
                   onChange={(val) => handleFieldChange('initial_soc_pct', val)}
@@ -360,17 +389,6 @@ export default function DeviceCard({
               </>
             )}
 
-            {['coal', 'gas', 'nuclear', 'hydro'].includes(device.type?.toLowerCase()) && (
-              <RangeInput
-                label="Efficiency"
-                value={device.efficiency_pct || 80}
-                onChange={(val) => handleFieldChange('efficiency_pct', val)}
-                min={20}
-                max={100}
-                step={5}
-                unit="%"
-              />
-            )}
 
             {isLoad && device.curtailment_penalty_zar_per_mwh != null && (
               <NumberInput

@@ -51,7 +51,7 @@ const OPERATORS = [
 /**
  * ChallengeEditor - Modal for creating/editing challenges
  */
-export default function ChallengeEditor({ open, onClose, challenge, onSave, applicableRoles = ['producer', 'consumer'] }) {
+export default function ChallengeEditor({ open, onClose, challenge, onSave, playerTypes = [] }) {
   const [formData, setFormData] = useState({
     id: '',
     name: '',
@@ -62,7 +62,7 @@ export default function ChallengeEditor({ open, onClose, challenge, onSave, appl
     required: false,
     points: 10,
     per_round: false,
-    applicable_to: ['producer', 'consumer']
+    applicable_to: []
   });
 
   const prevOpenRef = useRef(false);
@@ -82,7 +82,7 @@ export default function ChallengeEditor({ open, onClose, challenge, onSave, appl
           required: Boolean(challenge.required),
           points: typeof challenge.points === 'number' ? challenge.points : 10,
           per_round: Boolean(challenge.per_round),
-          applicable_to: Array.isArray(challenge.applicable_to) ? [...challenge.applicable_to] : ['producer', 'consumer']
+          applicable_to: Array.isArray(challenge.applicable_to) ? [...challenge.applicable_to] : []
         };
         setFormData(newFormData);
       } else {
@@ -97,13 +97,13 @@ export default function ChallengeEditor({ open, onClose, challenge, onSave, appl
           required: false,
           points: 10,
           per_round: false,
-          applicable_to: applicableRoles.length === 1 ? applicableRoles : ['producer', 'consumer']
+          applicable_to: []
         };
         setFormData(newFormData);
       }
     }
     prevOpenRef.current = open;
-  }, [open, challenge, applicableRoles]);
+  }, [open, challenge, playerTypes]);
 
   const handleChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -118,11 +118,11 @@ export default function ChallengeEditor({ open, onClose, challenge, onSave, appl
     onClose();
   };
 
-  // Get available metrics based on applicable roles
+  // Get all available metrics (no filtering by role since we use player types now)
   const availableMetrics = [
     ...UNIVERSAL_METRICS,
-    ...(formData.applicable_to.includes('producer') ? PRODUCER_METRICS : []),
-    ...(formData.applicable_to.includes('consumer') ? CONSUMER_METRICS : [])
+    ...PRODUCER_METRICS,
+    ...CONSUMER_METRICS
   ];
 
   const selectedMetric = availableMetrics.find(m => m.value === formData.metric);
@@ -132,40 +132,22 @@ export default function ChallengeEditor({ open, onClose, challenge, onSave, appl
       <DialogTitle>{challenge ? 'Edit Challenge' : 'New Challenge'}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
-          {/* Applicable To */}
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>Applies To:</Typography>
-            <Stack direction="row" spacing={1}>
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={formData.applicable_to.includes('producer')}
-                    onChange={(e) => {
-                      const newApplicable = e.target.checked
-                        ? [...formData.applicable_to, 'producer']
-                        : formData.applicable_to.filter(r => r !== 'producer');
-                      handleChange('applicable_to', newApplicable.length > 0 ? newApplicable : ['producer']);
-                    }}
-                  />
-                }
-                label="Producer"
-              />
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={formData.applicable_to.includes('consumer')}
-                    onChange={(e) => {
-                      const newApplicable = e.target.checked
-                        ? [...formData.applicable_to, 'consumer']
-                        : formData.applicable_to.filter(r => r !== 'consumer');
-                      handleChange('applicable_to', newApplicable.length > 0 ? newApplicable : ['consumer']);
-                    }}
-                  />
-                }
-                label="Consumer"
-              />
-            </Stack>
-          </Box>
+          {/* Applicable To - Player Types */}
+          <TextField
+            select
+            label="Applies To Player Type"
+            value={formData.applicable_to[0] || ''}
+            onChange={(e) => handleChange('applicable_to', e.target.value ? [e.target.value] : [])}
+            fullWidth
+            helperText="Select which player type this challenge applies to (leave empty for all)"
+          >
+            <MenuItem value="">All Player Types</MenuItem>
+            {playerTypes.map((pt) => (
+              <MenuItem key={pt.id} value={pt.id}>
+                {pt.name || pt.id}
+              </MenuItem>
+            ))}
+          </TextField>
 
           <TextField
             label="Challenge Name"

@@ -135,6 +135,7 @@ export default function EventEditor({ open, onClose, event, onSave, playerTypes 
               <MenuItem value="weather">Weather (solar/wind impact)</MenuItem>
               <MenuItem value="grid">Grid (ATC/network impact)</MenuItem>
               <MenuItem value="device">Device (specific device type)</MenuItem>
+              <MenuItem value="task">Task (displayed as actionable to-do item)</MenuItem>
             </TextField>
             <Box sx={{ p: 1.5, bgcolor: 'info.lighter', borderRadius: 1, border: 1, borderColor: 'info.light' }}>
               <Typography variant="caption" fontWeight={600} display="block" gutterBottom>
@@ -146,7 +147,8 @@ export default function EventEditor({ open, onClose, event, onSave, playerTypes 
                 <strong>Market:</strong> Changes market rules or parameters<br />
                 <strong>Weather:</strong> Weather-related impacts on renewables<br />
                 <strong>Grid:</strong> Grid congestion, ATC reduction, line trips<br />
-                <strong>Device:</strong> Targets specific device types (e.g., battery degradation)
+                <strong>Device:</strong> Targets specific device types (e.g., battery degradation)<br />
+                <strong>Task:</strong> Displays as actionable to-do item in player screen (e.g., "Review forecast", "Check bid strategy")
               </Typography>
             </Box>
           </Stack>

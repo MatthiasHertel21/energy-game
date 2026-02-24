@@ -22,6 +22,7 @@ import {
   Home as HomeIcon,
   LibraryBooks as CatalogIcon,
   Edit as EditIcon,
+  ElectricBolt as EnergyIcon,
 } from '@mui/icons-material'
 import { io } from 'socket.io-client'
 const Login = React.lazy(()=> import('./pages/Login'))
@@ -34,7 +35,6 @@ const Briefing = React.lazy(()=> import('./pages/Briefing'))
 const Cohorts = React.lazy(()=> import('./pages/Cohorts'))
 const Replay = React.lazy(()=> import('./pages/Replay'))
 const Comparison = React.lazy(()=> import('./pages/Comparison'))
-const Evaluation = React.lazy(()=> import('./pages/Evaluation'))
 const Catalog = React.lazy(()=> import('./pages/Catalog'))
 const CampaignDetail = React.lazy(()=> import('./pages/CampaignDetail'))
 const Designer = React.lazy(()=> import('./pages/Designer'))
@@ -107,7 +107,19 @@ export default function App({ themeMode, onToggleTheme }) {
         >
           {/* Logo and Title */}
           <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
-            <img src="/logo.svg" alt="Logo" height={36} />
+            <Box
+              sx={{
+                width: 36,
+                height: 36,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                bgcolor: 'action.hover'
+              }}
+            >
+              <EnergyIcon fontSize="small" />
+            </Box>
             <Typography 
               variant="caption" 
               sx={{ 
@@ -117,7 +129,9 @@ export default function App({ themeMode, onToggleTheme }) {
                 color: 'text.secondary'
               }}
             >
-              Electricity Market Simulation Game
+              Electricity Market
+              <br />
+              Simulation
             </Typography>
           </Box>
           
@@ -148,7 +162,7 @@ export default function App({ themeMode, onToggleTheme }) {
                     <ListItemIcon>
                       <CatalogIcon />
                     </ListItemIcon>
-                    <ListItemText primary="Catalog" />
+                    <ListItemText primary="Campaigns" />
                   </ListItemButton>
                 </ListItem>
               </>
@@ -164,7 +178,7 @@ export default function App({ themeMode, onToggleTheme }) {
                   <ListItemIcon>
                     <EditIcon />
                   </ListItemIcon>
-                  <ListItemText primary="Designer" />
+                  <ListItemText primary="Scenarios" />
                 </ListItemButton>
               </ListItem>
             )}
@@ -179,7 +193,7 @@ export default function App({ themeMode, onToggleTheme }) {
                   <ListItemIcon>
                     <GroupsIcon />
                   </ListItemIcon>
-                  <ListItemText primary="Trainer" />
+                  <ListItemText primary="Cohorts" />
                 </ListItemButton>
               </ListItem>
             )}
@@ -294,7 +308,6 @@ export default function App({ themeMode, onToggleTheme }) {
             <Route path="/briefing/:sessionId" element={<Briefing />} />
             <Route path="/player" element={<Player />} />
             <Route path="/replay" element={<Replay />} />
-            <Route path="/evaluation" element={<Evaluation />} />
             <Route path="/profile" element={<Profile />} />
           </Route>
           <Route element={<ProtectedRoute roles={["trainer","admin"]} /> }>

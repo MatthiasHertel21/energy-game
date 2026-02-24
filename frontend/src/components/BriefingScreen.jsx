@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Box,
   Paper,
@@ -7,38 +7,38 @@ import {
   Button,
   Divider,
   Alert,
-  List,
-  ListItem,
-  ListItemIcon,
-  ListItemText,
-  Chip
+  Chip,
+  Grid,
+  Card,
+  CardContent
 } from '@mui/material';
 import {
   PlayArrow as StartIcon,
   Info as InfoIcon,
-  CheckCircle as CheckIcon,
-  EmojiEvents as GoalIcon,
   Timer as TimerIcon,
-  Groups as PlayersIcon,
-  Flag as ChallengeIcon
+  CheckCircleOutline as CheckIcon,
+  Flag as ChallengeIcon,
+  AccessTime as ClockIcon,
+  CalendarToday as CalendarIcon
 } from '@mui/icons-material';
 import api from '../services/api';
-import TermTooltip from './TermTooltip';
 
 /**
  * BriefingScreen - Scenario introduction and start screen
  * Shown at the beginning before first round
  * Player clicks "Start Scenario" button to begin
  */
-export default function BriefingScreen({ session, scenario, onStart }) {
+export default function BriefingScreen({ session, scenario, onStart, selectedType, playerTypes, scenarioDevices, viewMode = 'start' }) {
   const [loading, setLoading] = useState(false);
 
   const handleStart = async () => {
     setLoading(true);
     try {
-      // In solo mode, player starts directly
-      // In shared mode, trainer starts (but this component can still be used for display)
-      await api.post(`/api/sessions/${session.id}/start-briefing`);
+      if (viewMode !== 'review') {
+        // In solo mode, player starts directly
+        // In shared mode, trainer starts (but this component can still be used for display)
+        await api.post(`/api/sessions/${session.id}/start-briefing`);
+      }
       if (onStart) onStart();
     } catch (error) {
       console.error('Failed to start scenario:', error);
@@ -57,15 +57,37 @@ export default function BriefingScreen({ session, scenario, onStart }) {
   const description = scenario?.description || 
     "Welcome to the energy trading simulation. Your goal is to maximize profit while maintaining grid stability.";
 
-  const objectives = [
-    <>Submit accurate demand forecasts each round</>,
-    <>Minimize <TermTooltip term="Imbalance">imbalance</TermTooltip> penalties by staying close to actual consumption</>,
-    <>Reduce curtailment costs through efficient electricity usage</>,
-    <>Complete all challenges to succeed</>
-  ];
+  const events = scenario?.config?.events || []
+  const playerRole = useMemo(() => {
+    if (!selectedType || !Array.isArray(playerTypes) || playerTypes.length === 0) return null
+    const type = playerTypes.find(pt => pt.id === selectedType)
+    const devIds = type?.devices || []
+    if (!Array.isArray(devIds) || devIds.length === 0) return null
+    const devs = (scenarioDevices || []).filter(d => devIds.includes(d.id))
+    let hasLoad = false
+    let hasGen = false
+    devs.forEach(d => {
+      const t = (d.type || '').toLowerCase()
+      if (t.includes('load') || t.endsWith('_load')) hasLoad = true
+      else if (t) hasGen = true
+    })
+    if (hasLoad && !hasGen) return 'consumer'
+    if (hasGen && !hasLoad) return 'producer'
+    return null
+  }, [playerTypes, scenarioDevices, selectedType])
 
   // Extract challenges from scenario config
-  const challenges = scenario?.config?.challenges || [];
+  const allChallenges = scenario?.config?.challenges || []
+  const challenges = useMemo(() => {
+    if (!playerRole) return allChallenges
+    return allChallenges.filter(ch => {
+      const app = ch?.applicable_to
+      if (!app) return true
+      if (typeof app === 'string') return app === 'all' || app === playerRole
+      if (Array.isArray(app)) return app.includes('all') || app.includes(playerRole)
+      return true
+    })
+  }, [allChallenges, playerRole])
   
   // Metric display names
   const metricNames = {
@@ -106,105 +128,163 @@ export default function BriefingScreen({ session, scenario, onStart }) {
     return target.toLocaleString();
   };
 
+  // Separate required and optional challenges
+  const requiredChallenges = challenges.filter(c => c.required)
+  const optionalChallenges = challenges.filter(c => !c.required)
+  const currentRound = session?.current_round || 1;
+
   return (
     <Box sx={{ p: 3, maxWidth: 900, mx: 'auto' }}>
       <Paper elevation={3} sx={{ p: 4 }}>
-        <Stack spacing={3}>
-          {/* Header */}
-          <Box sx={{ textAlign: 'center' }}>
-            <InfoIcon sx={{ fontSize: 64, color: 'primary.main', mb: 2 }} />
-            <Typography variant="h4" gutterBottom fontWeight="bold">
-              {scenario?.name || 'Scenario Briefing'}
+        <Stack spacing={4}>
+          {/* Compact Header */}
+          <Box>
+            <Typography variant="overline" color="text.secondary" fontWeight={600}>
+              Briefing
             </Typography>
-            <Chip 
-              label={isSolo ? 'Solo Mode' : 'Shared Market Mode'} 
-              color={isSolo ? 'info' : 'success'}
-              sx={{ mt: 1 }}
-            />
+            <Stack direction="row" spacing={2} alignItems="center" sx={{ mt: 0.5 }}>
+              <Typography variant="h4" fontWeight="bold">
+                {scenario?.name || 'Scenario'}
+              </Typography>
+              <Chip 
+                label={isSolo ? 'Solo Mode' : 'Shared Market'} 
+                color={isSolo ? 'default' : 'primary'}
+                size="small"
+              />
+            </Stack>
           </Box>
 
-          <Divider />
+          {/* Mission KPI Card */}
+          {requiredChallenges.length > 0 && (
+            <Card variant="outlined" sx={{ bgcolor: 'primary.lighter', borderColor: 'primary.main', borderWidth: 2 }}>
+              <CardContent>
+                <Typography variant="overline" color="text.secondary" fontWeight={600}>
+                  Objective
+                </Typography>
+                {requiredChallenges.map((challenge, idx) => (
+                  <Box key={idx} sx={{ mt: 1 }}>
+                    <Typography variant="body2" color="text.secondary" gutterBottom>
+                      {challenge.name} (Required)
+                    </Typography>
+                    <Typography variant="h3" fontWeight="bold" color="primary.main">
+                      {operatorSymbols[challenge.operator] || challenge.operator} {formatTarget(challenge.metric, challenge.target)}
+                    </Typography>
+                  </Box>
+                ))}
+                <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+                  <Chip label={`Status: ${currentRound - 1}/${rounds} Rounds`} size="small" variant="outlined" />
+                </Stack>
+              </CardContent>
+            </Card>
+          )}
 
-          {/* Scenario Description */}
+          {/* Short Description */}
           <Box>
-            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <InfoIcon /> Overview
-            </Typography>
-            <Typography variant="body1" color="text.secondary" paragraph>
+            <Typography variant="body1" color="text.secondary">
               {description}
             </Typography>
           </Box>
 
-          {/* Game Structure */}
+          <Divider />
+
+          {/* Compact Game Structure - 3 Fact Cards */}
           <Box>
-            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <TimerIcon /> Game Structure
+            <Typography variant="h6" fontWeight={600} gutterBottom>
+              Game Structure
             </Typography>
-            <Stack direction="row" spacing={2} flexWrap="wrap" sx={{ mt: 1 }}>
-              <Chip icon={<PlayersIcon />} label={`${rounds} Rounds`} variant="outlined" />
-              <Chip icon={<TimerIcon />} label={`${roundDuration / 60} min per round`} variant="outlined" />
-              <Chip label={`${roundSpan} hours forecast per round`} variant="outlined" />
-            </Stack>
+            <Grid container spacing={2} sx={{ mt: 0.5 }}>
+              <Grid item xs={12} sm={4}>
+                <Card variant="outlined" sx={{ textAlign: 'center', py: 2 }}>
+                  <CalendarIcon color="action" sx={{ fontSize: 32, mb: 1 }} />
+                  <Typography variant="h5" fontWeight="bold">
+                    {rounds}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Rounds
+                  </Typography>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <Card variant="outlined" sx={{ textAlign: 'center', py: 2 }}>
+                  <ClockIcon color="action" sx={{ fontSize: 32, mb: 1 }} />
+                  <Typography variant="h5" fontWeight="bold">
+                    {roundDuration / 60} min
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Time per Round
+                  </Typography>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <Card variant="outlined" sx={{ textAlign: 'center', py: 2 }}>
+                  <TimerIcon color="action" sx={{ fontSize: 32, mb: 1 }} />
+                  <Typography variant="h5" fontWeight="bold">
+                    {roundSpan} hrs
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Forecast Horizon
+                  </Typography>
+                </Card>
+              </Grid>
+            </Grid>
           </Box>
 
-          {/* Objectives */}
-          <Box>
-            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <GoalIcon /> Objectives
-            </Typography>
-            <List dense>
-              {objectives.map((objective, idx) => (
-                <ListItem key={idx}>
-                  <ListItemIcon>
-                    <CheckIcon color="success" />
-                  </ListItemIcon>
-                  <ListItemText primary={objective} />
-                </ListItem>
-              ))}
-            </List>
-          </Box>
-
-          {/* Challenges */}
-          {challenges.length > 0 && (
+          {/* Events */}
+          {events.length > 0 && (
             <Box>
-              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <ChallengeIcon color="warning" /> Challenges
+              <Typography variant="h6" fontWeight={600} gutterBottom>
+                Events
               </Typography>
-              <Alert severity="warning" sx={{ mb: 2 }}>
-                <Typography variant="body2" fontWeight="bold">
-                  Complete these challenges to succeed!
-                </Typography>
-              </Alert>
-              <Stack spacing={1}>
-                {challenges.map((challenge, idx) => (
-                  <Paper key={idx} variant="outlined" sx={{ p: 2, bgcolor: 'background.default' }}>
+              <Stack spacing={1} sx={{ mt: 1 }}>
+                {events.map((event, idx) => (
+                  <Paper key={idx} variant="outlined" sx={{ p: 1.5, bgcolor: 'background.default' }}>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      {event.name || 'Event'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {event.description || 'Event active'}
+                    </Typography>
+                    {event.trigger_value && (
+                      <Typography variant="caption" sx={{ display: 'block', mt: 0.5 }}>
+                        Round {event.trigger_value}
+                      </Typography>
+                    )}
+                  </Paper>
+                ))}
+              </Stack>
+            </Box>
+          )}
+
+          {/* Optional Challenges - Checklist */}
+          {optionalChallenges.length > 0 && (
+            <Box>
+              <Typography variant="h6" fontWeight={600} gutterBottom>
+                Challenges
+              </Typography>
+              <Stack spacing={1} sx={{ mt: 1 }}>
+                {optionalChallenges.map((challenge, idx) => (
+                  <Paper key={idx} variant="outlined" sx={{ p: 1.5, bgcolor: 'background.default' }}>
                     <Stack direction="row" spacing={2} alignItems="center">
-                      {challenge.required && (
-                        <Chip label="Required" color="error" size="small" />
-                      )}
-                      {challenge.per_round && (
-                        <Chip label="Per Round" color="info" size="small" />
-                      )}
+                      <CheckIcon color="disabled" />
                       <Box sx={{ flexGrow: 1 }}>
-                        <Typography variant="subtitle2" fontWeight="bold">
+                        <Typography variant="body2" fontWeight={600}>
                           {challenge.name}
                         </Typography>
-                        {challenge.description && (
-                          <Typography variant="caption" color="text.secondary">
-                            {challenge.description}
-                          </Typography>
-                        )}
-                        <Typography variant="body2" sx={{ mt: 0.5, fontFamily: 'monospace' }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
                           {metricNames[challenge.metric] || challenge.metric}{' '}
                           {operatorSymbols[challenge.operator] || challenge.operator}{' '}
-                          <strong>{formatTarget(challenge.metric, challenge.target)}</strong>
+                          {formatTarget(challenge.metric, challenge.target)}
                         </Typography>
                       </Box>
                       <Chip 
-                        label={`${challenge.points} pts`} 
+                        label={`+${challenge.points} pts`} 
                         color="success" 
+                        size="small"
                         variant="outlined"
                       />
+                      {challenge.per_round && (
+                        <Chip label="per round" color="info" size="small" variant="outlined" />
+                      )}
                     </Stack>
                   </Paper>
                 ))}
@@ -212,40 +292,33 @@ export default function BriefingScreen({ session, scenario, onStart }) {
             </Box>
           )}
 
-          {isSolo && (
-            <Alert severity="success">
-              <Typography variant="body2">
-                <strong>Solo Mode:</strong> Play at your own pace. 
-                Click "Next Round" after viewing results to continue.
-              </Typography>
-            </Alert>
-          )}
-
-          {!isSolo && (
-            <Alert severity="warning">
-              <Typography variant="body2">
-                <strong>Shared Market Mode:</strong> You are competing with other players. 
-                All players must submit before advancing to the next round.
-              </Typography>
-            </Alert>
-          )}
-
           <Divider />
 
-          {/* Start Button */}
-          <Box sx={{ textAlign: 'center', pt: 2 }}>
+          {/* Mode-Specific Hint */}
+          <Alert severity={isSolo ? "info" : "warning"} variant="outlined">
+            <Typography variant="body2">
+              {isSolo
+                ? 'Solo Mode: Review results and click "Next Round" to continue.'
+                : 'Shared Mode: The trainer controls round timing.'}
+            </Typography>
+          </Alert>
+
+          {/* CTA */}
+          <Box sx={{ textAlign: 'center', pt: 1 }}>
             <Button
               variant="contained"
               size="large"
               startIcon={<StartIcon />}
               onClick={handleStart}
-              disabled={loading}
-              sx={{ minWidth: 200, py: 1.5 }}
+              disabled={loading || (viewMode !== 'review' && !isSolo)}
+              sx={{ minWidth: 240, py: 1.5, fontWeight: 600 }}
             >
-              {loading ? 'Starting...' : 'Start Scenario'}
+              {loading ? (viewMode === 'review' ? 'Returning...' : 'Starting...') : (viewMode === 'review' ? 'Return to Session' : 'Start Scenario')}
             </Button>
-            <Typography variant="caption" display="block" sx={{ mt: 2, color: 'text.secondary' }}>
-              The timer will start immediately after clicking "Start Scenario"
+            <Typography variant="caption" display="block" sx={{ mt: 1.5, color: 'text.secondary' }}>
+              {viewMode === 'review'
+                ? 'Return to your current round view.'
+                : (isSolo ? 'The timer will start immediately after clicking "Start Scenario".' : 'Waiting for trainer to start.')}
             </Typography>
           </Box>
         </Stack>

@@ -27,6 +27,7 @@ services:
       - "15000:5000"
     volumes:
       - ./uploads:/app/uploads
+      - ./debug:/app/debug
     labels:
       - traefik.enable=true
       - traefik.http.routers.backend.rule=Host(`${TRAEFIK_DOMAIN}`) && PathPrefix(`/api`)

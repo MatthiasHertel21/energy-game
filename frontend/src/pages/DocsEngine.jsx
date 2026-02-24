@@ -12,8 +12,8 @@ export default function DocsEngine(){
       .catch(()=> setContent('# Calculation Engine Documentation\n\nFailed to load.'))
   },[])
   return (
-    <Container maxWidth="md" sx={{ mt: 4, mb: 6 }}>
-      <Paper sx={{ p: 3, maxHeight: 'calc(100vh - 160px)', overflow: 'auto' }}>
+    <Container maxWidth={false} disableGutters sx={{ mt: 4, mb: 0, px: 3, height: 'calc(100vh - 96px)', display: 'flex', flexDirection: 'column' }}>
+      <Paper sx={{ p: 3, flex: 1, overflow: 'auto' }}>
         <Typography variant="h4" gutterBottom>Calculation Engine</Typography>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       </Paper>

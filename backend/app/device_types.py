@@ -40,12 +40,14 @@ DEVICE_SPECS = {
             "min_load_pct": 40.0,
             "ramp_rate_mw_per_min": 5.0,
             "variable_cost_zar_per_mwh": 400.0,
+            "fixed_cost_zar_per_hour": 0.0,
+            "co2_emissions_kg_per_mwh": 950.0,  # Coal: ~950 kg CO2/MWh
             "efficiency_pct": 35.0,
             "curtailment_priority": CurtailmentPriority.HIGH,
             "availability_profile": [1.0] * 24,  # Constant baseload
         },
         "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_zar_per_mwh"],
-        "optional_params": ["efficiency_pct", "availability_profile"],
+        "optional_params": ["efficiency_pct", "availability_profile", "fixed_cost_zar_per_hour", "co2_emissions_kg_per_mwh"],
     },
     DeviceType.GAS: {
         "name": "Gas Turbine (OCGT)",
@@ -56,12 +58,14 @@ DEVICE_SPECS = {
             "min_load_pct": 20.0,
             "ramp_rate_mw_per_min": 15.0,
             "variable_cost_zar_per_mwh": 1200.0,
+            "fixed_cost_zar_per_hour": 0.0,
+            "co2_emissions_kg_per_mwh": 550.0,  # Gas: ~550 kg CO2/MWh
             "efficiency_pct": 30.0,
             "curtailment_priority": CurtailmentPriority.MEDIUM,
             "availability_profile": [0.8, 0.8, 0.8, 0.8, 0.8, 0.9, 1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0, 0.95, 0.9, 0.85, 0.8],  # Peaking pattern
         },
         "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_zar_per_mwh"],
-        "optional_params": ["efficiency_pct", "availability_profile"],
+        "optional_params": ["efficiency_pct", "availability_profile", "fixed_cost_zar_per_hour", "co2_emissions_kg_per_mwh"],
     },
     DeviceType.HYDRO: {
         "name": "Hydro Power",
@@ -72,13 +76,15 @@ DEVICE_SPECS = {
             "min_load_pct": 10.0,
             "ramp_rate_mw_per_min": 30.0,
             "variable_cost_zar_per_mwh": 50.0,
+            "fixed_cost_zar_per_hour": 0.0,
+            "co2_emissions_kg_per_mwh": 0.0,  # Hydro: 0 kg CO2/MWh (renewable)
             "efficiency_pct": 85.0,
             "reservoir_capacity_mwh": 1500.0,
             "curtailment_priority": CurtailmentPriority.MEDIUM,
             "availability_profile": [0.7, 0.7, 0.7, 0.7, 0.8, 0.9, 1.0, 1.0, 0.9, 0.8, 0.8, 0.8, 0.8, 0.8, 0.9, 1.0, 1.0, 1.0, 1.0, 0.95, 0.9, 0.85, 0.8, 0.7],  # Flexible dispatch
         },
         "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min"],
-        "optional_params": ["variable_cost_zar_per_mwh", "efficiency_pct", "reservoir_capacity_mwh", "availability_profile"],
+        "optional_params": ["variable_cost_zar_per_mwh", "efficiency_pct", "reservoir_capacity_mwh", "availability_profile", "fixed_cost_zar_per_hour", "co2_emissions_kg_per_mwh"],
     },
     DeviceType.NUCLEAR: {
         "name": "Nuclear Power Plant",
@@ -89,12 +95,15 @@ DEVICE_SPECS = {
             "min_load_pct": 90.0,
             "ramp_rate_mw_per_min": 1.0,
             "variable_cost_zar_per_mwh": 100.0,
+            "fixed_cost_zar_per_hour": 0.0,
+            "co2_emissions_kg_per_mwh": 0.0,  # Nuclear: 0 kg CO2/MWh (low-carbon)
             "efficiency_pct": 33.0,
             "curtailment_priority": CurtailmentPriority.VERY_HIGH,
             "availability_profile": [1.0] * 24,  # Constant baseload
+            "must_run": True,  # Nuclear is inflexible, must-run unit
         },
         "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_zar_per_mwh"],
-        "optional_params": ["efficiency_pct", "availability_profile"],
+        "optional_params": ["efficiency_pct", "availability_profile", "must_run", "fixed_cost_zar_per_hour", "co2_emissions_kg_per_mwh"],
     },
     DeviceType.SOLAR: {
         "name": "Solar PV",
@@ -104,11 +113,13 @@ DEVICE_SPECS = {
             "max_power_mw": 200.0,
             "capacity_factor_pct": 25.0,
             "variable_cost_zar_per_mwh": 0.0,
+            "fixed_cost_zar_per_hour": 0.0,
+            "co2_emissions_kg_per_mwh": 0.0,  # Solar: 0 kg CO2/MWh (renewable)
             "curtailment_priority": CurtailmentPriority.LOW,
             "availability_profile": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.4, 0.7, 0.9, 1.0, 1.0, 1.0, 1.0, 0.9, 0.7, 0.4, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # Solar curve: sunrise to sunset
         },
         "required_params": ["max_power_mw"],
-        "optional_params": ["capacity_factor_pct", "variable_cost_zar_per_mwh", "availability_profile"],
+        "optional_params": ["capacity_factor_pct", "variable_cost_zar_per_mwh", "availability_profile", "fixed_cost_zar_per_hour", "co2_emissions_kg_per_mwh"],
     },
     DeviceType.WIND: {
         "name": "Wind Turbine",
@@ -118,11 +129,13 @@ DEVICE_SPECS = {
             "max_power_mw": 150.0,
             "capacity_factor_pct": 35.0,
             "variable_cost_zar_per_mwh": 0.0,
+            "fixed_cost_zar_per_hour": 0.0,
+            "co2_emissions_kg_per_mwh": 0.0,  # Wind: 0 kg CO2/MWh (renewable)
             "curtailment_priority": CurtailmentPriority.LOW,
             "availability_profile": [0.6, 0.65, 0.7, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.4, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.85, 0.8, 0.75, 0.7],  # Wind: stronger at night/evening
         },
         "required_params": ["max_power_mw"],
-        "optional_params": ["capacity_factor_pct", "variable_cost_zar_per_mwh", "availability_profile"],
+        "optional_params": ["capacity_factor_pct", "variable_cost_zar_per_mwh", "availability_profile", "fixed_cost_zar_per_hour", "co2_emissions_kg_per_mwh"],
     },
     DeviceType.BATTERY: {
         "name": "Battery Storage",
@@ -135,10 +148,11 @@ DEVICE_SPECS = {
             "initial_soc_pct": 50.0,
             "max_dod_pct": 80.0,
             "degradation_pct_per_cycle": 0.1,
+            "fixed_cost_zar_per_hour": 0.0,
             "availability_profile": [1.0] * 24,  # Always available
         },
         "required_params": ["capacity_mwh", "power_mw", "efficiency_pct"],
-        "optional_params": ["initial_soc_pct", "max_dod_pct", "degradation_pct_per_cycle", "availability_profile"],
+        "optional_params": ["initial_soc_pct", "max_dod_pct", "degradation_pct_per_cycle", "availability_profile", "fixed_cost_zar_per_hour"],
     },
     DeviceType.INDUSTRIAL_LOAD: {
         "name": "Industrial Load",
@@ -149,10 +163,11 @@ DEVICE_SPECS = {
             "peak_load_mw": 450.0,
             "drm_capable": True,
             "demand_response_capacity_mw": 50.0,
+            "fixed_cost_zar_per_hour": 0.0,
             "load_profile": [0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.98, 0.98, 0.98, 0.97, 0.96, 0.95],  # Nearly constant, slightly lower at night
         },
         "required_params": ["baseline_load_mw", "peak_load_mw"],
-        "optional_params": ["drm_capable", "demand_response_capacity_mw", "load_profile"],
+        "optional_params": ["drm_capable", "demand_response_capacity_mw", "load_profile", "fixed_cost_zar_per_hour"],
     },
     DeviceType.COMMERCIAL_LOAD: {
         "name": "Commercial Load",
@@ -163,10 +178,11 @@ DEVICE_SPECS = {
             "peak_load_mw": 200.0,
             "drm_capable": False,
             "demand_response_capacity_mw": 20.0,
+            "fixed_cost_zar_per_hour": 0.0,
             "load_profile": [0.3, 0.3, 0.3, 0.3, 0.4, 0.6, 0.8, 0.95, 1.0, 1.0, 1.0, 1.0, 0.95, 0.95, 1.0, 1.0, 0.95, 0.8, 0.6, 0.5, 0.4, 0.35, 0.3, 0.3],  # Office hours peak 8-17
         },
         "required_params": ["baseline_load_mw", "peak_load_mw"],
-        "optional_params": ["drm_capable", "demand_response_capacity_mw", "load_profile"],
+        "optional_params": ["drm_capable", "demand_response_capacity_mw", "load_profile", "fixed_cost_zar_per_hour"],
     },
     DeviceType.RESIDENTIAL_LOAD: {
         "name": "Residential Load",
@@ -177,10 +193,11 @@ DEVICE_SPECS = {
             "peak_load_mw": 300.0,
             "drm_capable": False,
             "demand_response_capacity_mw": 10.0,
+            "fixed_cost_zar_per_hour": 0.0,
             "load_profile": [0.6, 0.6, 0.6, 0.6, 0.6, 0.65, 0.75, 0.85, 0.9, 0.85, 0.8, 0.75, 0.75, 0.75, 0.8, 0.85, 0.9, 1.0, 1.0, 0.95, 0.9, 0.85, 0.75, 0.7],  # Evening peak 17-19
         },
         "required_params": ["baseline_load_mw", "peak_load_mw"],
-        "optional_params": ["drm_capable", "demand_response_capacity_mw", "load_profile"],
+        "optional_params": ["drm_capable", "demand_response_capacity_mw", "load_profile", "fixed_cost_zar_per_hour"],
     },
 }
 
@@ -201,8 +218,20 @@ def _normalize_device(device: Dict[str, Any]):
     tval = d.get("type")
     dev_type = None
     if isinstance(tval, str):
+        tnorm = tval.strip().lower()
+        alias_map = {
+            "pv": "solar",
+            "solar_pv": "solar",
+            "household_load": "residential_load",
+            "residential": "residential_load",
+            "household": "residential_load",
+            "commercial": "commercial_load",
+            "industrial": "industrial_load",
+        }
+        tnorm = alias_map.get(tnorm, tnorm)
+        d["type"] = tnorm
         try:
-            dev_type = DeviceType(tval.strip().lower())
+            dev_type = DeviceType(tnorm)
         except Exception:
             dev_type = None
     elif isinstance(tval, DeviceType):
@@ -248,6 +277,29 @@ def _normalize_device(device: Dict[str, Any]):
         if "drm_capable" not in d and ("drm_capability" in d or "drm_capable" in d):
             d["drm_capable"] = bool(d.get("drm_capability", d.get("drm_capable")))
     return dev_type, d
+
+
+def enrich_device_with_defaults(device: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Enrich a device configuration with default values from DEVICE_SPECS.
+    Returns a new dict with defaults applied where values are missing.
+    """
+    dev_type, normalized = _normalize_device(device)
+    if not dev_type or dev_type not in DEVICE_SPECS:
+        return dict(device or {})
+    
+    spec = DEVICE_SPECS[dev_type]
+    defaults = spec.get("defaults", {})
+    
+    # Start with a copy of the normalized device
+    enriched = dict(normalized)
+    
+    # Apply defaults for any missing keys
+    for key, default_value in defaults.items():
+        if key not in enriched or enriched[key] is None:
+            enriched[key] = default_value
+    
+    return enriched
 
 
 def validate_device(device: Dict[str, Any]) -> List[str]:
@@ -412,6 +464,73 @@ def validate_forecast_constraints(device: Dict[str, Any], forecast_mw: List[floa
         if delta > max_ramp:
             errors.append(
                 f"Device {dnorm.get('id', '?')} hours {i}-{i+1}: ramp {delta:.1f} MW/h > max ramp {max_ramp:.1f} MW/h"
+            )
+    
+    return errors
+
+
+def validate_bid_monotonicity(bids: Dict[str, Dict[str, Any]], direction: str = "nondecreasing") -> List[str]:
+    """
+    Validate that multi-bid prices are monotonic.
+    Producers: P_A <= P_B <= P_C (non-decreasing)
+    Consumers: P_A >= P_B >= P_C (non-increasing)
+    
+    Args:
+        bids: Dict of {bid_label: {price, hours}} for a device
+    
+    Returns:
+        List of error messages
+    """
+    errors = []
+    
+    if not bids or not isinstance(bids, dict):
+        return errors
+    
+    # Extract prices for A, B, C bids
+    prices = {}
+    for label in ['A', 'B', 'C']:
+        if label in bids:
+            bid = bids[label]
+            if isinstance(bid, dict) and 'price' in bid:
+                prices[label] = float(bid.get('price', 0))
+    
+    # Check monotonicity
+    if direction not in ["nondecreasing", "nonincreasing"]:
+        direction = "nondecreasing"
+
+    if direction == "nonincreasing":
+        # A >= B >= C
+        if 'A' in prices and 'B' in prices and prices['A'] < prices['B']:
+            errors.append(
+                f"Bid price monotonicity violated: Bid A ({prices['A']:.1f} ZAR/MWh) < Bid B ({prices['B']:.1f} ZAR/MWh). "
+                f"Prices must be non-increasing (A >= B >= C)."
+            )
+        if 'B' in prices and 'C' in prices and prices['B'] < prices['C']:
+            errors.append(
+                f"Bid price monotonicity violated: Bid B ({prices['B']:.1f} ZAR/MWh) < Bid C ({prices['C']:.1f} ZAR/MWh). "
+                f"Prices must be non-increasing (A >= B >= C)."
+            )
+        if 'A' in prices and 'C' in prices and 'B' not in prices and prices['A'] < prices['C']:
+            errors.append(
+                f"Bid price monotonicity violated: Bid A ({prices['A']:.1f} ZAR/MWh) < Bid C ({prices['C']:.1f} ZAR/MWh). "
+                f"Prices must be non-increasing (A >= B >= C)."
+            )
+    else:
+        # A <= B <= C
+        if 'A' in prices and 'B' in prices and prices['A'] > prices['B']:
+            errors.append(
+                f"Bid price monotonicity violated: Bid A ({prices['A']:.1f} ZAR/MWh) > Bid B ({prices['B']:.1f} ZAR/MWh). "
+                f"Prices must be non-decreasing (A <= B <= C)."
+            )
+        if 'B' in prices and 'C' in prices and prices['B'] > prices['C']:
+            errors.append(
+                f"Bid price monotonicity violated: Bid B ({prices['B']:.1f} ZAR/MWh) > Bid C ({prices['C']:.1f} ZAR/MWh). "
+                f"Prices must be non-decreasing (A <= B <= C)."
+            )
+        if 'A' in prices and 'C' in prices and 'B' not in prices and prices['A'] > prices['C']:
+            errors.append(
+                f"Bid price monotonicity violated: Bid A ({prices['A']:.1f} ZAR/MWh) > Bid C ({prices['C']:.1f} ZAR/MWh). "
+                f"Prices must be non-decreasing (A <= B <= C)."
             )
     
     return errors

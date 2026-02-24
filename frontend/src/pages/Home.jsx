@@ -15,6 +15,7 @@ import {
   Divider,
   Alert
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import {
   PlayArrow as PlayIcon,
   MenuBook as HandbookIcon,
@@ -72,6 +73,13 @@ export default function Home() {
   const activeSession = sessions
     .filter(s => s.status === 'running' || s.status === 'paused' || s.status === 'round_active')
     .sort((a, b) => b.id - a.id)[0]
+
+  const liveSessions = sessions
+    .filter(s =>
+      (s.status === 'running' || s.status === 'paused' || s.status === 'round_results' || s.status === 'round_active' || s.status === 'briefing') &&
+      s.mode !== 'isolated_per_player'
+    )
+    .sort((a, b) => b.id - a.id)
   
   // Get most recent completed session  
   const lastCompletedSession = sessions
@@ -96,25 +104,77 @@ export default function Home() {
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
       {/* Welcome Header */}
-      <Paper sx={{ p: 4, mb: 4, background: 'linear-gradient(135deg, #1976d2 0%, #42a5f5 100%)', color: 'white' }}>
-        <Typography variant="h4" gutterBottom sx={{ fontWeight: 600 }}>
+      <Paper
+        sx={(theme) => ({
+          p: { xs: 3, sm: 4 },
+          mb: 4,
+          color: theme.palette.common.white,
+          background: `linear-gradient(135deg, ${theme.palette.primary.dark} 0%, ${theme.palette.primary.main} 55%, ${theme.palette.primary.light} 100%)`,
+          border: `1px solid ${alpha(theme.palette.common.white, 0.12)}`
+        })}
+      >
+        <Typography variant="h4" sx={{ fontWeight: 700, lineHeight: 1.15, mb: 1 }}>
           Welcome back, {user?.email?.split('@')[0] || 'Player'}!
         </Typography>
-        <Typography variant="h6" sx={{ opacity: 0.9 }}>
+        <Typography
+          variant="subtitle1"
+          sx={(theme) => ({
+            opacity: 0.95,
+            maxWidth: 720,
+            color: alpha(theme.palette.common.white, 0.92)
+          })}
+        >
           Ready to trade electricity in the South African market?
         </Typography>
+        
+        {/* Join Live Session CTA */}
+        {liveSessions.length > 0 && (
+          <Box sx={(theme) => ({ mt: 3, pt: 3, borderTop: `1px solid ${alpha(theme.palette.common.white, 0.22)}` })}>
+            <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
+              <Chip 
+                label={`${liveSessions.length} Live Session${liveSessions.length > 1 ? 's' : ''} Available`}
+                color="success"
+                size="medium"
+                sx={(theme) => ({
+                  fontWeight: 700,
+                  bgcolor: alpha(theme.palette.success.main, 0.92),
+                  color: theme.palette.common.white
+                })}
+              />
+              <Button
+                variant="contained"
+                size="large"
+                startIcon={<PlayIcon />}
+                onClick={() => navigate(`/player?sessionId=${liveSessions[0].id}`)}
+                sx={(theme) => ({
+                  bgcolor: theme.palette.common.white,
+                  color: theme.palette.primary.main,
+                  fontWeight: 700,
+                  px: 3.5,
+                  '&:hover': {
+                    bgcolor: alpha(theme.palette.common.white, 0.92)
+                  }
+                })}
+              >
+                Join Live
+              </Button>
+            </Stack>
+          </Box>
+        )}
       </Paper>
 
       {/* Quick Stats */}
       {stats && stats.total > 0 && (
         <Grid container spacing={3} sx={{ mb: 4 }}>
           <Grid item xs={12} sm={4}>
-            <Card>
+            <Card variant="outlined">
               <CardContent>
                 <Stack direction="row" alignItems="center" spacing={2}>
-                  <PlayIcon sx={{ fontSize: 40, color: 'success.main' }} />
+                  <PlayIcon sx={{ fontSize: 34, color: 'success.main' }} />
                   <Box>
-                    <Typography variant="h4">{stats.active}</Typography>
+                    <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.1 }}>
+                      {stats.active}
+                    </Typography>
                     <Typography variant="body2" color="text.secondary">Active Sessions</Typography>
                   </Box>
                 </Stack>
@@ -122,12 +182,14 @@ export default function Home() {
             </Card>
           </Grid>
           <Grid item xs={12} sm={4}>
-            <Card>
+            <Card variant="outlined">
               <CardContent>
                 <Stack direction="row" alignItems="center" spacing={2}>
-                  <ReportsIcon sx={{ fontSize: 40, color: 'info.main' }} />
+                  <ReportsIcon sx={{ fontSize: 34, color: 'info.main' }} />
                   <Box>
-                    <Typography variant="h4">{stats.completed}</Typography>
+                    <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.1 }}>
+                      {stats.completed}
+                    </Typography>
                     <Typography variant="body2" color="text.secondary">Completed</Typography>
                   </Box>
                 </Stack>
@@ -135,12 +197,14 @@ export default function Home() {
             </Card>
           </Grid>
           <Grid item xs={12} sm={4}>
-            <Card>
+            <Card variant="outlined">
               <CardContent>
                 <Stack direction="row" alignItems="center" spacing={2}>
-                  <TrendingIcon sx={{ fontSize: 40, color: 'warning.main' }} />
+                  <TrendingIcon sx={{ fontSize: 34, color: 'warning.main' }} />
                   <Box>
-                    <Typography variant="h4">{stats.total}</Typography>
+                    <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.1 }}>
+                      {stats.total}
+                    </Typography>
                     <Typography variant="body2" color="text.secondary">Total Sessions</Typography>
                   </Box>
                 </Stack>
@@ -162,30 +226,101 @@ export default function Home() {
               
               {activeSession ? (
                 <Box sx={{ mb: 3 }}>
-                  <Alert severity="success" sx={{ mb: 2 }}>
-                    You have an active session!
-                  </Alert>
-                  <Paper elevation={0} sx={{ p: 2, bgcolor: 'success.lighter', border: '2px solid', borderColor: 'success.main', borderRadius: 2 }}>
-                    <Typography variant="subtitle1" fontWeight={600} gutterBottom>
-                      {activeSession.scenario_name}
-                    </Typography>
-                    <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
-                      <Chip label={`Round ${activeSession.current_round}/${activeSession.max_rounds}`} size="small" color="primary" />
-                      <Chip label={activeSession.mode === 'isolated_per_player' ? 'Solo Mode' : 'Shared Market'} size="small" />
+                  <Paper
+                    elevation={0}
+                    sx={(theme) => ({
+                      p: 2,
+                      border: '2px solid',
+                      borderColor: 'success.main',
+                      borderRadius: 2,
+                      bgcolor: alpha(theme.palette.success.main, 0.08)
+                    })}
+                  >
+                    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={2} sx={{ mb: 1.5 }}>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800, lineHeight: 1.2 }} noWrap>
+                          {activeSession.scenario_name}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Active session
+                        </Typography>
+                      </Box>
+                      <Chip
+                        label="Active"
+                        size="small"
+                        color="success"
+                        sx={{ fontWeight: 700 }}
+                      />
                     </Stack>
-                    <Button 
-                      variant="contained" 
+
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mb: 2 }}>
+                      <Chip
+                        label={`Round ${activeSession.current_round}/${activeSession.max_rounds}`}
+                        size="small"
+                        color="primary"
+                        sx={{ fontWeight: 700 }}
+                      />
+                      <Chip
+                        label={activeSession.mode === 'isolated_per_player' ? 'Solo Mode' : 'Shared Market'}
+                        size="small"
+                      />
+                    </Stack>
+
+                    <Button
+                      variant="contained"
                       size="large"
                       startIcon={<PlayIcon />}
                       onClick={() => navigate(`/player?sessionId=${activeSession.id}`)}
                       fullWidth
-                      sx={{ py: 1.5 }}
+                      sx={{ py: 1.4, fontWeight: 700 }}
                     >
-                      Continue Playing
+                      Continue
                     </Button>
                   </Paper>
                 </Box>
               ) : null}
+
+              {liveSessions.length > 0 && (
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Live Sessions
+                  </Typography>
+                  <Stack spacing={1.5}>
+                    {liveSessions.slice(0, 3).map((s) => (
+                      <Paper
+                        key={s.id}
+                        elevation={0}
+                        sx={{
+                          p: 2,
+                          border: '1px solid',
+                          borderColor: 'success.main',
+                          borderRadius: 2,
+                          bgcolor: 'success.lighter'
+                        }}
+                      >
+                        <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2}>
+                          <Box>
+                            <Typography variant="subtitle2" fontWeight={600}>
+                              {s.scenario_name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {s.cohort_name || 'Cohort'} • Round {s.current_round}/{s.max_rounds}
+                            </Typography>
+                          </Box>
+                          <Button
+                            variant="contained"
+                            size="small"
+                            startIcon={<PlayIcon />}
+                            onClick={() => navigate(`/player?sessionId=${s.id}`)}
+                          >
+                            Join Live
+                          </Button>
+                        </Stack>
+                      </Paper>
+                    ))}
+                  </Stack>
+                </Box>
+              )}
               
               {/* Available Campaigns */}
               <Typography variant="subtitle2" gutterBottom sx={{ mt: activeSession ? 2 : 0, mb: 1 }}>
@@ -224,6 +359,7 @@ export default function Home() {
                           variant="contained" 
                           size="small"
                           startIcon={<PlayIcon />}
+                          sx={{ fontWeight: 700, minWidth: 110 }}
                         >
                           Play
                         </Button>
