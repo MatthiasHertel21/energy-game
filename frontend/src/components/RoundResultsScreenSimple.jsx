@@ -21,6 +21,7 @@ import {
   DialogContent,
   DialogActions,
   Table,
+  TableHead,
   TableBody,
   TableCell,
   TableContainer,
@@ -191,6 +192,97 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     if (!Number.isFinite(num)) return 'ZAR 0'
     if (Math.abs(num) < 0.5) return '± ZAR 0'
     return `${num >= 0 ? '+' : '-'} ${formatCurrency(Math.abs(num))}`
+  }
+
+  const formatPct = (value) => {
+    const num = Number(value)
+    if (!Number.isFinite(num)) return '—'
+    return `${Math.round(num)}%`
+  }
+
+  // NOTE: Do not add hooks below early returns (loading / no results).
+  // These helpers are plain functions and safe to define here.
+  const getDeviceLabel = (deviceId) => {
+    const devices = scenario?.config?.devices || []
+    const cfg = devices.find(d => String(d?.id) === String(deviceId))
+    return cfg?.name || cfg?.label || String(deviceId)
+  }
+
+  const deriveHourColumns = (hourlyBreakdown, deviceHourlyBreakdown) => {
+    if (Array.isArray(hourlyBreakdown) && hourlyBreakdown.length > 0) {
+      return hourlyBreakdown.map(h => h?.hour).filter(h => h !== undefined && h !== null)
+    }
+    const firstDev = Object.keys(deviceHourlyBreakdown || {})[0]
+    const rows = firstDev ? deviceHourlyBreakdown[firstDev] : []
+    if (Array.isArray(rows) && rows.length > 0) {
+      return rows.map(r => r?.hour).filter(h => h !== undefined && h !== null)
+    }
+    return []
+  }
+
+  const renderHourMatrixTable = (rows, hourColumns, renderCell, valueHeader = 'Value') => {
+    if (!rows?.length || !hourColumns?.length) {
+      return (
+        <Typography variant="body2" color="text.secondary">
+          No per-hour detail data available for this round.
+        </Typography>
+      )
+    }
+
+    return (
+      <TableContainer component={Paper} variant="outlined" sx={{ overflowX: 'auto' }}>
+        <Table size="small" stickyHeader>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ whiteSpace: 'nowrap', minWidth: 180 }}>{valueHeader}</TableCell>
+              {hourColumns.map((h) => (
+                <TableCell key={String(h)} align="right" sx={{ whiteSpace: 'nowrap' }}>
+                  H{h}
+                </TableCell>
+              ))}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow key={row.key}>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>{row.label}</TableCell>
+                {hourColumns.map((h, hIdx) => (
+                  <TableCell key={`${row.key}:${String(h)}`} align="right" sx={{ whiteSpace: 'nowrap' }}>
+                    {renderCell(row, hIdx)}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    )
+  }
+
+  const bidTierLabel = (bidKey) => {
+    if (bidKey === 'A') return 'Base'
+    if (bidKey === 'B') return 'Mid'
+    if (bidKey === 'C') return 'Peak'
+    return String(bidKey || '')
+  }
+
+  const findBidHourEntry = (rows, hourValue, hourOffset) => {
+    if (!Array.isArray(rows) || rows.length === 0) return null
+    const byScenarioHour = rows.find((entry) => {
+      if (!entry || typeof entry !== 'object') return false
+      const explicitHour = entry.hour_idx ?? entry.scenario_hour_idx
+      return Number(explicitHour) === Number(hourValue)
+    })
+    if (byScenarioHour) return byScenarioHour
+
+    const byOffset = rows.find((entry) => {
+      if (!entry || typeof entry !== 'object') return false
+      const offset = entry.hour_offset ?? entry.round_hour_offset ?? entry.hour
+      return Number(offset) === Number(hourOffset)
+    })
+    if (byOffset) return byOffset
+
+    return rows[hourOffset] || null
   }
   
   // Get current time
@@ -804,7 +896,18 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
             </Typography>
           </Box>
 
-          <Dialog open={Boolean(breakdownKey)} onClose={closeBreakdown} maxWidth="sm" fullWidth>
+          <Dialog
+            open={Boolean(breakdownKey)}
+            onClose={closeBreakdown}
+            maxWidth="xl"
+            fullWidth
+            PaperProps={{
+              sx: {
+                width: 'min(1400px, 96vw)',
+                maxWidth: '96vw'
+              }
+            }}
+          >
             <DialogTitle>{breakdownConfig[breakdownKey]?.title || 'Breakdown'}</DialogTitle>
             <DialogContent dividers>
               <Stack spacing={2}>
@@ -855,7 +958,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     </TableContainer>
                   </>
                 )}
-                {breakdownKey === 'revenue' && (
+                {breakdownKey === 'revenue' && (() => {
+                  const currentDeviceHourlyBreakdown = currentKpis?.device_hourly_breakdown || {}
+                  const currentHourlyBreakdown = currentKpis?.hourly_breakdown || []
+                  const hourColumns = deriveHourColumns(currentHourlyBreakdown, currentDeviceHourlyBreakdown)
+                  return (
                   <>
                     <Typography variant="body1" fontWeight={600} gutterBottom>
                       Revenue Calculation
@@ -866,9 +973,31 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', fontWeight: 600, color: 'success.main' }}>
                       Total Revenue = {formatCurrency(kpis.revenue_zar || 0)}
                     </Typography>
+
+                    {renderHourMatrixTable(
+                      Object.keys(currentDeviceHourlyBreakdown || {}).sort().flatMap((devId) => {
+                        const label = getDeviceLabel(devId)
+                        return [
+                          { key: `${devId}:da`, label: `${label} — DAM`, devId, market: 'da' },
+                          { key: `${devId}:id`, label: `${label} — IDM`, devId, market: 'id' },
+                        ]
+                      }),
+                      hourColumns,
+                      (row, hIdx) => {
+                        const entry = currentDeviceHourlyBreakdown?.[row.devId]?.[hIdx] || {}
+                        const val = row.market === 'da' ? entry.da_revenue_zar : entry.id_revenue_zar
+                        return formatSignedCurrency(val || 0)
+                      },
+                      'Device / Market'
+                    )}
                   </>
-                )}
-                {breakdownKey === 'co2' && (
+                  )
+                })()}
+                {breakdownKey === 'co2' && (() => {
+                  const currentDeviceHourlyBreakdown = currentKpis?.device_hourly_breakdown || {}
+                  const currentHourlyBreakdown = currentKpis?.hourly_breakdown || []
+                  const hourColumns = deriveHourColumns(currentHourlyBreakdown, currentDeviceHourlyBreakdown)
+                  return (
                   <>
                     <Typography variant="body1" fontWeight={600} gutterBottom>
                       {terms.co2BreakdownTitle}
@@ -879,13 +1008,79 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', fontWeight: 600, color: 'warning.main' }}>
                       {terms.co2TotalLinePrefix} = {formatInt(kpis.co2_emissions_kg || 0)} kg
                     </Typography>
+
+                    {renderHourMatrixTable(
+                      Object.keys(currentDeviceHourlyBreakdown || {}).sort().flatMap((devId) => {
+                        const label = getDeviceLabel(devId)
+                        return [
+                          { key: `${devId}:da`, label: `${label} — DAM`, devId, market: 'da' },
+                          { key: `${devId}:id`, label: `${label} — IDM`, devId, market: 'id' },
+                        ]
+                      }),
+                      hourColumns,
+                      (row, hIdx) => {
+                        const entry = currentDeviceHourlyBreakdown?.[row.devId]?.[hIdx] || {}
+                        const totalCo2 = Number(entry.co2_kg ?? 0)
+                        const da = Math.abs(Number(entry.da_dispatched_mwh ?? 0))
+                        const id = Math.abs(Number(entry.id_dispatched_mwh ?? 0))
+                        const total = Math.abs(Number(entry.total_dispatched_mwh ?? (da + id)))
+                        if (!Number.isFinite(totalCo2) || totalCo2 === 0 || !Number.isFinite(total) || total <= 0) return '0'
+                        const share = row.market === 'da' ? (da / total) : (id / total)
+                        const val = totalCo2 * share
+                        return `${formatInt(val)} kg`
+                      },
+                      'Device / Market'
+                    )}
                   </>
-                )}
-                {breakdownKey === 'dispatched' && (
-                  <Typography variant="body2">
-                    Dispatched volume: {formatInt(kpis.dispatched_mwh || 0)} MWh
-                  </Typography>
-                )}
+                  )
+                })()}
+                {breakdownKey === 'dispatched' && (() => {
+                  const currentDeviceHourlyBreakdown = currentKpis?.device_hourly_breakdown || {}
+                  const currentHourlyBreakdown = currentKpis?.hourly_breakdown || []
+                  const hourColumns = deriveHourColumns(currentHourlyBreakdown, currentDeviceHourlyBreakdown)
+
+                  const hasDamHistory = my_result?.dam_bid_dispatch && Object.keys(my_result.dam_bid_dispatch || {}).length > 0
+                  const damBidDispatch = hasDamHistory
+                    ? (my_result?.dam_bid_dispatch || {})
+                    : ((Number(round) === 1 || Number(round) === 0) ? (my_result?.bid_dispatch || {}) : {})
+                  const idmBidDispatch = hasDamHistory ? (my_result?.bid_dispatch || {}) : {}
+
+                  const dispatchedRows = Object.keys(currentDeviceHourlyBreakdown || {}).sort().flatMap((devId) => {
+                    const label = getDeviceLabel(devId)
+                    const bidKeys = ['A', 'B', 'C']
+                    return ['da', 'id'].flatMap((market) => bidKeys.map((bidKey) => ({
+                      key: `${devId}:${market}:${bidKey}`,
+                      label: `${label} — ${market.toUpperCase()} ${bidTierLabel(bidKey)}`,
+                      devId,
+                      market,
+                      bidKey
+                    })))
+                  })
+
+                  return (
+                  <>
+                    <Typography variant="body2">
+                      Dispatched volume: {formatInt(kpis.dispatched_mwh || 0)} MWh
+                    </Typography>
+
+                    {renderHourMatrixTable(
+                      dispatchedRows,
+                      hourColumns,
+                      (row, hIdx) => {
+                        const marketDispatch = row.market === 'da' ? damBidDispatch : idmBidDispatch
+                        const lotRows = marketDispatch?.[row.devId]?.[row.bidKey] || []
+                        const lotEntry = findBidHourEntry(lotRows, hourColumns[hIdx], hIdx)
+                        const dispatched = Math.abs(Number(lotEntry?.mw_dispatched ?? 0))
+                        const offered = Math.abs(Number((lotEntry?.mw_offered_signed ?? lotEntry?.mw_offered) ?? 0))
+                        if (!Number.isFinite(offered) || offered <= 0) return '—'
+                        const pct = (dispatched / offered) * 100
+                        return formatPct(pct)
+                      },
+                      'Device / Market / Bid'
+                    )}
+                  </>
+                  )
+                })()}
                 {breakdownKey === 'consumed' && (
                   <Typography variant="body2">
                     Consumed volume: {formatInt(kpis.dispatched_mwh || 0)} MWh

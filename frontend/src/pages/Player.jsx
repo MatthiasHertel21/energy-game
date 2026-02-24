@@ -2994,6 +2994,21 @@ export default function Player() {
     const daOpen = hourStatus.some(s => s === 'da' || s === 'da_r1')
     return { idOpen, daOpen }
   }, [daBaseline.hour_status])
+  const currentRoundNumber = Number(cfg.current_round || 1)
+  const dayAheadGateHour = Number(cfg.general?.day_ahead_gate_hour ?? 10)
+  const daSpecialRuleNote = useMemo(() => {
+    if (!openMarkets.daOpen || currentRoundNumber !== 1) return ''
+    return `Special game rule: In Round 1, Day-Ahead bidding is still open. Normally, these bids should have been submitted on the previous day before the DA gate time (about ${String(dayAheadGateHour).padStart(2, '0')}:00).`
+  }, [openMarkets.daOpen, currentRoundNumber, dayAheadGateHour])
+  const campaignDisplayName = useMemo(() => {
+    const raw = String(cfg.campaign_name || '').trim()
+    if (!raw) return cfg.scenario_name || 'Campaign'
+    const normalized = raw.toLowerCase()
+    if (normalized === 'standalone' || normalized === 'stanbdalone') {
+      return cfg.scenario_name || 'Campaign'
+    }
+    return raw
+  }, [cfg.campaign_name, cfg.scenario_name])
   const summaryLines = useMemo(() => {
     const lines = []
     if (openMarkets.daOpen) {
@@ -3013,7 +3028,10 @@ export default function Player() {
       items.push({
         id: 'market-da',
         title: 'Day-Ahead market open',
-        description: `Submit bids for ${deviceText}.`,
+        descriptionPrefix: 'Submit bids for',
+        deviceText,
+        descriptionSuffix: '.',
+        specialNote: daSpecialRuleNote,
         priority: 'high',
         status: 'Open'
       })
@@ -3022,7 +3040,9 @@ export default function Player() {
       items.push({
         id: 'market-id',
         title: 'Intraday market open',
-        description: `Review and adjust bids for ${deviceText}.`,
+        descriptionPrefix: 'Review and adjust bids for',
+        deviceText,
+        descriptionSuffix: '.',
         priority: 'high',
         status: 'Open'
       })
@@ -3050,7 +3070,7 @@ export default function Player() {
       })
     }
     return items
-  }, [openMarkets, deviceText, activeEvents])
+  }, [openMarkets, deviceText, activeEvents, daSpecialRuleNote, cfg.current_round])
   const priorityColor = (priority) => {
     if (priority === 'high') return 'error'
     if (priority === 'medium') return 'warning'
@@ -3096,7 +3116,7 @@ export default function Player() {
   }
 
   return (
-    <Container maxWidth={false} sx={{ mt: 4, mb: 4, maxWidth: 1800, mx: 'auto' }}>
+    <Container maxWidth={false} sx={{ mt: 1.5, mb: 4, maxWidth: 1800, mx: 'auto' }}>
       {mode === 'shared_market' && (
         <Box sx={{ position: 'fixed', bottom: 12, right: 12, zIndex: 1300 }}>
           <Chip label="Session Active" color="success" size="small" variant="filled" />
@@ -3446,7 +3466,7 @@ export default function Player() {
       <Box sx={{ mb: 2 }}>
         <Typography variant="subtitle2" component="div">
           <Box component="span" sx={{ color: 'primary.main', fontWeight: 600 }}>
-            {(cfg.campaign_name || 'Standalone')}
+            {campaignDisplayName}
           </Box>
           <Box component="span" sx={{ color: 'text.secondary', mx: 1 }}>→</Box>
           <Box component="span" sx={{ color: 'primary.main', fontWeight: 600 }}>
@@ -3515,11 +3535,28 @@ export default function Player() {
             </Typography>
             {taskItems.map((task) => {
               const isCompleted = completedTasks.has(task.id)
+              const isHighPriority = task.priority === 'high'
+              const isMediumPriority = task.priority === 'medium'
               return (
               <Paper 
                 key={task.id} 
                 variant="outlined" 
-                sx={{ p: 1.5, cursor: 'pointer', '&:hover': { bgcolor: '#f5f5f5' } }}
+                sx={(theme) => ({
+                  p: 1.5,
+                  cursor: 'pointer',
+                  borderWidth: 2,
+                  borderColor: isCompleted
+                    ? theme.palette.success.main
+                    : isHighPriority
+                      ? theme.palette.primary.main
+                      : isMediumPriority
+                        ? theme.palette.warning.main
+                        : theme.palette.info.main,
+                  bgcolor: theme.palette.background.paper,
+                  '&:hover': {
+                    bgcolor: theme.palette.action.hover
+                  }
+                })}
                 onClick={() => {
                   setCompletedTasks(prev => {
                     const next = new Set(prev)
@@ -3537,9 +3574,24 @@ export default function Player() {
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       {task.title}
                     </Typography>
-                    {task.description && (
+                    {task.deviceText ? (
                       <Typography variant="caption" color="text.secondary">
-                        {task.description}
+                        {task.descriptionPrefix}{' '}
+                        <Box component="span" sx={{ fontWeight: 700, color: 'text.primary' }}>
+                          {task.deviceText}
+                        </Box>
+                        {task.descriptionSuffix || ''}
+                      </Typography>
+                    ) : (
+                      task.description && (
+                        <Typography variant="caption" color="text.secondary">
+                          {task.description}
+                        </Typography>
+                      )
+                    )}
+                    {task.specialNote && (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                        {task.specialNote}
                       </Typography>
                     )}
                   </Box>
@@ -3561,7 +3613,20 @@ export default function Player() {
                   Events
                 </Typography>
                 {visibleEvents.map((event) => (
-                  <Paper key={event.id} variant="outlined" sx={{ p: 1.5, bgcolor: '#e3f2fd' }}>
+                  <Paper
+                    key={event.id}
+                    variant="outlined"
+                    sx={(theme) => ({
+                      p: 1.5,
+                      borderWidth: 2,
+                      borderColor: criticalEventTypes.has(event.type)
+                        ? theme.palette.error.main
+                        : theme.palette.primary.main,
+                      bgcolor: criticalEventTypes.has(event.type)
+                        ? theme.palette.error.light
+                        : theme.palette.primary.light
+                    })}
+                  >
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       {getEventTitle(event)}
                     </Typography>
@@ -3725,30 +3790,7 @@ export default function Player() {
                               return deviceBidding && deviceBids[did]
                             })() && (
                               <>
-                                <Box>
-                                  <ForecastChartEditor 
-                                    hours={deviceBids[did][activeLot]?.hours || []} 
-                                    lockedUntil={effectiveLockedUntil} 
-                                    onChange={(i, val) => onBidQuantityChange(did, activeLot, i, val)} 
-                                    maxValue={deviceMax} 
-                                    smoothRadius={3}
-                                    currentRound={Number(cfg.current_round || 1)}
-                                    roundSpan={Number(cfg.general.round_span_hours || 6)}
-                                    freezeHours={Number(cfg.general.freeze_hours || 6)}
-                                    dayAheadGateHour={Number(cfg.general.day_ahead_gate_hour ?? 12)}
-                                    startTime={cfg.general.start_time || '00:00'}
-                                    deviceType={deviceType}
-                                    deviceParams={deviceParams}
-                                    daBaseline={daBaseline.bids?.[did]?.[activeLot]?.hours || daBaseline.devices?.[did] || null}
-                                    committedPosition={daBaseline.current_position?.bids?.[did]?.[activeLot]?.hours || daBaseline.current_position?.devices?.[did] || null}
-                                    hourStatus={effectiveHourStatus || []}
-                                    totalRounds={Number(cfg.general.rounds)}
-                                    daCommittedStart={daBaseline.da_committed_start}
-                                    daCommittedEnd={daBaseline.da_committed_end}
-                                  />
-                                </Box>
-                                
-                                {/* Multi-Bid Price Inputs - moved below charts */}
+                                {/* Multi-Bid Price Inputs */}
                                 {(() => {
                                   const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
                                     ? deviceDef.enable_multi_bid 
@@ -3889,6 +3931,32 @@ export default function Player() {
                                     </Stack>
                                   </Box>
                                 )}
+
+                                <Box sx={{ mt: 3 }}>
+                                  <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                                    <Typography variant="subtitle2">Device Chart</Typography>
+                                  </Stack>
+                                  <ForecastChartEditor
+                                    hours={deviceBids[did][activeLot]?.hours || []}
+                                    lockedUntil={effectiveLockedUntil}
+                                    onChange={(i, val) => onBidQuantityChange(did, activeLot, i, val)}
+                                    maxValue={deviceMax}
+                                    smoothRadius={3}
+                                    currentRound={Number(cfg.current_round || 1)}
+                                    roundSpan={Number(cfg.general.round_span_hours || 6)}
+                                    freezeHours={Number(cfg.general.freeze_hours || 6)}
+                                    dayAheadGateHour={Number(cfg.general.day_ahead_gate_hour ?? 12)}
+                                    startTime={cfg.general.start_time || '00:00'}
+                                    deviceType={deviceType}
+                                    deviceParams={deviceParams}
+                                    daBaseline={daBaseline.bids?.[did]?.[activeLot]?.hours || daBaseline.devices?.[did] || null}
+                                    committedPosition={daBaseline.current_position?.bids?.[did]?.[activeLot]?.hours || daBaseline.current_position?.devices?.[did] || null}
+                                    hourStatus={effectiveHourStatus || []}
+                                    totalRounds={Number(cfg.general.rounds)}
+                                    daCommittedStart={daBaseline.da_committed_start}
+                                    daCommittedEnd={daBaseline.da_committed_end}
+                                  />
+                                </Box>
                                 
                                 <Box sx={{ mt: 3 }}>
                                   <StackedLotsChart

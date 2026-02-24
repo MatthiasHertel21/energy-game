@@ -17,9 +17,7 @@ import {
   CardContent,
   Chip,
   CircularProgress,
-  Divider,
-  ToggleButton,
-  ToggleButtonGroup
+  Divider
 } from '@mui/material';
 import {
   NavigateNext as NextIcon,
@@ -27,6 +25,8 @@ import {
   AccountBalanceWallet as ProfitIcon,
   Cloud as CO2Icon,
   EmojiEvents as ChallengeIcon,
+  CheckCircle as CheckCircleIcon,
+  Cancel as CancelIcon,
   Bolt as EnergyIcon,
   Home as HomeIcon,
   ShowChart as ChartIcon
@@ -85,6 +85,16 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   const formatInt = (value) => normalizeNumber(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   const formatCurrency = (value) => `ZAR ${formatInt(value)}`;
   const formatMwh = (value) => `${formatInt(value)} MWh`;
+  const formatChallengeValue = (value) => {
+    if (Array.isArray(value)) {
+      if (value.length === 2) return `${formatInt(value[0])} – ${formatInt(value[1])}`;
+      return value.map((item) => formatInt(item)).join(', ');
+    }
+    const num = Number(value);
+    if (Number.isFinite(num)) return formatInt(num);
+    if (value === null || value === undefined || value === '') return '-';
+    return String(value);
+  };
 
   const safeResults = (results && typeof results === 'object') ? results : {};
   const { my_cumulative, final_ranking, round_history, total_rounds } = safeResults;
@@ -108,9 +118,35 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   const resolvedIsProducer = isProducer || (!isConsumer);
   const terms = getRoleTerminology(resolvedIsProducer);
   const challengeHistory = Array.isArray(safeMyCumulative?.challenge_history) ? safeMyCumulative.challenge_history : [];
-  const totalChallengePoints = challengeHistory.reduce((sum, h) => sum + (h.result?.total_points || 0), 0);
-  const maxChallengePoints = challengeHistory.reduce((sum, h) => sum + (h.result?.max_points || 0), 0);
-  const challengesPassed = challengeHistory.filter(h => h.result?.passed).length;
+  const latestChallengeEntry = useMemo(() => {
+    if (!challengeHistory.length) return null;
+    return [...challengeHistory].sort((a, b) => Number(a?.round || 0) - Number(b?.round || 0)).at(-1) || null;
+  }, [challengeHistory]);
+  const latestChallengeResults = Array.isArray(latestChallengeEntry?.result?.results)
+    ? latestChallengeEntry.result.results
+    : [];
+  const totalChallengePoints = Number(latestChallengeEntry?.result?.total_points || 0);
+  const maxChallengePoints = Number(latestChallengeEntry?.result?.max_points || 0);
+  const challengesPassed = latestChallengeResults.filter((item) => item?.passed).length;
+
+  const playerTypeOptions = Array.isArray(scenario?.config?.player_types)
+    ? scenario.config.player_types
+    : (Array.isArray(scenario?.player_types) ? scenario.player_types : []);
+  const playerTypeNameById = useMemo(() => {
+    const map = {};
+    playerTypeOptions.forEach((item) => {
+      if (!item || typeof item !== 'object') return;
+      if (!item.id) return;
+      map[String(item.id)] = item.name || String(item.id);
+    });
+    return map;
+  }, [playerTypeOptions]);
+
+  const resolvePlayerTypeLabel = (value) => {
+    const key = String(value || '');
+    if (!key) return '-';
+    return playerTypeNameById[key] || key;
+  };
 
   const safeRoundHistory = Array.isArray(round_history)
     ? round_history.filter((row) => row && typeof row === 'object')
@@ -176,6 +212,68 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
         co2: { label: `${terms.co2ColumnLabel} (kg)`, color: '#ff9800', formatter: (v) => `${formatInt(v)} kg` },
         dispatched: { label: 'Consumed (MWh)', color: '#9c27b0', formatter: (v) => formatMwh(v) }
       };
+
+  const kpiCards = resolvedIsProducer
+    ? [
+        {
+          key: 'revenue',
+          title: 'Total Revenue',
+          icon: <ProfitIcon sx={{ color: '#2196f3' }} />,
+          color: '#2196f3',
+          value: formatCurrency(normalizeNumber(totalRevenueDisplay))
+        },
+        {
+          key: 'profit',
+          title: 'Total Profit',
+          icon: <RevenueIcon sx={{ color: '#4caf50' }} />,
+          color: '#4caf50',
+          value: formatCurrency(normalizeNumber(totalProfitDisplay))
+        },
+        {
+          key: 'co2',
+          title: terms.totalCo2Label,
+          icon: <CO2Icon sx={{ color: '#ff9800' }} />,
+          color: '#ff9800',
+          value: `${formatInt(totalCo2Display)} kg`
+        },
+        {
+          key: 'dispatched',
+          title: 'Total Dispatched',
+          icon: <EnergyIcon sx={{ color: '#9c27b0' }} />,
+          color: '#9c27b0',
+          value: formatMwh(totalDispatchedDisplay)
+        }
+      ]
+    : [
+        {
+          key: 'costs',
+          title: 'Total Costs',
+          icon: <ProfitIcon sx={{ color: '#2196f3' }} />,
+          color: '#2196f3',
+          value: formatCurrency(normalizeNumber(totalCostsDisplay))
+        },
+        {
+          key: 'coverage',
+          title: 'Coverage',
+          icon: <RevenueIcon sx={{ color: '#4caf50' }} />,
+          color: '#4caf50',
+          value: `${normalizeNumber(totalCoverageDisplay).toFixed(1)}%`
+        },
+        {
+          key: 'co2',
+          title: terms.totalCo2Label,
+          icon: <CO2Icon sx={{ color: '#ff9800' }} />,
+          color: '#ff9800',
+          value: `${formatInt(totalCo2Display)} kg`
+        },
+        {
+          key: 'dispatched',
+          title: 'Total Consumed',
+          icon: <EnergyIcon sx={{ color: '#9c27b0' }} />,
+          color: '#9c27b0',
+          value: formatMwh(totalDispatchedDisplay)
+        }
+      ];
 
   const fallbackMetric = resolvedIsProducer ? 'revenue' : 'costs';
   const activeMetric = chartMeta[chartMetric] ? chartMetric : fallbackMetric;
@@ -255,7 +353,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
               {scenario?.name || 'Scenario'}
             </Typography>
             <Typography color="text.secondary" variant="body2">
-              {safeMyCumulative?.player_type || safeMyCumulative?.type || 'Player Type'}
+              {resolvePlayerTypeLabel(safeMyCumulative?.player_type || safeMyCumulative?.type || 'Player Type')}
             </Typography>
             <Typography color="primary" variant="body2" fontWeight={600}>
               Final Results
@@ -283,60 +381,37 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
             Key Performance Indicators
           </Typography>
           <Grid container spacing={3} sx={{ mt: 0.5 }}>
-            <Grid item xs={12} sm={6} md={3}>
-              <Card variant="outlined" sx={{ borderColor: '#2196f3', borderWidth: 2, height: '100%' }}>
-                <CardContent>
-                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
-                    <ProfitIcon sx={{ color: '#2196f3' }} />
-                    <Typography variant="subtitle2" color="text.secondary">{resolvedIsProducer ? 'Total Revenue' : 'Total Costs'}</Typography>
-                  </Stack>
-                    <Typography variant="h5" sx={{ fontWeight: 600, color: normalizeNumber(resolvedIsProducer ? totalRevenueDisplay : totalCostsDisplay) >= 0 ? 'success.main' : 'error.main' }}>
-                    {formatCurrency(normalizeNumber(resolvedIsProducer ? totalRevenueDisplay : totalCostsDisplay))}
-                  </Typography>
-                </CardContent>
-              </Card>
-            </Grid>
-            <Grid item xs={12} sm={6} md={3}>
-              <Card variant="outlined" sx={{ borderColor: '#4caf50', borderWidth: 2, height: '100%' }}>
-                <CardContent>
-                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
-                    <RevenueIcon sx={{ color: '#4caf50' }} />
-                    <Typography variant="subtitle2" color="text.secondary">{resolvedIsProducer ? 'Total Profit' : 'Coverage'}</Typography>
-                  </Stack>
-                  <Typography variant="h5" sx={{ fontWeight: 600, color: '#4caf50' }}>
-                    {resolvedIsProducer
-                      ? formatCurrency(normalizeNumber(totalProfitDisplay))
-                      : `${normalizeNumber(totalCoverageDisplay).toFixed(1)}%`}
-                  </Typography>
-                </CardContent>
-              </Card>
-            </Grid>
-            <Grid item xs={12} sm={6} md={3}>
-              <Card variant="outlined" sx={{ borderColor: '#ff9800', borderWidth: 2, height: '100%' }}>
-                <CardContent>
-                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
-                    <CO2Icon sx={{ color: '#ff9800' }} />
-                    <Typography variant="subtitle2" color="text.secondary">{terms.totalCo2Label}</Typography>
-                  </Stack>
-                  <Typography variant="h5" sx={{ fontWeight: 600, color: '#ff9800' }}>
-                    {formatInt(totalCo2Display)} kg
-                  </Typography>
-                </CardContent>
-              </Card>
-            </Grid>
-            <Grid item xs={12} sm={6} md={3}>
-              <Card variant="outlined" sx={{ borderColor: '#9c27b0', borderWidth: 2, height: '100%' }}>
-                <CardContent>
-                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
-                    <EnergyIcon sx={{ color: '#9c27b0' }} />
-                    <Typography variant="subtitle2" color="text.secondary">{resolvedIsProducer ? 'Total Dispatched' : 'Total Consumed'}</Typography>
-                  </Stack>
-                  <Typography variant="h5" sx={{ fontWeight: 600, color: '#9c27b0' }}>
-                    {formatMwh(totalDispatchedDisplay)}
-                  </Typography>
-                </CardContent>
-              </Card>
-            </Grid>
+            {kpiCards.map((card) => {
+              const selected = activeMetric === card.key;
+              return (
+                <Grid key={card.key} item xs={12} sm={6} md={3}>
+                  <Card
+                    variant="outlined"
+                    onClick={() => setChartMetric(card.key)}
+                    sx={{
+                      borderColor: selected ? card.color : 'divider',
+                      borderWidth: selected ? 3 : 2,
+                      bgcolor: selected ? 'action.selected' : 'background.paper',
+                      cursor: 'pointer',
+                      height: '100%'
+                    }}
+                  >
+                    <CardContent>
+                      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
+                        {card.icon}
+                        <Typography variant="subtitle2" color="text.secondary">{card.title}</Typography>
+                      </Stack>
+                      <Typography variant="h5" sx={{ fontWeight: 600, color: card.color }}>
+                        {card.value}
+                      </Typography>
+                      {selected && (
+                        <Chip label="Selected" size="small" color="primary" variant="outlined" sx={{ mt: 1.2 }} />
+                      )}
+                    </CardContent>
+                  </Card>
+                </Grid>
+              );
+            })}
           </Grid>
         </Box>
 
@@ -346,29 +421,6 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           </Typography>
           <Paper variant="outlined" sx={{ p: 2 }}>
             <Stack spacing={2}>
-              <ToggleButtonGroup
-                size="small"
-                value={chartMetric}
-                exclusive
-                onChange={(_, value) => value && setChartMetric(value)}
-              >
-                {resolvedIsProducer ? (
-                  <>
-                    <ToggleButton value="revenue">Revenue</ToggleButton>
-                    <ToggleButton value="profit">Profit</ToggleButton>
-                    <ToggleButton value="co2">CO₂</ToggleButton>
-                    <ToggleButton value="dispatched">Dispatched</ToggleButton>
-                  </>
-                ) : (
-                  <>
-                    <ToggleButton value="costs">Costs</ToggleButton>
-                    <ToggleButton value="coverage">Coverage</ToggleButton>
-                    <ToggleButton value="co2">CO₂</ToggleButton>
-                    <ToggleButton value="dispatched">Consumed</ToggleButton>
-                  </>
-                )}
-              </ToggleButtonGroup>
-
               {chartPoints.length > 0 ? (
                 <>
                   <Box sx={{ width: '100%', overflowX: 'auto' }}>
@@ -395,50 +447,63 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           </Paper>
         </Box>
 
-        {challengeHistory.length > 0 ? (
+        {latestChallengeResults.length > 0 ? (
           <Box>
             <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <ChallengeIcon color="warning" />
-              Challenge Summary
+              Challenges
             </Typography>
-            <Paper sx={{ p: 3, bgcolor: 'rgba(255, 152, 0, 0.05)' }}>
-              <Grid container spacing={2} sx={{ mb: 2 }}>
-                <Grid item xs={12} sm={4}>
-                  <Card>
-                    <CardContent>
-                      <Typography variant="caption" color="text.secondary">Total Challenge Points</Typography>
-                      <Typography variant="h5" color="success.main">
-                        {totalChallengePoints} / {maxChallengePoints}
-                      </Typography>
-                    </CardContent>
-                  </Card>
-                </Grid>
-                <Grid item xs={12} sm={4}>
-                  <Card>
-                    <CardContent>
-                      <Typography variant="caption" color="text.secondary">Rounds Passed</Typography>
-                      <Typography variant="h5" color="primary.main">
-                        {challengesPassed} / {challengeRoundsDenominator}
-                      </Typography>
-                    </CardContent>
-                  </Card>
-                </Grid>
-                <Grid item xs={12} sm={4}>
-                  <Card>
-                    <CardContent>
-                      <Typography variant="caption" color="text.secondary">Success Rate</Typography>
-                      <Typography variant="h5" color={challengesPassed === challengeHistory.length ? 'success.main' : 'warning.main'}>
-                        {challengeHistory.length > 0 ? Math.round((challengesPassed / challengeHistory.length) * 100) : 0}%
-                      </Typography>
-                    </CardContent>
-                  </Card>
-                </Grid>
+            <Stack spacing={2}>
+              <Paper sx={{ p: 2, bgcolor: 'rgba(255, 152, 0, 0.05)' }}>
+                <Typography variant="body2" color="text.secondary">
+                  Final evaluation (Round {latestChallengeEntry?.round || '-'}) • Points: {totalChallengePoints}/{maxChallengePoints} • Passed: {challengesPassed}/{latestChallengeResults.length}
+                </Typography>
+              </Paper>
+              <Grid container spacing={2}>
+                {latestChallengeResults.map((challenge, idx) => {
+                  const passed = Boolean(challenge?.passed);
+                  return (
+                    <Grid key={`${challenge?.challenge_id || challenge?.name || 'challenge'}-${idx}`} item xs={12} sm={6} md={4}>
+                      <Card
+                        variant="outlined"
+                        sx={{
+                          height: '100%',
+                          borderColor: passed ? 'success.main' : 'error.main',
+                          borderWidth: 2,
+                          bgcolor: passed ? 'success.50' : 'error.50'
+                        }}
+                      >
+                        <CardContent>
+                          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                            <Typography variant="subtitle1" fontWeight={600}>
+                              {challenge?.name || 'Challenge'}
+                            </Typography>
+                            {passed ? <CheckCircleIcon color="success" /> : <CancelIcon color="error" />}
+                          </Stack>
+                          <Stack spacing={0.5}>
+                            <Typography variant="body2" color="text.secondary">
+                              Metric: {challenge?.metric || '-'}
+                            </Typography>
+                            <Typography variant="body2">
+                              Ziel: {challenge?.operator || '-'} {formatChallengeValue(challenge?.target)}
+                            </Typography>
+                            <Typography variant="body2">
+                              Erreicht: {formatChallengeValue(challenge?.actual)}
+                            </Typography>
+                            <Typography variant="body2" sx={{ color: passed ? 'success.main' : 'error.main', fontWeight: 600 }}>
+                              {passed ? 'Erreicht' : 'Nicht erreicht'}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              Punkte: {challenge?.points || 0}/{challenge?.max_points || 0}
+                            </Typography>
+                          </Stack>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  );
+                })}
               </Grid>
-              
-              <Typography variant="body2" color="text.secondary">
-                Total challenge points: {totalChallengePoints}/{maxChallengePoints} • Passed rounds: {challengesPassed}/{challengeRoundsDenominator}
-              </Typography>
-            </Paper>
+            </Stack>
           </Box>
         ) : (
           <Box>
@@ -489,7 +554,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                         {player?.email || '-'}
                         {isMe && <Chip label="You" size="small" color="primary" sx={{ ml: 1 }} />}
                       </TableCell>
-                      <TableCell>{player?.player_type || player?.type || '-'}</TableCell>
+                      <TableCell>{resolvePlayerTypeLabel(player?.player_type || player?.type || '-')}</TableCell>
                       <TableCell align="right">{formatInt(player?.total_profit)}</TableCell>
                       <TableCell align="right">{resolvedIsProducer ? formatInt(player?.total_revenue) : formatInt(Math.abs(Number(player?.total_revenue || 0)))}</TableCell>
                       <TableCell align="right">{formatInt(player?.total_dispatched_mwh)}</TableCell>

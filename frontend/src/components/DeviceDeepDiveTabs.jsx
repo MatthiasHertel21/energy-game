@@ -71,18 +71,48 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     || Boolean(my_result.dam_device_hourly_details)
     || Boolean(damHourlyResults.length)
 
+  const damHasCoverageForWindow = (bidDispatch) => {
+    if (!bidDispatch || typeof bidDispatch !== 'object') return false
+    const isInWindow = (hourValue) => {
+      const h = Number(hourValue)
+      return Number.isFinite(h) && h >= roundStartHour && h < roundEndHour
+    }
+
+    // If we have explicit scenario hour indices, require overlap with the current round window.
+    // Otherwise (legacy hour_offset-only payloads), assume it's meant for this window.
+    let sawExplicitHour = false
+    let sawOverlap = false
+
+    Object.values(bidDispatch).forEach((lots) => {
+      if (!lots || typeof lots !== 'object') return
+      Object.values(lots).forEach((rows) => {
+        if (!Array.isArray(rows)) return
+        rows.forEach((row) => {
+          if (!row || typeof row !== 'object') return
+          const explicit = row.hour_idx ?? row.scenario_hour_idx
+          if (explicit !== undefined && explicit !== null) {
+            sawExplicitHour = true
+            if (isInWindow(explicit)) sawOverlap = true
+          }
+        })
+      })
+    })
+
+    return sawExplicitHour ? sawOverlap : true
+  }
+
   // Separate DAM and IDM data
-  const hasDam = isCurrentRoundDamOnly || hasHistoricalDam
+  const hasDam = isCurrentRoundDamOnly || (hasHistoricalDam && damHasCoverageForWindow(my_result?.dam_bid_dispatch))
   const damBidDispatch = isCurrentRoundDamOnly
     ? (my_result.bid_dispatch || {})
-    : (hasHistoricalDam ? (my_result.dam_bid_dispatch || {}) : (my_result.bid_dispatch || {}))
+    : (hasDam ? (my_result.dam_bid_dispatch || {}) : {})
   const idmBidDispatch = isCurrentRoundDamOnly
     ? {}
     : (hasHistoricalDam ? (my_result.bid_dispatch || {}) : {})
   
   const damDeviceHourlyDetails = isCurrentRoundDamOnly
     ? (my_result.device_hourly_details || {})
-    : (hasHistoricalDam ? (my_result.dam_device_hourly_details || {}) : (my_result.device_hourly_details || {}))
+    : (hasDam ? (my_result.dam_device_hourly_details || {}) : {})
   const idmDeviceHourlyDetails = isCurrentRoundDamOnly
     ? {}
     : (hasHistoricalDam ? (my_result.device_hourly_details || {}) : {})
@@ -202,6 +232,12 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     return Math.round(num).toLocaleString('en-US')
   }
 
+  const displayMoney = (value) => {
+    const num = Number(value ?? 0)
+    if (!Number.isFinite(num)) return 0
+    return isConsumer ? Math.abs(num) : num
+  }
+
   // Get hourly data for selected device - separate DAM and IDM
   const deviceBidsDAM = damBidDispatch[selectedDeviceId] || {}
   const deviceBidsIDM = idmBidDispatch[selectedDeviceId] || {}
@@ -231,6 +267,14 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     })
     if (byScenarioHour) return byScenarioHour
 
+    // If the payload contains explicit scenario hours but none match,
+    // do NOT remap by hour_offset (prevents showing Round-1 DAM hours as Round-2 DAM hours).
+    const hasExplicit = entries.some((entry) => {
+      const entryScenarioHour = entry?.scenario_hour_idx ?? entry?.hour_idx
+      return entryScenarioHour !== undefined && entryScenarioHour !== null
+    })
+    if (hasExplicit) return {}
+
     const byMappedOffset = entries.find((entry) => {
       const entryOffset = entry?.round_hour_offset ?? entry?.hour_offset ?? entry?.hour
       if (!Number.isFinite(Number(entryOffset))) return false
@@ -254,6 +298,11 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         return Number(lotHourIdx) === Number(scenarioHourIdx)
       })
       if (byScenarioHour) return byScenarioHour
+
+      // If explicit hour_idx exists in the payload but doesn't match,
+      // don't fall back to hour_offset remapping (avoids wrong-round DAM display).
+      const hasExplicit = lotsArray.some((lot) => lot?.hour_idx !== undefined && lot?.hour_idx !== null)
+      if (hasExplicit) return {}
 
       const byMappedOffset = lotsArray.find((lot) => {
         const lotOffset = lot?.hour_offset ?? lot?.hour
@@ -291,13 +340,22 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     const effectiveCapacityRaw = deviceBreakdown.effective_capacity_mw !== undefined ? deviceBreakdown.effective_capacity_mw : deviceCapacity
     const totalOfferedFromBreakdown = deviceBreakdown.total_offered_mw || 0
 
-    // Calculate totals for DAM
+    // Calculate totals for DAM/IDM:
+    // Prefer backend-provided canonical DA/ID split so KPI and details cannot diverge.
     const totalOffered_DAM = (lotA_DAM.mw_offered || 0) + (lotB_DAM.mw_offered || 0) + (lotC_DAM.mw_offered || 0)
-    const totalDispatched_DAM = (lotA_DAM.mw_dispatched || 0) + (lotB_DAM.mw_dispatched || 0) + (lotC_DAM.mw_dispatched || 0)
-    
-    // Calculate totals for IDM
     const totalOffered_IDM = getSignedOffered(lotA_IDM) + getSignedOffered(lotB_IDM) + getSignedOffered(lotC_IDM)
-    const totalDispatched_IDM = (lotA_IDM.mw_dispatched || 0) + (lotB_IDM.mw_dispatched || 0) + (lotC_IDM.mw_dispatched || 0)
+
+    const backendDaDispatched = Number(deviceBreakdown.da_dispatched_mwh ?? 0)
+    const backendIdDispatched = Number(deviceBreakdown.id_dispatched_mwh ?? 0)
+    const hasBackendDispatchSplit = Number.isFinite(backendDaDispatched) || Number.isFinite(backendIdDispatched)
+
+    const totalDispatched_DAM = Number.isFinite(backendDaDispatched)
+      ? backendDaDispatched
+      : ((lotA_DAM.mw_dispatched || 0) + (lotB_DAM.mw_dispatched || 0) + (lotC_DAM.mw_dispatched || 0))
+
+    const totalDispatched_IDM = Number.isFinite(backendIdDispatched)
+      ? backendIdDispatched
+      : ((lotA_IDM.mw_dispatched || 0) + (lotB_IDM.mw_dispatched || 0) + (lotC_IDM.mw_dispatched || 0))
 
     const fallbackDemandBase = Math.max(
       Number(totalOfferedFromBreakdown || 0),
@@ -333,11 +391,24 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
           ? Number(hour.idp)
           : (Number.isFinite(roundLevelIdp) ? roundLevelIdp : smp))
       : null
-    const revenue_DAM = totalDispatched_DAM * smp
-    const revenue_IDM = totalDispatched_IDM * idp
+    // Revenue: always prefer backend canonical settlement values (DA+ID), otherwise fallback.
+    const backendDaRevenue = Number(deviceBreakdown.da_revenue_zar)
+    const backendIdRevenue = Number(deviceBreakdown.id_revenue_zar)
+    const backendRevenue = Number(deviceBreakdown.revenue_zar)
+
+    const revenue_DAM = Number.isFinite(backendDaRevenue)
+      ? backendDaRevenue
+      : (totalDispatched_DAM * smp)
+
+    const revenue_IDM = Number.isFinite(backendIdRevenue)
+      ? backendIdRevenue
+      : (totalDispatched_IDM * (Number.isFinite(idp) ? idp : 0))
 
     const totalDispatched = totalDispatched_DAM + totalDispatched_IDM
-    const imbalanceCostDisplay = (balancingData.balancing_cost_zar || 0)
+    const imbalanceCostBackend = Number(deviceBreakdown.imbalance_cost_zar)
+    const imbalanceCostDisplay = Number.isFinite(imbalanceCostBackend)
+      ? imbalanceCostBackend
+      : Number(balancingData.balancing_cost_zar || 0)
 
     const hourKey = scenarioHourIdx
     return {
@@ -373,10 +444,14 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       balancingCost: balancingData.balancing_cost_zar || 0,
       imbalanceCostDisplay,
       // CO2
-      co2Kg: co2Data.co2_kg || 0,
+      co2Kg: (Number.isFinite(Number(deviceBreakdown.co2_kg))
+        ? Number(deviceBreakdown.co2_kg)
+        : (co2Data.co2_kg || 0)),
       // Totals
       netMwh: totalDispatched_DAM + totalDispatched_IDM + (balancingData.imbalance_mwh || 0),
-      netRevenue: revenue_DAM + revenue_IDM - imbalanceCostDisplay
+      netRevenue: (Number.isFinite(backendRevenue)
+        ? backendRevenue
+        : (revenue_DAM + revenue_IDM)) - imbalanceCostDisplay
     }
   })
 
@@ -412,7 +487,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     totalLotBOffered_DAM: hourlyData.reduce((sum, h) => sum + (h.lotB_DAM.mw_offered || 0), 0),
     totalLotCOffered_DAM: hourlyData.reduce((sum, h) => sum + (h.lotC_DAM.mw_offered || 0), 0),
     totalDispatched_DAM: hourlyData.reduce((sum, h) => sum + h.totalDispatched_DAM, 0),
-    revenue_DAM: hourlyData.reduce((sum, h) => sum + h.revenue_DAM, 0),
+    revenue_DAM: hourlyData.reduce((sum, h) => sum + displayMoney(h.revenue_DAM), 0),
     // DAM - Averaged prices
     avgLotA_DAM: damLotA.avgPrice,
     avgLotB_DAM: damLotB.avgPrice,
@@ -427,7 +502,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     totalLotBOffered_IDM: hourlyData.reduce((sum, h) => sum + getSignedOffered(h.lotB_IDM), 0),
     totalLotCOffered_IDM: hourlyData.reduce((sum, h) => sum + getSignedOffered(h.lotC_IDM), 0),
     totalDispatched_IDM: hourlyData.reduce((sum, h) => sum + h.totalDispatched_IDM, 0),
-    revenue_IDM: hourlyData.reduce((sum, h) => sum + h.revenue_IDM, 0),
+    revenue_IDM: hourlyData.reduce((sum, h) => sum + displayMoney(h.revenue_IDM), 0),
     // IDM - Averaged prices
     avgLotA_IDM: idmLotA.avgPrice,
     avgLotB_IDM: idmLotB.avgPrice,
@@ -444,7 +519,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     avgBalancingPrice: hourlyData.filter(h => h.balancingPrice !== 0).reduce((sum, h) => sum + h.balancingPrice, 0) / (hourlyData.filter(h => h.balancingPrice !== 0).length || 1),
     // Totals - Summed
     totalNetMwh: hourlyData.reduce((sum, h) => sum + h.netMwh, 0),
-    totalNetRevenue: hourlyData.reduce((sum, h) => sum + h.netRevenue, 0),
+    totalNetRevenue: hourlyData.reduce((sum, h) => sum + displayMoney(h.netRevenue), 0),
     totalCO2: hourlyData.reduce((sum, h) => sum + h.co2Kg, 0)
   }
 
@@ -583,7 +658,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
             </TableRow>
             <TableRow hover>
               <TableCell>
-                Bid A {roundTotals.hasLotA_DAM ? `(${formatInteger(roundTotals.avgLotA_DAM)} ZAR/MWh)` : ''}
+                Base {roundTotals.hasLotA_DAM ? `(${formatInteger(roundTotals.avgLotA_DAM)} ZAR/MWh)` : ''}
               </TableCell>
               {hourlyData.map((h) => (
                 <TableCell 
@@ -600,7 +675,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
             </TableRow>
             <TableRow hover>
               <TableCell>
-                Bid B {roundTotals.hasLotB_DAM ? `(${formatInteger(roundTotals.avgLotB_DAM)} ZAR/MWh)` : ''}
+                Mid {roundTotals.hasLotB_DAM ? `(${formatInteger(roundTotals.avgLotB_DAM)} ZAR/MWh)` : ''}
               </TableCell>
               {hourlyData.map((h) => (
                 <TableCell 
@@ -617,7 +692,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
             </TableRow>
             <TableRow hover>
               <TableCell>
-                Bid C {roundTotals.hasLotC_DAM ? `(${formatInteger(roundTotals.avgLotC_DAM)} ZAR/MWh)` : ''}
+                Peak {roundTotals.hasLotC_DAM ? `(${formatInteger(roundTotals.avgLotC_DAM)} ZAR/MWh)` : ''}
               </TableCell>
               {hourlyData.map((h) => (
                 <TableCell 
@@ -658,7 +733,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               <TableCell>{isConsumer ? 'Cost (ZAR)' : 'Revenue (ZAR)'}</TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right">
-                  {h.revenue_DAM > 0 ? formatInteger(h.revenue_DAM) : '-'}
+                  {displayMoney(h.revenue_DAM) !== 0 ? formatInteger(displayMoney(h.revenue_DAM)) : '-'}
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
@@ -714,7 +789,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                 </TableRow>
                 <TableRow hover>
                   <TableCell>
-                    Bid A {roundTotals.hasLotA_IDM ? `(${formatInteger(roundTotals.avgLotA_IDM)} ZAR/MWh)` : ''}
+                    Base {roundTotals.hasLotA_IDM ? `(${formatInteger(roundTotals.avgLotA_IDM)} ZAR/MWh)` : ''}
                   </TableCell>
                   {hourlyData.map((h) => (
                     <TableCell 
@@ -731,7 +806,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                 </TableRow>
                 <TableRow hover>
                   <TableCell>
-                    Bid B {roundTotals.hasLotB_IDM ? `(${formatInteger(roundTotals.avgLotB_IDM)} ZAR/MWh)` : ''}
+                    Mid {roundTotals.hasLotB_IDM ? `(${formatInteger(roundTotals.avgLotB_IDM)} ZAR/MWh)` : ''}
                   </TableCell>
                   {hourlyData.map((h) => (
                     <TableCell 
@@ -748,7 +823,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                 </TableRow>
                 <TableRow hover>
                   <TableCell>
-                    Bid C {roundTotals.hasLotC_IDM ? `(${formatInteger(roundTotals.avgLotC_IDM)} ZAR/MWh)` : ''}
+                    Peak {roundTotals.hasLotC_IDM ? `(${formatInteger(roundTotals.avgLotC_IDM)} ZAR/MWh)` : ''}
                   </TableCell>
                   {hourlyData.map((h) => (
                     <TableCell 
@@ -789,7 +864,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   <TableCell>{isConsumer ? 'Cost (ZAR)' : 'Revenue (ZAR)'}</TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right">
-                      {h.revenue_IDM > 0 ? formatInteger(h.revenue_IDM) : '-'}
+                      {displayMoney(h.revenue_IDM) !== 0 ? formatInteger(displayMoney(h.revenue_IDM)) : '-'}
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
@@ -868,7 +943,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               <TableCell sx={{ fontWeight: 'bold' }}>{isConsumer ? 'Net Cost (ZAR)' : 'Net Revenue (ZAR)'}</TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right" sx={{ fontWeight: 'bold' }}>
-                  {h.netRevenue !== 0 ? formatInteger(h.netRevenue) : '-'}
+                  {displayMoney(h.netRevenue) !== 0 ? formatInteger(displayMoney(h.netRevenue)) : '-'}
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>

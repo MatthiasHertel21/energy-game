@@ -2265,6 +2265,36 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
 
             # Keep ID-only dispatched before optional delivery-time DA fallback
             id_dispatched_only = dispatched
+
+            # ID delta rounds: KPIs must reflect net commitment (DAM baseline + IDM delta)
+            # Otherwise KPI cards (net) and device details (DAM + IDM) diverge by design.
+            da_committed_by_device = {}
+            da_committed_total = 0.0
+            if round_num > 1 and id_delta_round:
+                da_committed_by_device = _get_da_delivery_dispatch_by_device(pid, hour_idx, hour_offset) or {}
+                da_committed_total = float(sum(da_committed_by_device.values())) if da_committed_by_device else 0.0
+
+                if da_committed_total != 0.0:
+                    # Add DA baseline to per-device planned/dispatched so breakdown + KPIs reconcile.
+                    for device_id, da_mw in da_committed_by_device.items():
+                        if device_id not in per_device_hourly_planned:
+                            per_device_hourly_planned[device_id] = [0.0] * display_span
+                        if device_id not in per_device_hourly_dispatched:
+                            per_device_hourly_dispatched[device_id] = [0.0] * display_span
+                        if device_id not in per_device_hourly_actual:
+                            per_device_hourly_actual[device_id] = [0.0] * display_span
+
+                        per_device_hourly_planned[device_id][hour_offset] = max(
+                            float(per_device_hourly_planned[device_id][hour_offset] or 0.0),
+                            float(da_mw)
+                        )
+                        per_device_hourly_dispatched[device_id][hour_offset] = (
+                            float(per_device_hourly_dispatched[device_id][hour_offset] or 0.0) + float(da_mw)
+                        )
+
+                    # Net planned/dispatched for settlement KPIs
+                    planned = float(planned) + float(da_committed_total)
+                    dispatched = float(dispatched) + float(da_committed_total)
             
             # Determine if player is consumer or generator
             # Check devices from bid dispatch (devices_cfg already loaded above)
@@ -2290,6 +2320,10 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 if device and 'load' in device.get('type', '').lower():
                     is_consumer = True
                     break
+
+            # Ensure DA baseline devices are included in classification/allocations
+            if round_num > 1 and id_delta_round and da_committed_by_device:
+                player_device_ids.update(da_committed_by_device.keys())
 
             # Delivery-time fallback for ID delta rounds:
             # For non-clearing display hours, include committed DA dispatch in KPI/device totals
@@ -2358,8 +2392,17 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 if enable_bidding and pid in hour_bid_dispatch:
                     # Distribute actual proportionally to each consumer device
                     total_dispatched = dispatched
-                    for device_id, device_dispatch in hour_bid_dispatch[pid].items():
-                        device_dispatched = sum(bid_info.get('mw_dispatched', 0.0) for bid_info in device_dispatch.values())
+                    device_ids_for_distribution = set(hour_bid_dispatch[pid].keys())
+                    if round_num > 1 and id_delta_round and da_committed_by_device:
+                        device_ids_for_distribution.update(da_committed_by_device.keys())
+
+                    for device_id in device_ids_for_distribution:
+                        device_dispatched = 0.0
+                        if device_id in per_device_hourly_dispatched:
+                            try:
+                                device_dispatched = float(per_device_hourly_dispatched[device_id][hour_offset] or 0.0)
+                            except Exception:
+                                device_dispatched = 0.0
                         if total_dispatched > 0:
                             device_actual = actual * (device_dispatched / total_dispatched)
                         else:
@@ -2376,18 +2419,12 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                 da_dispatched_for_device = device_dispatched
                                 id_dispatched_for_device = 0.0
                             else:
-                                # ID delta rounds: DA baseline + ID delta
-                                da_dispatched_for_device = 0.0
-                                if 'da_baseline_dispatch' in locals() and da_baseline_dispatch:
-                                    # Get DA dispatch for this device from Round 1
-                                    if pid in da_baseline_dispatch and device_id in da_baseline_dispatch[pid]:
-                                        # Sum across all lots (A, B, C) for this hour
-                                        for lot_label in ['A', 'B', 'C']:
-                                            if lot_label in da_baseline_dispatch[pid][device_id]:
-                                                lot_hourly = da_baseline_dispatch[pid][device_id][lot_label]
-                                                if isinstance(lot_hourly, list) and hour_offset < len(lot_hourly):
-                                                    da_dispatched_for_device += lot_hourly[hour_offset].get('mw_dispatched', 0.0)
-                                id_dispatched_for_device = device_dispatched
+                                # ID delta rounds: DA baseline (committed) + ID delta (net minus baseline)
+                                da_dispatched_for_device = float((da_committed_by_device or {}).get(device_id, 0.0) or 0.0)
+                                id_dispatched_for_device = float(device_dispatched) - da_dispatched_for_device
+                                # Safety: avoid tiny negative due to float noise
+                                if abs(id_dispatched_for_device) < 0.000001:
+                                    id_dispatched_for_device = 0.0
                             
                             # Total committed = DA (Round 1) + ID (current round)
                             total_dispatched = da_dispatched_for_device + id_dispatched_for_device
@@ -2420,10 +2457,19 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             elif enable_bidding and pid in hour_bid_dispatch:
                 # Generators: Per-device envelope enforcement for multi-bid mode
                 actual_constrained = 0.0
-                for device_id, device_dispatch in hour_bid_dispatch[pid].items():
+                device_ids_for_envelope = set(hour_bid_dispatch[pid].keys())
+                if round_num > 1 and id_delta_round and da_committed_by_device:
+                    device_ids_for_envelope.update(da_committed_by_device.keys())
+
+                for device_id in device_ids_for_envelope:
                     device = next((d for d in devices_cfg if d.get("id") == device_id), None)
                     if device:
-                        device_dispatched = sum(bid_info.get('mw_dispatched', 0.0) for bid_info in device_dispatch.values())
+                        device_dispatched = 0.0
+                        if device_id in per_device_hourly_dispatched:
+                            try:
+                                device_dispatched = float(per_device_hourly_dispatched[device_id][hour_offset] or 0.0)
+                            except Exception:
+                                device_dispatched = 0.0
                         availability = calculate_realistic_availability(device, hour_of_day, config)
                         max_available = device_dispatched * availability
                         device_actual = min(device_dispatched, max_available)
@@ -2451,8 +2497,17 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 
                 # Update per-device actual with event and noise applied (proportionally)
                 if enable_bidding and pid in hour_bid_dispatch:
-                    for device_id, device_dispatch in hour_bid_dispatch[pid].items():
-                        device_dispatched = sum(bid_info.get('mw_dispatched', 0.0) for bid_info in device_dispatch.values())
+                    device_ids_for_noise = set(hour_bid_dispatch[pid].keys())
+                    if round_num > 1 and id_delta_round and da_committed_by_device:
+                        device_ids_for_noise.update(da_committed_by_device.keys())
+
+                    for device_id in device_ids_for_noise:
+                        device_dispatched = 0.0
+                        if device_id in per_device_hourly_dispatched:
+                            try:
+                                device_dispatched = float(per_device_hourly_dispatched[device_id][hour_offset] or 0.0)
+                            except Exception:
+                                device_dispatched = 0.0
                         if actual_constrained > 0:
                             # Proportionally distribute actual (with noise) to each device
                             device_actual_with_noise = actual * (device_dispatched / dispatched) if dispatched > 0 else 0.0
@@ -2470,18 +2525,11 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                 da_dispatched_for_device = device_dispatched
                                 id_dispatched_for_device = 0.0
                             else:
-                                # ID delta rounds: DA baseline + ID delta
-                                da_dispatched_for_device = 0.0
-                                if 'da_baseline_dispatch' in locals() and da_baseline_dispatch:
-                                    # Get DA dispatch for this device from Round 1
-                                    if pid in da_baseline_dispatch and device_id in da_baseline_dispatch[pid]:
-                                        # Sum across all lots (A, B, C) for this hour
-                                        for lot_label in ['A', 'B', 'C']:
-                                            if lot_label in da_baseline_dispatch[pid][device_id]:
-                                                lot_hourly = da_baseline_dispatch[pid][device_id][lot_label]
-                                                if isinstance(lot_hourly, list) and hour_offset < len(lot_hourly):
-                                                    da_dispatched_for_device += lot_hourly[hour_offset].get('mw_dispatched', 0.0)
-                                id_dispatched_for_device = device_dispatched
+                                # ID delta rounds: DA baseline (committed) + ID delta (net minus baseline)
+                                da_dispatched_for_device = float((da_committed_by_device or {}).get(device_id, 0.0) or 0.0)
+                                id_dispatched_for_device = float(device_dispatched) - da_dispatched_for_device
+                                if abs(id_dispatched_for_device) < 0.000001:
+                                    id_dispatched_for_device = 0.0
                             
                             # Total committed = DA (Round 1) + ID (current round)
                             total_dispatched = da_dispatched_for_device + id_dispatched_for_device
@@ -2520,38 +2568,26 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     per_player_da_volume[pid] += dispatched
                     per_player_da_revenue[pid] += revenue
                 else:
-                    # Delivery-time settlement for DA commitments in non-clearing display hours
-                    if is_delivery_hour and abs(id_dispatched_only) < 0.000001 and delivery_da_dispatch > 0:
-                        revenue = -round(delivery_da_dispatch * price, 0)
-                        per_player_da_volume[pid] += delivery_da_dispatch
-                        per_player_da_revenue[pid] += revenue
-                        if hour_offset == 0:
-                            print(f"[DELIVERY_SETTLEMENT] Consumer {pid}, h={hour_idx}: DA_delivery={delivery_da_dispatch:.1f}@{price:.1f}={revenue:.0f}")
-                    else:
-                    # ID: Split settlement
+                    # ID: Split settlement (use cleared DAM dispatch as baseline when available)
+                    da_volume = float(da_committed_total or 0.0) if (round_num > 1 and id_delta_round) else 0.0
+                    if da_volume == 0.0:
                         forecast_data = normalized_forecasts.get(pid, {})
                         da_hours = forecast_data.get('da_hours', [])
-                        
                         if hour_idx < len(da_hours):
-                            da_volume = float(da_hours[hour_idx])
-                            id_delta = dispatched - da_volume
-                            
-                            # DA portion at DA price
-                            da_revenue = -round(da_volume * (da_smp or price), 0)
-                            # ID delta at current price (IDP)
-                            id_revenue = -round(id_delta * price, 0)
-                            revenue = da_revenue + id_revenue
-                            
-                            # Track for metadata
-                            per_player_da_volume[pid] += da_volume
-                            per_player_id_delta[pid] += id_delta
-                            per_player_da_revenue[pid] += da_revenue
-                            per_player_id_revenue[pid] += id_revenue
-                            
-                            if hour_offset == 0:  # Log first hour
-                                print(f"[DELTA_SETTLEMENT] Consumer {pid}, h={hour_idx}: DA={da_volume:.1f}@{da_smp or price:.1f}={da_revenue:.0f}, Delta={id_delta:.1f}@{price:.1f}={id_revenue:.0f}, Total={revenue:.0f}")
-                        else:
-                            revenue = -round(dispatched * price, 0)
+                            da_volume = float(da_hours[hour_idx] or 0.0)
+
+                    id_delta = float(id_dispatched_only or 0.0)
+                    da_revenue = -round(da_volume * (da_smp or price), 0)
+                    id_revenue = -round(id_delta * price, 0)
+                    revenue = da_revenue + id_revenue
+
+                    per_player_da_volume[pid] += da_volume
+                    per_player_id_delta[pid] += id_delta
+                    per_player_da_revenue[pid] += da_revenue
+                    per_player_id_revenue[pid] += id_revenue
+
+                    if hour_offset == 0:  # Log first hour
+                        print(f"[DELTA_SETTLEMENT] Consumer {pid}, h={hour_idx}: DA={da_volume:.1f}@{da_smp or price:.1f}={da_revenue:.0f}, Delta={id_delta:.1f}@{price:.1f}={id_revenue:.0f}, Total={revenue:.0f}")
             else:
                 # Generators earn (positive revenue)
                 if absolute_clearing_round:
@@ -2561,38 +2597,26 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     per_player_da_volume[pid] += dispatched
                     per_player_da_revenue[pid] += revenue
                 else:
-                    # Delivery-time settlement for DA commitments in non-clearing display hours
-                    if is_delivery_hour and abs(id_dispatched_only) < 0.000001 and delivery_da_dispatch > 0:
-                        revenue = round(delivery_da_dispatch * price, 0)
-                        per_player_da_volume[pid] += delivery_da_dispatch
-                        per_player_da_revenue[pid] += revenue
-                        if hour_offset == 0:
-                            print(f"[DELIVERY_SETTLEMENT] Generator {pid}, h={hour_idx}: DA_delivery={delivery_da_dispatch:.1f}@{price:.1f}={revenue:.0f}")
-                    else:
-                    # ID: Split settlement
+                    # ID: Split settlement (use cleared DAM dispatch as baseline when available)
+                    da_volume = float(da_committed_total or 0.0) if (round_num > 1 and id_delta_round) else 0.0
+                    if da_volume == 0.0:
                         forecast_data = normalized_forecasts.get(pid, {})
                         da_hours = forecast_data.get('da_hours', [])
-                        
                         if hour_idx < len(da_hours):
-                            da_volume = float(da_hours[hour_idx])
-                            id_delta = dispatched - da_volume
-                            
-                            # DA portion at DA price
-                            da_revenue = round(da_volume * (da_smp or price), 0)
-                            # ID delta at current price (IDP)
-                            id_revenue = round(id_delta * price, 0)
-                            revenue = da_revenue + id_revenue
-                            
-                            # Track for metadata
-                            per_player_da_volume[pid] += da_volume
-                            per_player_id_delta[pid] += id_delta
-                            per_player_da_revenue[pid] += da_revenue
-                            per_player_id_revenue[pid] += id_revenue
-                            
-                            if hour_offset == 0:  # Log first hour
-                                print(f"[DELTA_SETTLEMENT] Generator {pid}, h={hour_idx}: DA={da_volume:.1f}@{da_smp or price:.1f}={da_revenue:.0f}, Delta={id_delta:.1f}@{price:.1f}={id_revenue:.0f}, Total={revenue:.0f}")
-                        else:
-                            revenue = round(dispatched * price, 0)
+                            da_volume = float(da_hours[hour_idx] or 0.0)
+
+                    id_delta = float(id_dispatched_only or 0.0)
+                    da_revenue = round(da_volume * (da_smp or price), 0)
+                    id_revenue = round(id_delta * price, 0)
+                    revenue = da_revenue + id_revenue
+
+                    per_player_da_volume[pid] += da_volume
+                    per_player_id_delta[pid] += id_delta
+                    per_player_da_revenue[pid] += da_revenue
+                    per_player_id_revenue[pid] += id_revenue
+
+                    if hour_offset == 0:  # Log first hour
+                        print(f"[DELTA_SETTLEMENT] Generator {pid}, h={hour_idx}: DA={da_volume:.1f}@{da_smp or price:.1f}={da_revenue:.0f}, Delta={id_delta:.1f}@{price:.1f}={id_revenue:.0f}, Total={revenue:.0f}")
             
             # Variable costs and fixed costs: Calculate fuel/operational costs for generators
             variable_cost = 0.0
@@ -2623,38 +2647,47 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         device_fixed_cost = float(device.get('fixed_cost_zar_per_hour', 0.0) or 0.0)
                         fixed_cost += round(max(0.0, device_fixed_cost), 0)
 
-                if enable_bidding and pid in hour_bid_dispatch:
-                    # Calculate variable costs and CO2 per device based on what was dispatched
-                    for device_id, device_dispatch in hour_bid_dispatch[pid].items():
+                if enable_bidding:
+                    # Calculate variable costs and CO2 per device based on net committed dispatch
+                    # (DAM baseline + IDM delta in ID rounds).
+                    for device_id in player_device_ids:
                         device = next((d for d in devices_cfg if d.get("id") == device_id), None)
-                        if device:
-                            device_dispatched = sum(bid_info.get('mw_dispatched', 0.0) for bid_info in device_dispatch.values())
-                            # Variable cost (fuel/operational per MWh)
-                            device_variable_cost = device.get('variable_cost_zar_per_mwh', 0.0)
-                            variable_cost += round(device_dispatched * device_variable_cost, 0)
-                            # CO2 emissions (kg per MWh dispatched)
-                            device_co2_rate = device.get('co2_emissions_kg_per_mwh', device.get('co2_kg_per_mwh', 0.0))
-                            device_co2_hour = device_dispatched * device_co2_rate
-                            co2_emissions += device_co2_hour
-                            
-                            # NEW: Track CO2 per device per hour
-                            if device_id not in per_device_hourly_co2:
-                                per_device_hourly_co2[device_id] = []
-                            per_device_hourly_co2[device_id].append({
-                                'scenario_hour_idx': hour_idx,
-                                'hour_idx': hour_idx,
-                                'hour_offset': hour_offset,
-                                'round_hour_offset': hour_offset,
-                                'round_num': round_num,
-                                'hour_of_day': hour_of_day,
-                                'co2_kg': round(device_co2_hour, 2),
-                                'co2_rate': device_co2_rate,
-                                'dispatched_mwh': device_dispatched
-                            })
-                            
-                            # Debug log
-                            if hour_offset == 0 and pid == players[0]:
-                                print(f"[CO2_DEBUG] Device {device_id}: dispatched={device_dispatched:.1f}, co2_rate={device_co2_rate}, co2_total={co2_emissions:.1f}")
+                        if not device:
+                            continue
+                        if 'load' in str(device.get('type', '')).lower():
+                            continue
+
+                        try:
+                            device_dispatched = float(per_device_hourly_dispatched.get(device_id, [0.0] * display_span)[hour_offset] or 0.0)
+                        except Exception:
+                            device_dispatched = 0.0
+
+                        if abs(device_dispatched) < 0.000001:
+                            continue
+
+                        device_variable_cost = float(device.get('variable_cost_zar_per_mwh', 0.0) or 0.0)
+                        variable_cost += round(device_dispatched * device_variable_cost, 0)
+
+                        device_co2_rate = float(device.get('co2_emissions_kg_per_mwh', device.get('co2_kg_per_mwh', 0.0)) or 0.0)
+                        device_co2_hour = device_dispatched * device_co2_rate
+                        co2_emissions += device_co2_hour
+
+                        if device_id not in per_device_hourly_co2:
+                            per_device_hourly_co2[device_id] = []
+                        per_device_hourly_co2[device_id].append({
+                            'scenario_hour_idx': hour_idx,
+                            'hour_idx': hour_idx,
+                            'hour_offset': hour_offset,
+                            'round_hour_offset': hour_offset,
+                            'round_num': round_num,
+                            'hour_of_day': hour_of_day,
+                            'co2_kg': round(device_co2_hour, 2),
+                            'co2_rate': device_co2_rate,
+                            'dispatched_mwh': device_dispatched
+                        })
+
+                        if hour_offset == 0 and pid == players[0]:
+                            print(f"[CO2_DEBUG] Device {device_id}: dispatched={device_dispatched:.1f}, co2_rate={device_co2_rate}, co2_total={co2_emissions:.1f}")
                 elif is_delivery_hour and delivery_da_dispatch_by_device:
                     # Delivery-hour accounting: emissions from committed DA dispatch, even if no ID clearing now
                     for device_id, device_dispatched in delivery_da_dispatch_by_device.items():
@@ -3070,6 +3103,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 device_type_map[dev_id] = device_cfg.get('type', '')
             # Get balancing data if available (contains DA/ID dispatch breakdown)
             device_balancing = per_device_hourly_balancing.get(dev_id, [])
+            device_co2_rows = per_device_hourly_co2.get(dev_id, [])
             
             print(f"[DEVICE_BREAKDOWN_DEBUG] Device {dev_id}: balancing_len={len(device_balancing)}, hourly_results_len={len(hourly_results)}")
             
@@ -3106,6 +3140,16 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     for bal_entry in device_balancing:
                         if bal_entry.get("hour_idx") == current_hour_idx:
                             balancing_entry = bal_entry
+                            break
+
+                # Get CO2 entry for this hour (match by hour_idx)
+                co2_entry = None
+                if device_co2_rows:
+                    for co2_row in device_co2_rows:
+                        if not isinstance(co2_row, dict):
+                            continue
+                        if co2_row.get("hour_idx", co2_row.get("scenario_hour_idx")) == current_hour_idx:
+                            co2_entry = co2_row
                             break
                 
                 # Extract hour_offset from hour_result for bid_dispatch lookup
@@ -3260,11 +3304,142 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     hour_entry["id_dispatched_mwh"] = balancing_entry.get('id_dispatched_mwh', 0.0)
                     hour_entry["total_dispatched_mwh"] = balancing_entry.get('total_dispatched_mwh', 0.0)
                     hour_entry["imbalance_mwh"] = balancing_entry.get('imbalance_mwh', 0.0)
+                    hour_entry["imbalance_cost_zar"] = balancing_entry.get('balancing_cost_zar', 0.0)
                 else:
+                    # Fallback when legacy/per-hour balancing details are missing:
+                    # derive DA/ID dispatched split from delivery commitments and the
+                    # device dispatched quantity so downstream settlement totals stay consistent.
+                    fallback_total_dispatched = float(dispatched_h or 0.0)
+                    fallback_da_dispatched = 0.0
+                    fallback_id_dispatched = 0.0
+
+                    if round_num > 1 and id_delta_round:
+                        da_by_device = _get_da_delivery_dispatch_by_device(pid, current_hour_idx, current_hour_offset) or {}
+                        try:
+                            fallback_da_dispatched = float(da_by_device.get(dev_id, 0.0) or 0.0)
+                        except Exception:
+                            fallback_da_dispatched = 0.0
+                        fallback_id_dispatched = fallback_total_dispatched - fallback_da_dispatched
+                    else:
+                        # Absolute clearing rounds: treat dispatched quantity as DA-dispatched.
+                        fallback_da_dispatched = fallback_total_dispatched
+
+                    hour_entry["da_dispatched_mwh"] = round(fallback_da_dispatched, 3)
+                    hour_entry["id_dispatched_mwh"] = round(fallback_id_dispatched, 3)
+                    hour_entry["total_dispatched_mwh"] = round(fallback_total_dispatched, 3)
+
                     # Fallback: simple calculation for devices without balancing data
                     hour_entry["imbalance_mwh"] = round(actual_h - dispatched_h, 3)
+                    # Mirror settle_balancing price logic
+                    imbalance_h = float(actual_h) - float(dispatched_h)
+                    if imbalance_h > 0:
+                        hour_entry["imbalance_cost_zar"] = round(imbalance_h * 1200.0, 2)
+                    elif imbalance_h < 0:
+                        hour_entry["imbalance_cost_zar"] = round(abs(imbalance_h) * 800.0, 2)
+                    else:
+                        hour_entry["imbalance_cost_zar"] = 0.0
+
+                # Canonical financials / CO2 per device-hour: derived from the same DA/ID settlement basis
+                device_type = (device_cfg.get('type', '') if device_cfg else '').lower()
+                is_load = 'load' in device_type
+
+                da_mwh = float(hour_entry.get('da_dispatched_mwh', 0.0) or 0.0)
+                id_mwh = float(hour_entry.get('id_dispatched_mwh', 0.0) or 0.0)
+
+                # Prices: DA uses da_smp when available, otherwise hour smp; ID uses hour smp (engine settlement basis)
+                da_price = float((da_smp if da_smp is not None else hour_result.get('smp', 0.0)) or 0.0)
+                id_price = float(hour_result.get('smp', 0.0) or 0.0)
+
+                sign = -1.0 if is_load else 1.0
+                da_revenue = sign * da_mwh * da_price
+                id_revenue = sign * id_mwh * id_price
+                revenue_total = da_revenue + id_revenue
+
+                device_variable_cost = 0.0
+                if not is_load and device_cfg:
+                    device_variable_cost_rate = float(device_cfg.get('variable_cost_zar_per_mwh', device_cfg.get('cost_per_mwh_zar', 0.0)) or 0.0)
+                    device_variable_cost = max(0.0, (da_mwh + id_mwh)) * max(0.0, device_variable_cost_rate)
+
+                device_fixed_cost = 0.0
+                if not is_load and device_cfg:
+                    device_fixed_cost = max(0.0, float(device_cfg.get('fixed_cost_zar_per_hour', 0.0) or 0.0))
+
+                # Congestion revenue: allocate player-hourly congestion proportionally by dispatched volume
+                congestion_alloc = 0.0
+                try:
+                    player_hour_cong = float(per_player_hourly_congestion_revenue.get(pid, [0.0] * span)[h_idx] or 0.0)
+                except Exception:
+                    player_hour_cong = 0.0
+                if player_hour_cong != 0.0:
+                    # Compute total dispatched across the player's devices for this hour
+                    total_disp = 0.0
+                    for other_dev in player_device_ids:
+                        try:
+                            total_disp += float(per_device_hourly_dispatched.get(other_dev, [0.0] * span)[h_idx] or 0.0)
+                        except Exception:
+                            pass
+                    if total_disp != 0.0:
+                        congestion_alloc = player_hour_cong * (float(dispatched_h or 0.0) / float(total_disp))
+
+                co2_kg = 0.0
+                if isinstance(co2_entry, dict):
+                    try:
+                        co2_kg = float(co2_entry.get('co2_kg', 0.0) or 0.0)
+                    except Exception:
+                        co2_kg = 0.0
+
+                profit_device = revenue_total - device_variable_cost - device_fixed_cost - float(hour_entry.get('imbalance_cost_zar', 0.0) or 0.0) + congestion_alloc
+
+                hour_entry.update({
+                    'da_price_zar': round(da_price, 2),
+                    'id_price_zar': round(id_price, 2),
+                    'da_revenue_zar': round(da_revenue, 2),
+                    'id_revenue_zar': round(id_revenue, 2),
+                    'revenue_zar': round(revenue_total, 2),
+                    'variable_cost_zar': round(device_variable_cost, 2),
+                    'fixed_cost_zar': round(device_fixed_cost, 2),
+                    'congestion_revenue_zar': round(congestion_alloc, 2),
+                    'profit_zar': round(profit_device, 2),
+                    'co2_kg': round(co2_kg, 2),
+                })
                 
                 device_hourly_breakdown[dev_id].append(hour_entry)
+
+        # Derive canonical per-player hourly financials from device-hour settlement fields.
+        # This prevents KPI drift when legacy per_player_hourly_* arrays are missing/zero (e.g. delta rounds).
+        if isinstance(device_hourly_breakdown, dict) and hourly_breakdown:
+            for h_idx in range(min(len(hourly_breakdown), len(hourly_results))):
+                revenue_sum = 0.0
+                variable_cost_sum = 0.0
+                fixed_cost_sum = 0.0
+                imbalance_cost_sum = 0.0
+                congestion_sum = 0.0
+                imbalance_mwh_sum = 0.0
+                for _dev_id, rows in device_hourly_breakdown.items():
+                    if not isinstance(rows, list) or h_idx >= len(rows):
+                        continue
+                    row = rows[h_idx] or {}
+                    revenue_sum += float(row.get('revenue_zar', 0.0) or 0.0)
+                    variable_cost_sum += float(row.get('variable_cost_zar', 0.0) or 0.0)
+                    fixed_cost_sum += float(row.get('fixed_cost_zar', 0.0) or 0.0)
+                    imbalance_cost_sum += float(row.get('imbalance_cost_zar', 0.0) or 0.0)
+                    congestion_sum += float(row.get('congestion_revenue_zar', 0.0) or 0.0)
+                    imbalance_mwh_sum += float(row.get('imbalance_mwh', 0.0) or 0.0)
+
+                hourly_breakdown[h_idx]['revenue_zar'] = round(revenue_sum, 0)
+                hourly_breakdown[h_idx]['variable_cost_zar'] = round(variable_cost_sum, 0)
+                hourly_breakdown[h_idx]['fixed_cost_zar'] = round(fixed_cost_sum, 0)
+                hourly_breakdown[h_idx]['imbalance_cost_zar'] = round(imbalance_cost_sum, 0)
+                hourly_breakdown[h_idx]['congestion_revenue_zar'] = round(congestion_sum, 0)
+                hourly_breakdown[h_idx]['imbalance_mwh'] = round(imbalance_mwh_sum, 3)
+                hourly_breakdown[h_idx]['profit_zar'] = round(
+                    revenue_sum
+                    - variable_cost_sum
+                    - fixed_cost_sum
+                    - imbalance_cost_sum
+                    + congestion_sum,
+                    0
+                )
         
         # Debug: Log summary after building all hours
         total_planned = sum(h["planned_mw"] for h in hourly_breakdown)
@@ -3284,6 +3459,16 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         total_imbalance_mwh = sum(h.get("imbalance_mwh", 0) for h in hourly_breakdown)
         total_curtailment_mwh = sum(h.get("curtailment_mwh", 0) for h in hourly_breakdown)
         total_curtailment_cost_from_details = sum(h.get("curtailment_cost_zar", 0.0) for h in hourly_breakdown)
+
+        total_co2_from_details = 0.0
+        if isinstance(device_hourly_breakdown, dict):
+            for _dev_id, rows in device_hourly_breakdown.items():
+                if not isinstance(rows, list):
+                    continue
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    total_co2_from_details += float(row.get('co2_kg', 0.0) or 0.0)
         
         per_player[pid] = {
             "planned_mwh": round(total_planned_from_details, 3),
@@ -3297,7 +3482,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             "curtailment_cost_zar": round(total_curtailment_cost_from_details, 0),
             "curtailment_mwh": round(total_curtailment_mwh, 3),  # Quantity in MWh (not cost)
             "congestion_revenue_zar": round(total_congestion_revenue_from_details, 0),
-            "co2_emissions_kg": round(per_player_co2_emissions[pid], 2),  # CO2 emissions in kg
+            "co2_emissions_kg": round(total_co2_from_details, 2) if total_co2_from_details else round(per_player_co2_emissions[pid], 2),  # CO2 emissions in kg
             "profit_zar": round(total_profit_from_details, 0),
             "hourly_breakdown": hourly_breakdown,  # Detailed per-hour breakdown
             "device_hourly_breakdown": device_hourly_breakdown,  # Detailed per-device hourly breakdown

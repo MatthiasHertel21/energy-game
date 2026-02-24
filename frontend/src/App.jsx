@@ -62,6 +62,27 @@ export default function App({ themeMode, onToggleTheme }) {
   const user = useAuth((state) => state.user)
   const location = useLocation()
   const navigate = useNavigate()
+
+  const handbookEntriesByRole = {
+    player: [
+      { path: '/docs/player', label: 'Spieler-Handbuch' }
+    ],
+    trainer: [
+      { path: '/docs/trainer', label: 'Trainer-Handbuch' }
+    ],
+    designer: [
+      { path: '/docs/designer', label: 'Designer-Handbuch' }
+    ],
+    admin: [
+      { path: '/docs/player', label: 'Spieler-Handbuch' },
+      { path: '/docs/trainer', label: 'Trainer-Handbuch' },
+      { path: '/docs/designer', label: 'Designer-Handbuch' },
+      { path: '/docs/admin', label: 'Admin-Handbuch' },
+      { path: '/docs/engine', label: 'Engine-Handbuch' }
+    ]
+  }
+
+  const handbookEntries = user ? (handbookEntriesByRole[user.role] || handbookEntriesByRole.player) : []
   
   // Global socket listener for trainer broadcasts
   useEffect(() => {
@@ -215,12 +236,30 @@ export default function App({ themeMode, onToggleTheme }) {
           </List>
           
           <Divider />
+
+          <Box sx={{ px: 1, py: 1 }}>
+            <Typography variant="overline" sx={{ px: 1.5, color: 'text.secondary', fontSize: '0.65rem' }}>
+              Handbücher
+            </Typography>
+            <List dense>
+              {handbookEntries.map((entry) => (
+                <ListItem key={entry.path} disablePadding>
+                  <ListItemButton component={Link} to={entry.path} selected={isActive(entry.path)}>
+                    <ListItemIcon>
+                      <CatalogIcon fontSize="small" />
+                    </ListItemIcon>
+                    <ListItemText primary={entry.label} />
+                  </ListItemButton>
+                </ListItem>
+              ))}
+            </List>
+          </Box>
           
           {/* Theme Toggle and User Menu at bottom */}
           <Box sx={{ p: 2 }}>
             <Stack spacing={1}>
-              <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />
-              <UserMenu />
+              <ThemeToggle mode={themeMode} onToggle={onToggleTheme} showLabel />
+              <UserMenu showLabel />
             </Stack>
           </Box>
         </Drawer>

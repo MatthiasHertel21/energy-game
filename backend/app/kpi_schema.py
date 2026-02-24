@@ -14,6 +14,7 @@ def to_float(value, default=0.0):
 def canonicalize_kpis(kpis: dict | None):
     raw = dict(kpis or {})
     hourly_breakdown = raw.get("hourly_breakdown") if isinstance(raw.get("hourly_breakdown"), list) else []
+    device_hourly_breakdown = raw.get("device_hourly_breakdown") if isinstance(raw.get("device_hourly_breakdown"), dict) else {}
 
     dispatched_from_breakdown = sum(
         to_float(hour.get("dispatched_mw", 0.0))
@@ -47,6 +48,65 @@ def canonicalize_kpis(kpis: dict | None):
         "actual_mwh": to_float(raw.get("actual_mwh", actual_from_breakdown)),
         "_kpi_schema": "canonical_v2",
     }
+
+    # Backfill top-level totals from device-hour settlement fields when present.
+    # This fixes historical results where device-level revenue exists but round-level aggregates were not populated.
+    if device_hourly_breakdown:
+        revenue_from_devices = 0.0
+        variable_cost_from_devices = 0.0
+        fixed_cost_from_devices = 0.0
+        imbalance_cost_from_devices = 0.0
+        congestion_from_devices = 0.0
+        imbalance_mwh_from_devices = 0.0
+        co2_from_devices = 0.0
+        for _dev_id, rows in device_hourly_breakdown.items():
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row_revenue = row.get("revenue_zar")
+                if row_revenue is None:
+                    row_revenue = to_float(row.get("da_revenue_zar", 0.0)) + to_float(row.get("id_revenue_zar", 0.0))
+                revenue_from_devices += to_float(row_revenue)
+                variable_cost_from_devices += to_float(row.get("variable_cost_zar", 0.0))
+                fixed_cost_from_devices += to_float(row.get("fixed_cost_zar", 0.0))
+                imbalance_cost_from_devices += to_float(row.get("imbalance_cost_zar", 0.0))
+                congestion_from_devices += to_float(row.get("congestion_revenue_zar", 0.0))
+                imbalance_mwh_from_devices += to_float(row.get("imbalance_mwh", 0.0))
+                co2_from_devices += to_float(row.get("co2_kg", row.get("co2_emissions_kg", 0.0)))
+
+        eps = 1e-9
+        if abs(canonical["revenue_zar"]) < eps and abs(revenue_from_devices) >= eps:
+            canonical["revenue_zar"] = revenue_from_devices
+        if abs(canonical["variable_cost_zar"]) < eps and abs(variable_cost_from_devices) >= eps:
+            canonical["variable_cost_zar"] = variable_cost_from_devices
+        if abs(canonical["fixed_cost_zar"]) < eps and abs(fixed_cost_from_devices) >= eps:
+            canonical["fixed_cost_zar"] = fixed_cost_from_devices
+        if abs(canonical["imbalance_cost_zar"]) < eps and abs(imbalance_cost_from_devices) >= eps:
+            canonical["imbalance_cost_zar"] = imbalance_cost_from_devices
+        if abs(canonical["congestion_revenue_zar"]) < eps and abs(congestion_from_devices) >= eps:
+            canonical["congestion_revenue_zar"] = congestion_from_devices
+        if abs(canonical["imbalance_mwh"]) < eps and abs(imbalance_mwh_from_devices) >= eps:
+            canonical["imbalance_mwh"] = imbalance_mwh_from_devices
+        if abs(canonical["co2_emissions_kg"]) < eps and abs(co2_from_devices) >= eps:
+            canonical["co2_emissions_kg"] = co2_from_devices
+
+        # Profit should be consistent with components.
+        if abs(canonical["profit_zar"]) < eps and (
+            abs(canonical["revenue_zar"]) >= eps
+            or abs(canonical["variable_cost_zar"]) >= eps
+            or abs(canonical["fixed_cost_zar"]) >= eps
+            or abs(canonical["imbalance_cost_zar"]) >= eps
+            or abs(canonical["congestion_revenue_zar"]) >= eps
+        ):
+            canonical["profit_zar"] = (
+                canonical["revenue_zar"]
+                - canonical["variable_cost_zar"]
+                - canonical["fixed_cost_zar"]
+                - canonical["imbalance_cost_zar"]
+                + canonical["congestion_revenue_zar"]
+            )
 
     raw.update(canonical)
     return raw

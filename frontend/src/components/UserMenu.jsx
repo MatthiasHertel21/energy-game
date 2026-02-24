@@ -1,10 +1,10 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { IconButton, Menu, MenuItem, Avatar, Divider, ListItemIcon, ListItemText, Typography } from '@mui/material'
+import { IconButton, Menu, MenuItem, Avatar, Divider, ListItemIcon, ListItemText, Typography, ListItemButton } from '@mui/material'
 import { Logout as LogoutIcon, Person as PersonIcon, AccountCircle as ProfileIcon } from '@mui/icons-material'
 import useAuth from '../store/auth'
 
-export default function UserMenu() {
+export default function UserMenu({ showLabel = false }) {
   const navigate = useNavigate()
   const user = useAuth((state) => state.user)
   const logout = useAuth((state) => state.logout)
@@ -45,19 +45,37 @@ export default function UserMenu() {
   
   return (
     <>
-      <IconButton
-        onClick={handleClick}
-        size="small"
-        sx={{ ml: 2 }}
-        aria-controls={open ? 'user-menu' : undefined}
-        aria-haspopup="true"
-        aria-expanded={open ? 'true' : undefined}
-        aria-label="User menu"
-      >
-        <Avatar sx={{ width: 32, height: 32, bgcolor: 'secondary.main' }}>
-          {getInitials(user.email)}
-        </Avatar>
-      </IconButton>
+      {showLabel ? (
+        <ListItemButton
+          onClick={handleClick}
+          sx={{ borderRadius: 1 }}
+          aria-controls={open ? 'user-menu' : undefined}
+          aria-haspopup="true"
+          aria-expanded={open ? 'true' : undefined}
+          aria-label="User menu"
+        >
+          <ListItemIcon sx={{ minWidth: 36 }}>
+            <Avatar sx={{ width: 24, height: 24, bgcolor: 'secondary.main', fontSize: '0.75rem' }}>
+              {getInitials(user.email)}
+            </Avatar>
+          </ListItemIcon>
+          <ListItemText primary="Profil" />
+        </ListItemButton>
+      ) : (
+        <IconButton
+          onClick={handleClick}
+          size="small"
+          sx={{ ml: 2 }}
+          aria-controls={open ? 'user-menu' : undefined}
+          aria-haspopup="true"
+          aria-expanded={open ? 'true' : undefined}
+          aria-label="User menu"
+        >
+          <Avatar sx={{ width: 32, height: 32, bgcolor: 'secondary.main' }}>
+            {getInitials(user.email)}
+          </Avatar>
+        </IconButton>
+      )}
       
       <Menu
         id="user-menu"

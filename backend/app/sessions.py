@@ -565,7 +565,261 @@ class RoundResults(Resource):
         my_result = None
         
         for r in results:
+            # Resolve player type early so downstream KPI backfills can scope to the
+            # player's configured device set.
+            player_type = None
+            if _redis_client:
+                try:
+                    sel_key = f"session:{sid}:selected:{r.player_id}"
+                    sel_raw = _redis_client.get(sel_key)
+                    if sel_raw:
+                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
+                except Exception:
+                    pass
+            if not player_type:
+                try:
+                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=r.player_id).first()
+                    if sel_db:
+                        player_type = sel_db.type_id
+                except Exception:
+                    pass
+
             kpis = canonicalize_kpis(r.data.get("kpis", {}))
+
+            # Backfill legacy KPI/device-hour settlement fields from available per-device balancing + prices.
+            # Older stored results may contain dispatched quantities and prices but miss explicit revenue fields,
+            # causing KPI revenue=0 while detail views compute non-zero values.
+            try:
+                cfg_devices = (config.get("devices") or []) if isinstance(config, dict) else []
+                device_type_by_id = {str(d.get("id")): str(d.get("type", "")).lower() for d in cfg_devices if isinstance(d, dict) and d.get("id")}
+
+                cfg_player_types = (config.get("player_types") or []) if isinstance(config, dict) else []
+                player_device_ids = set()
+                if player_type:
+                    pt_cfg = next((pt for pt in cfg_player_types if isinstance(pt, dict) and pt.get("id") == player_type), None)
+                    if pt_cfg and isinstance(pt_cfg.get("devices"), list):
+                        player_device_ids.update({str(x) for x in pt_cfg.get("devices") if x})
+                if not player_device_ids and isinstance(kpis.get("device_hourly_breakdown"), dict):
+                    player_device_ids.update({str(x) for x in kpis.get("device_hourly_breakdown", {}).keys()})
+
+                raw_details = (r.data or {}).get("device_hourly_details") or {}
+                balancing_by_dev = (raw_details.get("balancing") or {}) if isinstance(raw_details, dict) else {}
+                balancing_map = {}
+                if isinstance(balancing_by_dev, dict):
+                    for dev_id, rows in balancing_by_dev.items():
+                        if not isinstance(rows, list):
+                            continue
+                        by_hour = {}
+                        for row in rows:
+                            if not isinstance(row, dict):
+                                continue
+                            h = row.get("hour_idx")
+                            if h is None:
+                                continue
+                            by_hour[h] = row
+                        balancing_map[str(dev_id)] = by_hour
+
+                da_smp = (r.data or {}).get("da_baseline_metadata", {}).get("da_smp")
+                da_smp = float(da_smp) if isinstance(da_smp, (int, float)) else None
+
+                # If older results don't include device_hourly_breakdown at all, reconstruct a minimal one
+                # from available device_hourly_details (balancing + co2). This keeps frontend tables and
+                # KPI totals consistent without requiring a full recompute.
+                device_hourly_breakdown = kpis.get("device_hourly_breakdown") if isinstance(kpis.get("device_hourly_breakdown"), dict) else {}
+                if not device_hourly_breakdown:
+                    co2_by_dev = (raw_details.get("co2") or {}) if isinstance(raw_details, dict) else {}
+                    co2_map = {}
+                    if isinstance(co2_by_dev, dict):
+                        for dev_id, rows in co2_by_dev.items():
+                            if not isinstance(rows, list):
+                                continue
+                            by_hour = {}
+                            for row in rows:
+                                if not isinstance(row, dict):
+                                    continue
+                                h = row.get("hour_idx")
+                                if h is None:
+                                    continue
+                                val = row.get("co2_kg")
+                                if val is None:
+                                    val = row.get("emissions_kg")
+                                by_hour[h] = val
+                            co2_map[str(dev_id)] = by_hour
+
+                    hours = []
+                    hourly_breakdown = kpis.get("hourly_breakdown")
+                    if isinstance(hourly_breakdown, list) and hourly_breakdown:
+                        for row in hourly_breakdown:
+                            if not isinstance(row, dict):
+                                continue
+                            h = row.get("hour")
+                            if h is None:
+                                continue
+                            hours.append(h)
+
+                    if not hours:
+                        hour_set = set()
+                        for dev_id, by_hour in balancing_map.items():
+                            if player_device_ids and str(dev_id) not in player_device_ids:
+                                continue
+                            if isinstance(by_hour, dict):
+                                hour_set.update(by_hour.keys())
+                        try:
+                            hours = sorted({int(h) for h in hour_set if h is not None})
+                        except Exception:
+                            hours = sorted([h for h in hour_set if h is not None])
+
+                    if player_device_ids:
+                        candidate_device_ids = sorted(player_device_ids)
+                    elif balancing_map:
+                        candidate_device_ids = sorted(balancing_map.keys())
+                    else:
+                        candidate_device_ids = sorted(device_type_by_id.keys())
+
+                    rebuilt = {}
+                    for dev_id in candidate_device_ids:
+                        dev_id_s = str(dev_id)
+                        bal_by_hour = balancing_map.get(dev_id_s, {})
+                        co2_by_hour = co2_map.get(dev_id_s, {})
+                        rows = []
+                        for h in hours:
+                            bal = bal_by_hour.get(h, {}) if isinstance(bal_by_hour, dict) else {}
+                            try:
+                                da_mwh = float(bal.get("da_dispatched_mwh") or 0.0)
+                            except Exception:
+                                da_mwh = 0.0
+                            try:
+                                id_mwh = float(bal.get("id_dispatched_mwh") or 0.0)
+                            except Exception:
+                                id_mwh = 0.0
+                            try:
+                                total_mwh = float(bal.get("total_dispatched_mwh") or (da_mwh + id_mwh))
+                            except Exception:
+                                total_mwh = da_mwh + id_mwh
+                            planned_mw = bal.get("planned_mw")
+                            if planned_mw is None:
+                                planned_mw = bal.get("planned_mwh")
+
+                            rows.append({
+                                "hour": h,
+                                "planned_mw": planned_mw,
+                                "da_dispatched_mwh": da_mwh,
+                                "id_dispatched_mwh": id_mwh,
+                                "total_dispatched_mwh": total_mwh,
+                                "co2_kg": co2_by_hour.get(h, 0.0),
+                            })
+
+                        if rows:
+                            rebuilt[dev_id_s] = rows
+
+                    if rebuilt:
+                        kpis["device_hourly_breakdown"] = rebuilt
+                        device_hourly_breakdown = rebuilt
+                if device_hourly_breakdown:
+                    total_revenue = 0.0
+                    for dev_id, rows in device_hourly_breakdown.items():
+                        dev_id_s = str(dev_id)
+                        if player_device_ids and dev_id_s not in player_device_ids:
+                            continue
+                        if not isinstance(rows, list):
+                            continue
+
+                        is_load = "load" in device_type_by_id.get(dev_id_s, "")
+                        sign = -1.0 if is_load else 1.0
+                        bal_by_hour = balancing_map.get(dev_id_s, {})
+
+                        for entry in rows:
+                            if not isinstance(entry, dict):
+                                continue
+                            hour_idx = entry.get("hour")
+                            bal = bal_by_hour.get(hour_idx) if hour_idx is not None else None
+
+                            # Fill DA/ID dispatched from balancing when missing
+                            if bal and entry.get("da_dispatched_mwh") is None:
+                                entry["da_dispatched_mwh"] = bal.get("da_dispatched_mwh", 0.0)
+                            if bal and entry.get("id_dispatched_mwh") is None:
+                                entry["id_dispatched_mwh"] = bal.get("id_dispatched_mwh", 0.0)
+                            if bal and entry.get("total_dispatched_mwh") is None:
+                                entry["total_dispatched_mwh"] = bal.get("total_dispatched_mwh", 0.0)
+
+                            # Compute/recompute settlement values when missing OR suspiciously zero despite dispatched volume.
+                            # Legacy rows may carry revenue_zar=0 with missing DA/ID split fields while dispatched_mw is populated.
+                            dispatched_hint = entry.get("total_dispatched_mwh")
+                            if dispatched_hint is None:
+                                dispatched_hint = entry.get("dispatched_mw")
+                            try:
+                                dispatched_hint = float(dispatched_hint or 0.0)
+                            except Exception:
+                                dispatched_hint = 0.0
+
+                            try:
+                                revenue_existing = float(entry.get("revenue_zar") or 0.0)
+                            except Exception:
+                                revenue_existing = 0.0
+
+                            needs_revenue_backfill = (
+                                entry.get("revenue_zar") is None
+                                or entry.get("da_revenue_zar") is None
+                                or entry.get("id_revenue_zar") is None
+                                or (abs(revenue_existing) < 1e-9 and abs(dispatched_hint) >= 1e-9)
+                            )
+
+                            if needs_revenue_backfill:
+                                market_price = entry.get("market_price_zar", entry.get("smp"))
+                                try:
+                                    market_price = float(market_price or 0.0)
+                                except Exception:
+                                    market_price = 0.0
+
+                                da_price = da_smp if da_smp is not None else market_price
+                                id_price = market_price
+
+                                try:
+                                    da_mwh = float(entry.get("da_dispatched_mwh") or 0.0)
+                                    id_mwh = float(entry.get("id_dispatched_mwh") or 0.0)
+                                except Exception:
+                                    da_mwh = 0.0
+                                    id_mwh = 0.0
+
+                                # Fallback for legacy rows without DA/ID split
+                                if da_mwh == 0.0 and id_mwh == 0.0:
+                                    try:
+                                        fallback_total = float(entry.get("total_dispatched_mwh") or entry.get("dispatched_mw") or 0.0)
+                                    except Exception:
+                                        fallback_total = 0.0
+
+                                    # Prefer DA assignment when DA reference price exists;
+                                    # otherwise treat as ID quantity.
+                                    if da_smp is not None:
+                                        da_mwh = fallback_total
+                                        id_mwh = 0.0
+                                    else:
+                                        id_mwh = fallback_total
+                                        da_mwh = 0.0
+
+                                    entry["da_dispatched_mwh"] = entry.get("da_dispatched_mwh", round(da_mwh, 3))
+                                    entry["id_dispatched_mwh"] = entry.get("id_dispatched_mwh", round(id_mwh, 3))
+                                    entry["total_dispatched_mwh"] = entry.get("total_dispatched_mwh", round(da_mwh + id_mwh, 3))
+
+                                da_rev = sign * da_mwh * da_price
+                                id_rev = sign * id_mwh * id_price
+                                entry["da_price_zar"] = round(da_price, 2)
+                                entry["id_price_zar"] = round(id_price, 2)
+                                entry["da_revenue_zar"] = round(da_rev, 2)
+                                entry["id_revenue_zar"] = round(id_rev, 2)
+                                entry["revenue_zar"] = round(da_rev + id_rev, 2)
+
+                            try:
+                                total_revenue += float(entry.get("revenue_zar") or 0.0)
+                            except Exception:
+                                pass
+
+                    # Backfill top-level revenue KPI if it looks missing
+                    if abs(float(kpis.get("revenue_zar") or 0.0)) < 1e-9 and abs(total_revenue) >= 1e-9:
+                        kpis["revenue_zar"] = total_revenue
+            except Exception:
+                # Never fail the endpoint due to best-effort backfill
+                pass
             profit = float(kpis.get("profit_zar", 0) or kpis.get("profit", 0))
             # Use MWh quantities for scoring (not costs), with fallback to cost/cost-based values for old sessions
             imbalance = float(kpis.get("imbalance_mwh", 0) or kpis.get("imbalance_cost_zar", 0) / 1000 or kpis.get("imbalance", 0))
@@ -586,22 +840,7 @@ class RoundResults(Resource):
             player_email = user.email if user else f"Player {r.player_id}"
             
             # Get player type
-            player_type = None
-            if _redis_client:
-                try:
-                    sel_key = f"session:{sid}:selected:{r.player_id}"
-                    sel_raw = _redis_client.get(sel_key)
-                    if sel_raw:
-                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
-                except Exception:
-                    pass
-            if not player_type:
-                try:
-                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=r.player_id).first()
-                    if sel_db:
-                        player_type = sel_db.type_id
-                except Exception:
-                    pass
+            # player_type already resolved above
             
             raw_bid_dispatch = r.data.get("bid_dispatch")
             if raw_bid_dispatch is None:
