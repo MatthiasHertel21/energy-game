@@ -3689,20 +3689,25 @@ export default function Player() {
                     key={event.id}
                     variant="outlined"
                     sx={(theme) => ({
+                      '--event-bg': criticalEventTypes.has(event.type)
+                        ? theme.palette.error.main
+                        : theme.palette.primary.main,
+                      '--event-text': criticalEventTypes.has(event.type)
+                        ? theme.palette.error.contrastText
+                        : theme.palette.primary.contrastText,
                       p: 1.5,
                       borderWidth: 2,
                       borderColor: criticalEventTypes.has(event.type)
                         ? theme.palette.error.main
                         : theme.palette.primary.main,
-                      bgcolor: criticalEventTypes.has(event.type)
-                        ? theme.palette.error.light
-                        : theme.palette.primary.light
+                      bgcolor: 'var(--event-bg)',
+                      color: 'var(--event-text)'
                     })}
                   >
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 700, color: 'inherit' }}>
                       {getEventTitle(event)}
                     </Typography>
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography variant="caption" sx={{ color: 'inherit', opacity: 0.9 }}>
                       {event.description || formatEventDescription(event) || 'Event active'}
                     </Typography>
                   </Paper>

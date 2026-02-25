@@ -82,6 +82,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     // Otherwise (legacy hour_offset-only payloads), assume it's meant for this window.
     let sawExplicitHour = false
     let sawOverlap = false
+    let sawRoundLocalHour = false
 
     Object.values(bidDispatch).forEach((lots) => {
       if (!lots || typeof lots !== 'object') return
@@ -89,16 +90,26 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         if (!Array.isArray(rows)) return
         rows.forEach((row) => {
           if (!row || typeof row !== 'object') return
-          const explicit = row.hour_idx ?? row.scenario_hour_idx
+          const explicit = row.scenario_hour_idx ?? row.hour_idx
           if (explicit !== undefined && explicit !== null) {
             sawExplicitHour = true
-            if (isInWindow(explicit)) sawOverlap = true
+            const numericExplicit = Number(explicit)
+            if (isInWindow(numericExplicit)) sawOverlap = true
+            if (Number.isFinite(numericExplicit) && numericExplicit >= 0 && numericExplicit < roundSpan) {
+              sawRoundLocalHour = true
+            }
           }
         })
       })
     })
 
-    return sawExplicitHour ? sawOverlap : true
+    if (sawExplicitHour) {
+      if (sawOverlap) return true
+      if (sawRoundLocalHour) return true
+      return false
+    }
+
+    return true
   }
 
   // Separate DAM and IDM data

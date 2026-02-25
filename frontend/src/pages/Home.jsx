@@ -48,9 +48,12 @@ export default function Home() {
       console.log('Loaded campaigns:', campaignData)
       setCampaigns(campaignData)
       
-      // Calculate stats - fix: nur running/paused zählen als active
-      const active = (sessionsRes.data || []).filter(s => 
-        s.status === 'running' || s.status === 'paused' || s.status === 'round_active'
+      const active = (sessionsRes.data || []).filter(s =>
+        s.status === 'running'
+        || s.status === 'paused'
+        || s.status === 'round_active'
+        || s.status === 'round_results'
+        || s.status === 'briefing'
       ).length
       const completed = (sessionsRes.data || []).filter(s => 
         s.status === 'ended' || s.status === 'scenario_complete'
@@ -69,18 +72,31 @@ export default function Home() {
     load()
   }, [])
 
-  // Get most recent active session
+      const sessionPriority = {
+        round_results: 0,
+        round_active: 1,
+        running: 2,
+        paused: 3,
+        briefing: 4
+      }
+
+      const resumableStatuses = Object.keys(sessionPriority)
+
+      const sortByResumePriority = (a, b) => {
+        const aPriority = sessionPriority[a.status] ?? 99
+        const bPriority = sessionPriority[b.status] ?? 99
+        if (aPriority !== bPriority) return aPriority - bPriority
+        return (b.id || 0) - (a.id || 0)
+      }
+
+  // Get most recent resumable session (prefer round_results)
   const activeSession = sessions
-    .filter(s => s.status === 'running' || s.status === 'paused' || s.status === 'round_active')
-    .sort((a, b) => b.id - a.id)[0]
+    .filter((s) => resumableStatuses.includes(s.status))
+    .sort(sortByResumePriority)[0]
 
   const liveSessions = sessions
-    .filter(s =>
-      (s.status === 'running' || s.status === 'paused' || s.status === 'round_results' || s.status === 'round_active' || s.status === 'briefing') &&
-      s.mode !== 'isolated_per_player'
-    )
-    .sort((a, b) => b.id - a.id)
-  
+    .filter((s) => resumableStatuses.includes(s.status) && s.mode !== 'isolated_per_player')
+    .sort(sortByResumePriority)
   // Get most recent completed session  
   const lastCompletedSession = sessions
     .filter(s => s.status === 'ended' || s.status === 'scenario_complete')
@@ -274,7 +290,7 @@ export default function Home() {
                       fullWidth
                       sx={{ py: 1.4, fontWeight: 700 }}
                     >
-                      Continue
+                          {activeSession.status === 'round_results' ? 'Go to Round Results' : 'Continue'}
                     </Button>
                   </Paper>
                 </Box>
