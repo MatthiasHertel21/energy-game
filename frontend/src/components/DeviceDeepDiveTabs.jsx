@@ -435,10 +435,23 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       : (totalDispatched_IDM * (Number.isFinite(idp) ? idp : 0))
 
     const totalDispatched = totalDispatched_DAM + totalDispatched_IDM
+    const imbalanceMwhBackend = Number(deviceBreakdown.imbalance_mwh)
+    const imbalanceMwhDisplay = Number.isFinite(imbalanceMwhBackend)
+      ? imbalanceMwhBackend
+      : Number(balancingData.imbalance_mwh || 0)
+
     const imbalanceCostBackend = Number(deviceBreakdown.imbalance_cost_zar)
     const imbalanceCostDisplay = Number.isFinite(imbalanceCostBackend)
       ? imbalanceCostBackend
       : Number(balancingData.balancing_cost_zar || 0)
+
+    const balancingPriceBackend = (Math.abs(imbalanceMwhDisplay) > 0.0001)
+      ? Math.abs(imbalanceCostDisplay / imbalanceMwhDisplay)
+      : 0
+    const balancingPriceRaw = Number(balancingData.balancing_price || 0)
+    const balancingPriceDisplay = Number.isFinite(balancingPriceRaw) && balancingPriceRaw > 0
+      ? balancingPriceRaw
+      : balancingPriceBackend
 
     const hourKey = scenarioHourIdx
     return {
@@ -469,8 +482,8 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       idp,
       revenue_IDM,
       // Balancing
-      imbalanceMwh: balancingData.imbalance_mwh || 0,
-      balancingPrice: balancingData.balancing_price || 0,
+      imbalanceMwh: imbalanceMwhDisplay,
+      balancingPrice: balancingPriceDisplay,
       balancingCost: balancingData.balancing_cost_zar || 0,
       imbalanceCostDisplay,
       // CO2
@@ -478,7 +491,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         ? Number(deviceBreakdown.co2_kg)
         : (co2Data.co2_kg || 0)),
       // Totals
-      netMwh: totalDispatched_DAM + totalDispatched_IDM + (balancingData.imbalance_mwh || 0),
+      netMwh: totalDispatched_DAM + totalDispatched_IDM + imbalanceMwhDisplay,
       netRevenue: (Number.isFinite(backendRevenue)
         ? backendRevenue
         : (revenue_DAM + revenue_IDM)) - imbalanceCostDisplay
@@ -596,6 +609,23 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     }
   })()
 
+  const relevantSystemicEvents = (Array.isArray(results?.active_events) ? results.active_events : []).filter((evt) => {
+    if (String(evt?.type || '').toLowerCase() !== 'systemic') return false
+    const target = String(evt?.target || 'all').toLowerCase()
+    const targetId = String(evt?.target_id || '').toLowerCase()
+    if (target === 'all') return true
+    if (target === 'player') {
+      const typeId = String(my_result?.type || '').toLowerCase()
+      const playerId = String(my_result?.player_id || '').toLowerCase()
+      return targetId === typeId || targetId === playerId
+    }
+    if (target === 'device') {
+      const selectedType = String(deviceConfig?.type || '').toLowerCase()
+      return targetId === String(selectedDeviceId || '').toLowerCase() || targetId === selectedType
+    }
+    return false
+  })
+
   const rawHourlyVariableCosts = hourlyData.map((hourData) => {
     const dispatchedMwh = Math.max(0, Number(hourData.totalDispatched_DAM || 0) + Number(hourData.totalDispatched_IDM || 0))
     return dispatchedMwh * selectedDeviceVariableRate
@@ -665,6 +695,14 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               Event impact detected in this round: effective {isConsumer ? 'demand' : 'capacity'} adjusted in {eventImpactSummary.hours} hour(s)
               {eventImpactSummary.avgDropPct > 0 ? `, avg reduction ${eventImpactSummary.avgDropPct.toFixed(0)}%` : ''}
               {eventImpactSummary.impactText ? ` (${eventImpactSummary.impactText})` : ''}.
+            </Typography>
+          </Alert>
+        )}
+        {!eventImpactSummary && relevantSystemicEvents.length > 0 && (
+          <Alert severity="info" variant="outlined" sx={{ mt: 1.5 }}>
+            <Typography variant="body2">
+              Active systemic event(s) for your scope: {relevantSystemicEvents.map((evt) => evt?.name || 'Event').join(' · ')}.
+              No explicit event modifier row is present for this device in the stored round details.
             </Typography>
           </Alert>
         )}

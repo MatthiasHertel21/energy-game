@@ -853,6 +853,7 @@ def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float,
                        devices_cfg: List[dict] = None,
                        da_dispatch_this_hour: Dict[str, float] = None,
                        round_events: list = None,
+                       player_type_by_player: Dict[int, str] = None,
                        use_synthetic: bool = True) -> Dict[int, Dict[str, Dict[str, dict]]]:
     """
     Track which player bids were dispatched during market clearing.
@@ -864,6 +865,7 @@ def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float,
         synthetic_supply: Synthetic supply curve (only used if use_synthetic=True)
         devices_cfg: List of device configurations for capacity validation
         da_dispatch_this_hour: Dict of {device_id: da_dispatched_mw} for capacity check
+        player_type_by_player: Optional mapping {player_id: selected_type_id} for player-targeted events
         use_synthetic: Whether to include synthetic supply in dispatch simulation
     
     Returns:
@@ -929,7 +931,13 @@ def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float,
                 
                 # Apply events to modify capacity (e.g. plant outage reduces capacity)
                 device_type = device.get('type', '')
-                event_mult, event_add = get_device_event_modifiers(device, device_type, round_events, player_id)
+                event_mult, event_add = get_device_event_modifiers(
+                    device,
+                    device_type,
+                    round_events,
+                    player_id,
+                    (player_type_by_player or {}).get(int(player_id))
+                )
                 max_capacity = (base_capacity * event_mult) + event_add
                 max_capacity = max(0.0, max_capacity)  # Capacity can't be negative
                 
@@ -1063,7 +1071,7 @@ def track_demand_dispatch(demand_bids: List[dict], smp: float, volume: float,
     return dispatch_tracking
 
 
-def get_device_event_modifiers(device: dict, device_type: str, events: list[dict], player_id: int = None) -> Tuple[float, float]:
+def get_device_event_modifiers(device: dict, device_type: str, events: list[dict], player_id: int = None, player_type_id: str = None) -> Tuple[float, float]:
     """
     Get event modifiers (multiplier, additive) for a specific device.
     
@@ -1083,6 +1091,7 @@ def get_device_event_modifiers(device: dict, device_type: str, events: list[dict
     Event targeting:
     - target='all': Applied to all devices
     - target='player' + target_id='123': Applied only to player 123's devices
+    - target='player' + target_id='ptype_abc': Applied to all devices of players with selected type ptype_abc
     - target='device' + target_id='coal': Applied to all coal-type devices
     - target='device' + target_id='device_abc': Applied to specific device ID
     """
@@ -1101,7 +1110,9 @@ def get_device_event_modifiers(device: dict, device_type: str, events: list[dict
         if target == 'all':
             apply_event = True
         elif target == 'player':
-            if player_id is not None and str(player_id) == target_id:
+            matches_player_id = player_id is not None and str(player_id).lower() == target_id
+            matches_player_type = player_type_id is not None and str(player_type_id).lower() == target_id
+            if matches_player_id or matches_player_type:
                 apply_event = True
         elif target == 'device':
             # Match by device type (e.g. 'coal') or specific device ID
@@ -1337,6 +1348,19 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         - bid_dispatch, hourly_results, device_hourly_details (IDM)
     """
     general_cfg = config.get("general", {})
+    player_type_by_player: Dict[int, str] = {}
+    try:
+        from .models import SessionPlayerType
+        selected_types = (
+            SessionPlayerType.query
+            .filter(SessionPlayerType.session_id == session_id, SessionPlayerType.user_id.in_(players))
+            .all()
+        )
+        for sel in selected_types:
+            if sel and sel.user_id is not None and sel.type_id:
+                player_type_by_player[int(sel.user_id)] = str(sel.type_id)
+    except Exception:
+        player_type_by_player = {}
     span = int(general_cfg.get("round_span_hours", 6))
     round_span = span  # Save original round_span for display
     start_time_str = general_cfg.get("start_time") or "00:00"
@@ -2128,7 +2152,17 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                     da_dispatch_this_hour[device_id] = 0.0
                                 da_dispatch_this_hour[device_id] += dispatched
             
-            hour_bid_dispatch = track_bid_dispatch(supply_bids, price, vol, synthetic_supply, devices_cfg_for_clearing, da_dispatch_this_hour, round_events, use_synthetic_in_dispatch)
+            hour_bid_dispatch = track_bid_dispatch(
+                supply_bids,
+                price,
+                vol,
+                synthetic_supply,
+                devices_cfg_for_clearing,
+                da_dispatch_this_hour,
+                round_events,
+                player_type_by_player,
+                use_synthetic_in_dispatch
+            )
             demand_dispatch = track_demand_dispatch(demand_bids, price, vol, synthetic_demand)
             
             # Merge demand dispatch
@@ -2373,7 +2407,13 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             device = next((d for d in devices_cfg if d.get('id') == device_id), None)
                             if device:
                                 device_type = device.get('type', '')
-                                dev_mult, dev_add = get_device_event_modifiers(device, device_type, round_events, pid)
+                                dev_mult, dev_add = get_device_event_modifiers(
+                                    device,
+                                    device_type,
+                                    round_events,
+                                    pid,
+                                    player_type_by_player.get(int(pid))
+                                )
                                 event_mult *= dev_mult
                                 event_add += dev_add
                     
@@ -3249,7 +3289,13 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     available_capacity = base_capacity * availability_factor
 
                     # Apply event modifiers to get effective capacity
-                    event_mult, event_add = get_device_event_modifiers(device_cfg, device_type, round_events, pid)
+                    event_mult, event_add = get_device_event_modifiers(
+                        device_cfg,
+                        device_type,
+                        round_events,
+                        pid,
+                        player_type_by_player.get(int(pid))
+                    )
                     effective_capacity = (available_capacity * event_mult) + event_add
                     effective_capacity = max(0.0, effective_capacity)  # Can't be negative
                 

@@ -496,15 +496,25 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         ? `Over-demand: requested volume above effective capacity. In this round: ${overbidSummary.total.toFixed(1)} MW across ${overbidSummary.hours} device-hours${topOverbidDevices ? ` (${topOverbidDevices})` : ''}.`
         : `Overbid/Over-demand: offered/requested volume above effective capacity. In this round: ${overbidSummary.total.toFixed(1)} MW across ${overbidSummary.hours} device-hours${topOverbidDevices ? ` (${topOverbidDevices})` : ''}.`)
     } else {
-      notes.push(isConsumer
-        ? 'Over-demand occurs when requested volume exceeds effective capacity (shown in red in details). No relevant over-demand was detected in this round.'
-        : 'Overbid/Over-demand occurs when bid volume exceeds effective capacity (shown in red in details). No relevant overbid was detected in this round.')
+      const totalImbalanceMwh = Number(currentKpis.imbalance_mwh || 0)
+      const totalImbalanceCost = Number(currentKpis.imbalance_cost_zar || 0)
+      if (Math.abs(totalImbalanceMwh) > 1 || Math.abs(totalImbalanceCost) > 1000) {
+        notes.push(isConsumer
+          ? `No relevant over-demand was detected, but imbalance is still high (${formatInt(totalImbalanceMwh)} MWh, ${formatCurrency(totalImbalanceCost)}). This indicates a dispatch-vs-actual divergence rather than an over-demand breach.`
+          : `No relevant overbid was detected, but imbalance is still high (${formatInt(totalImbalanceMwh)} MWh, ${formatCurrency(totalImbalanceCost)}). This indicates a dispatch-vs-actual divergence rather than an overbid breach.`)
+      } else {
+        notes.push(isConsumer
+          ? 'Over-demand occurs when requested volume exceeds effective capacity (shown in red in details). No relevant over-demand was detected in this round.'
+          : 'Overbid/Over-demand occurs when bid volume exceeds effective capacity (shown in red in details). No relevant overbid was detected in this round.')
+      }
     }
 
     const plannedMwh = Number(currentKpis.planned_mwh || 0)
     const dispatchedMwh = Number(currentKpis.dispatched_mwh || 0)
+    const actualMwh = Number(currentKpis.actual_mwh || 0)
     const uncoveredMwh = Math.max(0, plannedMwh - dispatchedMwh)
     const overCoveredMwh = Math.max(0, dispatchedMwh - plannedMwh)
+    const balancingGapMwh = Math.abs(dispatchedMwh - actualMwh)
     const pricedOutHours = Object.values(deviceBreakdown).reduce((count, entries) => {
       if (!Array.isArray(entries)) return count
       return count + entries.filter((hour) => {
@@ -523,7 +533,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     } else if (isConsumer && overCoveredMwh > 0.001) {
       notes.push(`Coverage above plan: planned ${formatInt(plannedMwh)} MWh vs delivered ${formatInt(dispatchedMwh)} MWh ⇒ surplus ${formatInt(overCoveredMwh)} MWh. This can occur due to intraday adjustments and balancing-related settlement effects.`)
     } else {
-      notes.push('Coverage: no relevant gap between planned and delivered energy; the round total is largely covered.')
+      if (balancingGapMwh > Math.max(5, Math.abs(dispatchedMwh) * 0.05)) {
+        notes.push(`Market coverage looks closed (planned ${formatInt(plannedMwh)} MWh vs dispatched ${formatInt(dispatchedMwh)} MWh), but balancing deviation is high (actual ${formatInt(actualMwh)} MWh; gap ${formatInt(balancingGapMwh)} MWh). This drives imbalance costs.`)
+      } else {
+        notes.push('Coverage: no relevant gap between planned and delivered energy; the round total is largely covered.')
+      }
     }
 
     const activeEvents = Array.isArray(results?.active_events) ? results.active_events : []
@@ -574,6 +588,8 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         if (Math.abs(imbalanceMwh) > 0.001 || Math.abs(imbalanceCost) > 0.5) {
           notes.push(`Event impact visible in detail rows: ${eventDrivenRows.length} device-hour entries carry event modifiers; average capacity reduction ≈ ${avgDropPct.toFixed(0)}%. This reduced deliverable volume and contributed to imbalance (${formatInt(imbalanceMwh)} MWh, ${formatCurrency(imbalanceCost)}) and lower ${isConsumer ? 'net result' : 'profit'}.`)
         }
+      } else if (shownEvents.some((evt) => String(evt?.type || '').toLowerCase() === 'systemic')) {
+        notes.push('Systemic event(s) are active, but no explicit event modifier is present in the current device-hour rows. If this is unexpected, verify event target scope and round applicability.')
       }
     }
 
