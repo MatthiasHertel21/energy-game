@@ -528,8 +528,53 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
     const activeEvents = Array.isArray(results?.active_events) ? results.active_events : []
     if (activeEvents.length > 0) {
-      const eventNames = activeEvents.slice(0, 2).map((evt) => evt?.name || 'Event').join(' · ')
-      notes.push(`Ongoing events: ${activeEvents.length} active (${eventNames}${activeEvents.length > 2 ? ' …' : ''}). Events modify capacity/demand before clearing (multiplier/additive), which shifts dispatch, revenue/costs, and imbalance.`)
+      const relevantEvents = activeEvents.filter((evt) => {
+        const target = String(evt?.target || 'all').toLowerCase()
+        const targetId = String(evt?.target_id || '').toLowerCase()
+        if (target === 'all') return true
+        if (target === 'player' && targetId) {
+          return targetId === String(playerTypeId || '').toLowerCase()
+            || targetId === String(my_result?.player_id || '').toLowerCase()
+        }
+        if (target === 'device' && targetId) {
+          return Object.keys(deviceBreakdown).some((deviceId) => {
+            const cfg = devicesById[deviceId] || {}
+            return String(deviceId).toLowerCase() === targetId || String(cfg.type || '').toLowerCase() === targetId
+          })
+        }
+        return false
+      })
+
+      const shownEvents = relevantEvents.length > 0 ? relevantEvents : activeEvents
+      const eventNames = shownEvents.slice(0, 2).map((evt) => evt?.name || 'Event').join(' · ')
+      notes.push(`Ongoing events: ${shownEvents.length} active for your scope (${eventNames}${shownEvents.length > 2 ? ' …' : ''}). Events modify capacity/demand before clearing (multiplier/additive), which shifts dispatch, revenue/costs, and imbalance.`)
+
+      const eventDrivenRows = Object.values(deviceBreakdown)
+        .flatMap((entries) => (Array.isArray(entries) ? entries : []))
+        .filter((row) => {
+          const debug = row?.capacity_debug || {}
+          const eventMult = Number(debug.event_mult)
+          const eventAdd = Number(debug.event_add)
+          return (Number.isFinite(eventMult) && Math.abs(eventMult - 1) > 0.0001)
+            || (Number.isFinite(eventAdd) && Math.abs(eventAdd) > 0.0001)
+        })
+
+      if (eventDrivenRows.length > 0) {
+        const rowsWithBase = eventDrivenRows.filter((row) => Number(row?.base_capacity_mw || 0) > 0)
+        const avgDropPct = rowsWithBase.length > 0
+          ? rowsWithBase.reduce((sum, row) => {
+            const base = Number(row?.base_capacity_mw || 0)
+            const effective = Number(row?.effective_capacity_mw || 0)
+            return sum + Math.max(0, ((base - effective) / base) * 100)
+          }, 0) / rowsWithBase.length
+          : 0
+
+        const imbalanceMwh = Number(currentKpis.imbalance_mwh || 0)
+        const imbalanceCost = Number(currentKpis.imbalance_cost_zar || 0)
+        if (Math.abs(imbalanceMwh) > 0.001 || Math.abs(imbalanceCost) > 0.5) {
+          notes.push(`Event impact visible in detail rows: ${eventDrivenRows.length} device-hour entries carry event modifiers; average capacity reduction ≈ ${avgDropPct.toFixed(0)}%. This reduced deliverable volume and contributed to imbalance (${formatInt(imbalanceMwh)} MWh, ${formatCurrency(imbalanceCost)}) and lower ${isConsumer ? 'net result' : 'profit'}.`)
+        }
+      }
     }
 
     const dynamicCapacity = Object.entries(deviceBreakdown).reduce((acc, [deviceId, entries]) => {

@@ -3,6 +3,7 @@ import {
   Box,
   Tabs,
   Tab,
+  Alert,
   Table,
   TableBody,
   TableCell,
@@ -555,6 +556,46 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   const selectedDeviceVariableRate = Math.max(0, Number(deviceConfig.variable_cost_zar_per_mwh ?? deviceConfig.cost_per_mwh_zar ?? 0))
   const selectedDeviceFixedPerHour = Math.max(0, Number(deviceConfig.fixed_cost_zar_per_hour ?? 0))
 
+  const eventImpactRows = (my_result?.kpis?.device_hourly_breakdown?.[selectedDeviceId] || [])
+    .filter((entry) => {
+      const debug = entry?.capacity_debug || {}
+      const eventMult = Number(debug.event_mult)
+      const eventAdd = Number(debug.event_add)
+      const hasMultiplierImpact = Number.isFinite(eventMult) && Math.abs(eventMult - 1) > 0.0001
+      const hasAdditiveImpact = Number.isFinite(eventAdd) && Math.abs(eventAdd) > 0.0001
+      return hasMultiplierImpact || hasAdditiveImpact
+    })
+
+  const eventImpactSummary = (() => {
+    if (!eventImpactRows.length) return null
+
+    const withBase = eventImpactRows.filter((entry) => Number(entry?.base_capacity_mw || 0) > 0)
+    const avgDropPct = withBase.length > 0
+      ? withBase.reduce((sum, entry) => {
+        const base = Number(entry?.base_capacity_mw || 0)
+        const effective = Number(entry?.effective_capacity_mw || 0)
+        return sum + Math.max(0, ((base - effective) / base) * 100)
+      }, 0) / withBase.length
+      : 0
+
+    const firstDebug = eventImpactRows.find((entry) => entry?.capacity_debug)?.capacity_debug || {}
+    const eventMult = Number(firstDebug.event_mult)
+    const eventAdd = Number(firstDebug.event_add)
+    const impactBits = []
+    if (Number.isFinite(eventMult) && Math.abs(eventMult - 1) > 0.0001) {
+      impactBits.push(`×${eventMult.toFixed(2)}`)
+    }
+    if (Number.isFinite(eventAdd) && Math.abs(eventAdd) > 0.0001) {
+      impactBits.push(`${eventAdd >= 0 ? '+' : ''}${eventAdd.toFixed(1)} MW`)
+    }
+
+    return {
+      hours: eventImpactRows.length,
+      avgDropPct,
+      impactText: impactBits.join(' ')
+    }
+  })()
+
   const rawHourlyVariableCosts = hourlyData.map((hourData) => {
     const dispatchedMwh = Math.max(0, Number(hourData.totalDispatched_DAM || 0) + Number(hourData.totalDispatched_IDM || 0))
     return dispatchedMwh * selectedDeviceVariableRate
@@ -618,6 +659,15 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
           Current round window: hours {roundStartHour + 1}-{roundEndHour}
         </Typography>
+        {eventImpactSummary && (
+          <Alert severity="warning" variant="outlined" sx={{ mt: 1.5 }}>
+            <Typography variant="body2">
+              Event impact detected in this round: effective {isConsumer ? 'demand' : 'capacity'} adjusted in {eventImpactSummary.hours} hour(s)
+              {eventImpactSummary.avgDropPct > 0 ? `, avg reduction ${eventImpactSummary.avgDropPct.toFixed(0)}%` : ''}
+              {eventImpactSummary.impactText ? ` (${eventImpactSummary.impactText})` : ''}.
+            </Typography>
+          </Alert>
+        )}
       </Box>
 
       {/* Transposed Hourly Details Table */}
