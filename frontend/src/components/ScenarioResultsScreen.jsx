@@ -106,17 +106,6 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
     ? (safeRanking.findIndex((r) => r?.player_id === safeMyCumulative?.player_id) + 1)
     : 0;
 
-  const roleHint = (
-    playerRole
-    || safeMyCumulative?.player_role
-    || safeMyCumulative?.type
-    || ''
-  ).toString().toLowerCase();
-
-  const isProducer = roleHint.includes('producer') || roleHint.includes('generator');
-  const isConsumer = roleHint.includes('consumer') || roleHint.includes('buyer');
-  const resolvedIsProducer = isProducer || (!isConsumer);
-  const terms = getRoleTerminology(resolvedIsProducer);
   const challengeHistory = Array.isArray(safeMyCumulative?.challenge_history) ? safeMyCumulative.challenge_history : [];
   const latestChallengeEntry = useMemo(() => {
     if (!challengeHistory.length) return null;
@@ -132,6 +121,71 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   const playerTypeOptions = Array.isArray(scenario?.config?.player_types)
     ? scenario.config.player_types
     : (Array.isArray(scenario?.player_types) ? scenario.player_types : []);
+  const scenarioDevices = Array.isArray(scenario?.config?.devices)
+    ? scenario.config.devices
+    : [];
+
+  const deviceTypeById = useMemo(() => {
+    const map = {};
+    scenarioDevices.forEach((item) => {
+      if (!item || typeof item !== 'object' || !item.id) return;
+      map[String(item.id)] = String(item.type || '').toLowerCase();
+    });
+    return map;
+  }, [scenarioDevices]);
+
+  const inferRoleFromAnyHint = (hint) => {
+    const roleHint = String(hint || '').toLowerCase();
+    if (roleHint.includes('producer') || roleHint.includes('generator')) return 'producer';
+    if (roleHint.includes('consumer') || roleHint.includes('buyer')) return 'consumer';
+    return null;
+  };
+
+  const classifyDeviceType = (deviceTypeRaw) => {
+    const deviceType = String(deviceTypeRaw || '').toLowerCase();
+    const isLoad = deviceType.includes('load') || deviceType.includes('consumer') || deviceType.includes('demand');
+    const isGeneration =
+      deviceType.includes('coal')
+      || deviceType.includes('gas')
+      || deviceType.includes('hydro')
+      || deviceType.includes('nuclear')
+      || deviceType.includes('pv')
+      || deviceType.includes('solar')
+      || deviceType.includes('wind')
+      || deviceType.includes('generator')
+      || deviceType.includes('plant');
+    if (isLoad && !isGeneration) return 'consumer';
+    if (isGeneration && !isLoad) return 'producer';
+    return 'unknown';
+  };
+
+  const inferRoleFromTypeId = (typeId) => {
+    const target = String(typeId || '');
+    if (!target) return null;
+    const playerType = playerTypeOptions.find((item) => String(item?.id || '') === target);
+    if (!playerType || !Array.isArray(playerType.devices)) return null;
+
+    let hasProducerDevice = false;
+    let hasConsumerDevice = false;
+    playerType.devices.forEach((deviceId) => {
+      const kind = classifyDeviceType(deviceTypeById[String(deviceId)] || '');
+      if (kind === 'producer') hasProducerDevice = true;
+      if (kind === 'consumer') hasConsumerDevice = true;
+    });
+
+    if (hasProducerDevice && !hasConsumerDevice) return 'producer';
+    if (hasConsumerDevice && !hasProducerDevice) return 'consumer';
+    return null;
+  };
+
+  const myInferredRole =
+    inferRoleFromAnyHint(playerRole)
+    || inferRoleFromAnyHint(safeMyCumulative?.player_role)
+    || inferRoleFromTypeId(safeMyCumulative?.player_type || safeMyCumulative?.type)
+    || ((Number(safeMyCumulative?.total_revenue || 0) < 0) ? 'consumer' : 'producer');
+
+  const resolvedIsProducer = myInferredRole !== 'consumer';
+  const terms = getRoleTerminology(resolvedIsProducer);
   const playerTypeNameById = useMemo(() => {
     const map = {};
     playerTypeOptions.forEach((item) => {
@@ -201,8 +255,8 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
 
   const chartMeta = resolvedIsProducer
     ? {
-        revenue: { label: 'Revenue (ZAR)', color: '#4caf50', formatter: (v) => formatCurrency(v) },
-        profit: { label: 'Profit (ZAR)', color: '#2196f3', formatter: (v) => formatCurrency(v) },
+        revenue: { label: 'Revenue (ZAR)', color: '#2196f3', formatter: (v) => formatCurrency(v) },
+        profit: { label: 'Profit (ZAR)', color: '#4caf50', formatter: (v) => formatCurrency(v) },
         co2: { label: 'CO₂ (kg)', color: '#ff9800', formatter: (v) => `${formatInt(v)} kg` },
         dispatched: { label: 'Dispatched (MWh)', color: '#9c27b0', formatter: (v) => formatMwh(v) }
       }
@@ -218,14 +272,14 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
         {
           key: 'revenue',
           title: 'Total Revenue',
-          icon: <ProfitIcon sx={{ color: '#2196f3' }} />,
+          icon: <RevenueIcon sx={{ color: '#2196f3' }} />,
           color: '#2196f3',
           value: formatCurrency(normalizeNumber(totalRevenueDisplay))
         },
         {
           key: 'profit',
           title: 'Total Profit',
-          icon: <RevenueIcon sx={{ color: '#4caf50' }} />,
+          icon: <ProfitIcon sx={{ color: '#4caf50' }} />,
           color: '#4caf50',
           value: formatCurrency(normalizeNumber(totalProfitDisplay))
         },
@@ -278,6 +332,32 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   const fallbackMetric = resolvedIsProducer ? 'revenue' : 'costs';
   const activeMetric = chartMeta[chartMetric] ? chartMetric : fallbackMetric;
   const activeChartMeta = chartMeta[activeMetric];
+
+  const inferPlayerRole = (player) => {
+    if (!player || typeof player !== 'object') return 'producer';
+    return (
+      inferRoleFromAnyHint(player?.player_role)
+      || inferRoleFromTypeId(player?.player_type || player?.type)
+      || ((Number(player?.total_revenue || 0) < 0) ? 'consumer' : 'producer')
+    );
+  };
+
+  const leaderboardGroups = useMemo(() => {
+    const map = new Map();
+    safeRanking.forEach((player) => {
+      const typeId = String(player?.player_type || player?.type || 'unknown');
+      if (!map.has(typeId)) {
+        map.set(typeId, {
+          typeId,
+          typeLabel: resolvePlayerTypeLabel(typeId),
+          role: inferPlayerRole(player),
+          rows: []
+        });
+      }
+      map.get(typeId).rows.push(player);
+    });
+    return Array.from(map.values());
+  }, [safeRanking, playerTypeNameById]);
 
   const chartPoints = useMemo(() => {
     if (!trendSeries.length) return [];
@@ -523,55 +603,96 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
             Final Leaderboard
           </Typography>
-          <TableContainer>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell sx={{ fontWeight: 600 }}>Rank</TableCell>
-                  <TableCell sx={{ fontWeight: 600 }}>Player</TableCell>
-                  <TableCell sx={{ fontWeight: 600 }}>Type</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 600 }}>Total Profit (ZAR)</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 600 }}>{resolvedIsProducer ? 'Total Revenue (ZAR)' : 'Total Costs (ZAR)'}</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 600 }}>{resolvedIsProducer ? 'Total Dispatched (MWh)' : 'Total Consumed (MWh)'}</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 600 }}>{resolvedIsProducer ? 'Total CO₂ (kg)' : `${terms.totalCo2Label} (kg)`}</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {safeRanking.map((player, index) => {
-                  const isMe = safeMyCumulative && player?.player_id === safeMyCumulative.player_id;
-                  return (
-                    <TableRow 
-                      key={player?.player_id || `player-${index}`}
-                      sx={{ 
-                        bgcolor: isMe ? 'action.selected' : 'inherit',
-                        fontWeight: isMe ? 600 : 400
-                      }}
-                    >
-                      <TableCell>
-                        #{index + 1}
-                      </TableCell>
-                      <TableCell>
-                        {player?.email || '-'}
-                        {isMe && <Chip label="You" size="small" color="primary" sx={{ ml: 1 }} />}
-                      </TableCell>
-                      <TableCell>{resolvePlayerTypeLabel(player?.player_type || player?.type || '-')}</TableCell>
-                      <TableCell align="right">{formatInt(player?.total_profit)}</TableCell>
-                      <TableCell align="right">{resolvedIsProducer ? formatInt(player?.total_revenue) : formatInt(Math.abs(Number(player?.total_revenue || 0)))}</TableCell>
-                      <TableCell align="right">{formatInt(player?.total_dispatched_mwh)}</TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 600 }}>{formatInt(player?.total_co2_emissions)}</TableCell>
-                    </TableRow>
-                  );
-                })}
-                {safeRanking.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} align="center" sx={{ color: 'text.secondary' }}>
-                      No ranking data available.
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
+          <Stack spacing={2}>
+            {leaderboardGroups.map((group) => {
+              const groupIsProducer = group.role !== 'consumer';
+              const groupTerms = getRoleTerminology(groupIsProducer);
+              return (
+                <Paper key={group.typeId} variant="outlined" sx={{ p: 1.5 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 1, pb: 1 }}>
+                    <Typography variant="subtitle1" fontWeight={600}>{group.typeLabel}</Typography>
+                    <Chip
+                      size="small"
+                      label={groupIsProducer ? 'Producer' : 'Consumer'}
+                      color={groupIsProducer ? 'primary' : 'secondary'}
+                      variant="outlined"
+                    />
+                  </Stack>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 600 }}>Rank</TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>Player</TableCell>
+                          {groupIsProducer ? (
+                            <>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>Total Profit (ZAR)</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>Total Revenue (ZAR)</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>Total Dispatched (MWh)</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>Total CO₂ (kg)</TableCell>
+                            </>
+                          ) : (
+                            <>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>Total Costs (ZAR)</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>Coverage (%)</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>Total Consumed (MWh)</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>{groupTerms.totalCo2Label} (kg)</TableCell>
+                            </>
+                          )}
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {group.rows.map((player, index) => {
+                          const isMe = safeMyCumulative && player?.player_id === safeMyCumulative.player_id;
+                          const coverage = normalizeNumber(player?.total_planned_mwh) > 0
+                            ? (normalizeNumber(player?.total_dispatched_mwh) / normalizeNumber(player?.total_planned_mwh)) * 100
+                            : 0;
+                          return (
+                            <TableRow
+                              key={player?.player_id || `player-${index}`}
+                              sx={{
+                                bgcolor: isMe ? 'action.selected' : 'inherit',
+                                fontWeight: isMe ? 600 : 400
+                              }}
+                            >
+                              <TableCell>#{player?.rank || '-'}</TableCell>
+                              <TableCell>
+                                {player?.email || '-'}
+                                {isMe && <Chip label="You" size="small" color="primary" sx={{ ml: 1 }} />}
+                              </TableCell>
+                              {groupIsProducer ? (
+                                <>
+                                  <TableCell align="right">{formatInt(player?.total_profit)}</TableCell>
+                                  <TableCell align="right">{formatInt(player?.total_revenue)}</TableCell>
+                                  <TableCell align="right">{formatInt(player?.total_dispatched_mwh)}</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600 }}>{formatInt(player?.total_co2_emissions)}</TableCell>
+                                </>
+                              ) : (
+                                <>
+                                  <TableCell align="right">{formatInt(Math.abs(Number(player?.total_revenue || 0)))}</TableCell>
+                                  <TableCell align="right">{normalizeNumber(coverage).toFixed(1)}%</TableCell>
+                                  <TableCell align="right">{formatInt(player?.total_dispatched_mwh)}</TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 600 }}>{formatInt(player?.total_co2_emissions)}</TableCell>
+                                </>
+                              )}
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
+              );
+            })}
+
+            {leaderboardGroups.length === 0 && (
+              <Paper variant="outlined" sx={{ p: 2 }}>
+                <Typography variant="body2" color="text.secondary" align="center">
+                  No ranking data available.
+                </Typography>
+              </Paper>
+            )}
+          </Stack>
         </Box>
 
         {trendSeries.length > 0 && (

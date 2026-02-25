@@ -1,10 +1,22 @@
 import React from 'react'
 import { Container, Typography, Paper, Grid, Box, Button, Stack, Divider } from '@mui/material'
 import { GitHub as GitHubIcon, Info as InfoIcon, Email as EmailIcon, MenuBook as DocsIcon, School as TrainerIcon } from '@mui/icons-material'
+import { alpha, useTheme } from '@mui/material/styles'
 import { useNavigate } from 'react-router-dom'
 
 export default function About() {
   const navigate = useNavigate()
+  const theme = useTheme()
+  const isDark = theme.palette.mode === 'dark'
+  const infoSurface = isDark ? alpha(theme.palette.info.main, 0.18) : '#e3f2fd'
+  const successSurface = isDark ? alpha(theme.palette.success.main, 0.16) : '#e8f5e9'
+  const warnSurface = isDark ? alpha(theme.palette.warning.main, 0.16) : '#fff3e0'
+  const accentLinkColor = isDark ? theme.palette.primary.light : theme.palette.primary.main
+  const highlightPillBg = isDark ? alpha(theme.palette.success.main, 0.35) : '#76ff03'
+  const highlightPillColor = isDark ? theme.palette.success.contrastText : '#000'
+  const githubBtnBg = isDark ? theme.palette.warning.main : '#ffd700'
+  const githubBtnHover = isDark ? theme.palette.warning.dark : '#ffed4e'
+  const githubBtnText = isDark ? theme.palette.getContrastText(theme.palette.warning.main) : '#000'
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
@@ -20,7 +32,7 @@ export default function About() {
         sx={{ 
           p: 4, 
           mb: 4,
-          bgcolor: '#e3f2fd',
+          bgcolor: infoSurface,
           borderRadius: 2,
           textAlign: 'center'
         }}
@@ -40,7 +52,7 @@ export default function About() {
             sx={{ 
               p: 3, 
               height: '100%',
-              bgcolor: '#e3f2fd',
+              bgcolor: infoSurface,
               borderRadius: 2
             }}
           >
@@ -56,7 +68,7 @@ export default function About() {
               href="https://github.com"
               target="_blank"
               rel="noopener noreferrer"
-              sx={{ mt: 2, bgcolor: '#ffd700', color: '#000', '&:hover': { bgcolor: '#ffed4e' } }}
+              sx={{ mt: 2, bgcolor: githubBtnBg, color: githubBtnText, '&:hover': { bgcolor: githubBtnHover } }}
             >
               Click here to access GitHub
             </Button>
@@ -65,8 +77,8 @@ export default function About() {
               sx={{ 
                 display: 'block', 
                 mt: 1, 
-                bgcolor: '#ffd700', 
-                color: '#000',
+                bgcolor: githubBtnBg, 
+                color: githubBtnText,
                 px: 1,
                 py: 0.5,
                 borderRadius: 1,
@@ -84,14 +96,14 @@ export default function About() {
             sx={{ 
               p: 3, 
               height: '100%',
-              bgcolor: '#e8f5e9',
+              bgcolor: successSurface,
               borderRadius: 2
             }}
           >
             <Box
               sx={{
-                bgcolor: '#76ff03',
-                color: '#000',
+                bgcolor: highlightPillBg,
+                color: highlightPillColor,
                 px: 2,
                 py: 0.5,
                 borderRadius: 1,
@@ -163,7 +175,7 @@ export default function About() {
       </Paper>
 
       {/* Feedback Section */}
-      <Paper sx={{ p: 4, mb: 4, bgcolor: '#fff3e0' }}>
+      <Paper sx={{ p: 4, mb: 4, bgcolor: warnSurface, border: '1px solid', borderColor: 'divider' }}>
         <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
           Do you have questions or feedback?
         </Typography>
@@ -190,27 +202,27 @@ export default function About() {
         </Typography>
         <Typography variant="body1" paragraph sx={{ lineHeight: 1.8 }}>
           Developed in 2025 by{' '}
-          <a href="https://fastbreak.one" target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>
+          <a href="https://fastbreak.one" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
             Fastbreak.One
           </a>{' '}
           under the{' '}
-          <a href="https://www.giz.de/en/worldwide/86454.html" target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>
+          <a href="https://www.giz.de/en/worldwide/86454.html" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
             South African-German Energy Programme (SAGEN)
           </a>{' '}
           of{' '}
-          <a href="https://www.giz.de" target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>
+          <a href="https://www.giz.de" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
             GIZ
           </a>
           , funded by{' '}
-          <a href="https://www.bmz.de" target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>
+          <a href="https://www.bmz.de" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
             BMZ
           </a>
           , in collaboration with{' '}
-          <a href="https://www.ntcsa.co.za" target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>
+          <a href="https://www.ntcsa.co.za" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
             NTCSA
           </a>{' '}
           and the{' '}
-          <a href="https://www.gsb.uct.ac.za/power-futures-lab" target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>
+          <a href="https://www.gsb.uct.ac.za/power-futures-lab" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
             Power Futures Lab (PFL)
           </a>{' '}
           at UCT Graduate School of Business.

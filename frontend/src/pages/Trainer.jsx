@@ -250,14 +250,20 @@ export default function Trainer(){
     if(!sessionId) return
     try{
       await api.post(`/api/sessions/${sessionId}/force-round-end`)
-    }catch(_){ }
+    }catch(e){
+      const msg = e?.response?.data?.error || 'Failed to end round now'
+      if(window.__showSnack) window.__showSnack(msg, 'error')
+    }
   }
   const advanceRoundForce = async ()=>{
     if(!sessionId) return
     try{
       await api.post(`/api/sessions/${sessionId}/advance-round-force`)
       setTimeout(loadStatus, 300)
-    }catch(_){ }
+    }catch(e){
+      const msg = e?.response?.data?.error || 'Failed to advance round'
+      if(window.__showSnack) window.__showSnack(msg, 'error')
+    }
   }
   const nextAction = async ()=>{
     if(!sessionId) return
@@ -267,7 +273,10 @@ export default function Trainer(){
       }else if(['running','round_active','paused'].includes(sessionInfo?.status)){
         await forceRoundEnd()
       }
-    }catch(_){ }
+    }catch(e){
+      const msg = e?.response?.data?.error || 'Action failed'
+      if(window.__showSnack) window.__showSnack(msg, 'error')
+    }
   }
   const rewindRound = async ()=>{
     if(!sessionId) return

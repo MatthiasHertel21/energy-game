@@ -14,7 +14,7 @@ export default function ThemeToggle({ mode, onToggle, showLabel = false }) {
           <ListItemIcon sx={{ minWidth: 36 }}>
             {icon}
           </ListItemIcon>
-          <ListItemText primary="Tag/Nachtmodus" />
+          <ListItemText primary="Theme" primaryTypographyProps={{ noWrap: true }} />
         </ListItemButton>
       </Tooltip>
     )

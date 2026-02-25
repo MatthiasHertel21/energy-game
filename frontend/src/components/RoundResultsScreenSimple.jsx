@@ -333,23 +333,39 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const revenue = Number(currentKpis.revenue_zar || 0)
     const profit = Number(currentKpis.profit_zar || 0)
     const dispatched = Number(currentKpis.dispatched_mwh || 0)
+    const planned = Number(currentKpis.planned_mwh || 0)
     const co2 = Number(currentKpis.co2_emissions_kg || 0)
     const totalCosts = Number(currentKpis.variable_cost_zar || 0) + Number(currentKpis.fixed_cost_zar || 0) + Number(currentKpis.imbalance_cost_zar || 0)
+    const demandCoveragePct = planned > 0 ? (dispatched / planned) * 100 : null
 
-    if (Math.abs(revenue) < 1) {
-      notes.push('Revenue is 0: This round produced effectively no billable market revenue (e.g., little/no cleared dispatch or fully offsetting delta positions).')
-    }
+    if (isProducer) {
+      if (Math.abs(revenue) < 1) {
+        notes.push('Revenue is 0: This round produced effectively no billable market revenue (e.g., little/no cleared dispatch or fully offsetting delta positions).')
+      }
 
-    if (Math.abs(totalCosts) < 1) {
-      notes.push('Costs are 0: No relevant variable, fixed, or imbalance costs were incurred in this round.')
-    }
+      if (Math.abs(totalCosts) < 1) {
+        notes.push('Costs are 0: No relevant variable, fixed, or imbalance costs were incurred in this round.')
+      }
 
-    if (Math.abs(co2) < 1) {
-      notes.push('CO₂ is 0: Either no fossil dispatch occurred, or the round had no relevant dispatched volume with a non-zero emission factor.')
-    }
+      if (Math.abs(co2) < 1) {
+        notes.push('CO₂ is 0: Either no fossil dispatch occurred, or the round had no relevant dispatched volume with a non-zero emission factor.')
+      }
 
-    if (profit < 0) {
-      notes.push('Profit is negative: The sum of variable/fixed costs and imbalance exceeded achieved revenue.')
+      if (profit < 0) {
+        notes.push('Profit is negative: The sum of variable/fixed costs and imbalance exceeded achieved revenue.')
+      }
+    } else {
+      if (Math.abs(revenue) < 1) {
+        notes.push('Total costs are 0: No relevant market procurement was settled in this round.')
+      }
+      if (demandCoveragePct !== null && demandCoveragePct < 95) {
+        notes.push(`Demand coverage is low: only ${demandCoveragePct.toFixed(1)}% of planned demand was delivered in this round.`)
+      } else if (demandCoveragePct !== null && demandCoveragePct > 100.1) {
+        notes.push(`Demand coverage is above 100% (${demandCoveragePct.toFixed(1)}%): delivered volume exceeded planned demand in this round (e.g., additional intraday procurement or balancing effects).`)
+      }
+      if (profit < 0) {
+        notes.push('Net result is negative: procurement and imbalance costs exceeded positive settlement effects in this round.')
+      }
     }
 
     const previous = roundHistoryKpis
@@ -361,6 +377,9 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       const avgRevenue = avg(previous, 'revenue_zar')
       const avgProfit = avg(previous, 'profit_zar')
       const avgDispatch = avg(previous, 'dispatched_mwh')
+      const avgCoverage = avg(previous, 'planned_mwh') > 0
+        ? (avgDispatch / avg(previous, 'planned_mwh')) * 100
+        : 0
 
       const strongDeviation = (value, baseline) => {
         const absBaseline = Math.abs(baseline)
@@ -368,7 +387,12 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         return Math.abs(value - baseline) / absBaseline >= 0.6
       }
 
-      if (strongDeviation(revenue, avgRevenue) || strongDeviation(profit, avgProfit) || strongDeviation(dispatched, avgDispatch)) {
+      if (
+        strongDeviation(revenue, avgRevenue)
+        || strongDeviation(profit, avgProfit)
+        || strongDeviation(dispatched, avgDispatch)
+        || (isConsumer && demandCoveragePct !== null && Math.abs(demandCoveragePct - avgCoverage) >= 15)
+      ) {
         notes.push('This round deviates strongly from previous rounds. Typical drivers are changed market prices, different gate phases, special events, or major bid/dispatch changes.')
       }
     }
@@ -395,13 +419,21 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const revenueDelta = totalRevenue - (daRevenue + idRevenue)
 
     if (Math.abs(daRevenue) > 0.5 || Math.abs(idRevenue) > 0.5) {
-      notes.push(`Revenue composition: DAM ${formatCurrency(daRevenue)} + IDM ${formatCurrency(idRevenue)} = ${formatCurrency(daRevenue + idRevenue)}. KPI Revenue = ${formatCurrency(totalRevenue)}.`)
+      if (isConsumer) {
+        notes.push(`Cost settlement composition (signed): DAM ${formatCurrency(daRevenue)} + IDM ${formatCurrency(idRevenue)} = ${formatCurrency(daRevenue + idRevenue)}. KPI settlement value = ${formatCurrency(totalRevenue)} (Total Costs card shows absolute value: ${formatCurrency(Math.abs(totalRevenue))}).`)
+      } else {
+        notes.push(`Revenue composition: DAM ${formatCurrency(daRevenue)} + IDM ${formatCurrency(idRevenue)} = ${formatCurrency(daRevenue + idRevenue)}. KPI Revenue = ${formatCurrency(totalRevenue)}.`)
+      }
 
       if (Math.abs(revenueDelta) > 1) {
-        notes.push(`Revenue reconciliation gap: KPI Revenue - (DAM + IDM) = ${formatSignedCurrency(revenueDelta)}. This gap comes from method/scope differences: KPI Revenue is summed from current-round hourly settlement, while DAM/IDM attribution is derived from DA baseline + ID delta valuation and then rounded in separate steps.`)
+        notes.push(`Settlement reconciliation gap: KPI - (DAM + IDM) = ${formatSignedCurrency(revenueDelta)}. This gap comes from method/scope differences: KPI is summed from current-round hourly settlement, while DAM/IDM attribution is derived from DA baseline + ID delta valuation and then rounded in separate steps.`)
       }
     } else {
-      notes.push(`Revenue composition: KPI Revenue (${formatCurrency(totalRevenue)}) comes from the sum of cleared hourly energy volumes × market prices.`)
+      if (isConsumer) {
+        notes.push(`Cost settlement composition: KPI settlement (${formatCurrency(totalRevenue)}) comes from the sum of cleared hourly energy volumes × market prices (cost card displays ${formatCurrency(Math.abs(totalRevenue))}).`)
+      } else {
+        notes.push(`Revenue composition: KPI Revenue (${formatCurrency(totalRevenue)}) comes from the sum of cleared hourly energy volumes × market prices.`)
+      }
     }
 
     const variableCost = Number(currentKpis.variable_cost_zar || 0)
@@ -409,7 +441,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const imbalanceCost = Number(currentKpis.imbalance_cost_zar || 0)
     const congestionRevenue = Number(currentKpis.congestion_revenue_zar || 0)
     const computedProfit = totalRevenue - variableCost - fixedCost - imbalanceCost + congestionRevenue
-    notes.push(`Profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
+    if (isConsumer) {
+      notes.push(`Net-result composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Net result: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
+    } else {
+      notes.push(`Profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
+    }
 
     const deviceRevenueApprox = Object.entries(deviceBreakdown)
       .map(([deviceId, entries]) => {
@@ -430,9 +466,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
     if (deviceRevenueApprox.length > 0) {
       const topDevicesText = deviceRevenueApprox
-        .map((item) => `${item.name}: ${formatCurrency(item.approxRevenue)}`)
+        .map((item) => `${item.name}: ${formatCurrency(isConsumer ? Math.abs(item.approxRevenue) : item.approxRevenue)}`)
         .join(' · ')
-      notes.push(`Device contributions (approximated from hourly details): ${topDevicesText}.`)
+      notes.push(isConsumer
+        ? `Device cost contributions (approximated from hourly details): ${topDevicesText}.`
+        : `Device contributions (approximated from hourly details): ${topDevicesText}.`)
     }
 
     const overbidSummary = Object.entries(deviceBreakdown).reduce((acc, [deviceId, entries]) => {
@@ -454,14 +492,19 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         .slice(0, 2)
         .map((item) => `${item.name}: ${item.overbidMw.toFixed(1)} MW`)
         .join(' · ')
-      notes.push(`Overbid/Over-demand: offered/requested volume above effective capacity. In this round: ${overbidSummary.total.toFixed(1)} MW across ${overbidSummary.hours} device-hours${topOverbidDevices ? ` (${topOverbidDevices})` : ''}.`)
+      notes.push(isConsumer
+        ? `Over-demand: requested volume above effective capacity. In this round: ${overbidSummary.total.toFixed(1)} MW across ${overbidSummary.hours} device-hours${topOverbidDevices ? ` (${topOverbidDevices})` : ''}.`
+        : `Overbid/Over-demand: offered/requested volume above effective capacity. In this round: ${overbidSummary.total.toFixed(1)} MW across ${overbidSummary.hours} device-hours${topOverbidDevices ? ` (${topOverbidDevices})` : ''}.`)
     } else {
-      notes.push('Overbid/Over-demand occurs when bid volume exceeds effective capacity (shown in red in details). No relevant overbid was detected in this round.')
+      notes.push(isConsumer
+        ? 'Over-demand occurs when requested volume exceeds effective capacity (shown in red in details). No relevant over-demand was detected in this round.'
+        : 'Overbid/Over-demand occurs when bid volume exceeds effective capacity (shown in red in details). No relevant overbid was detected in this round.')
     }
 
     const plannedMwh = Number(currentKpis.planned_mwh || 0)
     const dispatchedMwh = Number(currentKpis.dispatched_mwh || 0)
     const uncoveredMwh = Math.max(0, plannedMwh - dispatchedMwh)
+    const overCoveredMwh = Math.max(0, dispatchedMwh - plannedMwh)
     const pricedOutHours = Object.values(deviceBreakdown).reduce((count, entries) => {
       if (!Array.isArray(entries)) return count
       return count + entries.filter((hour) => {
@@ -477,6 +520,8 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
     if (uncoveredMwh > 0.001) {
       notes.push(`Missing coverage: planned ${formatInt(plannedMwh)} MWh vs delivered ${formatInt(dispatchedMwh)} MWh ⇒ gap ${formatInt(uncoveredMwh)} MWh. A common reason is a price gap ("you wanted to buy/sell at price x, market was at y") — visible here in ${pricedOutHours} device-hours.`)
+    } else if (isConsumer && overCoveredMwh > 0.001) {
+      notes.push(`Coverage above plan: planned ${formatInt(plannedMwh)} MWh vs delivered ${formatInt(dispatchedMwh)} MWh ⇒ surplus ${formatInt(overCoveredMwh)} MWh. This can occur due to intraday adjustments and balancing-related settlement effects.`)
     } else {
       notes.push('Coverage: no relevant gap between planned and delivered energy; the round total is largely covered.')
     }

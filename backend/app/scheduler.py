@@ -112,6 +112,15 @@ def run_rounds(session_id: int, app=None):
                     time.sleep(1)
                     # pause handling
                     s = Session.query.get(s.id)
+                    if s and s.status in [
+                        SessionStatus.round_closing,
+                        SessionStatus.calculating,
+                        SessionStatus.round_results,
+                        SessionStatus.scenario_complete,
+                        SessionStatus.ended,
+                    ]:
+                        remaining = 0
+                        break
                     if s and s.status == SessionStatus.paused:
                         continue
                     # Check for frozen state (trainer freeze)

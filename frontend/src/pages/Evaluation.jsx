@@ -2,12 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Paper, Typography, Table, TableHead, TableRow, TableCell, TableBody, Button, Stack, Select, MenuItem, FormControl, InputLabel, Alert, Box, Divider, Chip } from '@mui/material'
 import { EmojiEvents as LeaderboardIcon, TrendingUp as DAIcon, SwapHoriz as IDIcon } from '@mui/icons-material'
+import { alpha, useTheme } from '@mui/material/styles'
 import api from '../services/api'
 import Radar from '../components/Radar'
 import { exportSVG } from '../utils/exportSvg'
 import TermTooltip from '../components/TermTooltip'
 
 export default function Evaluation(){
+  const theme = useTheme()
+  const isDark = theme.palette.mode === 'dark'
+  const daChipBg = isDark ? alpha(theme.palette.text.secondary, 0.45) : '#9e9e9e'
+  const idChipBg = isDark ? alpha(theme.palette.success.main, 0.8) : '#4caf50'
+  const daCellBg = isDark ? alpha(theme.palette.text.secondary, 0.20) : 'rgba(158, 158, 158, 0.1)'
+  const idPosBg = isDark ? alpha(theme.palette.success.main, 0.22) : 'rgba(76, 175, 80, 0.1)'
+  const idNegBg = isDark ? alpha(theme.palette.error.main, 0.22) : 'rgba(244, 67, 54, 0.1)'
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const [rows, setRows] = useState([])
@@ -198,7 +206,7 @@ export default function Evaluation(){
           {selected && (
             <Stack direction="row" spacing={2} alignItems="center" sx={{ mt:2 }}>
               <div ref={radarWrap}><Radar axes={radarAxes} axes2={radarRefAxes || radarAvg} /></div>
-              <Typography variant="body2">Spider (Radar) – normalized KPIs für {selected.email || `Player ${selected.player_id}`}</Typography>
+              <Typography variant="body2">Spider (Radar) – normalized KPIs for {selected.email || `Player ${selected.player_id}`}</Typography>
             </Stack>
           )}
           <Table size="small">
@@ -269,25 +277,25 @@ export default function Evaluation(){
                     <TableCell>Player</TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
-                        <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.7rem', height: 18 }} />
+                        <Chip label="DA" size="small" sx={{ bgcolor: daChipBg, color: 'white', fontSize: '0.7rem', height: 18 }} />
                         Volume (MWh)
                       </Stack>
                     </TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
-                        <Chip label="DA" size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.7rem', height: 18 }} />
+                        <Chip label="DA" size="small" sx={{ bgcolor: daChipBg, color: 'white', fontSize: '0.7rem', height: 18 }} />
                         Revenue (ZAR)
                       </Stack>
                     </TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
-                        <Chip label="ID" size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.7rem', height: 18 }} />
+                        <Chip label="ID" size="small" sx={{ bgcolor: idChipBg, color: 'white', fontSize: '0.7rem', height: 18 }} />
                         Delta (MWh)
                       </Stack>
                     </TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
-                        <Chip label="ID" size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.7rem', height: 18 }} />
+                        <Chip label="ID" size="small" sx={{ bgcolor: idChipBg, color: 'white', fontSize: '0.7rem', height: 18 }} />
                         Revenue (ZAR)
                       </Stack>
                     </TableCell>
@@ -300,20 +308,20 @@ export default function Evaluation(){
                   {marketBreakdown.map(mb => (
                     <TableRow key={mb.player_id}>
                       <TableCell>{mb.email}</TableCell>
-                      <TableCell align="right" sx={{ bgcolor: 'rgba(158, 158, 158, 0.1)' }}>
+                      <TableCell align="right" sx={{ bgcolor: daCellBg }}>
                         {mb.da_volume_mwh?.toLocaleString()}
                       </TableCell>
-                      <TableCell align="right" sx={{ bgcolor: 'rgba(158, 158, 158, 0.1)' }}>
+                      <TableCell align="right" sx={{ bgcolor: daCellBg }}>
                         {mb.da_revenue_zar?.toLocaleString()} ZAR
                       </TableCell>
                       <TableCell align="right" sx={{ 
-                        bgcolor: mb.id_delta_mwh >= 0 ? 'rgba(76, 175, 80, 0.1)' : 'rgba(244, 67, 54, 0.1)',
+                        bgcolor: mb.id_delta_mwh >= 0 ? idPosBg : idNegBg,
                         color: mb.id_delta_mwh >= 0 ? 'success.main' : 'error.main'
                       }}>
                         {mb.id_delta_mwh >= 0 ? '+' : ''}{mb.id_delta_mwh?.toLocaleString()}
                       </TableCell>
                       <TableCell align="right" sx={{ 
-                        bgcolor: mb.id_revenue_zar >= 0 ? 'rgba(76, 175, 80, 0.1)' : 'rgba(244, 67, 54, 0.1)',
+                        bgcolor: mb.id_revenue_zar >= 0 ? idPosBg : idNegBg,
                         color: mb.id_revenue_zar >= 0 ? 'success.main' : 'error.main'
                       }}>
                         {mb.id_revenue_zar >= 0 ? '+' : ''}{mb.id_revenue_zar?.toLocaleString()} ZAR
@@ -334,8 +342,8 @@ export default function Evaluation(){
               <Box sx={{ mt: 2, p: 1, bgcolor: 'background.default', borderRadius: 1 }}>
                 <Typography variant="caption" color="text.secondary">
                   <strong>Legend:</strong>{' '}
-                  <Chip label={<TermTooltip term="DA">DA</TermTooltip>} size="small" sx={{ bgcolor: '#9e9e9e', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = <TermTooltip term="DA">Day-Ahead</TermTooltip> (round 1 position){' '}
-                  <Chip label={<TermTooltip term="ID">ID</TermTooltip>} size="small" sx={{ bgcolor: '#4caf50', color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = <TermTooltip term="ID">Intraday</TermTooltip> (adjustments in rounds 2+)
+                  <Chip label={<TermTooltip term="DA">DA</TermTooltip>} size="small" sx={{ bgcolor: daChipBg, color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = <TermTooltip term="DA">Day-Ahead</TermTooltip> (round 1 position){' '}
+                  <Chip label={<TermTooltip term="ID">ID</TermTooltip>} size="small" sx={{ bgcolor: idChipBg, color: 'white', fontSize: '0.65rem', height: 16, mx: 0.5 }} /> = <TermTooltip term="ID">Intraday</TermTooltip> (adjustments in rounds 2+)
                 </Typography>
               </Box>
             </Box>

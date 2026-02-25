@@ -59,7 +59,7 @@ export default function UserMenu({ showLabel = false }) {
               {getInitials(user.email)}
             </Avatar>
           </ListItemIcon>
-          <ListItemText primary="Profil" />
+          <ListItemText primary="Profile" primaryTypographyProps={{ noWrap: true }} />
         </ListItemButton>
       ) : (
         <IconButton

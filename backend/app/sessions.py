@@ -429,17 +429,25 @@ class ForceRoundEnd(Resource):
         if s.status not in [SessionStatus.running, SessionStatus.round_active, SessionStatus.paused]:
             return {"error": "Round can only be ended early while active."}, HTTPStatus.BAD_REQUEST
 
-        if _redis_client is None:
-            return {"error": "Force round end unavailable (Redis not configured)."}, HTTPStatus.SERVICE_UNAVAILABLE
+        forced_via = "redis"
+        if _redis_client is not None:
+            try:
+                _redis_client.setex(f"session:{sid}:force_end_round", 120, "1")
+            except Exception:
+                forced_via = "status_fallback"
+        else:
+            forced_via = "status_fallback"
 
-        try:
-            _redis_client.setex(f"session:{sid}:force_end_round", 120, "1")
-        except Exception:
-            return {"error": "Failed to force end round."}, HTTPStatus.INTERNAL_SERVER_ERROR
+        if forced_via == "status_fallback":
+            # Fallback path when Redis signal is unavailable:
+            # mark session as round_closing so scheduler exits countdown and proceeds.
+            s.status = SessionStatus.round_closing
+            db.session.add(s)
+            db.session.commit()
 
         emit_trainer("round_end", {"session_id": sid, "forced": True})
         socketio.emit("round_end", {"session_id": sid, "forced": True}, namespace="/game", to=f"session-{sid}")
-        return {"status": "ok", "forced": True}
+        return {"status": "ok", "forced": True, "via": forced_via}
 
 
 @ns.route("/<int:sid>/extend-timer")
@@ -1421,11 +1429,18 @@ class SubmitStatus(Resource):
         scenario = Scenario.query.get(session.scenario_id)
         config = scenario.config or {}
         player_types = config.get("player_types", [])
+        type_name_map = {
+            str(pt.get("id")): (pt.get("name") or pt.get("id"))
+            for pt in player_types
+            if pt.get("id")
+        }
         current_round = session.current_round or 1
         
         # Get all cohort members
         members = CohortMember.query.filter_by(cohort_id=session.cohort_id).all()
         member_ids = [m.user_id for m in members]
+        users = User.query.filter(User.id.in_(member_ids)).all() if member_ids else []
+        users_by_id = {u.id: u for u in users}
         
         # Get player type selections
         type_map = {}
@@ -1456,6 +1471,7 @@ class SubmitStatus(Resource):
             tid = ptype.get("id")
             type_counts[tid] = {"submitted": 0, "total": 0}
         
+        players = []
         for mid, ptype in type_map.items():
             if ptype in type_counts:
                 type_counts[ptype]["total"] += 1
@@ -1465,12 +1481,26 @@ class SubmitStatus(Resource):
                     player_id=mid,
                     round_num=current_round
                 ).first()
+                submitted = bool(forecast)
                 if forecast:
                     type_counts[ptype]["submitted"] += 1
+                user = users_by_id.get(mid)
+                player_name = (user.name or "").strip() if user and user.name else None
+                players.append({
+                    "player_id": mid,
+                    "player_name": player_name or (user.email if user else f"Player {mid}"),
+                    "player_email": user.email if user else None,
+                    "type_id": ptype,
+                    "type_name": type_name_map.get(str(ptype), ptype),
+                    "submitted": submitted,
+                })
+
+        players.sort(key=lambda p: ((p.get("type_name") or ""), (p.get("player_name") or ""), p.get("player_id") or 0))
         
         return {
             "round": current_round,
             "by_type": type_counts,
+            "players": players,
             "total_submitted": sum(t["submitted"] for t in type_counts.values()),
             "total_players": sum(t["total"] for t in type_counts.values())
         }

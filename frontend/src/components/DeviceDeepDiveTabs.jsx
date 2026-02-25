@@ -267,13 +267,21 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     })
     if (byScenarioHour) return byScenarioHour
 
-    // If the payload contains explicit scenario hours but none match,
-    // do NOT remap by hour_offset (prevents showing Round-1 DAM hours as Round-2 DAM hours).
+    // If payload has explicit hour fields, they can be either absolute scenario hours
+    // OR round-local offsets (legacy/compat payloads).
+    // Only block remapping when values clearly look like absolute scenario hours.
     const hasExplicit = entries.some((entry) => {
       const entryScenarioHour = entry?.scenario_hour_idx ?? entry?.hour_idx
       return entryScenarioHour !== undefined && entryScenarioHour !== null
     })
-    if (hasExplicit) return {}
+    if (hasExplicit) {
+      const explicitHours = entries
+        .map((entry) => Number(entry?.scenario_hour_idx ?? entry?.hour_idx))
+        .filter((value) => Number.isFinite(value))
+      const hasWindowOverlap = explicitHours.some((value) => value >= roundStartHour && value < roundEndHour)
+      const looksRoundLocal = explicitHours.some((value) => value >= 0 && value < roundSpan)
+      if (!looksRoundLocal || hasWindowOverlap) return {}
+    }
 
     const byMappedOffset = entries.find((entry) => {
       const entryOffset = entry?.round_hour_offset ?? entry?.hour_offset ?? entry?.hour
@@ -299,13 +307,23 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       })
       if (byScenarioHour) return byScenarioHour
 
-      // If explicit hour_idx exists in the payload but doesn't match,
-      // don't fall back to hour_offset remapping (avoids wrong-round DAM display).
-      const hasExplicit = lotsArray.some((lot) => lot?.hour_idx !== undefined && lot?.hour_idx !== null)
-      if (hasExplicit) return {}
+      // hour_idx can be absolute scenario hour or round-local offset.
+      // If values look round-local (0..roundSpan-1), allow remapping.
+      const hasExplicit = lotsArray.some((lot) => {
+        const explicit = lot?.scenario_hour_idx ?? lot?.hour_idx
+        return explicit !== undefined && explicit !== null
+      })
+      if (hasExplicit) {
+        const explicitHours = lotsArray
+          .map((lot) => Number(lot?.scenario_hour_idx ?? lot?.hour_idx))
+          .filter((value) => Number.isFinite(value))
+        const hasWindowOverlap = explicitHours.some((value) => value >= roundStartHour && value < roundEndHour)
+        const looksRoundLocal = explicitHours.some((value) => value >= 0 && value < roundSpan)
+        if (!looksRoundLocal || hasWindowOverlap) return {}
+      }
 
       const byMappedOffset = lotsArray.find((lot) => {
-        const lotOffset = lot?.hour_offset ?? lot?.hour
+        const lotOffset = lot?.round_hour_offset ?? lot?.hour_offset ?? lot?.hour
         if (!Number.isFinite(Number(lotOffset))) return false
         const mappedScenarioHour = roundStartHour + Number(lotOffset)
         return mappedScenarioHour === Number(scenarioHourIdx)

@@ -1,0 +1,472 @@
+{
+  "exported_at": "2026-02-24T11:44:51.303401Z",
+  "scenario": {
+    "campaign_id": null,
+    "config": {
+      "challenges": [
+        {
+          "applicable_to": [
+            "ptype_mj97y61j_sxl6"
+          ],
+          "description": "Achieve minimum total revenue across all rounds",
+          "id": "challenge_revenue_producer",
+          "metric": "total_revenue",
+          "name": "Revenue Target",
+          "operator": ">=",
+          "per_round": false,
+          "points": 100,
+          "required": true,
+          "target": 500000
+        },
+        {
+          "applicable_to": [
+            "ptype_mj97y61j_sxl6"
+          ],
+          "description": "Maximize total profit over the trading day",
+          "id": "challenge_profit_producer",
+          "metric": "total_profit",
+          "name": "Profit Master",
+          "operator": ">=",
+          "per_round": false,
+          "points": 50,
+          "required": false,
+          "target": 200000
+        },
+        {
+          "applicable_to": [
+            "ptype_mj97y61j_sxl6"
+          ],
+          "description": "Keep total curtailment below 5%",
+          "id": "challenge_curtailment_producer",
+          "metric": "total_curtailment_rate",
+          "name": "High Utilization",
+          "operator": "<=",
+          "per_round": false,
+          "points": 30,
+          "required": false,
+          "target": 5
+        },
+        {
+          "applicable_to": [
+            "ptype_mj9yhsec_5orq"
+          ],
+          "description": "Minimize total procurement costs",
+          "id": "challenge_cost_consumer",
+          "metric": "total_cost",
+          "name": "Cost Efficiency",
+          "operator": "<=",
+          "per_round": false,
+          "points": 100,
+          "required": true,
+          "target": 400000
+        },
+        {
+          "applicable_to": [
+            "ptype_mj9yhsec_5orq"
+          ],
+          "description": "Maintain minimum 95% demand coverage",
+          "id": "challenge_coverage_consumer",
+          "metric": "total_demand_coverage",
+          "name": "Demand Coverage",
+          "operator": ">=",
+          "per_round": false,
+          "points": 40,
+          "required": false,
+          "target": 95
+        },
+        {
+          "applicable_to": [
+            "ptype_mj9yhsec_5orq"
+          ],
+          "description": "Keep total imbalance costs below target",
+          "id": "challenge_imbalance_consumer",
+          "metric": "total_imbalance",
+          "name": "Grid Balance Master",
+          "operator": "<=",
+          "per_round": false,
+          "points": 35,
+          "required": false,
+          "target": 50000
+        },
+        {
+          "applicable_to": [
+            "ptype_monday_prosumer"
+          ],
+          "description": "Generate revenue from renewable sources",
+          "id": "challenge_renewable_revenue",
+          "metric": "total_revenue",
+          "name": "Green Revenue",
+          "operator": ">=",
+          "per_round": false,
+          "points": 100,
+          "required": true,
+          "target": 300000
+        },
+        {
+          "applicable_to": [
+            "ptype_monday_prosumer"
+          ],
+          "description": "Optimize flexible demand response",
+          "id": "challenge_demand_flex",
+          "metric": "total_cost",
+          "name": "Demand Flexibility",
+          "operator": "<=",
+          "per_round": false,
+          "points": 40,
+          "required": false,
+          "target": 250000
+        },
+        {
+          "applicable_to": [
+            "ptype_monday_prosumer"
+          ],
+          "description": "Achieve low imbalance through balanced operation",
+          "id": "challenge_balance_prosumer",
+          "metric": "total_imbalance",
+          "name": "Perfect Balance",
+          "operator": "<=",
+          "per_round": false,
+          "points": 45,
+          "required": false,
+          "target": 30000
+        }
+      ],
+      "devices": [
+        {
+          "capacity_mw": 600,
+          "cost_per_mwh_zar": 400,
+          "efficiency_pct": 35,
+          "enable_multi_bid": true,
+          "fixed_cost_zar_per_hour": 2000,
+          "id": "device_mj97ycal_1vrd",
+          "max_power_mw": 600,
+          "min_load_pct": 0,
+          "name": "Coal Plant",
+          "ramp_rate_mw_per_h": 120,
+          "ramp_rate_mw_per_min": 60,
+          "type": "coal",
+          "variable_cost_zar_per_mwh": 400
+        },
+        {
+          "baseline_load_mw": 300,
+          "drm_capable": true,
+          "enable_multi_bid": true,
+          "fixed_cost_zar_per_hour": 0,
+          "id": "device_mj9yhxvk_1vml",
+          "name": "Big Industry",
+          "peak_load_mw": 450,
+          "type": "industrial_load"
+        },
+        {
+          "baseline_load_mw": 100,
+          "drm_capable": false,
+          "enable_multi_bid": true,
+          "fixed_cost_zar_per_hour": 0,
+          "id": "device_mj9yhzz5_1vmm",
+          "name": "Mall",
+          "peak_load_mw": 200,
+          "type": "commercial_load"
+        },
+        {
+          "capacity_mw": 250,
+          "cost_per_mwh_zar": 50,
+          "efficiency_pct": 100,
+          "enable_multi_bid": true,
+          "fixed_cost_zar_per_hour": 0,
+          "id": "device_monday_pv_prosumer",
+          "max_power_mw": 250,
+          "min_load_pct": 0,
+          "name": "Solar Farm",
+          "ramp_rate_mw_per_h": 250,
+          "ramp_rate_mw_per_min": 60,
+          "type": "pv",
+          "variable_cost_zar_per_mwh": 50
+        },
+        {
+          "baseline_load_mw": 150,
+          "drm_capable": true,
+          "enable_multi_bid": true,
+          "fixed_cost_zar_per_hour": 0,
+          "id": "device_monday_household_prosumer",
+          "name": "Smart Homes",
+          "peak_load_mw": 250,
+          "type": "household_load"
+        },
+        {
+          "capacity_factor_pct": 100,
+          "capacity_mw": 400,
+          "cost_per_mwh_zar": 50,
+          "enable_multi_bid": true,
+          "fixed_cost_zar_per_hour": 500,
+          "id": "device_mlnrjhyj_1zdt",
+          "max_power_mw": 400,
+          "name": "Solar Park",
+          "type": "solar",
+          "variable_cost_zar_per_mwh": 50
+        }
+      ],
+      "environment": {
+        "actual_noise_pct": 10,
+        "diurnal_profile": [
+          0.8,
+          0.7,
+          0.7,
+          0.7,
+          0.8,
+          0.9,
+          1,
+          1.1,
+          1.2,
+          1.1,
+          1,
+          0.95,
+          0.9,
+          0.95,
+          1,
+          1.1,
+          1.2,
+          1.25,
+          1.2,
+          1.1,
+          1,
+          0.95,
+          0.9,
+          0.85
+        ],
+        "profile_preset": "Winter Weekday",
+        "seasonal_factors": [
+          1.1,
+          1.1,
+          1.05,
+          1,
+          0.95,
+          0.9,
+          0.9,
+          0.9,
+          0.95,
+          1,
+          1.05,
+          1.1
+        ],
+        "seed": "preview"
+      },
+      "events": [
+        {
+          "description": "Establish your initial day-ahead forecasts and bids",
+          "duration_rounds": 1,
+          "name": "Round 1: Set Baseline",
+          "target": "all",
+          "target_id": null,
+          "trigger_type": "round",
+          "trigger_value": 1,
+          "type": "task"
+        },
+        {
+          "description": "Review your dispatch results and market clearing prices",
+          "duration_rounds": 1,
+          "name": "Round 2: Monitor Results",
+          "target": "all",
+          "target_id": null,
+          "trigger_type": "round",
+          "trigger_value": 2,
+          "type": "task"
+        },
+        {
+          "description": "Adapt your bids based on actual market performance",
+          "duration_rounds": 1,
+          "name": "Round 3: Adjust Strategy",
+          "target": "all",
+          "target_id": null,
+          "trigger_type": "round",
+          "trigger_value": 3,
+          "type": "task"
+        },
+        {
+          "description": "Fine-tune your bidding strategy for peak hours",
+          "duration_rounds": 1,
+          "name": "Round 4: Optimize Bids",
+          "target": "all",
+          "target_id": null,
+          "trigger_type": "round",
+          "trigger_value": 4,
+          "type": "task"
+        },
+        {
+          "description": "Position yourself for evening peak demand",
+          "duration_rounds": 1,
+          "name": "Round 5: Prepare for Peak",
+          "target": "all",
+          "target_id": null,
+          "trigger_type": "round",
+          "trigger_value": 5,
+          "type": "task"
+        },
+        {
+          "description": "Maximize your performance in the final round",
+          "duration_rounds": 1,
+          "name": "Round 6: Final Push",
+          "target": "all",
+          "target_id": null,
+          "trigger_type": "round",
+          "trigger_value": 6,
+          "type": "task"
+        },
+        {
+          "additive": 0,
+          "description": "Unexpected technical failure reduces coal plant capacity to 20% for 2 rounds",
+          "duration_rounds": 2,
+          "multiplier": 0.2,
+          "name": "Coal Plant Outage",
+          "target": "player",
+          "target_id": "ptype_mj97y61j_sxl6",
+          "trigger_type": "round",
+          "trigger_value": 2,
+          "type": "systemic"
+        },
+        {
+          "additive": 0,
+          "description": "Increased industrial activity causes 30% demand increase",
+          "duration_rounds": 1,
+          "multiplier": 1.3,
+          "name": "Morning Demand Spike",
+          "target": "player",
+          "target_id": "ptype_mj9yhsec_5orq",
+          "trigger_type": "round",
+          "trigger_value": 3,
+          "type": "systemic"
+        },
+        {
+          "additive": 0,
+          "description": "Clear skies provide optimal solar conditions with 20% capacity increase",
+          "duration_rounds": 2,
+          "multiplier": 1.2,
+          "name": "Solar Boost",
+          "target": "player",
+          "target_id": "ptype_monday_prosumer",
+          "trigger_type": "round",
+          "trigger_value": 4,
+          "type": "systemic"
+        },
+        {
+          "additive": 0,
+          "description": "End-of-day consumption surge increases all demand by 25%",
+          "duration_rounds": 1,
+          "multiplier": 1.25,
+          "name": "Evening Peak Demand",
+          "target": "all",
+          "target_id": null,
+          "trigger_type": "round",
+          "trigger_value": 6,
+          "type": "systemic"
+        }
+      ],
+      "general": {
+        "day_ahead_gate_hour": 10,
+        "day_one_baseline_mode": "edit_round_one",
+        "description": "Monday Market Simulation - A comprehensive training scenario covering day-ahead and intraday markets over a full trading day. Experience the dynamics of a liberalized electricity market with conventional generators, flexible consumers, and renewable producers competing in a two-zone grid.",
+        "fake_date": "2001-01-01",
+        "forecast_horizon_hours": 60,
+        "freeze_hours": 1,
+        "horizon_hours": 36,
+        "id_gate_base_hour": 0,
+        "round_duration_seconds": 1800,
+        "round_span_hours": 6,
+        "rounds": 6,
+        "start_time": "00:00"
+      },
+      "grid": {
+        "atc": [
+          [
+            0,
+            5000
+          ],
+          [
+            5000,
+            0
+          ]
+        ],
+        "zones": 2
+      },
+      "market": {
+        "base_price": 1000,
+        "base_volume_mwh": 2000,
+        "consumer_mix": {
+          "agriculture": 1,
+          "household": 2,
+          "industrial": 2
+        },
+        "enable_player_bidding": true,
+        "generator_mix": {
+          "coal": 6,
+          "gas": 3,
+          "hydro": 1,
+          "nuclear": 0,
+          "pv": 1,
+          "wind": 1
+        },
+        "price_cap": 5000,
+        "price_floor": -500,
+        "random_capacity_pct": 10,
+        "random_price_pct": 10
+      },
+      "markets": {
+        "dam": {
+          "trading": [
+            "on",
+            "on",
+            "on",
+            "market_code",
+            "market_code",
+            "market_code"
+          ]
+        },
+        "idm": {
+          "trading": [
+            "on",
+            "on",
+            "on",
+            "off",
+            "market_code",
+            "market_code"
+          ]
+        }
+      },
+      "objectives": "# Welcome to the Monday Market Simulation!\n\nYou are participating in a full-day electricity market simulation covering 6 rounds (36 hours of trading). Your goal depends on your role:\n\n📊 PRODUCERS: Maximize profit by bidding strategically in day-ahead and intraday markets while managing your generation capacity efficiently.\n\n💡 CONSUMERS: Minimize procurement costs by purchasing electricity at the right time and utilizing demand response capabilities when profitable.\n\n🌱 PROSUMERS: Balance renewable generation and flexible consumption to optimize your position in both markets.\n\nKey Learning Objectives:\n- Understanding day-ahead vs. intraday market timing\n- Managing plant outages and system events\n- Optimizing bids across multiple market sessions\n- Balancing supply and demand in a two-zone grid\n- Responding to price signals and market conditions\n\nGood luck!",
+      "player_types": [
+        {
+          "description": "Traditional power producer with coal and gas plants. Focus on maximizing profits through strategic bidding and efficient capacity utilization.",
+          "devices": [
+            "device_mj97ycal_1vrd",
+            "device_mlnrjhyj_1zdt"
+          ],
+          "id": "ptype_mj97y61j_sxl6",
+          "name": "Classic Provider"
+        },
+        {
+          "description": "Large-scale consumer managing industrial and commercial loads. Minimize procurement costs and leverage demand response capabilities.",
+          "devices": [
+            "device_mj9yhxvk_1vml",
+            "device_mj9yhzz5_1vmm"
+          ],
+          "id": "ptype_mj9yhsec_5orq",
+          "name": "Municipal Consumer"
+        }
+      ],
+      "scoring": {
+        "weights": {
+          "curtailment": 0.1,
+          "imbalance": 0.3,
+          "profit": 0.6
+        }
+      },
+      "structure": {
+        "hours_per_round": 6,
+        "rounds": 6
+      },
+      "version": "1.0.0"
+    },
+    "created_at": "2025-12-16T23:33:37.497623Z",
+    "id": 1,
+    "name": "Monday"
+  }
+}

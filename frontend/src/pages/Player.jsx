@@ -44,6 +44,7 @@ import {
   FlashOn
 } from '@mui/icons-material'
 import { IconButton } from '@mui/material'
+import { alpha, useTheme } from '@mui/material/styles'
 import InfoLabel from '../components/InfoLabel'
 import ForecastChartEditor from '../components/ForecastChartEditor'
 import MarketPhaseTimeline from '../components/MarketPhaseTimeline'
@@ -111,6 +112,8 @@ const calculateNextIdGateHour = (currentHour, gateInterval, gateBase) => {
 
 // Market Supply/Demand Curves Component
 function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode = 'dam' }) {
+  const theme = useTheme()
+  const isDark = theme.palette.mode === 'dark'
   const ref = useRef(null)
   const [marketData, setMarketData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -176,6 +179,11 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
     const W = width - M.left - M.right
     const H = 180 - M.top - M.bottom
     const g = svg.attr('width', width).attr('height', 180).append('g').attr('transform', `translate(${M.left},${M.top})`)
+    const axisColor = theme.palette.text.secondary
+    const gridColor = theme.palette.divider
+    const supplyColor = theme.palette.success.main
+    const demandColor = theme.palette.error.main
+    const smpColor = theme.palette.info.main
 
     // Sort to ensure monotonic curves (Merit Order)
     const supply = (marketData.supply || []).slice().sort((a, b) => a.price - b.price) // Ascending
@@ -199,10 +207,14 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
     const y = d3.scaleLinear().domain([minP - pad, maxP + pad]).nice().range([H, 0]).clamp(true)
 
     // Axes
-    g.append('g').attr('transform', `translate(0,${H})`).call(d3.axisBottom(x).ticks(4))
-    g.append('g').call(d3.axisLeft(y).ticks(5))
-    g.append('text').attr('x', W / 2).attr('y', H + 28).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 9).text('Volume (MWh)')
-    g.append('text').attr('transform', 'rotate(-90)').attr('x', -H / 2).attr('y', -40).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 9).text('Price (ZAR/MWh)')
+    const xAxis = g.append('g').attr('transform', `translate(0,${H})`).call(d3.axisBottom(x).ticks(4))
+    const yAxis = g.append('g').call(d3.axisLeft(y).ticks(5))
+    xAxis.selectAll('path,line').attr('stroke', gridColor)
+    yAxis.selectAll('path,line').attr('stroke', gridColor)
+    xAxis.selectAll('text').attr('fill', axisColor)
+    yAxis.selectAll('text').attr('fill', axisColor)
+    g.append('text').attr('x', W / 2).attr('y', H + 28).attr('text-anchor', 'middle').attr('fill', axisColor).attr('font-size', 9).text('Volume (MWh)')
+    g.append('text').attr('transform', 'rotate(-90)').attr('x', -H / 2).attr('y', -40).attr('text-anchor', 'middle').attr('fill', axisColor).attr('font-size', 9).text('Price (ZAR/MWh)')
 
     // Step paths
     const toStep = (arr) => {
@@ -216,8 +228,8 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
     const sPts = toStep(sCum)
     const dPts = toStep(dCum)
 
-    g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2)
-    g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', '#c62828').attr('stroke-width', 2)
+    g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', supplyColor).attr('stroke-width', 2)
+    g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', demandColor).attr('stroke-width', 2)
 
     // SMP line
     if (smp > 0) {
@@ -226,7 +238,7 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
         .attr('x2', W)
         .attr('y1', y(smp))
         .attr('y2', y(smp))
-        .attr('stroke', '#1976d2')
+        .attr('stroke', smpColor)
         .attr('stroke-width', 1.5)
         .attr('stroke-dasharray', '4,2')
       
@@ -234,7 +246,7 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
         .attr('x', W - 5)
         .attr('y', y(smp) - 4)
         .attr('font-size', 9)
-        .attr('fill', '#1976d2')
+        .attr('fill', smpColor)
         .attr('text-anchor', 'end')
         .text(`SMP: ${smp.toFixed(0)} ZAR/MWh`)
     }
@@ -245,10 +257,10 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
       .attr('x', 0)
       .attr('y', 0)
       .attr('font-size', 11)
-      .attr('fill', '#666')
+      .attr('fill', axisColor)
       .style('font-weight', 'bold')
       .text(`Round ${marketData.round_num}, Hour ${String(marketData.hour_of_day).padStart(2, '0')}:00`)
-  }, [marketData, containerWidth])
+  }, [marketData, containerWidth, theme.palette.mode])
 
   if (loading) {
     return (
@@ -266,7 +278,7 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
     )
   }
 
-  return <svg ref={ref} width="100%" height={180} style={{ border: '1px solid #eee', background: '#fff' }} />
+  return <svg ref={ref} width="100%" height={180} style={{ border: `1px solid ${theme.palette.divider}`, background: isDark ? theme.palette.background.default : theme.palette.background.paper }} />
 }
 const clampValue = (val, min = 0, max = Number.POSITIVE_INFINITY) => {
   if (!Number.isFinite(max)) return Math.max(min, val)
@@ -581,6 +593,8 @@ function TimerAndClock({ timeRemaining }) {
 
 // Stacked area chart showing all three lots (clickable to select lot)
 function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = null, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate = '', hourStatus = [] }) {
+  const theme = useTheme()
+  const isDark = theme.palette.mode === 'dark'
   const svgRef = useRef(null)
   const [containerWidth, setContainerWidth] = useState(700)
 
@@ -614,6 +628,17 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
     const ih = H - M.top - M.bottom
     
     const g = svg.attr('width', width).attr('height', H).append('g').attr('transform', `translate(${M.left},${M.top})`)
+    const gridColor = theme.palette.divider
+    const axisColor = theme.palette.text.secondary
+    const activeLotColor = theme.palette.primary.main
+    const inactiveColors = [
+      alpha(theme.palette.text.secondary, isDark ? 0.45 : 0.25),
+      alpha(theme.palette.text.secondary, isDark ? 0.6 : 0.4),
+      alpha(theme.palette.text.secondary, isDark ? 0.75 : 0.55)
+    ]
+    const referenceMaxColor = theme.palette.error.main
+    const referenceWarnColor = theme.palette.warning.main
+    const referenceExpectedColor = theme.palette.success.main
     
     const n = Math.max(bidsA.length, bidsB.length, bidsC.length)
     if (n === 0) return
@@ -631,7 +656,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
       .attr('class', 'grid')
       .call(d3.axisLeft(y).ticks(6).tickSize(-iw).tickFormat(''))
       .selectAll('line')
-      .attr('stroke', '#e0e0e0')
+      .attr('stroke', gridColor)
       .attr('stroke-dasharray', '2,2')
     
     g.append('g')
@@ -639,29 +664,30 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
       .attr('transform', `translate(0,${ih})`)
       .call(d3.axisBottom(x).ticks(n).tickSize(-ih).tickFormat(''))
       .selectAll('line')
-      .attr('stroke', '#e0e0e0')
+      .attr('stroke', gridColor)
       .attr('stroke-dasharray', '2,2')
     
     // Axes
     const startHour = startTime ? parseInt(startTime.split(':')[0]) : 0
-    g.append('g')
+    const bottomAxis = g.append('g')
       .attr('transform', `translate(0,${ih})`)
       .call(d3.axisBottom(x).ticks(n > 24 ? 12 : n).tickFormat(d => {
         const hour = (startHour + Math.round(d - 1)) % 24
         return `${String(hour).padStart(2, '0')}:00`
       }))
-      .selectAll('text')
-      .style('font-size', '10px')
+    bottomAxis.selectAll('text').style('font-size', '10px').attr('fill', axisColor)
+    bottomAxis.selectAll('path,line').attr('stroke', gridColor)
     
-    g.append('g')
-      .call(d3.axisLeft(y).ticks(6))
+    const leftAxis = g.append('g').call(d3.axisLeft(y).ticks(6))
+    leftAxis.selectAll('path,line').attr('stroke', gridColor)
+    leftAxis.selectAll('text').attr('fill', axisColor)
     
     g.append('text')
       .attr('transform', 'rotate(-90)')
       .attr('y', -36)
       .attr('x', -ih / 2)
       .attr('text-anchor', 'middle')
-      .attr('fill', '#666')
+      .attr('fill', axisColor)
       .style('font-size', '11px')
       .text('MW (Stacked)')
     
@@ -685,11 +711,11 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
     
     // Color config matching ForecastChartEditor
     const phaseConfig = {
-      locked: { color: '#F5F5F5', opacity: 0.60 },
-      id: { color: '#FFE0B2', opacity: 0.50 },
-      da: { color: '#FFF9C4', opacity: 0.50 },
-      da_r1: { color: '#B2EBF2', opacity: 0.50 },
-      forecast: { color: '#E3F2FD', opacity: 0.35 }
+      locked: { color: theme.palette.text.disabled, opacity: isDark ? 0.16 : 0.22 },
+      id: { color: theme.palette.warning.main, opacity: isDark ? 0.16 : 0.20 },
+      da: { color: theme.palette.warning.light, opacity: isDark ? 0.14 : 0.20 },
+      da_r1: { color: theme.palette.info.main, opacity: isDark ? 0.14 : 0.20 },
+      forecast: { color: theme.palette.primary.main, opacity: isDark ? 0.10 : 0.14 }
     }
     
     // Draw background rectangles for each phase
@@ -734,14 +760,13 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
       .curve(d3.curveStepAfter)
     
     // Draw stacked areas with gray for inactive, blue for active
-    const colors = ['#e0e0e0', '#bdbdbd', '#9e9e9e'] // Gray tones for inactive lots
     const lotNames = ['A', 'B', 'C']
     g.selectAll('.area')
       .data(series)
       .enter()
       .append('path')
       .attr('class', 'area')
-      .attr('fill', (d, i) => lotNames[i] === activeLot ? '#1976d2' : colors[i])
+      .attr('fill', (d, i) => lotNames[i] === activeLot ? activeLotColor : inactiveColors[i])
       .attr('opacity', (d, i) => lotNames[i] === activeLot ? 0.95 : 0.65)
       .attr('d', area)
       .style('cursor', 'pointer')
@@ -769,7 +794,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x2', iw)
             .attr('y1', y(maxPower))
             .attr('y2', y(maxPower))
-            .attr('stroke', '#d32f2f')
+            .attr('stroke', referenceMaxColor)
             .attr('stroke-width', 2)
             .attr('stroke-dasharray', '3,0')
           
@@ -777,7 +802,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x', iw - 5)
             .attr('y', y(maxPower) - 5)
             .attr('text-anchor', 'end')
-            .attr('fill', '#d32f2f')
+            .attr('fill', referenceMaxColor)
             .style('font-size', '10px')
             .style('font-weight', 'bold')
             .text(`Max Power: ${maxPower.toFixed(0)} MW`)
@@ -789,7 +814,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x2', iw)
             .attr('y1', y(minPower))
             .attr('y2', y(minPower))
-            .attr('stroke', '#f57c00')
+            .attr('stroke', referenceWarnColor)
             .attr('stroke-width', 2)
             .attr('stroke-dasharray', '4,2')
           
@@ -797,7 +822,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x', iw - 5)
             .attr('y', y(minPower) - 5)
             .attr('text-anchor', 'end')
-            .attr('fill', '#f57c00')
+            .attr('fill', referenceWarnColor)
             .style('font-size', '10px')
             .style('font-weight', 'bold')
             .text(`Min Load: ${minPower.toFixed(0)} MW`)
@@ -854,7 +879,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x2', iw)
             .attr('y1', y(maxPower))
             .attr('y2', y(maxPower))
-            .attr('stroke', '#d32f2f')
+            .attr('stroke', referenceMaxColor)
             .attr('stroke-width', 2)
             .attr('stroke-dasharray', '3,0')
           
@@ -862,7 +887,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x', iw - 5)
             .attr('y', y(maxPower) - 5)
             .attr('text-anchor', 'end')
-            .attr('fill', '#d32f2f')
+            .attr('fill', referenceMaxColor)
             .style('font-size', '10px')
             .style('font-weight', 'bold')
             .text(`Max Power: ${maxPower.toFixed(0)} MW`)
@@ -874,7 +899,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x2', iw)
             .attr('y1', y(expected))
             .attr('y2', y(expected))
-            .attr('stroke', '#388e3c')
+            .attr('stroke', referenceExpectedColor)
             .attr('stroke-width', 2)
             .attr('stroke-dasharray', '5,3')
           
@@ -882,7 +907,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x', iw - 5)
             .attr('y', y(expected) - 5)
             .attr('text-anchor', 'end')
-            .attr('fill', '#388e3c')
+            .attr('fill', referenceExpectedColor)
             .style('font-size', '10px')
             .style('font-weight', 'bold')
             .text(`Expected (KSE): ${expected.toFixed(0)} MW`)
@@ -899,7 +924,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x2', iw)
             .attr('y1', y(maxPower))
             .attr('y2', y(maxPower))
-            .attr('stroke', '#d32f2f')
+            .attr('stroke', referenceMaxColor)
             .attr('stroke-width', 2)
             .attr('stroke-dasharray', '3,0')
 
@@ -907,7 +932,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
             .attr('x', iw - 5)
             .attr('y', y(maxPower) - 5)
             .attr('text-anchor', 'end')
-            .attr('fill', '#d32f2f')
+            .attr('fill', referenceMaxColor)
             .style('font-size', '10px')
             .style('font-weight', 'bold')
             .text(`Max Power: ${maxPower.toFixed(0)} MW`)
@@ -915,7 +940,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
       }
     }
     
-  }, [bidsA, bidsB, bidsC, maxValue, effectiveLimitMw, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate, hourStatus, containerWidth])
+  }, [bidsA, bidsB, bidsC, maxValue, effectiveLimitMw, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate, hourStatus, containerWidth, theme.palette.mode])
   
   return (
     <Box>
@@ -932,6 +957,11 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
 }
 
 export default function Player() {
+  const theme = useTheme()
+  const isDark = theme.palette.mode === 'dark'
+  const lotHighlightBg = isDark ? alpha(theme.palette.primary.main, 0.22) : '#e3f2fd'
+  const groupedSectionSurface = isDark ? alpha(theme.palette.common.white, 0.06) : '#f5f5f5'
+  const groupedSectionInfoBg = isDark ? alpha(theme.palette.info.main, 0.14) : '#e3f2fd'
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const { showSnack } = useSnackbar()
@@ -1900,36 +1930,54 @@ export default function Player() {
   }, [cfg.general, effectiveHourStatus])
 
   const marketMatrixCellSx = useCallback((rowKey, roundCol = {}) => {
+    const baseSurface = theme.palette.background.paper
+    const clearedColor = isDark ? alpha(theme.palette.text.primary, 0.35) : '#BDBDBD'
+    const forecastBorder = theme.palette.divider
+    const submittedOverlay = isDark
+      ? 'repeating-linear-gradient(135deg, rgba(255,255,255,0.16) 0 5px, rgba(255,255,255,0.06) 5px 10px)'
+      : 'repeating-linear-gradient(135deg, rgba(224,224,224,0.85) 0 5px, rgba(245,245,245,0.55) 5px 10px)'
+    const damBase = isDark ? theme.palette.warning.main : '#FDD835'
+    const damStripe = isDark
+      ? `repeating-linear-gradient(135deg, ${alpha(theme.palette.warning.dark, 0.45)} 0 6px, ${alpha(theme.palette.warning.light, 0.20)} 6px 12px)`
+      : 'repeating-linear-gradient(135deg, rgba(245,127,23,0.32) 0 6px, rgba(253,216,53,0.16) 6px 12px)'
+    const damSpecialBase = isDark ? theme.palette.info.main : '#00BCD4'
+    const damSpecialStripe = isDark
+      ? `repeating-linear-gradient(135deg, ${alpha(theme.palette.info.dark, 0.45)} 0 6px, ${alpha(theme.palette.info.light, 0.20)} 6px 12px)`
+      : 'repeating-linear-gradient(135deg, rgba(0,131,143,0.35) 0 6px, rgba(0,188,212,0.16) 6px 12px)'
+    const idmBase = isDark ? theme.palette.warning.dark : '#FB8C00'
+    const idmStripe = isDark
+      ? `repeating-linear-gradient(135deg, ${alpha(theme.palette.warning.dark, 0.5)} 0 6px, ${alpha(theme.palette.warning.light, 0.2)} 6px 12px)`
+      : 'repeating-linear-gradient(135deg, rgba(230,81,0,0.35) 0 6px, rgba(251,140,0,0.15) 6px 12px)'
+
     if (roundCol?.isCleared) {
-      return { backgroundColor: '#BDBDBD' }
+      return { backgroundColor: clearedColor }
     }
 
-    const submittedOverlay = 'repeating-linear-gradient(135deg, rgba(224,224,224,0.85) 0 5px, rgba(245,245,245,0.55) 5px 10px)'
     const marketPalette = {
       dam: {
-        color: '#FDD835',
-        stripe: 'repeating-linear-gradient(135deg, rgba(245,127,23,0.32) 0 6px, rgba(253,216,53,0.16) 6px 12px)',
+        color: damBase,
+        stripe: damStripe,
         openCountKey: 'damOpenCount',
         bidTotalKey: 'damTotal',
-        specialColor: '#00BCD4',
-        specialStripe: 'repeating-linear-gradient(135deg, rgba(0,131,143,0.35) 0 6px, rgba(0,188,212,0.16) 6px 12px)',
+        specialColor: damSpecialBase,
+        specialStripe: damSpecialStripe,
         specialCountKey: 'damSpecialCount'
       },
       idm: {
-        color: '#FB8C00',
-        stripe: 'repeating-linear-gradient(135deg, rgba(230,81,0,0.35) 0 6px, rgba(251,140,0,0.15) 6px 12px)',
+        color: idmBase,
+        stripe: idmStripe,
         openCountKey: 'idmOpenCount',
         bidTotalKey: 'idmSubmittedTotal'
       }
     }
 
     if (rowKey === 'forecast' || rowKey === 'total') {
-      return { backgroundColor: '#FFFFFF' }
+      return { backgroundColor: baseSurface }
     }
 
     const palette = marketPalette[rowKey]
     if (!palette) {
-      return { backgroundColor: '#FFFFFF' }
+      return { backgroundColor: baseSurface }
     }
 
     const totalHours = Math.max(1, Number(roundCol?.hoursInRound || 1))
@@ -1943,7 +1991,7 @@ export default function Player() {
     const isGateClosedNow = openCount === 0
     const isSubmittedWhenClosed = bidTotal > 0 && isGateClosedNow
 
-    const style = { backgroundColor: '#FFFFFF' }
+    const style = { backgroundColor: baseSurface }
     const images = []
 
     const baseColor = hasSpecialNow && palette.specialColor ? palette.specialColor : palette.color
@@ -1965,7 +2013,7 @@ export default function Player() {
     }
 
     return style
-  }, [])
+  }, [isDark, theme.palette])
 
   const damBidPresenceByHour = useMemo(() => {
     const horizon = Number(cfg.general.forecast_horizon_hours || 48)
@@ -2438,6 +2486,10 @@ export default function Player() {
       console.log('[Player] No hourly chart data - skipping D3 render')
       return
     }
+    const gridColor = theme.palette.divider
+    const axisColor = theme.palette.text.secondary
+    const smpSeriesColor = theme.palette.success.main
+    const volumeSeriesColor = theme.palette.info.main
     // create or reuse a floating tooltip div for charts
     const tipSel = d3.select('body').select('div.emsg-chart-tip')
     const tooltip = tipSel.empty() ? d3.select('body').append('div').attr('class','emsg-chart-tip') : tipSel
@@ -2450,6 +2502,9 @@ export default function Player() {
       .style('font-size','12px')
       .style('display','none')
       .style('z-index','9999')
+      .style('background', theme.palette.background.paper)
+      .style('color', theme.palette.text.primary)
+      .style('border', `1px solid ${theme.palette.divider}`)
 
     // Draw SMP chart
     if (smpRef.current) {
@@ -2489,11 +2544,11 @@ export default function Player() {
         .attr('class', 'grid')
         .call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat(''))
         .selectAll('line')
-        .attr('stroke', '#ddd')
+        .attr('stroke', gridColor)
         .attr('stroke-opacity', 0.6)
-      g.append('path').datum(marketScopedHourlyData).attr('fill', 'none').attr('stroke', '#2e7d32').attr('stroke-width', 2).attr('d', line)
+      g.append('path').datum(marketScopedHourlyData).attr('fill', 'none').attr('stroke', smpSeriesColor).attr('stroke-width', 2).attr('d', line)
       const startHour = cfg.general.start_time ? parseInt(cfg.general.start_time.split(':')[0]) : 0
-      g.append('g')
+      const xAxis = g.append('g')
         .attr('transform', `translate(0,${H})`)
         .call(
           d3.axisBottom(x).ticks(5).tickFormat((d) => {
@@ -2505,7 +2560,11 @@ export default function Player() {
             }
           })
         )
-      g.append('g').call(d3.axisLeft(y).ticks(4))
+      const yAxis = g.append('g').call(d3.axisLeft(y).ticks(4))
+      xAxis.selectAll('path,line').attr('stroke', gridColor)
+      yAxis.selectAll('path,line').attr('stroke', gridColor)
+      xAxis.selectAll('text').attr('fill', axisColor)
+      yAxis.selectAll('text').attr('fill', axisColor)
       // points + tooltips
       g.selectAll('circle.point')
         .data(marketScopedHourlyData)
@@ -2515,13 +2574,13 @@ export default function Player() {
         .attr('cx', (d)=> xValue(d))
         .attr('cy', d=> y(d.marketPrice))
         .attr('r', 3)
-        .attr('fill', '#2e7d32')
+        .attr('fill', smpSeriesColor)
         .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`${d.label}: ${d.marketPrice} ZAR/MWh`) })
   .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
   .on('mouseleave', ()=> { tooltip.style('display','none') })
       // axis labels
-      g.append('text').attr('x', W/2).attr('y', H+25).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Simulation Time')
-      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text(`${marketInsightsTab === 'idm' ? 'IDP' : 'SMP'} (ZAR/MWh)`)
+      g.append('text').attr('x', W/2).attr('y', H+25).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text('Simulation Time')
+      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text(`${marketInsightsTab === 'idm' ? 'IDP' : 'SMP'} (ZAR/MWh)`)
     }
 
     // Draw Volume chart
@@ -2559,11 +2618,11 @@ export default function Player() {
         .attr('class', 'grid')
         .call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat(''))
         .selectAll('line')
-        .attr('stroke', '#ddd')
+        .attr('stroke', gridColor)
         .attr('stroke-opacity', 0.6)
-      g.append('path').datum(marketScopedHourlyData).attr('fill', 'none').attr('stroke', '#1976d2').attr('stroke-width', 2).attr('d', line)
+      g.append('path').datum(marketScopedHourlyData).attr('fill', 'none').attr('stroke', volumeSeriesColor).attr('stroke-width', 2).attr('d', line)
       const startHour = cfg.general.start_time ? parseInt(cfg.general.start_time.split(':')[0]) : 0
-      g.append('g')
+      const xAxis = g.append('g')
         .attr('transform', `translate(0,${H})`)
         .call(
           d3.axisBottom(x).ticks(5).tickFormat((d) => {
@@ -2575,7 +2634,11 @@ export default function Player() {
             }
           })
         )
-      g.append('g').call(d3.axisLeft(y).ticks(4))
+      const yAxis = g.append('g').call(d3.axisLeft(y).ticks(4))
+      xAxis.selectAll('path,line').attr('stroke', gridColor)
+      yAxis.selectAll('path,line').attr('stroke', gridColor)
+      xAxis.selectAll('text').attr('fill', axisColor)
+      yAxis.selectAll('text').attr('fill', axisColor)
       // points + tooltips
       g.selectAll('circle.point')
         .data(marketScopedHourlyData)
@@ -2585,16 +2648,16 @@ export default function Player() {
         .attr('cx', (d)=> xValue(d))
         .attr('cy', d=> y(d.marketVolume))
         .attr('r', 3)
-        .attr('fill', '#1976d2')
+        .attr('fill', volumeSeriesColor)
         .on('mouseenter', (event, d)=> { tooltip.style('display','block').text(`${d.label}: ${d.marketVolume} MWh`) })
   .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
   .on('mouseleave', ()=> { tooltip.style('display','none') })
       // axis labels
-      g.append('text').attr('x', W/2).attr('y', H+25).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Simulation Time')
-      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Volume (MWh)')
+      g.append('text').attr('x', W/2).attr('y', H+25).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text('Simulation Time')
+      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text('Volume (MWh)')
     }
     return ()=> { try { tooltip.remove() } catch(_){} }
-  }, [marketScopedHourlyData, chartWidth, cfg.general.start_time])
+  }, [marketScopedHourlyData, chartWidth, cfg.general.start_time, marketInsightsTab, theme.palette.mode])
 
   const onChange = (i, val) => setHours((prev) => prev.map((v, idx) => (idx === i ? Number(val) : v)))
   const onDeviceChange = (did, i, val) => {
@@ -3115,6 +3178,11 @@ export default function Player() {
     )
   }
 
+  const showSubmitWaitingOnly =
+    mode === 'shared_market' &&
+    submitted &&
+    (status === 'running' || status === 'round_active')
+
   return (
     <Container maxWidth={false} sx={{ mt: 1.5, mb: 4, maxWidth: 1800, mx: 'auto' }}>
       {mode === 'shared_market' && (
@@ -3153,7 +3221,7 @@ export default function Player() {
       )}
 
       {/* Waiting Screen - after submit while backend prepares round results */}
-      {submitted && (status === 'running' || status === 'round_active') && (
+      {showSubmitWaitingOnly && (
         <WaitingScreen
           sessionId={sessionId}
           round={cfg.current_round}
@@ -3171,11 +3239,9 @@ export default function Player() {
           mode={mode}
           scenario={scenario}
           campaignName={cfg.campaign_name}
-          onAdvance={async () => {
+          onAdvance={mode !== 'shared_market' ? async () => {
             try {
-              // Post to advance-round endpoint
               await api.post(`/api/sessions/${sessionId}/advance-round`)
-              // Refresh session status
               const { data } = await api.get(`/api/sessions/${sessionId}`)
               setStatus(data.status || 'running')
               setCfg(prev => ({
@@ -3187,7 +3253,7 @@ export default function Player() {
             } catch (err) {
               console.error('Failed to advance round:', err)
             }
-          }}
+          } : undefined}
         />
         </>
       )}
@@ -3202,7 +3268,7 @@ export default function Player() {
       )}
 
       {/* Main Game Interface - only show when in active round */}
-      {(status === 'running' || status === 'round_active') && (
+      {(status === 'running' || status === 'round_active') && !showSubmitWaitingOnly && (
       <>
       {console.log('[Player] Showing Main Game Interface')}
       <Dialog open={typeDialogOpen} disableEscapeKeyDown>
@@ -3294,7 +3360,9 @@ export default function Player() {
 
       {/* Market Overview Dialog (timeline click) */}
       <Dialog open={marketDialogOpen} onClose={()=> setMarketDialogOpen(false)} maxWidth="md" fullWidth>
-        <DialogTitle>Market Overview</DialogTitle>
+        <DialogTitle>
+          {`Market Overview${marketDialogData ? ` — Scope: ${marketDialogData.scopeLabel === 'All devices' ? 'All devices' : `Device (${marketDialogData.scopeLabel})`}` : ''}`}
+        </DialogTitle>
         <DialogContent dividers>
           {marketDialogData ? (
             <Stack spacing={2}>
@@ -3398,33 +3466,37 @@ export default function Player() {
                   })
 
                   const legendItems = [
-                    hasCleared && { key: 'cleared', label: 'cleared', squareSx: { backgroundColor: '#BDBDBD' } },
-                    hasDamSpecial && { key: 'dam-special', label: 'DAM special', squareSx: { backgroundColor: '#00BCD4' } },
-                    hasDamOpen && { key: 'dam-open', label: 'DAM open', squareSx: { backgroundColor: '#FDD835' } },
-                    hasIdmOpen && { key: 'idm-open', label: 'IDM open', squareSx: { backgroundColor: '#FB8C00' } },
+                    hasCleared && { key: 'cleared', label: 'cleared', squareSx: { backgroundColor: isDark ? alpha(theme.palette.text.primary, 0.35) : '#BDBDBD' } },
+                    hasDamSpecial && { key: 'dam-special', label: 'DAM special', squareSx: { backgroundColor: isDark ? theme.palette.info.main : '#00BCD4' } },
+                    hasDamOpen && { key: 'dam-open', label: 'DAM open', squareSx: { backgroundColor: isDark ? theme.palette.warning.main : '#FDD835' } },
+                    hasIdmOpen && { key: 'idm-open', label: 'IDM open', squareSx: { backgroundColor: isDark ? theme.palette.warning.dark : '#FB8C00' } },
                     hasPartial && {
                       key: 'partial',
                       label: 'partially open',
                       squareSx: {
-                        backgroundColor: '#FB8C00',
-                        backgroundImage: 'repeating-linear-gradient(135deg, rgba(230,81,0,0.30) 0 6px, rgba(251,140,0,0.15) 6px 12px)'
+                        backgroundColor: isDark ? theme.palette.warning.dark : '#FB8C00',
+                        backgroundImage: isDark
+                          ? `repeating-linear-gradient(135deg, ${alpha(theme.palette.warning.dark, 0.5)} 0 6px, ${alpha(theme.palette.warning.light, 0.2)} 6px 12px)`
+                          : 'repeating-linear-gradient(135deg, rgba(230,81,0,0.30) 0 6px, rgba(251,140,0,0.15) 6px 12px)'
                       }
                     },
                     hasSubmittedClosed && {
                       key: 'submitted',
                       label: 'submitted (gate closed)',
                       squareSx: {
-                        backgroundColor: '#FFFFFF',
-                        backgroundImage: 'repeating-linear-gradient(135deg, rgba(224,224,224,0.85) 0 5px, rgba(245,245,245,0.55) 5px 10px)',
-                        border: '1px solid #E0E0E0'
+                        backgroundColor: theme.palette.background.paper,
+                        backgroundImage: isDark
+                          ? 'repeating-linear-gradient(135deg, rgba(255,255,255,0.16) 0 5px, rgba(255,255,255,0.06) 5px 10px)'
+                          : 'repeating-linear-gradient(135deg, rgba(224,224,224,0.85) 0 5px, rgba(245,245,245,0.55) 5px 10px)',
+                        border: `1px solid ${theme.palette.divider}`
                       }
                     },
                     hasForecast && {
                       key: 'forecast',
                       label: 'forecast',
                       squareSx: {
-                        backgroundColor: '#FFFFFF',
-                        border: '1px solid #E0E0E0'
+                        backgroundColor: theme.palette.background.paper,
+                        border: `1px solid ${theme.palette.divider}`
                       }
                     }
                   ].filter(Boolean)
@@ -3454,7 +3526,7 @@ export default function Player() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={()=> setMarketDialogOpen(false)}>Schließen</Button>
+          <Button onClick={()=> setMarketDialogOpen(false)}>Close</Button>
         </DialogActions>
       </Dialog>
 
@@ -3599,7 +3671,7 @@ export default function Player() {
                     {isCompleted ? (
                       <DoneIcon fontSize="small" color="success" />
                     ) : (
-                      <DoneIcon fontSize="small" sx={{ color: '#bdbdbd' }} />
+                      <DoneIcon fontSize="small" sx={{ color: 'text.disabled' }} />
                     )}
                   </Box>
                 </Stack>
@@ -3797,7 +3869,7 @@ export default function Player() {
                                     : biddingEnabled
                                   return deviceBidding && deviceBids[did]
                                 })() && (
-                                  <Box sx={{ mt: 3, p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+                                  <Box sx={{ mt: 3, p: 2, bgcolor: groupedSectionSurface, borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
                                     <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
                                       <Typography variant="subtitle2">Bid Input</Typography>
                                       <InfoLabel
@@ -3812,7 +3884,7 @@ export default function Player() {
                                     {/* Price Inputs */}
                                     <Stack direction="row" spacing={2}>
                                       <Box sx={{ flex: 1, opacity: activeLot === 'A' ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot('A')}>
-                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'A' ? 'bold' : 'normal', color: activeLot === 'A' ? '#000' : 'text.secondary' }}>
+                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'A' ? 'bold' : 'normal', color: activeLot === 'A' ? 'text.primary' : 'text.secondary' }}>
                                           Baseload {activeLot === 'A' && '✓'}
                                         </Typography>
                                         <TextField
@@ -3835,23 +3907,23 @@ export default function Player() {
                                           InputProps={{
                                             endAdornment: <Typography variant="caption" sx={{ ml: 0.5 }}>ZAR/MWh</Typography>,
                                             sx: {
-                                              backgroundColor: activeLot === 'A' ? '#e3f2fd' : 'transparent'
+                                              backgroundColor: activeLot === 'A' ? lotHighlightBg : 'transparent'
                                             }
                                           }}
                                           sx={{
                                             '& .MuiOutlinedInput-root': {
-                                              borderColor: activeLot === 'A' ? '#1976d2' : undefined,
+                                              borderColor: activeLot === 'A' ? 'primary.main' : undefined,
                                               borderWidth: activeLot === 'A' ? 2 : 1,
-                                              backgroundColor: activeLot === 'A' ? '#e3f2fd' : 'transparent'
+                                              backgroundColor: activeLot === 'A' ? lotHighlightBg : 'transparent'
                                             },
                                             '& .MuiOutlinedInput-input': {
-                                              backgroundColor: activeLot === 'A' ? '#e3f2fd' : 'transparent'
+                                              backgroundColor: activeLot === 'A' ? lotHighlightBg : 'transparent'
                                             }
                                           }}
                                         />
                                       </Box>
                                       <Box sx={{ flex: 1, opacity: activeLot === 'B' ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot('B')}>
-                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'B' ? 'bold' : 'normal', color: activeLot === 'B' ? '#000' : 'text.secondary' }}>
+                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'B' ? 'bold' : 'normal', color: activeLot === 'B' ? 'text.primary' : 'text.secondary' }}>
                                           Mid-Merit {activeLot === 'B' && '✓'}
                                         </Typography>
                                         <TextField
@@ -3874,23 +3946,23 @@ export default function Player() {
                                           InputProps={{
                                             endAdornment: <Typography variant="caption" sx={{ ml: 0.5 }}>ZAR/MWh</Typography>,
                                             sx: {
-                                              backgroundColor: activeLot === 'B' ? '#e3f2fd' : 'transparent'
+                                              backgroundColor: activeLot === 'B' ? lotHighlightBg : 'transparent'
                                             }
                                           }}
                                           sx={{
                                             '& .MuiOutlinedInput-root': {
-                                              borderColor: activeLot === 'B' ? '#1976d2' : undefined,
+                                              borderColor: activeLot === 'B' ? 'primary.main' : undefined,
                                               borderWidth: activeLot === 'B' ? 2 : 1,
-                                              backgroundColor: activeLot === 'B' ? '#e3f2fd' : 'transparent'
+                                              backgroundColor: activeLot === 'B' ? lotHighlightBg : 'transparent'
                                             },
                                             '& .MuiOutlinedInput-input': {
-                                              backgroundColor: activeLot === 'B' ? '#e3f2fd' : 'transparent'
+                                              backgroundColor: activeLot === 'B' ? lotHighlightBg : 'transparent'
                                             }
                                           }}
                                         />
                                       </Box>
                                       <Box sx={{ flex: 1, opacity: activeLot === 'C' ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot('C')}>
-                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'C' ? 'bold' : 'normal', color: activeLot === 'C' ? '#000' : 'text.secondary' }}>
+                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'C' ? 'bold' : 'normal', color: activeLot === 'C' ? 'text.primary' : 'text.secondary' }}>
                                           Peak {activeLot === 'C' && '✓'}
                                         </Typography>
                                         <TextField
@@ -3913,17 +3985,17 @@ export default function Player() {
                                           InputProps={{
                                             endAdornment: <Typography variant="caption" sx={{ ml: 0.5 }}>ZAR/MWh</Typography>,
                                             sx: {
-                                              backgroundColor: activeLot === 'C' ? '#e3f2fd' : 'transparent'
+                                              backgroundColor: activeLot === 'C' ? lotHighlightBg : 'transparent'
                                             }
                                           }}
                                           sx={{
                                             '& .MuiOutlinedInput-root': {
-                                              borderColor: activeLot === 'C' ? '#1976d2' : undefined,
+                                              borderColor: activeLot === 'C' ? 'primary.main' : undefined,
                                               borderWidth: activeLot === 'C' ? 2 : 1,
-                                              backgroundColor: activeLot === 'C' ? '#e3f2fd' : 'transparent'
+                                              backgroundColor: activeLot === 'C' ? lotHighlightBg : 'transparent'
                                             },
                                             '& .MuiOutlinedInput-input': {
-                                              backgroundColor: activeLot === 'C' ? '#e3f2fd' : 'transparent'
+                                              backgroundColor: activeLot === 'C' ? lotHighlightBg : 'transparent'
                                             }
                                           }}
                                         />
@@ -4029,7 +4101,7 @@ export default function Player() {
                                 ? deviceDef.enable_multi_bid 
                                 : biddingEnabled
                               return deviceBidding && deviceBids[did] ? (
-                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: '#e3f2fd', borderRadius: 1 }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: groupedSectionInfoBg, borderRadius: 1 }}>
                                   Currently editing: <strong>{activeLot === 'A' ? 'Baseload' : activeLot === 'B' ? 'Mid-Merit' : 'Peak'}</strong> (Click a price field above to switch). Enter MW for each hour.
                                 </Typography>
                               ) : null
@@ -4049,21 +4121,21 @@ export default function Player() {
                                   label: 'Locked Hours', 
                                   start: 0, 
                                   end: lockedEnd, 
-                                  color: '#ff9800', 
+                                  color: isDark ? theme.palette.warning.light : '#ff9800', 
                                   hint: 'These hours are locked after Round 1. Simulates the Intraday Market (IDM) gate closure - the point where even short-term Intraday trading closes before delivery.' 
                                 },
                                 { 
                                   label: 'Today (Editable)', 
                                   start: lockedEnd, 
                                   end: todayEnd, 
-                                  color: '#2196f3', 
+                                  color: isDark ? theme.palette.info.light : '#2196f3', 
                                   hint: 'Hours for today\'s simulation. Always editable. This represents the main trading window.' 
                                 },
                                 { 
                                   label: 'Tomorrow (Editable)', 
                                   start: todayEnd, 
                                   end: series.length, 
-                                  color: '#9c27b0', 
+                                  color: isDark ? theme.palette.secondary.light : '#9c27b0', 
                                   hint: 'Forward planning for the next day. Always editable.' 
                                 }
                               ].filter(g => g.start < g.end && g.start < series.length)
@@ -4123,10 +4195,10 @@ export default function Player() {
                                                         fullWidth
                                                         sx={{
                                                           '& .MuiOutlinedInput-root': {
-                                                            backgroundColor: highlightLot ? '#e3f2fd' : 'transparent'
+                                                            backgroundColor: highlightLot ? lotHighlightBg : 'transparent'
                                                           },
                                                           '& .MuiOutlinedInput-input': {
-                                                            backgroundColor: highlightLot ? '#e3f2fd' : 'transparent'
+                                                            backgroundColor: highlightLot ? lotHighlightBg : 'transparent'
                                                           }
                                                         }}
                                                       />
@@ -4237,21 +4309,21 @@ export default function Player() {
                           label: 'Locked Hours', 
                           start: 0, 
                           end: lockedEnd, 
-                          color: '#ff9800', 
+                                  color: isDark ? theme.palette.warning.light : '#ff9800', 
                           hint: 'These hours are locked after Round 1. Simulates the Intraday Market (IDM) gate closure - the point where even short-term Intraday trading closes before delivery.' 
                         },
                         { 
                           label: 'Today (Editable)', 
                           start: lockedEnd, 
                           end: todayEnd, 
-                          color: '#2196f3', 
+                                  color: isDark ? theme.palette.info.light : '#2196f3', 
                           hint: 'Hours for today\'s simulation. Always editable. This represents the main trading window.' 
                         },
                         { 
                           label: 'Tomorrow (Editable)', 
                           start: todayEnd, 
                           end: hours.length, 
-                          color: '#9c27b0', 
+                                  color: isDark ? theme.palette.secondary.light : '#9c27b0', 
                           hint: 'Forward planning for the next day. Always editable.' 
                         }
                       ].filter(g => g.start < g.end && g.start < hours.length)
@@ -4371,12 +4443,12 @@ export default function Player() {
                     <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
                       {marketInsightsTab === 'dam' ? 'SMP' : 'IDP'} last round ({marketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
                     </Typography>
-                    <svg ref={smpRef} width="100%" height={100} style={{ border: '1px solid #eee' }} />
+                    <svg ref={smpRef} width="100%" height={100} style={{ border: `1px solid ${theme.palette.divider}`, background: isDark ? theme.palette.background.default : theme.palette.background.paper }} />
 
                     <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
                       Volume last round ({marketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
                     </Typography>
-                    <svg ref={volRef} width="100%" height={100} style={{ border: '1px solid #eee' }} />
+                    <svg ref={volRef} width="100%" height={100} style={{ border: `1px solid ${theme.palette.divider}`, background: isDark ? theme.palette.background.default : theme.palette.background.paper }} />
                   </>
                 )}
               </CardContent>

@@ -65,20 +65,20 @@ export default function App({ themeMode, onToggleTheme }) {
 
   const handbookEntriesByRole = {
     player: [
-      { path: '/docs/player', label: 'Spieler-Handbuch' }
+      { path: '/docs/player', label: 'Player Guide' }
     ],
     trainer: [
-      { path: '/docs/trainer', label: 'Trainer-Handbuch' }
+      { path: '/docs/trainer', label: 'Trainer Guide' }
     ],
     designer: [
-      { path: '/docs/designer', label: 'Designer-Handbuch' }
+      { path: '/docs/designer', label: 'Designer Guide' }
     ],
     admin: [
-      { path: '/docs/player', label: 'Spieler-Handbuch' },
-      { path: '/docs/trainer', label: 'Trainer-Handbuch' },
-      { path: '/docs/designer', label: 'Designer-Handbuch' },
-      { path: '/docs/admin', label: 'Admin-Handbuch' },
-      { path: '/docs/engine', label: 'Engine-Handbuch' }
+      { path: '/docs/player', label: 'Player Guide' },
+      { path: '/docs/trainer', label: 'Trainer Guide' },
+      { path: '/docs/designer', label: 'Designer Guide' },
+      { path: '/docs/admin', label: 'Admin Guide' },
+      { path: '/docs/engine', label: 'Engine Guide' }
     ]
   }
 
@@ -239,7 +239,7 @@ export default function App({ themeMode, onToggleTheme }) {
 
           <Box sx={{ px: 1, py: 1 }}>
             <Typography variant="overline" sx={{ px: 1.5, color: 'text.secondary', fontSize: '0.65rem' }}>
-              Handbücher
+              Documentation
             </Typography>
             <List dense>
               {handbookEntries.map((entry) => (
@@ -248,7 +248,7 @@ export default function App({ themeMode, onToggleTheme }) {
                     <ListItemIcon>
                       <CatalogIcon fontSize="small" />
                     </ListItemIcon>
-                    <ListItemText primary={entry.label} />
+                    <ListItemText primary={entry.label} primaryTypographyProps={{ noWrap: true }} />
                   </ListItemButton>
                 </ListItem>
               ))}
