@@ -5,54 +5,145 @@ Audience: Admins, Designers, Technical Trainers
 
 ## 1) Engine purpose
 
-The calculation engine resolves round outcomes from submitted bids/forecasts and writes market/KPI results used by player, trainer, and evaluation views.
+The engine converts player inputs and scenario rules into round outcomes:
+- market prices and cleared volumes,
+- dispatch/consumption per hour and device,
+- KPI summaries used across player/trainer/evaluation UIs.
 
-## 2) High-level processing flow
+It is the canonical source of truth for settlement numbers.
 
-Per round, the engine:
-1. Loads session/scenario configuration.
-2. Resolves market availability (DA/ID and gate behavior).
-3. Processes participant submissions.
-4. Clears markets and computes dispatch/prices.
-5. Computes KPI outputs and detail breakdowns.
-6. Persists round results and emits status updates.
+## 2) Core round pipeline
 
-## 3) Inputs that strongly affect outcomes
+For each round, the system performs:
+1. Load session, scenario, role assignments, and current submissions.
+2. Determine active hours and market availability (DA/ID rules).
+3. Resolve active events for this round.
+4. Apply technical and event constraints to capacities/demand.
+5. Clear market(s) and derive price signals.
+6. Compute dispatch, imbalance, costs, and KPI components.
+7. Persist result payloads and publish round status.
 
-- `general`: rounds, span, freeze/gate timing
-- `market` and `markets`: pricing bounds and per-round trading states
-- `devices` and `player_types`: technical limits and role assets
-- `events`: temporary multipliers/additives
-- submitted bids/forecasts
+## 3) Input domains that shape outcomes
 
-## 4) KPI consistency principle
+- **General timing** (`general`): round span, horizon, gate/freeze behavior.
+- **Market config** (`market`, `markets`): caps/floors and per-round trading states.
+- **Physical model** (`devices`, `player_types`): who can do what technically.
+- **Scenario dynamics** (`events`, `environment`): temporary shifts and profiles.
+- **Player actions** (bids/forecasts): the primary controllable variable.
 
-UI KPIs should reconcile with detail tables (allowing rounding tolerance).  
-When validating scenarios, compare:
-- top-level KPI values,
-- hour/device detail aggregations,
-- role-specific semantics (producer vs consumer interpretation).
+## 4) Event handling model
 
-## 5) Shared-market round progression
+Events are filtered by round activation logic (trigger + duration/probability).  
+For affected scope (`all`, `player`, `device`), event modifiers are applied before clearing.
 
-In trainer-led shared mode:
+Conceptually:
+- `available_capacity` is derived from base plus availability/profile factors,
+- `effective_capacity = available_capacity * multiplier + additive`.
+
+This is why outages or demand spikes can drastically alter dispatch and imbalance outcomes.
+
+## 5) Price and dispatch concepts
+
+- **SMP** (day-ahead/system price) comes from clearing supply-demand intersection under market bounds.
+- **IDP** is based on intraday trade dynamics with configured constraints.
+- Cleared quantity is distributed across submitted bid structures (including lot logic where enabled).
+
+Interpretation note: price can look stable while cost/profit swings sharply due to quantity mismatch effects.
+
+## 6) KPI composition logic
+
+Top-level KPIs are composed from hourly and per-device settlements:
+- revenue/cost settlement,
+- variable + fixed costs,
+- imbalance and curtailment components,
+- congestion and additional adjustments where applicable.
+
+The UI should reconcile with this structure; rounding differences are expected but should be bounded.
+
+## 7) Why imbalance can dominate profit
+
+Large imbalance cost usually indicates a structural mismatch between planned and deliverable/actual volume.  
+Typical causes:
+- event-driven capacity reduction,
+- over-offering despite lower effective capacity,
+- gate-timing mismatch and limited correction options.
+
+When imbalance grows, profit can turn negative even with high gross market revenue.
+
+## 8) Result payload layers (conceptual)
+
+A round result generally includes:
+- top-level KPI aggregate,
+- hourly market outcomes,
+- per-device hourly breakdown,
+- bid/dispatch details,
+- metadata needed for explanation screens.
+
+Design goal: explainability from KPI down to hour-level causes.
+
+## 9) Shared-mode orchestration
+
+In trainer-led shared sessions:
 - players submit,
-- waiting status is shown,
-- trainer advances round/session phase.
+- waiting state persists,
+- trainer advances the session.
 
-Engine state transitions must remain consistent with this flow to avoid UI mismatches.
+Engine processing and session status updates must align with this control model to avoid UX inconsistency.
 
-## 6) Debugging checklist
+## 10) Debugging methodology
 
-- Verify session mode and status transitions.
-- Validate per-round market availability arrays.
-- Confirm player-type selection and device mappings.
-- Compare KPI totals against hourly/device breakdowns.
-- Reproduce with deterministic config export where possible.
+### Step 1: Scope first
 
-## 7) Practical validation strategy
+- session ID,
+- round number,
+- affected role/player,
+- symptom category (missing dispatch, high imbalance, wrong explanation text).
 
-- Start with one scenario, one role, one round.
-- Expand to full-round run.
-- Validate both UI text interpretation and numeric consistency.
-- Keep tolerance thresholds explicit for automated checks.
+### Step 2: Validate mechanics
+
+- active events for round,
+- market availability state,
+- selected player type and mapped devices,
+- effective vs base capacity rows.
+
+### Step 3: Reconcile numbers
+
+- KPI totals vs hourly sums,
+- hourly imbalance vs imbalance cost,
+- device-level contributions to outliers.
+
+### Step 4: Confirm UX representation
+
+- detail table matches backend payload,
+- explanation text references relevant causal factors.
+
+## 11) Validation strategy for scenario changes
+
+Minimum safe sequence:
+1. one-round dry run with one role,
+2. multi-round run with known event timing,
+3. shared-mode trainer progression test,
+4. report consistency check (KPI cards vs detail tables).
+
+## 12) Quality criteria for engine-facing changes
+
+Prefer changes that preserve:
+- deterministic reproducibility where expected,
+- explicit event-to-impact traceability,
+- numeric reconciliation across layers,
+- backwards compatibility for historical result payloads.
+
+## 13) Common failure patterns
+
+- wrong round/hour mapping (absolute vs round-local indices),
+- event target mismatch (role/device IDs),
+- stale assumptions in explanation text,
+- incomplete fallback handling in legacy result formats.
+
+## 14) Practical review checklist before release
+
+- event impacts visible in effective capacity/demand rows,
+- imbalance spikes are explainable from detail data,
+- guide text matches actual mechanics,
+- no regression in round progression flow,
+- build/test smoke checks pass.

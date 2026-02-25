@@ -3,57 +3,69 @@
 Last updated: 2026-02-25  
 Audience: Trainers / Facilitators
 
-## 1) Trainer workflow
+## 1) Trainer objective
 
-1. Prepare cohort and assign campaigns/scenarios.
-2. Start a shared-market session.
-3. Monitor participation and round progression.
-4. Control pace (pause/resume/advance).
-5. Debrief with results and comparison views.
+Run sessions with clear pacing, stable operations, and high learning value.
 
-## 2) Key trainer pages
+## 2) Full facilitation flow
 
-- `/trainer`: cohort-centric trainer entry and management.
-- `/session-control`: live session control panel.
-- `/comparison`, `/leaderboard`, `/replay`, `/evaluation`: post-round and post-session analysis.
+1. Prepare cohort/campaign/scenario.
+2. Verify role/type setup and expectations.
+3. Launch briefing and active rounds.
+4. Monitor submissions and guide transitions.
+5. Debrief outcomes with causal clarity.
 
-## 3) Session start essentials
+## 3) Core control surfaces
 
-When starting a session:
-- Choose cohort, campaign, and scenario.
-- Verify allowed player types and optional type capacities.
-- Start in shared market mode for synchronized trainer-led rounds.
+- `/trainer` for setup and high-level session control.
+- `/session-control` for live operation.
+- `/leaderboard`, `/comparison`, `/replay`, `/evaluation` for discussion and wrap-up.
 
-## 4) Live controls during session
+## 4) Live controls and intended use
 
-Main controls include:
-- Start/briefing transition
-- Pause / Resume
-- Force round end
-- Advance round
-- Rewind round (where available)
-- Extend timer
-- End session
+- `Pause/Resume`: temporary instructional or technical hold.
+- `Extend timer`: preferred when many participants are close.
+- `Force end`: emergency fallback, use sparingly.
+- `Advance round`: normal progression in shared mode.
+- `Rewind`: controlled recovery use only.
 
-## 5) Shared-mode submit behavior
+## 5) Submit/waiting model in shared mode
 
-After players submit:
-- they see only player status list + waiting hint,
-- trainer advances to next phase.
+Players submit, then wait. Trainer advances.  
+Avoid long silent waits—announce transitions.
 
-Practical implication: keep round progression timely to avoid idle wait.
+## 6) Communication pattern
 
-## 6) Monitoring and communication
+Use short broadcasts:
+- timing reminders,
+- active event reminders,
+- next-step instructions,
+- transition notices.
 
-Track:
-- current round/status,
-- participant presence and type distribution,
-- submission progress,
-- session messages.
+## 7) Debrief structure per round
 
-Use broadcast messages for pacing and clarifications.
+1. KPI headline change,
+2. primary causal factor (event/timing/pricing/volume mismatch),
+3. one improvement action for next round.
 
-## 7) Troubleshooting
+## 8) Event-driven anomaly handling
 
-- If players are stuck waiting: verify session status and advance action.
-- If submissions are missing: verify player type assignment and round context.
+For sudden negative outcomes:
+- confirm event scope and duration,
+- review effective vs base capacity/demand,
+- map imbalance cost to affected hours,
+- explain controllable adjustment for next round.
+
+## 9) Troubleshooting
+
+- players stuck waiting: check status and trigger correct advance path,
+- missing submissions: validate role assignment and round context,
+- suspicious KPIs: compare top-level with hourly detail before escalation.
+
+## 10) Post-session note template
+
+Capture:
+- scenario and participant count,
+- top 3 learning outcomes,
+- technical issues and fixes,
+- scenario improvements for next run.

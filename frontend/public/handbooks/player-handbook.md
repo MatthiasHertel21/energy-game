@@ -3,80 +3,155 @@
 Last updated: 2026-02-25  
 Audience: Players
 
-## 1) What you do as a player
+## 1) Purpose of this guide
 
-In each round, you:
-- Review tasks/events and market phase availability.
-- Enter bids/forecasts per device (or per lot A/B/C when multi-bid is enabled).
-- Submit the round before timer expiry.
-- Review round results and continue.
+This guide helps you make better decisions during a session, not just click through screens.  
+You will learn:
+- what to do before each round,
+- how to read market timing correctly,
+- how to avoid expensive imbalance outcomes,
+- how to interpret your round report and adjust strategy.
 
-## 2) Main pages and statuses
+## 2) Round lifecycle (what happens in practice)
 
-- `Briefing`: scenario intro, role, devices, objectives.
-- `Running / Round Active`: full player workspace (tasks, devices, charts, market panel).
-- `Round Closing / Calculating`: waiting state while backend processes.
-- `Round Results`: KPI cards, explanations, and round interpretation.
-- `Scenario Complete`: final scenario summary.
+Each round follows the same basic loop:
+1. **Preparation**: read active task/events and check tradable hours.
+2. **Planning**: decide quantities and prices per device/lot.
+3. **Submission**: submit before timer ends.
+4. **Settlement**: backend clears markets and computes KPIs.
+5. **Review**: analyze round results and prepare your next move.
 
-## 3) Multiplayer submit behavior (shared market)
+### Quick decision checklist before submit
 
-After you submit in a multi-player session:
-- You now see only the player status list (name, player type, submit status).
-- You also see a waiting hint:
-  - “Please wait: The trainer will advance to the next phase.”
+- Did you check current round window and gate state (DA/ID)?
+- Are quantities realistic versus effective capacity/demand?
+- Are your lot prices intentional (not accidental leftovers)?
+- Do your key hours match expected market conditions?
 
-You cannot continue manually from this waiting state.
+## 3) Main pages and statuses
 
-## 4) Bid input and device views
+- `Briefing`: scenario context, your role, devices, objectives, and starting assumptions.
+- `Running / Round Active`: primary workspace for bids, charts, and market view.
+- `Round Closing / Calculating`: no edits, engine is processing outcomes.
+- `Round Results`: KPI cards, detail tables, and interpretation hints.
+- `Scenario Complete`: final summary and debrief screens.
 
-Depending on scenario/device settings:
-- **Single-series mode**: edit one hourly profile.
-- **Multi-bid mode**: edit lots A/B/C (price + hourly quantities).
+## 4) Shared-market behavior after submit
 
-Views:
-- **Bid Input**: lot prices and quantities.
-- **Device Chart**: interactive per-hour editing.
-- **Bid Overview**: stacked lot visualization with limit/reference lines.
+In trainer-led shared sessions, once you submit:
+- you see participant submit status,
+- you cannot advance the round yourself,
+- trainer controls progression.
 
-## 5) Market timing and gates
+Expected message: “Please wait: The trainer will advance to the next phase.”
 
-The game distinguishes Day-Ahead (DA) and Intraday (ID) availability per round/hour.
+## 5) Working with devices and bids
 
-Important effects:
-- Not all hours are editable in each round.
-- Some hours are locked by gate/freeze logic.
-- In Round 1, scenarios may use a DA special rule (if configured).
+### Single-series mode
 
-Use the market timeline/legend and hour status indicators to see what is currently tradable.
+- You edit one hourly quantity profile per device.
+- Best for quick baseline strategies.
 
-## 6) Market overview modal
+### Multi-bid mode (lots A/B/C)
 
-The market overview dialog title now indicates its scope:
-- all devices, or
-- one specific device.
+- You set **price + quantity** per lot.
+- Typical intent:
+  - **Lot A (Base)**: high probability / conservative price.
+  - **Lot B (Mid)**: conditional volume.
+  - **Lot C (Peak)**: opportunistic, price-sensitive part.
 
-This helps avoid confusion when comparing market structure with your own bids.
+### Three practical patterns
 
-## 7) Round results interpretation
+1. **Stability pattern**: large base lot, limited peak lot.  
+2. **Price-seeking pattern**: moderate base, bigger mid/peak spread.  
+3. **Risk-control pattern**: reduced offered quantity in uncertain/event rounds.
 
-Round results include role-aware explanations.
+## 6) Market timing, gate logic, and editable hours
 
-For consumers:
-- Cost and settlement language is consumer-specific.
-- Demand coverage can exceed 100% (for example over-procurement or balancing effects).
-- The UI explicitly explains this >100% case.
+Not every hour is tradable in every round. The timeline and hour status indicators are your source of truth.
 
-## 8) Best practices
+Important implications:
+- locked hours cannot be changed anymore,
+- freeze logic may restrict late edits,
+- DA and ID availability differ by round and scenario rules.
 
-- Submit early; avoid last-second edits.
-- Check each device’s effective limit and active market window.
-- For multi-bid: keep lot prices logically ordered unless your strategy requires otherwise.
-- In shared sessions, monitor the waiting list after submit and wait for trainer progression.
+If something is disabled, assume timing rule first (not a bug).
 
-## 9) Troubleshooting
+## 7) Events: how they should influence your decisions
 
-- If inputs appear disabled, check gate/freeze state and timer.
-- If no progress after submit in shared mode, wait for trainer action.
-- If data seems stale, refresh once; session state is server-driven.
-- If a chart looks unreadable, switch theme and report the page + screenshot.
+Events can modify capacity/demand with multiplier/additive logic before clearing.  
+Example: outage event with multiplier `0.2` means available capacity is heavily reduced.
+
+Player rule:
+- if capacity is event-reduced, lower offered quantities immediately,
+- avoid selling/buying volumes you likely cannot physically deliver/consume,
+- verify effective capacity row in detail report after the round.
+
+## 8) Reading round results correctly
+
+### KPI cards (top level)
+
+- **Revenue / Costs**: settled market value.
+- **Profit / Net result**: revenue minus cost components.
+- **Dispatched/Consumed MWh**: physically settled quantity.
+- **Imbalance Cost**: penalty/cost from mismatch between planned and actual.
+
+### Why high imbalance happens
+
+Common causes:
+- event-driven capacity drop,
+- aggressive quantities despite lower effective capacity,
+- large plan vs actual mismatch across key hours.
+
+### How to use the detail table
+
+Check these rows in order:
+1. `Base Capacity/Demand` vs `Effective Capacity/Demand`
+2. `Offered/Demanded` vs `Dispatched/Consumed`
+3. `Imbalance (MWh)` and `Imbalance Cost`
+4. `Net Revenue/Cost`
+
+If effective capacity is much lower than base and imbalance is high, your next round should reduce risk exposure.
+
+## 9) Fast strategy adaptation after a bad round
+
+If profit drops due to imbalance:
+- cut risky volume in affected hours,
+- keep core volume in safer lot/price range,
+- re-check event scope (your role/device or all players),
+- prioritize deliverability over upside in outage rounds.
+
+If dispatch is too low:
+- compare your lot prices with SMP/IDP in the report,
+- adjust price levels where bids were priced out,
+- separate “must clear” and “opportunistic” quantities across lots.
+
+## 10) Common mistakes and how to avoid them
+
+- **Mistake**: leaving old quantities active after an event starts.  
+  **Fix**: always re-open key devices at round start and check event banner.
+
+- **Mistake**: treating base capacity as guaranteed.  
+  **Fix**: use effective capacity as operational limit.
+
+- **Mistake**: focusing only on revenue and ignoring imbalance.  
+  **Fix**: track imbalance cost per hour in every result review.
+
+- **Mistake**: submitting too late without sanity check.  
+  **Fix**: reserve last 60–90 seconds for a cross-device review.
+
+## 11) Troubleshooting
+
+- Inputs disabled: verify round status, gate/freeze state, and timer.
+- Waiting screen after submit: expected in shared mode; trainer advances.
+- Values look stale: reload once and re-open session.
+- Unexpected KPI numbers: inspect hourly imbalance and event impact first.
+
+## 12) Personal improvement routine (recommended)
+
+After each round, capture three notes:
+1. one thing that worked,
+2. one source of avoidable cost,
+3. one concrete adjustment for next round.
+
+This creates a repeatable learning loop and usually improves results after 2–3 rounds.

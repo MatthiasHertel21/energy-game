@@ -3,41 +3,59 @@
 Last updated: 2026-02-25  
 Audience: Platform Administrators
 
-## 1) Admin responsibilities
+## 1) Admin objective
 
-- User and role administration
-- Session/platform oversight
-- Operational reliability (deployments, backups, monitoring)
-- Security and access governance
+Keep the platform secure, reliable, and recoverable while enabling smooth trainer/player operations.
 
-## 2) Documentation governance
+## 2) Responsibility areas
 
-Admin users can access all guides from sidebar documentation:
-- Player Guide
-- Trainer Guide
-- Designer Guide
-- Admin Guide
-- Engine Guide
+- identity and role governance,
+- release/deploy operations,
+- backup/restore integrity,
+- incident response and communication,
+- documentation quality control.
 
-Guides are loaded from `/handbooks/*.md`; keep content synchronized with code behavior.
+## 3) Operational baseline
 
-## 3) Operational workflow
+Daily checks:
+- service health,
+- error spikes,
+- recent deploy status,
+- active session anomalies,
+- backup status.
 
-Recommended release sequence:
-1. Build frontend/backend.
-2. Deploy to dev/staging.
-3. Smoke-test key flows (submit/waiting, trainer advance, round results, docs pages).
+## 4) Release process (recommended)
 
-## 4) Security and reliability baseline
+1. Build and local verify.
+2. Deploy to staging.
+3. Run smoke tests (login, submit/waiting, trainer advance, round results, docs).
+4. Deploy production.
+5. Confirm post-deploy health.
 
-- Enforce strong password policies and least-privilege role assignment.
-- Keep backups and logs access-restricted.
-- Monitor API availability and websocket behavior.
-- Maintain rollback readiness for production incidents.
+## 5) Security baseline
 
-## 5) Incident response (minimal)
+- enforce least privilege,
+- protect admin credentials/keys,
+- restrict log and backup access,
+- avoid exposing sensitive tokens in diagnostics.
 
-- Scope impact (role/page/session).
-- Check latest deploy and logs.
-- Reproduce on dev with known session/scenario.
-- Apply focused fix, re-validate build, communicate outcome.
+## 6) Incident handling
+
+1. Triage scope and severity.
+2. Stabilize (pause/rollback/contain).
+3. Diagnose with logs + session context.
+4. Apply targeted fix and verify key flows.
+5. Document and communicate outcome.
+
+## 7) Documentation governance
+
+Guides under `/handbooks/*.md` and `docs/guide/*` should match current behavior.  
+Update docs alongside feature/UX changes to avoid operational confusion.
+
+## 8) Weekly admin review
+
+- top incidents,
+- open risks,
+- role/access changes,
+- deployment outcomes,
+- required documentation updates.

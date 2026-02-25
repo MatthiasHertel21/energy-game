@@ -3,70 +3,82 @@
 Last updated: 2026-02-25  
 Audience: Players
 
-## 1) What you do as a player
+## 1) Objective
 
-In each round, you:
-- Review tasks/events and market phase availability.
-- Enter bids/forecasts per device (or per lot A/B/C when multi-bid is enabled).
-- Submit the round before timer expiry.
-- Review round results and continue.
+This guide explains how to make better round decisions, not just how to navigate the UI.  
+Focus areas:
+- timing and gates,
+- deliverability vs offered volume,
+- event-aware risk management,
+- KPI interpretation and next-round adaptation.
 
-## 2) Main pages and statuses
+## 2) Round workflow
 
-- `Briefing`: scenario intro, role, devices, objectives.
-- `Running / Round Active`: full player workspace (tasks, devices, charts, market panel).
-- `Round Closing / Calculating`: waiting state while backend processes.
-- `Round Results`: KPI cards, explanations, and round interpretation.
-- `Scenario Complete`: final scenario summary.
+1. Check active round context (events + tradable hours).
+2. Build/adjust bids per device.
+3. Run a quick sanity pass (capacity, pricing, timing).
+4. Submit before timer expires.
+5. Analyze round report and apply one concrete adjustment.
 
-## 3) Multiplayer submit behavior (shared market)
+## 3) Shared-market behavior after submit
 
-After you submit in a multi-player session:
-- You now see only the player status list (name, player type, submit status).
-- You also see a waiting hint:
-  - “Please wait: The trainer will advance to the next phase.”
+In trainer-led sessions, after submit you enter waiting mode:
+- submit status list is shown,
+- you cannot advance manually,
+- trainer drives progression.
 
-You cannot continue manually from this waiting state.
+This is expected behavior.
 
-## 4) Bid input and device views
+## 4) Device and bid modes
 
-Depending on scenario/device settings:
-- **Single-series mode**: edit one hourly profile.
-- **Multi-bid mode**: edit lots A/B/C (price + hourly quantities).
+- **Single-series**: one quantity profile.
+- **Multi-bid**: lots A/B/C with price+quantity.
 
-Views:
-- **Bid Input**: lot prices and quantities.
-- **Device Chart**: interactive per-hour editing.
-- **Bid Overview**: stacked lot visualization with limit/reference lines.
+Typical lot intent:
+- A = core volume,
+- B = conditional volume,
+- C = opportunistic/risk volume.
 
 ## 5) Market timing and gates
 
-The game distinguishes Day-Ahead (DA) and Intraday (ID) availability per round/hour.
+DA and ID availability vary by round and hour.  
+If an hour is locked, edits are blocked by timing logic (not necessarily an error).
 
-Important effects:
-- Not all hours are editable in each round.
-- Some hours are locked by gate/freeze logic.
-- In Round 1, scenarios may use a DA special rule (if configured).
+Always validate tradable status before spending time on edits.
 
-Use the market timeline/legend and hour status indicators to see what is currently tradable.
+## 6) Events and decision impact
 
-## 6) Market overview modal
+Events may reduce capacity or alter demand before clearing.  
+If effective capacity drops, keep offered volume realistic to avoid imbalance penalties.
 
-The market overview dialog title indicates its scope:
-- all devices, or
-- one specific device.
+## 7) Reading round results
 
-## 7) Round results interpretation
+Use this order:
+1. KPI cards (profit/cost/imbalance headline),
+2. effective vs base capacity/demand,
+3. offered vs dispatched/consumed,
+4. hourly imbalance and imbalance cost.
 
-Round results include role-aware explanations.
+If imbalance dominates the round, reduce exposure in affected hours next round.
 
-For consumers:
-- Cost and settlement language is consumer-specific.
-- Demand coverage can exceed 100% (for example over-procurement or balancing effects).
-- The UI explicitly explains this >100% case.
+## 8) Rapid recovery strategy
 
-## 8) Troubleshooting
+After a bad round:
+- lower risky volume where event pressure is active,
+- separate must-clear and optional quantity by lot,
+- use previous SMP/IDP observations to recalibrate prices,
+- prioritize deliverability over upside.
 
-- If inputs appear disabled, check gate/freeze state and timer.
-- If no progress after submit in shared mode, wait for trainer action.
-- If data seems stale, refresh once; session state is server-driven.
+## 9) Frequent mistakes
+
+- leaving old bids unchanged after new events,
+- offering against base capacity instead of effective capacity,
+- optimizing revenue while ignoring imbalance cost,
+- submitting without final cross-device sanity check.
+
+## 10) Troubleshooting
+
+- Inputs disabled: check gate/timer/session status.
+- Waiting after submit: expected in shared trainer-led mode.
+- Stale values: reload once and reopen session.
+- Confusing KPI: inspect hourly detail and event impact first.

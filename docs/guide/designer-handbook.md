@@ -3,52 +3,55 @@
 Last updated: 2026-02-25  
 Audience: Scenario/Campaign Designers
 
-## 1) Designer scope
+## 1) Design objective
 
-Designers create and maintain:
-- campaigns,
-- scenarios,
-- market/device/event/challenge configurations,
-- player-type mappings.
+Create scenarios where decisions are meaningful, outcomes are explainable, and learning goals are measurable.
 
-## 2) Core pages
+## 2) Design scope
 
-- `/designer` and related designer tabs/pages.
-- `/kse` (scenario editor) for detailed configuration.
-- campaign/scenario lists for clone/export/import workflows.
+You own:
+- scenario structure and pacing,
+- market mechanics and timing,
+- role/device composition,
+- events, challenges, and scoring calibration.
 
-## 3) Scenario structure (current)
+## 3) Configuration layers
 
-A scenario config typically contains:
-- `general`,
-- `market` and `markets`,
-- `grid`,
-- `environment`,
-- `devices`,
-- `player_types`,
-- `events`,
-- `challenges`,
-- `scoring`.
+Treat the scenario as layers:
+- `general` (time model),
+- `market/markets` (economic mechanics),
+- `devices/player_types` (capabilities),
+- `events` (dynamic pressure),
+- `challenges/scoring` (behavior incentives).
 
-## 4) Market availability model
+## 4) Event design quality
 
-Per-round market availability uses `markets.<market>.trading` arrays.
+Events should:
+- activate at teachable moments,
+- target intended role/device scope,
+- create adaptation pressure without making recovery impossible.
 
-Observed values in current codebase:
-- `on`
-- `off`
-- `market_code`
+Use outage/demand/boost events intentionally and verify effect visibility in detail reports.
 
-## 5) Authoring checklist
+## 5) Validation before rollout
 
-- Confirm `rounds × round_span_hours` timeline.
-- Validate gate/freeze settings.
-- Ensure all `player_type.devices` IDs exist.
-- Verify event/challenge target IDs and trigger rounds.
-- Re-test one full run after structural changes.
+- static ID/reference checks,
+- one-role dry run,
+- multi-round run with event checkpoints,
+- shared-mode trainer flow check,
+- KPI-to-detail reconciliation review.
 
-## 6) Current UX assumptions
+## 6) Common pitfalls
 
-- Shared multiplayer rounds are trainer-advanced.
-- After submit in shared mode, players see only submit-status list.
-- Round results include clearer role-specific KPI explanations.
+- target ID mismatches,
+- unrealistic timing/gate combinations,
+- challenge targets disconnected from controllable actions,
+- event intensity that overwhelms strategy.
+
+## 7) Governance and versioning
+
+For each revision document:
+- changed fields,
+- intended effect,
+- validation evidence,
+- rollback reference export.

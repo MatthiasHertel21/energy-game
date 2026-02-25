@@ -3,86 +3,143 @@
 Last updated: 2026-02-25  
 Audience: Scenario/Campaign Designers
 
-## 1) Designer scope
+## 1) What good scenario design means here
 
-Designers create and maintain:
-- campaigns,
-- scenarios,
-- market/device/event/challenge configurations,
-- player-type mappings.
+A good scenario is not only technically valid; it creates clear learning signals:
+- player decisions should visibly affect outcomes,
+- events should create explainable, not random-feeling shifts,
+- KPI results should be interpretable in debrief.
 
-## 2) Core pages
+## 2) Designer responsibilities
 
-- `/designer` and related designer tabs/pages.
-- `/kse` (scenario editor) for detailed configuration.
-- campaign/scenario lists for clone/export/import workflows.
+Designers own:
+- campaign and scenario structure,
+- market timing and gate logic,
+- device portfolio realism,
+- event/challenge balance,
+- role fairness and educational difficulty.
 
-## 3) Scenario structure (current)
+## 3) Main tooling surfaces
 
-A scenario config typically contains:
-- `general` (rounds, timing, horizons, gate settings),
-- `market` and `markets` (rules and per-round trading availability),
-- `grid`,
-- `environment`,
-- `devices`,
-- `player_types`,
-- `events`,
-- `challenges`,
-- `scoring`.
+- `/designer`: campaign/scenario management.
+- `/kse`: detailed scenario configuration (general, market, events, player types, challenges, etc.).
+- Export/import workflow: reproducibility and review with JSON snapshots.
 
-## 4) Market availability model
+## 4) Scenario architecture (recommended mental model)
 
-Per-round market availability uses `markets.<market>.trading` arrays.
+Treat config blocks as separate design layers:
+- `general`: time mechanics and round structure.
+- `market` + `markets`: price/volume envelope and DA/ID availability.
+- `devices` + `player_types`: who controls which assets.
+- `events`: controlled disruption and adaptation pressure.
+- `challenges` + `scoring`: what behavior is rewarded.
+- `environment` + `grid`: context realism and variability.
 
-Observed values in current codebase:
-- `on`
-- `off`
-- `market_code` (gated/limited by logic)
+Design quality improves when each layer has a clear teaching purpose.
 
-Design recommendation:
-- align trading arrays with your intended DA/ID teaching sequence,
-- test the resulting hour-status behavior in the player view.
+## 5) Timing and market availability design
 
-## 5) Devices and player types
+Critical relationships:
+- `rounds × round_span_hours` defines total scenario horizon,
+- gate/freeze settings define what can still be edited,
+- `markets.<key>.trading` controls DA/ID opportunities per round.
 
-Each player type references device IDs.
+Practical guidance:
+- start simple in early rounds,
+- increase decision pressure in middle rounds,
+- avoid introducing too many mechanism shifts at once.
 
-Common device groups:
-- thermal generators,
-- renewables,
-- storage,
-- load/consumer assets.
+## 6) Devices and player type mapping
 
-Keep naming and IDs stable once sessions are in use; it reduces reporting and replay confusion.
+Each `player_type` should have a coherent strategic identity:
+- asset mix supports meaningful trade-offs,
+- capacities and costs create differentiated options,
+- naming is explicit enough for debrief discussion.
 
-## 6) Events and challenges
+Do not rename IDs in active ecosystems unless migration is planned.
 
-Events:
-- trigger by round,
-- can target all players or specific player types,
-- can use multipliers/additives and durations.
+## 7) Event design patterns
 
-Challenges:
-- role-specific KPIs,
-- optional/required objectives,
-- clear target thresholds.
+### A) Capability shock (e.g., outage)
 
-## 7) Authoring checklist
+- Use multiplier < 1 on targeted role/device.
+- Ensure players can react (not pure unavoidable punishment).
 
-- Confirm `rounds × round_span_hours` matches your intended timeline.
-- Validate `freeze_hours`, `day_ahead_gate_hour`, `id_gate_base_hour` coherence.
-- Check every `player_type.devices` ID exists in `devices`.
-- Review event/challenge target IDs for typos.
-- Verify price floor/cap and base volume realism.
+### B) Demand shock
 
-## 8) Export/import and versioning
+- Increase demand for specific roles/time windows.
+- Pair with clear guidance in task text.
 
-- Export scenarios to JSON for review and backup.
-- Keep a version note in scenario description/objectives.
-- Re-test one full run after any structural change (devices, timing, market arrays).
+### C) Opportunity event
 
-## 9) Current UX assumptions to respect
+- Positive renewable or flexibility event.
+- Encourage tactical repositioning, not passive gain.
 
-- Shared multiplayer rounds are trainer-advanced.
-- After submit in shared mode, players see only submit-status list.
-- Round results include clearer role-specific KPI explanations.
+### Event quality checks
+
+- trigger timing aligns with round narrative,
+- target scope is unambiguous (`all`, `player`, `device`),
+- duration is long enough to react but short enough to learn.
+
+## 8) Challenge and scoring calibration
+
+Challenges should motivate role-appropriate behavior:
+- producers: profitability and controllable risk,
+- consumers: coverage and cost discipline,
+- mixed roles: balance and adaptability.
+
+Scoring weights should match learning goals.  
+If imbalance awareness is central, keep imbalance weight meaningful relative to profit.
+
+## 9) Balancing realism and playability
+
+Too easy:
+- outcomes insensitive to decisions,
+- no meaningful event pressure,
+- all players converge to same strategy.
+
+Too hard:
+- persistent negative outcomes without clear recovery path,
+- timing complexity exceeds session pacing,
+- event effects dominate all strategy choices.
+
+Target: high signal, manageable complexity.
+
+## 10) Validation workflow before release
+
+1. **Static validation**
+	- references and IDs are consistent,
+	- role/device mappings complete,
+	- numeric ranges plausible.
+2. **Single-player dry run**
+	- test one role through multiple rounds,
+	- confirm KPI and detail consistency.
+3. **Shared-mode simulation**
+	- test trainer flow, submit waiting, round transitions.
+4. **Debrief sanity check**
+	- verify outcomes are explainable from available data.
+
+## 11) Versioning and change governance
+
+For each scenario revision, record:
+- what changed,
+- why it changed,
+- expected impact on behavior,
+- validation evidence.
+
+Use export snapshots for rollback and peer review.
+
+## 12) Common design pitfalls
+
+- Event target mismatch (wrong role ID).
+- Market arrays inconsistent with intended teaching timeline.
+- Challenges disconnected from controllable player actions.
+- Device capacity/cost values that make one strategy dominant.
+
+## 13) Practical pre-launch checklist
+
+- Timeline coherent and understandable.
+- Role balance acceptable across at least one full run.
+- Event effects visible in detail outputs.
+- KPI interpretation text still makes sense for your mechanics.
+- Trainer can explain top 3 expected failure modes.

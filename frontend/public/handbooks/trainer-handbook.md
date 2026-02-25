@@ -3,77 +3,148 @@
 Last updated: 2026-02-25  
 Audience: Trainers / Facilitators
 
-## 1) Trainer workflow
+## 1) Goal of trainer facilitation
 
-1. Prepare cohort and assign campaigns/scenarios.
-2. Start a shared-market session.
-3. Monitor participation and round progression.
-4. Control pace (pause/resume/advance).
-5. Debrief with results and comparison views.
+Your job is to keep the simulation both **didactic** and **operationally stable**:
+- participants should understand why outcomes happen,
+- rounds should progress with minimal idle time,
+- interventions should be transparent and documented.
 
-## 2) Key trainer pages
+## 2) End-to-end trainer workflow
 
-- `/trainer`: cohort-centric trainer entry and management.
-- `/session-control`: live session control panel.
-- `/comparison`, `/leaderboard`, `/replay`, `/evaluation`: post-round and post-session analysis.
+1. **Pre-session setup**
+	- choose cohort/campaign/scenario,
+	- verify role/type configuration,
+	- communicate learning objectives.
+2. **Session launch**
+	- start briefing,
+	- confirm all participants selected types.
+3. **Round operations**
+	- monitor submit status,
+	- announce timing milestones,
+	- advance or intervene as needed.
+4. **Result debrief per round**
+	- explain major KPI drivers,
+	- connect events/gates to outcomes.
+5. **Final debrief**
+	- compare strategies,
+	- extract transferable lessons.
 
-## 3) Session start essentials
+## 3) Core trainer pages and their use
 
-When starting a session:
-- Choose cohort, campaign, and scenario.
-- Verify allowed player types and optional type capacities.
-- Start in shared market mode for synchronized trainer-led rounds.
+- `/trainer`: session creation, monitoring entry point, high-level controls.
+- `/session-control`: live operation panel during active rounds.
+- `/leaderboard`: ranking and performance overview.
+- `/comparison`: cross-player KPI comparison.
+- `/replay`: timeline-like recap of outcomes.
+- `/evaluation`: discussion-ready KPI summaries.
 
-## 4) Live controls during session
+## 4) Session start checklist (must-do)
 
-Main controls include:
-- Start/briefing transition
-- Pause / Resume
-- Force round end
-- Advance round
-- Rewind round (where available)
-- Extend timer
-- End session
+Before pressing start:
+- scenario version is correct,
+- allowed player types are intentional,
+- capacity limits per type (if used) are valid,
+- participants know round duration and trainer control model.
 
-Use force/rewind controls carefully (best for facilitation or recovery cases).
+Recommended opening message:
+“After submit, you will wait for trainer progression. Please use waiting time to note one risk and one next-round adjustment.”
 
-## 5) What players see after submit (shared mode)
+## 5) Live controls: when to use what
 
-After players submit, they now see:
-- only a player status list (name, player type, submitted/pending),
-- plus a waiting hint that the trainer advances to the next phase.
+- **Pause**: use for clarification, technical issue, or late join alignment.
+- **Resume**: continue after issue is resolved.
+- **Force round end**: emergency only (time overrun, severe blockage).
+- **Advance round**: normal progression once enough submissions are in.
+- **Rewind round**: controlled correction in special facilitation cases.
+- **Extend timer**: if many participants are close to submit.
+- **End session**: only after explicit debrief closure.
 
-Implication for facilitation:
-- round progression is explicitly trainer-driven,
-- avoid long idle time before advancing.
+Rule of thumb: prefer `Extend timer` over `Force end` if learning value would be lost.
 
-## 6) Monitoring and communication
+## 6) Submit-phase behavior (shared mode)
 
-Use trainer monitoring to track:
-- current round/status,
-- participant presence and type distribution,
-- submission progress,
-- session messages.
+After participants submit, they see waiting status and cannot self-advance.  
+Trainer implication:
+- monitor pending users,
+- avoid dead air,
+- announce expected advance timing.
 
-Broadcast messages can be used for pacing instructions and clarifications.
+Suggested pacing:
+- if >80% submitted and no blockers, prepare advance,
+- if repeated blockers, pause and clarify one concrete action.
 
-## 7) Results and debrief
+## 7) Communication protocol during rounds
 
-Use:
-- round and final leaderboards,
-- comparison views,
-- replay/evaluation pages,
-to discuss decisions, market timing, and KPI outcomes.
+Use short, structured broadcasts:
+- **Timing**: “5 minutes left / 2 minutes left.”
+- **Focus**: “Check effective capacity before submit.”
+- **Events**: “Outage active this round for Classic Provider.”
+- **Transition**: “Submitting now; advancing in ~30s.”
 
-## 8) Facilitation checklist
+Avoid long tactical coaching in live rounds; keep guidance neutral across participants.
 
-- Confirm everyone has selected a type before active rounds.
-- Announce key gate transitions (DA vs ID availability).
-- Advance promptly once submission status is complete.
-- Keep a backup plan (pause + brief explanation) for technical delays.
+## 8) Debrief framework per round
 
-## 9) Troubleshooting
+Use a fixed 4-step structure:
+1. **Outcome snapshot**: top KPI movement (profit/cost/imbalance).
+2. **Causal driver**: event, pricing, gate timing, or bidding behavior.
+3. **Decision quality**: what was controllable vs external.
+4. **Next-round adjustment**: one actionable change per role.
 
-- If players are stuck waiting: check session status and advance action.
-- If submissions are missing: verify player type assignment and active round context.
-- If outputs look inconsistent: refresh status and validate session ID/round.
+Example trainer prompt:
+“Which hours drove imbalance cost, and was that due to event-driven capacity or your bid sizing?”
+
+## 9) Interpreting event-driven anomalies
+
+If one role suddenly shows large negative profit/imbalance:
+- confirm active event scope (`all`, `player`, `device`),
+- check effective capacity/demand changes in detail tables,
+- compare offered vs deliverable volumes,
+- show how imbalance cost mathematically dominated net result.
+
+This turns “unexpected loss” into a clear learning moment.
+
+## 10) Facilitation quality checklist
+
+During operation:
+- no unexplained long waits,
+- transitions announced,
+- interventions minimal but timely,
+- every forced action documented.
+
+After session:
+- summarize top 3 learnings,
+- capture recurring confusion points,
+- feed improvements back into scenario design.
+
+## 11) Incident handling playbook
+
+### A) Players stuck in waiting
+
+- check session status,
+- verify round not already advancing,
+- trigger proper trainer action (`advance`/`resume`).
+
+### B) Missing submissions
+
+- verify player type was selected,
+- confirm user is in current session,
+- ask player to refresh and re-check active round.
+
+### C) Suspicious results
+
+- re-open same session/round,
+- check event list + KPI breakdown,
+- validate with detail rows before escalating.
+
+## 12) Post-session documentation (recommended)
+
+Capture in a short note:
+- scenario ID and date,
+- number of participants,
+- major outcome pattern,
+- technical issues,
+- suggested scenario or UX improvements.
+
+This builds a reusable facilitation knowledge base over time.
