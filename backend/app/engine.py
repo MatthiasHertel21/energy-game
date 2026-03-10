@@ -2390,6 +2390,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             # This enforces physical constraints (e.g., solar = 0 at night)
             # NOTE: Only for GENERATORS! Consumers don't have availability constraints.
             actual_before_envelope = dispatched
+            actual_constrained = 0.0
+            device_ids_for_noise = set()
             
             if is_consumer:
                 # Consumers: actual = dispatched with consumption noise
@@ -2496,7 +2498,6 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             })
             elif enable_bidding and pid in hour_bid_dispatch:
                 # Generators: Per-device envelope enforcement for multi-bid mode
-                actual_constrained = 0.0
                 device_ids_for_envelope = set(hour_bid_dispatch[pid].keys())
                 if round_num > 1 and id_delta_round and da_committed_by_device:
                     device_ids_for_envelope.update(da_committed_by_device.keys())
@@ -2516,6 +2517,47 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         
                         actual_constrained += device_actual
                 actual = actual_constrained
+                device_ids_for_noise = set(device_ids_for_envelope)
+            elif round_num > 1 and id_delta_round:
+                # ID-delta carry-over edge case:
+                # If player has committed per-device dispatch (DA baseline and/or device-level dispatched)
+                # but no hour_bid_dispatch entry for this hour, do NOT use global min-availability fallback.
+                # Compute actual from player's committed devices with device-level availability.
+                device_ids_for_envelope = set(da_committed_by_device.keys())
+                for device_id in player_device_ids:
+                    try:
+                        dispatched_h = float(per_device_hourly_dispatched.get(device_id, [0.0] * display_span)[hour_offset] or 0.0)
+                    except Exception:
+                        dispatched_h = 0.0
+                    if dispatched_h > 0.0:
+                        device_ids_for_envelope.add(device_id)
+
+                if device_ids_for_envelope:
+                    for device_id in device_ids_for_envelope:
+                        try:
+                            device_dispatched = float(per_device_hourly_dispatched.get(device_id, [0.0] * display_span)[hour_offset] or 0.0)
+                        except Exception:
+                            device_dispatched = 0.0
+                        if device_dispatched <= 0.0:
+                            continue
+
+                        device = next((d for d in devices_cfg if d.get("id") == device_id), None)
+                        availability = calculate_realistic_availability(device, hour_of_day, config) if device else 1.0
+                        max_available = device_dispatched * availability
+                        device_actual = min(device_dispatched, max_available)
+                        actual_constrained += device_actual
+
+                    actual = actual_constrained
+                    device_ids_for_noise = set(device_ids_for_envelope)
+                else:
+                    # No player-specific committed devices: keep legacy aggregate fallback
+                    min_availability = 1.0
+                    for device in devices_cfg:
+                        avail = calculate_realistic_availability(device, hour_of_day, config)
+                        if avail < min_availability:
+                            min_availability = avail
+                    max_available = dispatched * min_availability
+                    actual = min(dispatched, max_available)
             else:
                 # Generators: For aggregate mode, apply weighted average availability
                 # (Conservative: use minimum availability of any renewable in config)
@@ -2536,11 +2578,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 actual = max(0.0, actual + noise)
                 
                 # Update per-device actual with event and noise applied (proportionally)
-                if enable_bidding and pid in hour_bid_dispatch:
-                    device_ids_for_noise = set(hour_bid_dispatch[pid].keys())
-                    if round_num > 1 and id_delta_round and da_committed_by_device:
-                        device_ids_for_noise.update(da_committed_by_device.keys())
-
+                if device_ids_for_noise:
                     for device_id in device_ids_for_noise:
                         device_dispatched = 0.0
                         if device_id in per_device_hourly_dispatched:
@@ -2555,46 +2593,47 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             device_actual_with_noise = 0.0
                         
                         # Track device actual with noise applied
-                        if device_id in per_device_hourly_actual:
-                            per_device_hourly_actual[device_id][hour_offset] = device_actual_with_noise
-                            
-                            # NEW: Track balancing (imbalance) per device per hour
-                            # For ID delta rounds, imbalance is against DA + ID total dispatch
-                            if absolute_clearing_round:
-                                # Absolute-clearing rounds: pure DAM-style dispatch in this round
-                                da_dispatched_for_device = device_dispatched
+                        if device_id not in per_device_hourly_actual:
+                            per_device_hourly_actual[device_id] = [0.0] * display_span
+                        per_device_hourly_actual[device_id][hour_offset] = device_actual_with_noise
+
+                        # NEW: Track balancing (imbalance) per device per hour
+                        # For ID delta rounds, imbalance is against DA + ID total dispatch
+                        if absolute_clearing_round:
+                            # Absolute-clearing rounds: pure DAM-style dispatch in this round
+                            da_dispatched_for_device = device_dispatched
+                            id_dispatched_for_device = 0.0
+                        else:
+                            # ID delta rounds: DA baseline (committed) + ID delta (net minus baseline)
+                            da_dispatched_for_device = float((da_committed_by_device or {}).get(device_id, 0.0) or 0.0)
+                            id_dispatched_for_device = float(device_dispatched) - da_dispatched_for_device
+                            if abs(id_dispatched_for_device) < 0.000001:
                                 id_dispatched_for_device = 0.0
-                            else:
-                                # ID delta rounds: DA baseline (committed) + ID delta (net minus baseline)
-                                da_dispatched_for_device = float((da_committed_by_device or {}).get(device_id, 0.0) or 0.0)
-                                id_dispatched_for_device = float(device_dispatched) - da_dispatched_for_device
-                                if abs(id_dispatched_for_device) < 0.000001:
-                                    id_dispatched_for_device = 0.0
-                            
-                            # Total committed = DA (Round 1) + ID (current round)
-                            total_dispatched = da_dispatched_for_device + id_dispatched_for_device
-                            device_imbalance_mwh = device_actual_with_noise - total_dispatched
-                            
-                            if device_imbalance_mwh > 0:  # Over-delivery
-                                device_imbalance_cost = device_imbalance_mwh * 1200  # up_price
-                            elif device_imbalance_mwh < 0:  # Under-delivery
-                                device_imbalance_cost = abs(device_imbalance_mwh) * 800  # down_price
-                            else:
-                                device_imbalance_cost = 0.0
-                            
-                            if device_id not in per_device_hourly_balancing:
-                                per_device_hourly_balancing[device_id] = []
-                            per_device_hourly_balancing[device_id].append({
-                                'hour_idx': hour_idx,
-                                'hour_offset': hour_offset,
-                                'da_dispatched_mwh': round(da_dispatched_for_device, 3),
-                                'id_dispatched_mwh': round(id_dispatched_for_device, 3),
-                                'total_dispatched_mwh': round(total_dispatched, 3),
-                                'actual_mwh': round(device_actual_with_noise, 3),
-                                'imbalance_mwh': round(device_imbalance_mwh, 3),
-                                'balancing_cost_zar': round(device_imbalance_cost, 2),
-                                'balancing_price': 1200 if device_imbalance_mwh > 0 else (800 if device_imbalance_mwh < 0 else 0)
-                            })
+
+                        # Total committed = DA (Round 1) + ID (current round)
+                        total_dispatched = da_dispatched_for_device + id_dispatched_for_device
+                        device_imbalance_mwh = device_actual_with_noise - total_dispatched
+
+                        if device_imbalance_mwh > 0:  # Over-delivery
+                            device_imbalance_cost = device_imbalance_mwh * 1200  # up_price
+                        elif device_imbalance_mwh < 0:  # Under-delivery
+                            device_imbalance_cost = abs(device_imbalance_mwh) * 800  # down_price
+                        else:
+                            device_imbalance_cost = 0.0
+
+                        if device_id not in per_device_hourly_balancing:
+                            per_device_hourly_balancing[device_id] = []
+                        per_device_hourly_balancing[device_id].append({
+                            'hour_idx': hour_idx,
+                            'hour_offset': hour_offset,
+                            'da_dispatched_mwh': round(da_dispatched_for_device, 3),
+                            'id_dispatched_mwh': round(id_dispatched_for_device, 3),
+                            'total_dispatched_mwh': round(total_dispatched, 3),
+                            'actual_mwh': round(device_actual_with_noise, 3),
+                            'imbalance_mwh': round(device_imbalance_mwh, 3),
+                            'balancing_cost_zar': round(device_imbalance_cost, 2),
+                            'balancing_price': 1200 if device_imbalance_mwh > 0 else (800 if device_imbalance_mwh < 0 else 0)
+                        })
             
             # Settlement mode:
             # - absolute_clearing_round: normal revenue at current price

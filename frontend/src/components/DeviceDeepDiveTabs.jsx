@@ -35,6 +35,9 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   const isIdmRound = currentRound > 1
   const isConsumer = roleType === 'consumer'
   const roundLevelIdp = Number(my_result?.idp)
+  const roundLevelDaPrice = Number(
+    my_result?.kpis?.hourly_breakdown?.find((entry) => entry?.da_price_zar !== undefined && entry?.da_price_zar !== null)?.da_price_zar
+  )
 
   const getTradingStatusForRound = (marketKey) => {
     const marketsCfg = scenario?.config?.markets || {}
@@ -416,10 +419,17 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     
     const smp = hour.smp || 0
     const hourlyIdTradeCount = Number(hour.id_trade_count ?? 0)
+    const backendDaPrice = Number(deviceBreakdown.da_price_zar)
+    const backendIdPrice = Number(deviceBreakdown.id_price_zar)
+    const damPrice = Number.isFinite(backendDaPrice)
+      ? backendDaPrice
+      : (Number.isFinite(roundLevelDaPrice) ? roundLevelDaPrice : smp)
     const idp = hourlyIdTradeCount > 0
-      ? ((hour.idp !== undefined && hour.idp !== null)
+      ? ((Number.isFinite(backendIdPrice) && backendIdPrice > 0)
+        ? backendIdPrice
+        : ((hour.idp !== undefined && hour.idp !== null)
           ? Number(hour.idp)
-          : (Number.isFinite(roundLevelIdp) ? roundLevelIdp : smp))
+          : (Number.isFinite(roundLevelIdp) ? roundLevelIdp : smp)))
       : null
     // Revenue: always prefer backend canonical settlement values (DA+ID), otherwise fallback.
     const backendDaRevenue = Number(deviceBreakdown.da_revenue_zar)
@@ -428,7 +438,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
 
     const revenue_DAM = Number.isFinite(backendDaRevenue)
       ? backendDaRevenue
-      : (totalDispatched_DAM * smp)
+      : (totalDispatched_DAM * damPrice)
 
     const revenue_IDM = Number.isFinite(backendIdRevenue)
       ? backendIdRevenue
@@ -471,6 +481,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       lotC_DAM,
       totalOffered_DAM,
       totalDispatched_DAM,
+      damPrice,
       smp,
       revenue_DAM,
       // IDM
@@ -538,6 +549,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     hasLotA_DAM: damLotA.hasPrice,
     hasLotB_DAM: damLotB.hasPrice,
     hasLotC_DAM: damLotC.hasPrice,
+    avgDamPrice: hourlyData.filter(h => h.damPrice > 0).reduce((sum, h) => sum + h.damPrice, 0) / (hourlyData.filter(h => h.damPrice > 0).length || 1),
     avgSMP: hourlyData.filter(h => h.smp > 0).reduce((sum, h) => sum + h.smp, 0) / (hourlyData.filter(h => h.smp > 0).length || 1),
     // IDM - Summed
     totalOffered_IDM: hourlyData.reduce((sum, h) => sum + h.totalOffered_IDM, 0),
@@ -553,7 +565,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     hasLotA_IDM: idmLotA.hasPrice,
     hasLotB_IDM: idmLotB.hasPrice,
     hasLotC_IDM: idmLotC.hasPrice,
-    avgIDP: hourlyData.filter(h => h.idp > 0).reduce((sum, h) => sum + h.idp, 0) / (hourlyData.filter(h => h.idp > 0).length || 1),
+    avgIdPrice: hourlyData.filter(h => h.idp > 0).reduce((sum, h) => sum + h.idp, 0) / (hourlyData.filter(h => h.idp > 0).length || 1),
     // Capacity - Summed overbid
     totalOverbid: hourlyData.reduce((sum, h) => sum + (h.overbidMw || 0), 0),
     // Balancing - Summed for MWh and Cost
@@ -825,14 +837,14 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell>SMP (ZAR/MWh)</TableCell>
+              <TableCell>{isIdmRound ? 'DA Price (ZAR/MWh)' : 'SMP (ZAR/MWh)'}</TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right">
-                  {h.smp > 0 ? formatNumber(h.smp, 1) : '-'}
+                  {h.damPrice > 0 ? formatNumber(h.damPrice, 1) : '-'}
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {roundTotals.avgSMP > 0 ? `Ø ${formatNumber(roundTotals.avgSMP, 1)}` : '-'}
+                {roundTotals.avgDamPrice > 0 ? `Ø ${formatNumber(roundTotals.avgDamPrice, 1)}` : '-'}
               </TableCell>
             </TableRow>
             <TableRow hover>
@@ -956,14 +968,14 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>IDP (ZAR/MWh)</TableCell>
+                  <TableCell>ID Price (ZAR/MWh)</TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right">
                       {h.idp > 0 ? formatNumber(h.idp, 1) : '-'}
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {roundTotals.avgIDP > 0 ? `Ø ${formatNumber(roundTotals.avgIDP, 1)}` : '-'}
+                    {roundTotals.avgIdPrice > 0 ? `Ø ${formatNumber(roundTotals.avgIdPrice, 1)}` : '-'}
                   </TableCell>
                 </TableRow>
                 <TableRow hover>

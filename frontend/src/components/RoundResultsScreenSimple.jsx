@@ -515,6 +515,31 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const uncoveredMwh = Math.max(0, plannedMwh - dispatchedMwh)
     const overCoveredMwh = Math.max(0, dispatchedMwh - plannedMwh)
     const balancingGapMwh = Math.abs(dispatchedMwh - actualMwh)
+    const smpButNotClearedRows = Object.values(deviceBreakdown).reduce((acc, entries) => {
+      if (!Array.isArray(entries)) return acc
+      entries.forEach((hour) => {
+        const offerPrice = Number(hour?.offer_price_zar)
+        const marketPrice = Number(hour?.market_price_zar)
+        const planned = Number(hour?.planned_mw || 0)
+        const dispatched = Number(hour?.dispatched_mw || 0)
+        if (!Number.isFinite(offerPrice) || !Number.isFinite(marketPrice)) return
+        if (planned <= 0 || dispatched >= planned) return
+
+        const isPriceCompetitive = isConsumer ? offerPrice >= marketPrice : offerPrice <= marketPrice
+        if (!isPriceCompetitive) return
+
+        acc.count += 1
+        acc.uncovered += Math.max(0, planned - dispatched)
+      })
+      return acc
+    }, { count: 0, uncovered: 0 })
+
+    if (smpButNotClearedRows.count > 0) {
+      notes.push(
+        `Price-competitive but not fully cleared (${smpButNotClearedRows.count} device-hours, ${formatInt(smpButNotClearedRows.uncovered)} MWh not awarded): this can happen because SMP is a market-wide intersection price, not a guarantee of full award for every single bid. After price formation, allocation still follows merit-order and remaining cleared volume. If competing supply at the same/lower price (or synthetic system blocks) already absorbs most volume, your bid can be only partially accepted or remain at 0 even when bid price is at/below SMP.`
+      )
+    }
+
     const pricedOutHours = Object.values(deviceBreakdown).reduce((count, entries) => {
       if (!Array.isArray(entries)) return count
       return count + entries.filter((hour) => {
