@@ -21,6 +21,14 @@ except Exception:
 
 ns = Namespace("kse", description="Kampagnien/Szenarieneditor")
 
+PLAYER_INPUT_SCOPE_MODES = {
+    "all_hours",
+    "first_hour",
+    "first_two_hours",
+    "first_three_hours",
+    "custom_offsets",
+}
+
 campaign_in = ns.model(
     "CampaignIn",
     {
@@ -104,6 +112,37 @@ def validate_config(cfg: dict) -> list[str]:
                 errors.append("forecast_horizon_hours must be >= horizon_hours")
         except Exception:
             pass
+
+    player_input = cfg.get("player_input") or {}
+    if player_input and not isinstance(player_input, dict):
+        errors.append("player_input must be an object")
+    else:
+        mode = str(player_input.get("mode") or "all_hours").strip().lower()
+        if mode not in PLAYER_INPUT_SCOPE_MODES:
+            errors.append("player_input.mode must be one of: all_hours, first_hour, first_two_hours, first_three_hours, custom_offsets")
+
+        editable_offsets = player_input.get("editable_offsets", [])
+        if editable_offsets is not None and not isinstance(editable_offsets, list):
+            errors.append("player_input.editable_offsets must be a list")
+        elif isinstance(editable_offsets, list):
+            for offset in editable_offsets:
+                try:
+                    normalized_offset = int(offset)
+                except Exception:
+                    errors.append(f"player_input.editable_offsets contains non-integer value: {offset}")
+                    continue
+                if normalized_offset < 0:
+                    errors.append("player_input.editable_offsets must be >= 0")
+                elif span and normalized_offset >= int(span):
+                    errors.append("player_input.editable_offsets must be smaller than round_span_hours")
+
+        allow_other_rounds_editing = player_input.get("allow_other_rounds_editing", True)
+        if allow_other_rounds_editing is not None and not isinstance(allow_other_rounds_editing, bool):
+            errors.append("player_input.allow_other_rounds_editing must be a boolean")
+
+        enable_smooth_drag = player_input.get("enable_smooth_drag", True)
+        if enable_smooth_drag is not None and not isinstance(enable_smooth_drag, bool):
+            errors.append("player_input.enable_smooth_drag must be a boolean")
     
     # Validate devices
     devices = cfg.get("devices", [])
@@ -208,10 +247,38 @@ def sanitize_markets_config(cfg: dict) -> dict:
             return {"trading": []}
         return {"trading": []}
 
+    def _sanitize_player_input(entry):
+        if not isinstance(entry, dict):
+            entry = {}
+        mode = str(entry.get("mode") or "all_hours").strip().lower()
+        if mode not in PLAYER_INPUT_SCOPE_MODES:
+            mode = "all_hours"
+        raw_offsets = entry.get("editable_offsets", [])
+        offsets = []
+        if isinstance(raw_offsets, list):
+            for value in raw_offsets:
+                try:
+                    normalized = int(value)
+                except Exception:
+                    continue
+                if normalized < 0:
+                    continue
+                if normalized not in offsets:
+                    offsets.append(normalized)
+        offsets.sort()
+        return {
+            "mode": mode,
+            "editable_offsets": offsets,
+            "hide_non_editable_hours": bool(entry.get("hide_non_editable_hours", False)),
+            "allow_other_rounds_editing": entry.get("allow_other_rounds_editing", True) is not False,
+            "enable_smooth_drag": entry.get("enable_smooth_drag", True) is not False,
+        }
+
     out["markets"] = {
         "dam": _sanitize_entry(markets.get("dam", [])),
         "idm": _sanitize_entry(markets.get("idm", [])),
     }
+    out["player_input"] = _sanitize_player_input(out.get("player_input"))
     return out
 
 

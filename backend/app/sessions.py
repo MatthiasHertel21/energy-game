@@ -149,6 +149,7 @@ class SessionItem(Resource):
             "general": general,
             "market": market,
             "markets": markets,
+            "player_input": config.get("player_input", {}),
             "mode": s.mode,
             "scenario_name": (sc.name if sc else None),
             "campaign_id": campaign.id if campaign else None,
@@ -229,6 +230,7 @@ class SessionBriefing(Resource):
             "general": cfg.get("general", {}),
             "market": cfg.get("market", {}),      # Market parameters (base_price, etc.)
             "markets": cfg.get("markets", {}),    # Per-round availability (dam/idm arrays)
+            "player_input": cfg.get("player_input", {}),
             "grid": cfg.get("grid", {}),
             "events": cfg.get("events", []),
             "objectives": cfg.get("objectives", ""),

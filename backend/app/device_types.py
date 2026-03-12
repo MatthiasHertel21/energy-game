@@ -7,6 +7,9 @@ from enum import Enum
 from typing import Dict, Any, List, Optional
 
 
+BID_LABELS = ["A", "B", "C", "D", "E"]
+
+
 class DeviceType(str, Enum):
     """Supported device types"""
     COAL = "coal"
@@ -472,8 +475,8 @@ def validate_forecast_constraints(device: Dict[str, Any], forecast_mw: List[floa
 def validate_bid_monotonicity(bids: Dict[str, Dict[str, Any]], direction: str = "nondecreasing") -> List[str]:
     """
     Validate that multi-bid prices are monotonic.
-    Producers: P_A <= P_B <= P_C (non-decreasing)
-    Consumers: P_A >= P_B >= P_C (non-increasing)
+    Producers: P_A <= P_B <= ... (non-decreasing)
+    Consumers: P_A >= P_B >= ... (non-increasing)
     
     Args:
         bids: Dict of {bid_label: {price, hours}} for a device
@@ -486,9 +489,8 @@ def validate_bid_monotonicity(bids: Dict[str, Dict[str, Any]], direction: str = 
     if not bids or not isinstance(bids, dict):
         return errors
     
-    # Extract prices for A, B, C bids
     prices = {}
-    for label in ['A', 'B', 'C']:
+    for label in BID_LABELS:
         if label in bids:
             bid = bids[label]
             if isinstance(bid, dict) and 'price' in bid:
@@ -498,39 +500,19 @@ def validate_bid_monotonicity(bids: Dict[str, Dict[str, Any]], direction: str = 
     if direction not in ["nondecreasing", "nonincreasing"]:
         direction = "nondecreasing"
 
-    if direction == "nonincreasing":
-        # A >= B >= C
-        if 'A' in prices and 'B' in prices and prices['A'] < prices['B']:
+    ordered_labels = [label for label in BID_LABELS if label in prices]
+    comparator = (lambda left, right: left < right) if direction == "nonincreasing" else (lambda left, right: left > right)
+    expectation = "non-increasing" if direction == "nonincreasing" else "non-decreasing"
+    symbol = ">=" if direction == "nonincreasing" else "<="
+
+    for current_label, next_label in zip(ordered_labels, ordered_labels[1:]):
+        current_price = prices[current_label]
+        next_price = prices[next_label]
+        if comparator(current_price, next_price):
             errors.append(
-                f"Bid price monotonicity violated: Bid A ({prices['A']:.1f} ZAR/MWh) < Bid B ({prices['B']:.1f} ZAR/MWh). "
-                f"Prices must be non-increasing (A >= B >= C)."
-            )
-        if 'B' in prices and 'C' in prices and prices['B'] < prices['C']:
-            errors.append(
-                f"Bid price monotonicity violated: Bid B ({prices['B']:.1f} ZAR/MWh) < Bid C ({prices['C']:.1f} ZAR/MWh). "
-                f"Prices must be non-increasing (A >= B >= C)."
-            )
-        if 'A' in prices and 'C' in prices and 'B' not in prices and prices['A'] < prices['C']:
-            errors.append(
-                f"Bid price monotonicity violated: Bid A ({prices['A']:.1f} ZAR/MWh) < Bid C ({prices['C']:.1f} ZAR/MWh). "
-                f"Prices must be non-increasing (A >= B >= C)."
-            )
-    else:
-        # A <= B <= C
-        if 'A' in prices and 'B' in prices and prices['A'] > prices['B']:
-            errors.append(
-                f"Bid price monotonicity violated: Bid A ({prices['A']:.1f} ZAR/MWh) > Bid B ({prices['B']:.1f} ZAR/MWh). "
-                f"Prices must be non-decreasing (A <= B <= C)."
-            )
-        if 'B' in prices and 'C' in prices and prices['B'] > prices['C']:
-            errors.append(
-                f"Bid price monotonicity violated: Bid B ({prices['B']:.1f} ZAR/MWh) > Bid C ({prices['C']:.1f} ZAR/MWh). "
-                f"Prices must be non-decreasing (A <= B <= C)."
-            )
-        if 'A' in prices and 'C' in prices and 'B' not in prices and prices['A'] > prices['C']:
-            errors.append(
-                f"Bid price monotonicity violated: Bid A ({prices['A']:.1f} ZAR/MWh) > Bid C ({prices['C']:.1f} ZAR/MWh). "
-                f"Prices must be non-decreasing (A <= B <= C)."
+                f"Bid price monotonicity violated: Bid {current_label} ({current_price:.1f} ZAR/MWh) "
+                f"{'<' if direction == 'nonincreasing' else '>'} Bid {next_label} ({next_price:.1f} ZAR/MWh). "
+                f"Prices must be {expectation} ({current_label} {symbol} {next_label})."
             )
     
     return errors

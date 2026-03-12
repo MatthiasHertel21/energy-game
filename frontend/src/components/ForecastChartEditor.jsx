@@ -6,6 +6,8 @@ import * as d3 from 'd3'
  * Interactive line chart for editing hourly forecast values by dragging points.
  * Props:
  * - hours: number[]
+ * - hourIndices: number[] (optional absolute hour indices for visible points)
+ * - editableIndices: number[] (optional relative indices that remain editable)
  * - lockedUntil: number (index of first editable hour, 0-based)
  * - onChange: (index:number, value:number) => void
  * - deviceType: string (device type for reference lines)
@@ -22,6 +24,8 @@ import * as d3 from 'd3'
  */
 export default function ForecastChartEditor({
   hours = [],
+  hourIndices = null,
+  editableIndices = null,
   lockedUntil = 0,
   onChange,
   maxValue,
@@ -83,6 +87,28 @@ export default function ForecastChartEditor({
     const g = svg.attr('width', width).attr('height', H).append('g').attr('transform', `translate(${M.left},${M.top})`)
 
     const n = Math.max(1, hours.length)
+    const displayHourIndices = Array.isArray(hourIndices) && hourIndices.length === hours.length
+      ? hourIndices.map((value, idx) => {
+          const parsed = Number(value)
+          return Number.isFinite(parsed) ? parsed : idx
+        })
+      : hours.map((_, idx) => idx)
+    const segmentGapUnits = 0.45
+    const displaySlots = []
+    let nextSlot = 1
+    displayHourIndices.forEach((hourIdx, idx) => {
+      if (idx === 0) {
+        displaySlots.push(nextSlot)
+        return
+      }
+      const prevHourIdx = displayHourIndices[idx - 1]
+      nextSlot += hourIdx === prevHourIdx + 1 ? 1 : (1 + segmentGapUnits)
+      displaySlots.push(nextSlot)
+    })
+    const minDisplaySlot = d3.min(displaySlots) ?? 1
+    const maxDisplaySlot = d3.max(displaySlots) ?? n
+    const editableIndexSet = Array.isArray(editableIndices) ? new Set(editableIndices) : null
+    const hourIndexToVisibleIdx = new Map(displayHourIndices.map((hourIdx, idx) => [hourIdx, idx]))
     const seriesMax = Math.max(1, d3.max(hours) || 1)
     const hintedMax = Number.isFinite(Number(maxValue)) ? Number(maxValue) : 0
     const parsedStart = String(startTime || '00:00').split(':')
@@ -194,7 +220,7 @@ export default function ForecastChartEditor({
     const yMax = Math.max(targetMax * 1.05, seriesMax * 1.2, ...refLines.map(r => Math.abs(r.value)), 10)
 
     // Extend X-domain by +1 hour so DA baseline and markers can reach the next day boundary (e.g. 00:00 next day)
-    const x = d3.scaleLinear().domain([1, n + 1]).range([0, iw])
+    const x = d3.scaleLinear().domain([minDisplaySlot, maxDisplaySlot + 1]).range([0, iw])
     const y = d3.scaleLinear().domain([yMin, yMax]).nice().range([ih, 0])
     const [yDomainMin, yDomainMax] = y.domain()
     const clampY = (val) => Math.max(yDomainMin, Math.min(yDomainMax, val))
@@ -209,18 +235,65 @@ export default function ForecastChartEditor({
     let pathSelection = null
     let hitAreas = null
 
+    const getHourStartX = (idx) => x(displaySlots[idx] ?? (idx + 1))
+    const getHourRightX = (idx) => {
+      const slot = displaySlots[idx] ?? (idx + 1)
+      return x(slot + 1)
+    }
+    const getHourCenterX = (idx) => {
+      const slot = displaySlots[idx] ?? (idx + 1)
+      return x(slot + 0.5)
+    }
+    const getVisibleIndexForAbsoluteHour = (hourIdx) => hourIndexToVisibleIdx.get(hourIdx)
+
+    const findNearestVisibleIndex = (pixelX) => {
+      let bestIdx = 0
+      let bestDistance = Number.POSITIVE_INFINITY
+      for (let idx = 0; idx < displaySlots.length; idx += 1) {
+        const dist = Math.abs(getHourCenterX(idx) - pixelX)
+        if (dist < bestDistance) {
+          bestDistance = dist
+          bestIdx = idx
+        }
+      }
+      return bestIdx
+    }
+
+    const buildLineSegments = (values) => {
+      const segments = []
+      let currentSegment = []
+      values.forEach((value, idx) => {
+        const point = { i: idx, v: value, hourIdx: displayHourIndices[idx] ?? idx, slot: displaySlots[idx] ?? (idx + 1) }
+        const prevPoint = currentSegment[currentSegment.length - 1]
+        if (prevPoint && point.hourIdx !== prevPoint.hourIdx + 1) {
+          segments.push(currentSegment)
+          currentSegment = []
+        }
+        currentSegment.push(point)
+      })
+      if (currentSegment.length > 0) segments.push(currentSegment)
+      return segments
+    }
+
     const syncWorkingHoursToChart = () => {
       if (pathSelection && lineGenerator) {
-        pathSelection.attr('d', lineGenerator(workingHours))
+        pathSelection = g.selectAll('path.forecast-line').data(lineGenerator(workingHours)).join('path')
+          .attr('class', 'forecast-line')
+          .attr('fill', 'none')
+          .attr('stroke', '#1976d2')
+          .attr('stroke-width', 2)
+          .attr('d', (d) => d)
       }
       if (pts) {
         pts
+          .attr('cx', (d) => getHourCenterX(d.i))
           .attr('cy', (d) => y(workingHours[d.i]))
           .each((d) => {
             d.v = workingHours[d.i]
           })
       }
       if (hitAreas) {
+        hitAreas.attr('cx', (d) => getHourCenterX(d.i))
         hitAreas.attr('cy', (d) => y(workingHours[d.i]))
       }
     }
@@ -246,7 +319,8 @@ export default function ForecastChartEditor({
       let rangeStart = 0
       
       for (let i = 1; i <= hourStatus.length; i++) {
-        if (i === hourStatus.length || hourStatus[i] !== currentStatus) {
+        const hasGap = i < hourStatus.length && i < displayHourIndices.length && displayHourIndices[i] !== (displayHourIndices[i - 1] + 1)
+        if (i === hourStatus.length || hourStatus[i] !== currentStatus || hasGap) {
           statusRanges.push({ status: currentStatus, start: rangeStart, end: i })
           if (i < hourStatus.length) {
             currentStatus = hourStatus[i]
@@ -356,8 +430,8 @@ export default function ForecastChartEditor({
     // Draw background rectangles for each phase
     statusRanges.forEach(range => {
       const config = phaseConfig[range.status] || phaseConfig.future
-      const xStart = x(Math.max(1, range.start + 1))
-      const xEnd = x(Math.min(n + 1, range.end + 1))
+      const xStart = getHourStartX(range.start)
+      const xEnd = getHourRightX(Math.max(range.end - 1, range.start))
       const width = xEnd - xStart
       
       if (width > 5) {  // Only draw if visible
@@ -378,7 +452,7 @@ export default function ForecastChartEditor({
     
     // Draw separator lines between market phases
     for (let i = 1; i < statusRanges.length; i++) {
-      const xSeparator = x(statusRanges[i].start + 1)
+      const xSeparator = getHourStartX(statusRanges[i].start)
       const nextStatus = statusRanges[i].status
       
       const strokeColor = '#CFD8DC'
@@ -404,9 +478,10 @@ export default function ForecastChartEditor({
       const fallback = Math.max(0, Number(freezeHours) || 0)
       return Math.min(n, fallback)
     })()
-    const hourToX = (hourIdx) => {
-      const domainHour = Math.max(1, Math.min(n + 1, (hourIdx || 0) + 1))
-      return x(domainHour)
+    const absoluteHourToX = (hourIdx) => {
+      const visibleIdx = getVisibleIndexForAbsoluteHour(hourIdx)
+      if (!Number.isInteger(visibleIdx)) return null
+      return getHourStartX(visibleIdx)
     }
     const formatClock = (hourIdx) => {
       const totalHours = startHour + hourIdx
@@ -426,7 +501,8 @@ export default function ForecastChartEditor({
     const nextDayRightIndex = currentDayIndex + 1
     
     if (currentSimHour >= 0) {
-      const nowX = hourToX(currentSimHour)
+      const nowX = absoluteHourToX(currentSimHour)
+      if (nowX != null) {
       
       // Glow effect
       g.append('line')
@@ -470,20 +546,23 @@ export default function ForecastChartEditor({
         .attr('fill', '#D32F2F')
         .attr('font-size', 10)
         .text(formatClock(Math.floor(currentSimHour)))
+      }
     }
 
     // Day-Ahead gate marker removed per user request (marker clutter)
     
     if (lockedLineHour > 0 && lockedLineHour < n) {
-      const gateX = hourToX(lockedLineHour)
-      g.append('line')
-        .attr('x1', gateX)
-        .attr('x2', gateX)
-        .attr('y1', 0)
-        .attr('y2', ih)
-        .attr('stroke', '#CFD8DC')
-        .attr('stroke-width', 1.5)
-        .attr('stroke-dasharray', '2,4')
+      const gateX = absoluteHourToX(lockedLineHour)
+      if (gateX != null) {
+        g.append('line')
+          .attr('x1', gateX)
+          .attr('x2', gateX)
+          .attr('y1', 0)
+          .attr('y2', ih)
+          .attr('stroke', '#CFD8DC')
+          .attr('stroke-width', 1.5)
+          .attr('stroke-dasharray', '2,4')
+      }
       
       const leftLabel = currentSimHour >= lockedLineHour ? 'Past' : 'Locked'
       const leftTooltip = currentSimHour >= lockedLineHour 
@@ -497,7 +576,8 @@ export default function ForecastChartEditor({
     }
     
     if (nextDayBoundaryHour > 0 && nextDayBoundaryHour < n) {
-      const dayX = hourToX(nextDayBoundaryHour)
+      const dayX = absoluteHourToX(nextDayBoundaryHour)
+      if (dayX != null) {
       const dayDeltaRight = nextDayRightIndex - currentDayIndex
       const leftLabel = describeDayDelta(0)
       const rightLabel = describeDayDelta(dayDeltaRight)
@@ -514,14 +594,15 @@ export default function ForecastChartEditor({
         ? 'Tomorrow+ - Day after tomorrow and beyond' 
         : `${rightLabel} - Future calendar day`
       
-      g.append('line')
-        .attr('x1', dayX)
-        .attr('x2', dayX)
-        .attr('y1', 0)
-        .attr('y2', ih)
-        .attr('stroke', '#CFD8DC')
-        .attr('stroke-width', 1.5)
-        .attr('stroke-dasharray', '2,4')
+        g.append('line')
+          .attr('x1', dayX)
+          .attr('x2', dayX)
+          .attr('y1', 0)
+          .attr('y2', ih)
+          .attr('stroke', '#CFD8DC')
+          .attr('stroke-width', 1.5)
+          .attr('stroke-dasharray', '2,4')
+      }
     }
     
     // Locked zone hatching removed per user request - solid grey background from phase backgrounds is sufficient
@@ -532,8 +613,8 @@ export default function ForecastChartEditor({
       const idEndIdx = hourStatus.lastIndexOf('id')
       
       if (idStartIdx >= 0 && idStartIdx < n) {
-        const idStartX = hourToX(idStartIdx)
-        const idEndX = hourToX(idEndIdx + 1)
+        const idStartX = getHourStartX(idStartIdx)
+        const idEndX = getHourRightX(idEndIdx)
         const idWidth = idEndX - idStartX
         
         // Background stays white; keep only boundary lines for ID zone
@@ -563,8 +644,8 @@ export default function ForecastChartEditor({
       const daEndIdx = hourStatus.lastIndexOf('da')
       
       if (daStartIdx >= 0 && daStartIdx < n) {
-        const daStartX = hourToX(daStartIdx)
-        const daEndX = hourToX(daEndIdx + 1)
+        const daStartX = getHourStartX(daStartIdx)
+        const daEndX = getHourRightX(daEndIdx)
         const daWidth = daEndX - daStartX
         
         // Background stays white; DA zone is represented via baseline and DA/ID fills only
@@ -582,7 +663,7 @@ export default function ForecastChartEditor({
       
       // 1. Fill area from X-axis to DA baseline (grey) - DA Position
       const daAreaPath = d3.area()
-        .x(d => x(d.i + 1))
+        .x(d => getHourStartX(d.i))
         .y0(ih) // Bottom (X-axis)
         .y1(d => y(d.v))
         .curve(d3.curveStepAfter)
@@ -653,7 +734,7 @@ export default function ForecastChartEditor({
         
         // ID Buy area (current > DA) - Green
         const idBuyArea = d3.area()
-          .x(d => x(d.i + 1))
+          .x(d => getHourStartX(d.i))
           .y0(d => y(d.da))
           .y1(d => y(Math.max(d.current, d.da)))
           .curve(d3.curveStepAfter)
@@ -667,7 +748,7 @@ export default function ForecastChartEditor({
         
         // ID Sell area (current < DA) - Red
         const idSellArea = d3.area()
-          .x(d => x(d.i + 1))
+          .x(d => getHourStartX(d.i))
           .y0(d => y(d.da))
           .y1(d => y(Math.min(d.current, d.da)))
           .curve(d3.curveStepAfter)
@@ -682,7 +763,7 @@ export default function ForecastChartEditor({
       
       // Draw DA baseline line (dotted grey)
       const baselinePath = d3.line()
-        .x(d => x(d.i + 1))
+        .x(d => getHourStartX(d.i))
         .y(d => y(d.v))
         .curve(d3.curveStepAfter)
       
@@ -734,9 +815,13 @@ export default function ForecastChartEditor({
 
     // axes
     // X-axis with time labels only (no day labels per user request)
-    const xAxis = d3.axisBottom(x).ticks(Math.min(n + 1, 12)).tickFormat((hourNum) => {
-      const hourIdx = Math.round(hourNum) - 1
-      const totalHours = startHour + hourIdx
+    const tickStep = Math.max(1, Math.ceil(displaySlots.length / 10))
+    const tickIndices = displaySlots.map((_, idx) => idx).filter((idx) => idx % tickStep === 0 || idx === displaySlots.length - 1)
+    const xAxis = d3.axisBottom(x)
+      .tickValues(tickIndices.map((idx) => displaySlots[idx]))
+      .tickFormat((slot) => {
+      const idx = displaySlots.findIndex((value) => value === slot)
+      const totalHours = startHour + (displayHourIndices[idx] ?? idx)
       const hourOfDay = ((totalHours % 24) + 24) % 24
       
       return `${String(hourOfDay).padStart(2, '0')}:00`
@@ -750,12 +835,26 @@ export default function ForecastChartEditor({
     
     g.append('g').call(d3.axisLeft(y).ticks(6))
 
-    const line = d3.line().x((d, i) => x(i + 1)).y((d) => y(d)).curve(d3.curveStepAfter)
-    lineGenerator = line
+    lineGenerator = (values) => buildLineSegments(values).map((segment) => {
+      if (!segment || segment.length === 0) return null
+      let path = `M ${getHourStartX(segment[0].i)} ${y(segment[0].v)}`
+      segment.forEach((point, idx) => {
+        path += ` L ${getHourRightX(point.i)} ${y(point.v)}`
+        const nextPoint = segment[idx + 1]
+        if (nextPoint) {
+          path += ` L ${getHourRightX(point.i)} ${y(nextPoint.v)}`
+        }
+      })
+      return path
+    }).filter(Boolean)
 
     // path
-    const path = g.append('path').datum(hours).attr('fill', 'none').attr('stroke', '#1976d2').attr('stroke-width', 2).attr('d', line)
-    pathSelection = path
+    pathSelection = g.selectAll('path.forecast-line').data(lineGenerator(hours)).enter().append('path')
+      .attr('class', 'forecast-line')
+      .attr('fill', 'none')
+      .attr('stroke', '#1976d2')
+      .attr('stroke-width', 2)
+      .attr('d', (d) => d)
 
     const lockedColor = '#9e9e9e'
     const futureColor = '#90caf9'  // Light blue for future hours
@@ -796,6 +895,7 @@ export default function ForecastChartEditor({
     // "locked" = past (executed), "future" = beyond horizon - NOT editable
     // "da" = DA bidding (Round 1), "id" = ID trading (Round 2+) - BOTH editable
     const isHourEditable = (idx) => {
+      if (editableIndexSet) return editableIndexSet.has(idx)
       if (idx < lockedUntil) return false
       if (Array.isArray(hourStatus)) {
         const status = hourStatus[idx]
@@ -817,16 +917,18 @@ export default function ForecastChartEditor({
       // Update center first
       commitValue(centerIdx, clampedCenter)
       if (R === 0 || delta === 0) return
+      const isConnectedToLeft = (idx) => idx >= 0 && idx + 1 < displayHourIndices.length && displayHourIndices[idx + 1] === displayHourIndices[idx] + 1
+      const isConnectedToRight = (idx) => idx - 1 >= 0 && idx < displayHourIndices.length && displayHourIndices[idx] === displayHourIndices[idx - 1] + 1
       // Then adjust neighbors with triangular falloff
       for (let d = 1; d <= R; d++){
         const w = (R - d + 1) / (R + 1) // linear falloff
         const left = centerIdx - d
         const right = centerIdx + d
-        if (isHourEditable(left) && left >= 0){
+        if (left >= 0 && isConnectedToLeft(left) && isHourEditable(left)){
           const targetLeft = clampY((workingHours[left] ?? 0) + delta * w)
           commitValue(left, targetLeft)
         }
-        if (isHourEditable(right) && right < workingHours.length){
+        if (right < workingHours.length && isConnectedToRight(right) && isHourEditable(right)){
           const targetRight = clampY((workingHours[right] ?? 0) + delta * w)
           commitValue(right, targetRight)
         }
@@ -838,7 +940,7 @@ export default function ForecastChartEditor({
       .on('start', function(event) {
         const [x0Raw, y0] = d3.pointer(event, g.node())
         const x0 = Math.max(0, Math.min(iw, x0Raw))  // Clamp X to chart area
-        const idx = Math.max(0, Math.min(n - 1, Math.round(x.invert(x0)) - 1))
+        const idx = findNearestVisibleIndex(x0)
         const rawValue = y.invert(y0)
         const value = clampY(rawValue)
         if (!isHourEditable(idx)) {
@@ -850,8 +952,7 @@ export default function ForecastChartEditor({
       .on('drag', function(event) {
         const [x0Raw, y0] = d3.pointer(event, g.node())
         const x0 = Math.max(0, Math.min(iw, x0Raw))  // Clamp X to chart area
-        let idx = Math.round(x.invert(x0)) - 1
-        idx = Math.max(0, Math.min(n - 1, idx))
+        const idx = findNearestVisibleIndex(x0)
         if (!isHourEditable(idx)) {
           clearActivePoint()
           return
@@ -910,7 +1011,7 @@ export default function ForecastChartEditor({
     const pointData = hours.map((v, i) => ({ v, i }))
     pts = g.selectAll('circle.point').data(pointData).enter().append('circle')
       .attr('class', 'point')
-      .attr('cx', (d) => x(d.i + 1))
+      .attr('cx', (d) => getHourCenterX(d.i))
       .attr('cy', (d) => y(d.v))
       .attr('r', 4)
       .attr('fill', pointColor)
@@ -918,7 +1019,7 @@ export default function ForecastChartEditor({
     // Larger invisible hit-area to make drag easier
     const pointHitSelection = g.selectAll('circle.point-hit').data(pointData).enter().append('circle')
       .attr('class', 'point-hit')
-      .attr('cx', (d) => x(d.i + 1))
+      .attr('cx', (d) => getHourCenterX(d.i))
       .attr('cy', (d) => y(d.v))
       .attr('r', 12)
       .attr('fill', 'transparent')
@@ -944,7 +1045,7 @@ export default function ForecastChartEditor({
     // labels
     g.append('text').attr('transform', 'rotate(-90)').attr('x', -ih / 2).attr('y', -36).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Power (MW) per hour')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hours, lockedUntil, onChange, maxValue, effectiveLimitMw, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, dayAheadGateHour, startTime, fakeDate, daBaseline, hourStatus, totalRounds, containerWidth])
+  }, [hours, hourIndices, editableIndices, lockedUntil, onChange, maxValue, effectiveLimitMw, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, dayAheadGateHour, startTime, fakeDate, daBaseline, hourStatus, totalRounds, containerWidth])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

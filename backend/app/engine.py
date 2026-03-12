@@ -21,6 +21,71 @@ except ImportError:
         return 2  # default medium priority
 
 
+def _normalize_boolean_flag(value, fallback: bool = False) -> bool:
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"false", "0", "no", "off", "disabled", ""}:
+            return False
+    return bool(value)
+
+
+BID_LABELS = ["A", "B", "C", "D", "E"]
+
+
+def _normalize_bid_count(value, fallback: int = 0) -> int:
+    try:
+        normalized = int(value)
+    except Exception:
+        normalized = int(fallback)
+    return max(0, min(len(BID_LABELS), normalized))
+
+
+def _get_device_bid_count(device: dict | None, legacy_global_enabled: bool = False) -> int:
+    device = device or {}
+    if device.get("bid_count") is not None:
+        return _normalize_bid_count(device.get("bid_count"), 0)
+    if device.get("enable_multi_bid") is not None:
+        return 3 if _normalize_boolean_flag(device.get("enable_multi_bid"), False) else 0
+    return 3 if legacy_global_enabled else 0
+
+
+def _get_bid_labels(device_bids: dict | None = None, device: dict | None = None, legacy_global_enabled: bool = False) -> List[str]:
+    labels: List[str] = []
+    configured_count = _get_device_bid_count(device, legacy_global_enabled)
+    if configured_count > 0:
+        labels.extend(BID_LABELS[:configured_count])
+
+    if isinstance(device_bids, dict):
+        for label in BID_LABELS:
+            if label in device_bids and label not in labels:
+                labels.append(label)
+        for label in device_bids.keys():
+            if label not in labels:
+                labels.append(label)
+
+    return labels
+
+
+def _config_uses_explicit_bids(config: dict, forecasts: Dict[int, dict] | None = None) -> bool:
+    legacy_global_enabled = _normalize_boolean_flag(config.get("market", {}).get("enable_player_bidding", False), False)
+    for device in config.get("devices", []) or []:
+        if _get_device_bid_count(device, legacy_global_enabled) > 0:
+            return True
+    if isinstance(forecasts, dict):
+        for forecast_data in forecasts.values():
+            if isinstance(forecast_data, dict) and forecast_data.get("bids"):
+                return True
+    return False
+
+
 # Linear Congruential Generator (LCG) matching d3.randomLcg
 class LCG:
     """
@@ -533,7 +598,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                            config: dict, round_events: list = None) -> Tuple[List[Tuple[float, float]], List[dict]]:
     """
     Merge player bids with synthetic supply curve for market clearing.
-    Includes both multi-bid devices (3 lots) and classic devices (implicit single bid at marginal cost).
+    Includes explicit-bid devices (A-E lots) and classic devices (implicit single bid at marginal cost).
     
     Args:
         player_forecasts: Dict of {player_id: forecast_data_with_bids}
@@ -545,13 +610,11 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
     Returns:
         Tuple of (combined_supply_curve, bid_metadata_list)
     """
-    # Check if global bidding setting is enabled (campaign-wide)
-    global_bidding_enabled = config.get("market", {}).get("enable_player_bidding", False)
+    # Legacy scenarios may still rely on the global switch when bid_count is absent.
+    global_bidding_enabled = _normalize_boolean_flag(config.get("market", {}).get("enable_player_bidding", False), False)
     
-    # Build device map for quick lookup
-    # Device-level enable_multi_bid: If set, overrides global for that device
-    # - True: Device uses 3 lots (A/B/C) in bidding
-    # - False/None: Device uses implicit single bid at marginal cost (CLASSIC)
+    # Build device map for quick lookup. Legacy flags are only used as fallback
+    # when bid_count is not present on a device.
     devices = {d['id']: d for d in config.get('devices', [])}
     
     def _extract_bid_price(bid: dict, default: float = 0.0) -> float:
@@ -595,16 +658,11 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
             if 'load' in device_type:
                 continue
             
-            device_bidding_enabled = device.get('enable_multi_bid')
-            
-            # Use device-level setting if specified, otherwise fall back to global
-            if device_bidding_enabled is None:
-                device_bidding_enabled = global_bidding_enabled
-            
-            # Multi-bid enabled: use 3 lots (A/B/C)
-            if device_bidding_enabled and device_id in device_ids_from_bids:
+            bid_labels = _get_bid_labels(bids_data.get(device_id, {}), device, global_bidding_enabled)
+
+            if bid_labels and device_id in device_ids_from_bids:
                 device_bids = bids_data.get(device_id, {})
-                for bid_label in ['A', 'B', 'C']:
+                for bid_label in bid_labels:
                     if bid_label not in device_bids:
                         continue
                     
@@ -691,7 +749,7 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                            config: dict, round_events: list = None) -> Tuple[List[Tuple[float, float]], List[dict]]:
     """
     Merge player demand bids with synthetic demand curve for market clearing.
-    Includes both multi-bid consumer devices (3 lots with WTP) and classic consumer devices (implicit WTP).
+    Includes explicit-bid consumer devices (A-E lots with WTP) and classic consumer devices (implicit WTP).
     
     Args:
         player_forecasts: Dict of {player_id: forecast_data_with_bids}
@@ -703,13 +761,11 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
     Returns:
         Tuple of (combined_demand_curve, bid_metadata_list)
     """
-    # Check if global bidding setting is enabled (campaign-wide)
-    global_bidding_enabled = config.get("market", {}).get("enable_player_bidding", False)
+    # Legacy scenarios may still rely on the global switch when bid_count is absent.
+    global_bidding_enabled = _normalize_boolean_flag(config.get("market", {}).get("enable_player_bidding", False), False)
     
-    # Build device map for quick lookup
-    # Device-level enable_multi_bid: If set, overrides global for that device
-    # - True: Device uses 3 lots (A/B/C) in bidding
-    # - False/None: Device uses implicit single bid at marginal cost (CLASSIC)
+    # Build device map for quick lookup. Legacy flags are only used as fallback
+    # when bid_count is not present on a device.
     devices = {d['id']: d for d in config.get('devices', [])}
     
     def _extract_bid_price(bid: dict, default: float = 0.0) -> float:
@@ -749,20 +805,15 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
             device = devices.get(device_id, {})
             device_type = device.get('type', '').lower()
             
-            device_bidding_enabled = device.get('enable_multi_bid')
-            
-            # Use device-level setting if specified, otherwise fall back to global
-            if device_bidding_enabled is None:
-                device_bidding_enabled = global_bidding_enabled
-            
             # Check if this is a consumer device (load) or generator with negative delta (buy-back)
             is_consumer = 'load' in device_type
             is_generator = not is_consumer
-            
-            # Multi-bid enabled: use 3 lots (A/B/C)
-            if device_bidding_enabled and device_id in device_ids_from_bids:
+
+            bid_labels = _get_bid_labels(bids_data.get(device_id, {}), device, global_bidding_enabled)
+
+            if bid_labels and device_id in device_ids_from_bids:
                 device_bids = bids_data.get(device_id, {})
-                for bid_label in ['A', 'B', 'C']:
+                for bid_label in bid_labels:
                     if bid_label not in device_bids:
                         continue
                     
@@ -1717,7 +1768,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     delta_bids[device_id] = {}
                     dam_device_bids = dam_offering_bids.get(device_id, {}) if dam_offering_bids else {}
                     
-                    for bid_label in ['A', 'B', 'C']:
+                    for bid_label in _get_bid_labels(device_bids, device=None):
                         if bid_label in device_bids:
                             current_bid = device_bids[bid_label]
                             dam_bid = dam_device_bids.get(bid_label, {}) if dam_device_bids else {}
@@ -1753,7 +1804,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             if delta_bids:
                 total_delta = 0.0
                 for device_id, device_bids in delta_bids.items():
-                    for bid_label in ['A', 'B', 'C']:
+                    for bid_label in _get_bid_labels(device_bids, device=None):
                         if bid_label in device_bids:
                             hours = device_bids[bid_label].get('hours', [])
                             round_hours = hours[display_base_idx:display_base_idx+display_span] if len(hours) > display_base_idx else []
@@ -1764,7 +1815,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         if current_data.get('bids'):
             total_offered = 0.0
             for device_id, device_bids in current_data['bids'].items():
-                for bid_label in ['A', 'B', 'C']:
+                for bid_label in _get_bid_labels(device_bids, device=None):
                     if bid_label in device_bids:
                         hours = device_bids[bid_label].get('hours', [])
                         # Only sum hours for this round (display/clearing hours)
@@ -1857,10 +1908,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 by_device[device_id] = device_total
         return by_device
     
-    # Check if multi-bid pricing is enabled (campaign-wide setting)
-    # NOTE: This controls the MARKET CLEARING MECHANISM (bid-based vs synthetic)
-    # Device-level enable_multi_bid controls INPUT/UI only (3 lots vs 1 implicit bid)
-    enable_bidding = config.get("market", {}).get("enable_player_bidding", False)
+    # Detect whether this scenario uses explicit per-device bids anywhere.
+    # Legacy flags are still honored as fallback for older scenarios.
+    enable_bidding = _config_uses_explicit_bids(config, normalized_forecasts)
     print(f"[HOURLY_DEBUG] Engine started: enable_bidding={enable_bidding}")
     
     # Apply only events active for this round
@@ -2200,7 +2250,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 # Sum all bids for this player for this hour
                 planned = 0.0
                 for device_id, device_bids in forecast_data['bids'].items():
-                    for bid_label in ['A', 'B', 'C']:
+                    for bid_label in _get_bid_labels(device_bids, device=None):
                         if bid_label in device_bids:
                             bid_hours = device_bids[bid_label].get('hours', [])
                             if hour_idx < len(bid_hours):
@@ -2268,7 +2318,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         # Calculate planned from bids (sum of all lots for this hour)
                         device_bids = device_bids_all.get(device_id, {})
                         device_planned_h = 0.0
-                        for bid_label in ['A', 'B', 'C']:
+                        for bid_label in _get_bid_labels(device_bids, device=None):
                             if bid_label in device_bids:
                                 bid_hours = device_bids[bid_label].get('hours', [])
                                 if hour_idx < len(bid_hours):
@@ -3571,7 +3621,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             "profit_zar": round(total_profit_from_details, 0),
             "hourly_breakdown": hourly_breakdown,  # Detailed per-hour breakdown
             "device_hourly_breakdown": device_hourly_breakdown,  # Detailed per-device hourly breakdown
-            "bid_dispatch": all_bid_dispatch.get(pid, {}),  # Lot-level dispatch tracking (A/B/C lots)
+            "bid_dispatch": all_bid_dispatch.get(pid, {}),  # Lot-level dispatch tracking (A-E lots)
             "debug_info": {  # DEBUG: Add diagnostic info
                 "enable_bidding": enable_bidding,
                 "per_device_keys": list(per_device_hourly_planned.keys()),

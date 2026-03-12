@@ -126,6 +126,55 @@ class TestBuildSupplyFromBids:
         combined, _ = build_supply_from_bids(forecasts, 2, synthetic, config)
         assert combined[0][1] == 30
 
+    def test_bid_count_five_supports_extended_labels(self):
+        """Devices with bid_count 5 may submit A-E bids without relying on global switch."""
+        config = {
+            "market": {"enable_player_bidding": False},
+            "devices": [{"id": "device_1", "type": "coal", "bid_count": 5}]
+        }
+        synthetic = []
+        forecasts = {
+            1: {
+                "bids": {
+                    "device_1": {
+                        "A": {"price": 300, "hours": [10] * 24},
+                        "B": {"price": 350, "hours": [20] * 24},
+                        "C": {"price": 400, "hours": [30] * 24},
+                        "D": {"price": 450, "hours": [40] * 24},
+                        "E": {"price": 500, "hours": [50] * 24},
+                    }
+                }
+            }
+        }
+
+        combined, bids_meta = build_supply_from_bids(forecasts, 0, synthetic, config)
+
+        assert [price for price, _ in combined] == [300, 350, 400, 450, 500]
+        assert [bid["bid_label"] for bid in bids_meta] == ["A", "B", "C", "D", "E"]
+
+    def test_bid_count_one_uses_single_explicit_bid(self):
+        """Devices with bid_count 1 expose only a single explicit bid."""
+        config = {
+            "market": {"enable_player_bidding": False},
+            "devices": [{"id": "device_1", "type": "gas", "bid_count": 1}]
+        }
+        synthetic = [(900, 100)]
+        forecasts = {
+            1: {
+                "bids": {
+                    "device_1": {
+                        "A": {"price": 450, "hours": [25] * 24}
+                    }
+                }
+            }
+        }
+
+        combined, bids_meta = build_supply_from_bids(forecasts, 0, synthetic, config)
+
+        assert combined == [(450.0, 25.0), (900, 100)]
+        assert len(bids_meta) == 1
+        assert bids_meta[0]["bid_label"] == "A"
+
 
 class TestTrackBidDispatch:
     """Test track_bid_dispatch function"""

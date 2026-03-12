@@ -9,6 +9,24 @@ from datetime import datetime
 from typing import Dict, List, Any
 
 
+BID_LABELS = ["A", "B", "C", "D", "E"]
+LOT_DISPLAY_NAMES = {
+    "A": "Base",
+    "B": "Mid",
+    "C": "Peak",
+    "D": "Reserve",
+    "E": "Flex",
+}
+
+
+def _get_present_bid_labels(lots: Dict[str, Any] | None) -> List[str]:
+    if not isinstance(lots, dict):
+        return []
+    labels = [label for label in BID_LABELS if label in lots]
+    labels.extend([label for label in lots.keys() if label not in labels])
+    return labels
+
+
 def format_unified_hour(hour_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Format hour data with unified structure for forensic traceability.
@@ -224,48 +242,55 @@ class CalculationDebugLogger:
             # Per device, per lot - NOW SHOW ALL HOURS
             for dev_id, dev_forecast in forecast.items():
                 md.append(f"### Device: {dev_id}\n\n")
+                lot_labels = _get_present_bid_labels(dev_forecast)
+                if not lot_labels:
+                    continue
                 
                 # Check structure: single price or price array?
-                lotA = dev_forecast.get("A", {})
-                has_price_array = "prices" in lotA
+                first_lot = dev_forecast.get(lot_labels[0], {})
+                has_price_array = "prices" in first_lot
                 
                 if has_price_array:
                     # Old structure: prices array, amounts array
-                    total_hours = len(dev_forecast.get("A", {}).get("prices", []))
+                    total_hours = max(len(dev_forecast.get(label, {}).get("prices", [])) for label in lot_labels)
                     md.append(f"**All {total_hours} Hours:**\n\n")
-                    md.append("| Hour | Base Price | Base Amount | Mid Price | Mid Amount | Peak Price | Peak Amount |\n")
-                    md.append("|------|------------|-------------|-----------|------------|------------|-------------|\n")
+                    headers = ["Hour"]
+                    separators = ["------"]
+                    for label in lot_labels:
+                        title = LOT_DISPLAY_NAMES.get(label, f"Lot {label}")
+                        headers.extend([f"{title} Price", f"{title} Amount"])
+                        separators.extend(["------------", "-------------"])
+                    md.append(f"| {' | '.join(headers)} |\n")
+                    md.append(f"| {' | '.join(separators)} |\n")
                     
                     for hour in range(total_hours):
-                        lotA_price = dev_forecast.get("A", {}).get("prices", [])[hour] if hour < len(dev_forecast.get("A", {}).get("prices", [])) else "-"
-                        lotA_amount = dev_forecast.get("A", {}).get("amounts", [])[hour] if hour < len(dev_forecast.get("A", {}).get("amounts", [])) else "-"
-                        lotB_price = dev_forecast.get("B", {}).get("prices", [])[hour] if hour < len(dev_forecast.get("B", {}).get("prices", [])) else "-"
-                        lotB_amount = dev_forecast.get("B", {}).get("amounts", [])[hour] if hour < len(dev_forecast.get("B", {}).get("amounts", [])) else "-"
-                        lotC_price = dev_forecast.get("C", {}).get("prices", [])[hour] if hour < len(dev_forecast.get("C", {}).get("prices", [])) else "-"
-                        lotC_amount = dev_forecast.get("C", {}).get("amounts", [])[hour] if hour < len(dev_forecast.get("C", {}).get("amounts", [])) else "-"
-                        
-                        md.append(f"| H{hour} ({hour:02d}:00) | {lotA_price} | {lotA_amount} | {lotB_price} | {lotB_amount} | {lotC_price} | {lotC_amount} |\n")
+                        row = [f"H{hour} ({hour:02d}:00)"]
+                        for label in lot_labels:
+                            prices = dev_forecast.get(label, {}).get("prices", [])
+                            amounts = dev_forecast.get(label, {}).get("amounts", [])
+                            row.append(prices[hour] if hour < len(prices) else "-")
+                            row.append(amounts[hour] if hour < len(amounts) else "-")
+                        md.append(f"| {' | '.join(map(str, row))} |\n")
                 else:
                     # New structure: single price, hours array
-                    priceA = lotA.get("price", "N/A")
-                    priceB = dev_forecast.get("B", {}).get("price", "N/A")
-                    priceC = dev_forecast.get("C", {}).get("price", "N/A")
-                    
-                    hoursA = lotA.get("hours", [])
-                    hoursB = dev_forecast.get("B", {}).get("hours", [])
-                    hoursC = dev_forecast.get("C", {}).get("hours", [])
-                    total_hours = max(len(hoursA), len(hoursB), len(hoursC))
-                    
-                    md.append(f"**Prices:** Base = {priceA} ZAR/MWh | Mid = {priceB} ZAR/MWh | Peak = {priceC} ZAR/MWh\n\n")
+                    total_hours = max(len(dev_forecast.get(label, {}).get("hours", [])) for label in lot_labels)
+                    price_summary = " | ".join(
+                        f"{LOT_DISPLAY_NAMES.get(label, f'Lot {label}')} = {dev_forecast.get(label, {}).get('price', 'N/A')} ZAR/MWh"
+                        for label in lot_labels
+                    )
+                    md.append(f"**Prices:** {price_summary}\n\n")
                     md.append(f"**All {total_hours} Hours:**\n\n")
-                    md.append("| Hour | Base (MW) | Mid (MW) | Peak (MW) |\n")
-                    md.append("|------|-----------|----------|-----------|\n")
+                    headers = ["Hour"] + [f"{LOT_DISPLAY_NAMES.get(label, f'Lot {label}')} (MW)" for label in lot_labels]
+                    separators = ["------"] + ["-----------" for _ in lot_labels]
+                    md.append(f"| {' | '.join(headers)} |\n")
+                    md.append(f"| {' | '.join(separators)} |\n")
                     
                     for hour in range(total_hours):
-                        valA = f"{hoursA[hour]:.2f}" if hour < len(hoursA) else "-"
-                        valB = f"{hoursB[hour]:.2f}" if hour < len(hoursB) else "-"
-                        valC = f"{hoursC[hour]:.2f}" if hour < len(hoursC) else "-"
-                        md.append(f"| H{hour} ({hour:02d}:00) | {valA} | {valB} | {valC} |\n")
+                        row = [f"H{hour} ({hour:02d}:00)"]
+                        for label in lot_labels:
+                            hours = dev_forecast.get(label, {}).get("hours", [])
+                            row.append(f"{hours[hour]:.2f}" if hour < len(hours) else "-")
+                        md.append(f"| {' | '.join(row)} |\n")
                 md.append("\n")
         
         # === SECTION 5: MARKET CLEARING RESULTS ===
@@ -552,7 +577,7 @@ class CalculationDebugLogger:
             
             # Check if there's at least one device with data
             for dev_id, dev_data in bid_dispatch.items():
-                if dev_data and any(dev_data.get(lot) for lot in ['A', 'B', 'C']):
+                if dev_data and any(dev_data.get(lot) for lot in _get_present_bid_labels(dev_data)):
                     has_bid_dispatch_data = True
                     break
             
@@ -564,7 +589,8 @@ class CalculationDebugLogger:
                     dev_capacity = device_capacities.get(dev_id)
                     
                     # Show ALL hours for each lot
-                    for lot_label, lot_name in [("A", "Base"), ("B", "Mid"), ("C", "Peak")]:
+                    for lot_label in _get_present_bid_labels(dev_data):
+                        lot_name = LOT_DISPLAY_NAMES.get(lot_label, f"Lot {lot_label}")
                         if lot_label in dev_data and isinstance(dev_data[lot_label], list) and len(dev_data[lot_label]) > 0:
                             total_hours = len(dev_data[lot_label])
                             md.append(f"**{lot_name} Lot (All {total_hours} Hours):**\n\n")
@@ -629,7 +655,7 @@ class CalculationDebugLogger:
             
             # Check if there's at least one device with data
             for dev_id, dev_data in bid_dispatch.items():
-                if dev_data and any(dev_data.get(lot) for lot in ['A', 'B', 'C']):
+                if dev_data and any(dev_data.get(lot) for lot in _get_present_bid_labels(dev_data)):
                     has_capacity_data = True
                     break
             
@@ -647,7 +673,7 @@ class CalculationDebugLogger:
                     total_hours = 0
                     hourly_totals = {}  # {hour_offset: total_offered}
                     
-                    for lot_label in ['A', 'B', 'C']:
+                    for lot_label in _get_present_bid_labels(dev_data):
                         if lot_label in dev_data and isinstance(dev_data[lot_label], list):
                             for lot_hour in dev_data[lot_label]:
                                 hour = lot_hour.get('hour_offset', 0)
@@ -669,7 +695,7 @@ class CalculationDebugLogger:
                 hour_metadata = {}  # {hour_offset: unified_hour}
                 if "bid_dispatch" in results and results["bid_dispatch"]:
                     for dev_id, dev_data in results["bid_dispatch"].items():
-                        for lot_label in ['A', 'B', 'C']:
+                        for lot_label in _get_present_bid_labels(dev_data):
                             if lot_label in dev_data and isinstance(dev_data[lot_label], list):
                                 for lot_hour in dev_data[lot_label]:
                                     h_offset = lot_hour.get('hour_offset', 0)

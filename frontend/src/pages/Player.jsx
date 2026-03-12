@@ -58,9 +58,80 @@ import { useSnackbar } from '../components/SnackbarProvider'
 import api from '../services/api'
 import { io } from 'socket.io-client'
 import * as d3 from 'd3'
+import {
+  filterArrayByVisibleHours,
+  getVisibleHourIndices,
+  isPlayerInputHourAllowed,
+  mapSeriesToVisibleHours,
+  shouldHideNonEditableHours,
+  zeroHiddenBidsPayload,
+  zeroHiddenDevicePayload,
+  zeroHiddenSeries,
+} from '../utils/playerInputScope'
 
 const BASELOAD_PATTERN = [0.92, 0.91, 0.9, 0.9, 0.9, 0.92, 0.94, 0.95, 0.96, 0.96, 0.95, 0.94, 0.93, 0.93, 0.94, 0.95, 0.96, 0.96, 0.95, 0.94, 0.93, 0.93, 0.92, 0.92]
 const PEAKING_PATTERN = [0.4, 0.35, 0.32, 0.32, 0.38, 0.5, 0.62, 0.75, 0.85, 0.92, 0.95, 0.96, 0.94, 0.9, 0.88, 0.9, 0.94, 0.95, 0.86, 0.75, 0.65, 0.55, 0.48, 0.42]
+const BID_LABELS = ['A', 'B', 'C', 'D', 'E']
+const DEFAULT_BID_SPLITS = [0.5, 0.2, 0.15, 0.1, 0.05]
+
+const getNormalizedBidCount = (device) => {
+  if (device?.bid_count != null) {
+    const normalized = Number(device.bid_count)
+    if (Number.isFinite(normalized)) {
+      return Math.max(0, Math.min(BID_LABELS.length, normalized))
+    }
+  }
+  if (device?.enable_multi_bid === true) return 3
+  return 0
+}
+
+const getDeviceBidLabels = (device, deviceBids = null, fallbackEnabled = false) => {
+  const labels = []
+  const count = getNormalizedBidCount(device)
+  if (count > 0) labels.push(...BID_LABELS.slice(0, count))
+  if (fallbackEnabled && labels.length === 0) labels.push(...BID_LABELS.slice(0, 3))
+  if (deviceBids && typeof deviceBids === 'object') {
+    BID_LABELS.forEach((label) => {
+      if (deviceBids[label] && !labels.includes(label)) labels.push(label)
+    })
+    Object.keys(deviceBids).forEach((label) => {
+      if (!labels.includes(label)) labels.push(label)
+    })
+  }
+  return labels
+}
+
+const hasExplicitBiddingDevices = (devices = []) => (
+  (devices || []).some((device) => getNormalizedBidCount(device) > 0 || device?.enable_multi_bid === true)
+)
+
+const getBidSplitRatios = (count) => {
+  if (!count || count <= 0) return []
+  const base = DEFAULT_BID_SPLITS.slice(0, count)
+  const total = base.reduce((sum, value) => sum + value, 0) || 1
+  return base.map((value) => value / total)
+}
+
+const getBidLabelTitle = (label, index) => {
+  const legacyNames = ['Baseload', 'Mid-Merit', 'Peak', 'Reserve', 'Flex']
+  return legacyNames[index] ? `${label} · ${legacyNames[index]}` : `Bid ${label}`
+}
+
+const buildInitialBidsForDevice = (device, horizonHours, baseProfile) => {
+  const labels = getDeviceBidLabels(device)
+  const defaultPrices = getDefaultBidPrices(device)
+  const ratios = getBidSplitRatios(labels.length)
+  const next = {}
+  labels.forEach((label, index) => {
+    const fallbackPrice = defaultPrices[label] ?? defaultPrices[BID_LABELS[Math.min(index, 2)]] ?? 0
+    const ratio = ratios[index] || 0
+    next[label] = {
+      price: fallbackPrice,
+      hours: Array.from({ length: horizonHours }, (_, hourIdx) => Math.round(((baseProfile[hourIdx] || 0) * ratio) * 100) / 100)
+    }
+  })
+  return next
+}
 const LOAD_PATTERN = [0.55, 0.5, 0.48, 0.47, 0.5, 0.62, 0.74, 0.86, 0.93, 0.97, 1.0, 1.0, 0.98, 0.95, 0.92, 0.94, 0.97, 0.98, 0.9, 0.82, 0.72, 0.66, 0.6, 0.58]
 const SOLAR_PATTERN = [0, 0, 0, 0, 0.05, 0.15, 0.35, 0.6, 0.78, 0.9, 0.92, 0.9, 0.78, 0.6, 0.35, 0.15, 0.05, 0, 0, 0, 0, 0, 0, 0]
 const WIND_PATTERN = [0.52, 0.5, 0.46, 0.44, 0.48, 0.55, 0.6, 0.66, 0.72, 0.75, 0.7, 0.66, 0.62, 0.58, 0.55, 0.5, 0.52, 0.56, 0.6, 0.6, 0.58, 0.55, 0.54, 0.52]
@@ -68,6 +139,24 @@ const BATTERY_PATTERN = [0.45, 0.4, 0.35, 0.3, 0.2, 0.1, -0.05, -0.2, -0.4, -0.5
 const DEFAULT_AGG_PATTERN = [0.6, 0.58, 0.55, 0.52, 0.52, 0.62, 0.78, 0.92, 1.02, 1.08, 1.1, 1.05, 0.98, 0.96, 0.98, 1.02, 1.08, 1.1, 1.0, 0.9, 0.82, 0.76, 0.7, 0.65]
 
 const zeroProfile = (len) => Array.from({ length: Math.max(1, len) }, () => 0)
+
+const normalizeBooleanFlag = (value, fallback = false) => {
+  if (value === undefined || value === null) {
+    return fallback
+  }
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value === 'number') {
+    return value !== 0
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['true', '1', 'yes', 'on', 'enabled'].includes(normalized)) return true
+    if (['false', '0', 'no', 'off', 'disabled', ''].includes(normalized)) return false
+  }
+  return Boolean(value)
+}
 const toNumber = (value, fallback = 0) => {
   const num = Number(value)
   return Number.isFinite(num) ? num : fallback
@@ -369,32 +458,25 @@ const buildDeviceProfile = (device, len) => {
 const getDefaultBidPrices = (device) => {
   const variableCost = toNumber(device?.variable_cost_zar_per_mwh ?? device?.cost_per_mwh_zar ?? 0, 0)
   const deviceType = (device?.type || '').toLowerCase()
+  const labels = getDeviceBidLabels(device)
+  const multipliers = deviceType.includes('load')
+    ? [1.3, 1.2, 1.1, 1.0, 0.9]
+    : [0.85, 0.95, 1.1, 1.2, 1.3]
+  const fallbackBase = deviceType.includes('load')
+    ? [1300, 1200, 1100, 1000, 900]
+    : [850, 950, 1100, 1200, 1300]
+  const prices = {}
   
   if (variableCost <= 0) {
-    // Fallback defaults for devices without cost data
-    // For consumers (loads): bid slightly above expected SMP (~1000)
-    // Strategy: A=high (always get), B=medium (usually get), C=low (marginal)
-    if (deviceType.includes('load')) {
-      return { A: 1300, B: 1150, C: 1050 }  // Consumers bid above SMP, Baseload highest
-    }
-    // For generators: bid around/below expected SMP to get dispatched
-    return { A: 850, B: 950, C: 1100 }
+    labels.forEach((label, index) => {
+      prices[label] = fallbackBase[index] ?? fallbackBase[fallbackBase.length - 1]
+    })
+    return prices
   }
-  // When varCost is provided, check if consumer or generator
-  if (deviceType.includes('load')) {
-    // Consumers: Bid above variable cost (A highest)
-    return {
-      A: Math.round(variableCost * 1.30),   // Baseload: +30%
-      B: Math.round(variableCost * 1.15),   // Mid-merit: +15%
-      C: Math.round(variableCost * 1.05)    // Peak: +5% (can be curtailed)
-    }
-  }
-  // Generators: Bid near variable cost (A lowest)
-  return {
-    A: Math.round(variableCost * 0.85),   // Baseload: -15% (dispatched first)
-    B: Math.round(variableCost * 0.95),   // Mid-merit: -5%
-    C: Math.round(variableCost * 1.10)    // Peak: +10% (dispatched last)
-  }
+  labels.forEach((label, index) => {
+    prices[label] = Math.round(variableCost * (multipliers[index] ?? multipliers[multipliers.length - 1]))
+  })
+  return prices
 }
 
 const buildAggregateFallback = (len, baseMw = 60) => {
@@ -591,8 +673,7 @@ function TimerAndClock({ timeRemaining }) {
   )
 }
 
-// Stacked area chart showing all three lots (clickable to select lot)
-function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = null, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate = '', hourStatus = [] }) {
+function StackedLotsChart({ bidSeries = {}, maxValue, effectiveLimitMw = null, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate = '', hourStatus = [] }) {
   const theme = useTheme()
   const isDark = theme.palette.mode === 'dark'
   const svgRef = useRef(null)
@@ -631,20 +712,16 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
     const gridColor = theme.palette.divider
     const axisColor = theme.palette.text.secondary
     const activeLotColor = theme.palette.primary.main
-    const inactiveColors = [
-      alpha(theme.palette.text.secondary, isDark ? 0.45 : 0.25),
-      alpha(theme.palette.text.secondary, isDark ? 0.6 : 0.4),
-      alpha(theme.palette.text.secondary, isDark ? 0.75 : 0.55)
-    ]
+    const lotLabels = BID_LABELS.filter((label) => Array.isArray(bidSeries[label]))
+    const inactiveColors = lotLabels.map((_, index) => alpha(theme.palette.text.secondary, Math.min(0.8, (isDark ? 0.35 : 0.2) + index * 0.1)))
     const referenceMaxColor = theme.palette.error.main
     const referenceWarnColor = theme.palette.warning.main
     const referenceExpectedColor = theme.palette.success.main
-    
-    const n = Math.max(bidsA.length, bidsB.length, bidsC.length)
+
+    const n = lotLabels.reduce((max, label) => Math.max(max, bidSeries[label]?.length || 0), 0)
     if (n === 0) return
-    
-    // Calculate stacked max
-    const stackedMax = d3.max(d3.range(n).map(i => (bidsA[i] || 0) + (bidsB[i] || 0) + (bidsC[i] || 0)))
+
+    const stackedMax = d3.max(d3.range(n).map(i => lotLabels.reduce((sum, label) => sum + (bidSeries[label]?.[i] || 0), 0)))
     const yMax = Math.max(stackedMax || 100, maxValue || 100)
     
     // Scales
@@ -737,17 +814,16 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
       }
     })
     
-    // Prepare stacked data
-    const stackedData = d3.range(n).map(i => ({
-      hour: i + 1,
-      a: bidsA[i] || 0,
-      b: bidsB[i] || 0,
-      c: bidsC[i] || 0
-    }))
-    
-    // Stacked area generator
+    const stackedData = d3.range(n).map(i => {
+      const entry = { hour: i + 1 }
+      lotLabels.forEach((label) => {
+        entry[label] = bidSeries[label]?.[i] || 0
+      })
+      return entry
+    })
+
     const stack = d3.stack()
-      .keys(['a', 'b', 'c'])
+      .keys(lotLabels)
       .order(d3.stackOrderNone)
       .offset(d3.stackOffsetNone)
     
@@ -759,20 +835,18 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
       .y1(d => y(d[1]))
       .curve(d3.curveStepAfter)
     
-    // Draw stacked areas with gray for inactive, blue for active
-    const lotNames = ['A', 'B', 'C']
     g.selectAll('.area')
       .data(series)
       .enter()
       .append('path')
       .attr('class', 'area')
-      .attr('fill', (d, i) => lotNames[i] === activeLot ? activeLotColor : inactiveColors[i])
-      .attr('opacity', (d, i) => lotNames[i] === activeLot ? 0.95 : 0.65)
+      .attr('fill', (d, i) => lotLabels[i] === activeLot ? activeLotColor : inactiveColors[i])
+      .attr('opacity', (d, i) => lotLabels[i] === activeLot ? 0.95 : 0.65)
       .attr('d', area)
       .style('cursor', 'pointer')
       .on('click', (event, d) => {
         const lotIndex = series.indexOf(d)
-        if (lotIndex >= 0) onLotChange(lotNames[lotIndex])
+        if (lotIndex >= 0) onLotChange(lotLabels[lotIndex])
       })
     
     // Reference lines based on device type (Max Power, Expected, etc.)
@@ -940,7 +1014,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
       }
     }
     
-  }, [bidsA, bidsB, bidsC, maxValue, effectiveLimitMw, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate, hourStatus, containerWidth, theme.palette.mode])
+  }, [bidSeries, maxValue, effectiveLimitMw, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate, hourStatus, containerWidth, theme.palette.mode])
   
   return (
     <Box>
@@ -948,7 +1022,7 @@ function StackedLotsChart({ bidsA, bidsB, bidsC, maxValue, effectiveLimitMw = nu
         <Typography variant="subtitle2" gutterBottom sx={{ mb: 0 }}>Bid Overview</Typography>
         <InfoLabel
           showTitle={false}
-          tooltip="Stacked lots A/B/C by hour. The red max-power line uses effective capacity for this round (hour/month profile aware), so it can differ from static nameplate values."
+          tooltip="Stacked explicit bids by hour. The red max-power line uses effective capacity for this round (hour/month profile aware), so it can differ from static nameplate values."
         />
       </Stack>
       <svg ref={svgRef}></svg>
@@ -972,6 +1046,7 @@ export default function Player() {
   const [hours, setHours] = useState([])
   const [cfg, setCfg] = useState({
     general: { round_span_hours: 6, forecast_horizon_hours: 48, freeze_hours: 6, day_ahead_gate_hour: 12, horizon_hours: 24, fake_date: '', start_time: '' },
+    player_input: { mode: 'all_hours', editable_offsets: [], hide_non_editable_hours: false, allow_other_rounds_editing: true },
     current_round: 1,
     scenario_name: '',
     campaign_name: ''
@@ -1019,13 +1094,12 @@ export default function Player() {
   const [hourlySeries, setHourlySeries] = useState([])
   const [damHourlySeries, setDamHourlySeries] = useState([])
   const [idmHourlySeries, setIdmHourlySeries] = useState([])
-  const [deviceBids, setDeviceBids] = useState({}) // { device_id: { A: {price, hours}, B: {price, hours}, C: {price, hours} } }
+  const [deviceBids, setDeviceBids] = useState({})
   const [biddingEnabled, setBiddingEnabled] = useState(false)
   const [activeLot, setActiveLot] = useState(() => {
-    // Restore activeLot from localStorage on mount
     try {
       const saved = localStorage.getItem(`player_activeLot_${sessionId}`)
-      return saved && ['A', 'B', 'C'].includes(saved) ? saved : 'A'
+      return saved && BID_LABELS.includes(saved) ? saved : 'A'
     } catch { return 'A' }
   })
   const [confirmOvercapacityOpen, setConfirmOvercapacityOpen] = useState(false)
@@ -1042,6 +1116,18 @@ export default function Player() {
     market_timeline: null,
     current_position: { devices: {}, bids: {}, aggregate: [] }
   })
+
+  const isDeviceMultiBidEnabled = useCallback((deviceDef, globalBidding = biddingEnabled) => {
+    if (getNormalizedBidCount(deviceDef) > 0) {
+      return true
+    }
+    // Legacy fallback for scenarios that still carry the old per-device flag.
+    return Boolean(globalBidding && deviceDef?.enable_multi_bid === true)
+  }, [biddingEnabled])
+
+  const getDeviceBidLabelsForUi = useCallback((deviceDef, existingBids = null, globalBidding = biddingEnabled) => {
+    return getDeviceBidLabels(deviceDef, existingBids, Boolean(globalBidding && deviceDef?.enable_multi_bid === true))
+  }, [biddingEnabled])
   
   // Persist activeLot to localStorage whenever it changes
   useEffect(() => {
@@ -1051,6 +1137,19 @@ export default function Player() {
       } catch (e) { console.error('Failed to save activeLot:', e) }
     }
   }, [activeLot, sessionId])
+
+  useEffect(() => {
+    const labels = Object.values(deviceBids || {}).flatMap((bids) => getDeviceBidLabels(null, bids))
+    if (labels.length > 0 && !labels.includes(activeLot)) {
+      setActiveLot(labels[0])
+    }
+  }, [activeLot, deviceBids])
+
+  useEffect(() => {
+    if (!biddingEnabled) {
+      setDeviceBids({})
+    }
+  }, [biddingEnabled])
   
   // Build roundsSummary whenever cfg.markets or cfg.general.rounds changes
   useEffect(() => {
@@ -1157,7 +1256,7 @@ export default function Player() {
     
     // Load saved bids if available
     if (savedBids && biddingEnabled) {
-      setDeviceBids(savedBids)
+      setDeviceBids(zeroHiddenBidsPayload(savedBids, { general, player_input: cfg.player_input }, general.round_span_hours))
     }
 
     const normalizedDevices = {}
@@ -1166,7 +1265,11 @@ export default function Player() {
         const did = entry?.device_id
         if (!did) return
         const sourceHours = Array.isArray(entry?.hours) ? entry.hours : []
-        normalizedDevices[did] = Array.from({ length: fhHours }, (_, idx) => Number(sourceHours[idx] || 0))
+        normalizedDevices[did] = zeroHiddenSeries(
+          Array.from({ length: fhHours }, (_, idx) => Number(sourceHours[idx] || 0)),
+          { general, player_input: cfg.player_input },
+          general.round_span_hours
+        )
       })
     }
 
@@ -1182,7 +1285,11 @@ export default function Player() {
       const defaults = {}
       deviceIdsSafe.forEach((id) => {
         const def = byId.get(id)
-        defaults[id] = buildDeviceProfile(def, fhHours)
+        defaults[id] = zeroHiddenSeries(
+          buildDeviceProfile(def, fhHours),
+          { general, player_input: cfg.player_input },
+          general.round_span_hours
+        )
       })
       deviceData = defaults
     }
@@ -1190,7 +1297,11 @@ export default function Player() {
     setDeviceHours(deviceData)
 
     const normalizedAggregate = Array.isArray(savedHours)
-      ? Array.from({ length: fhHours }, (_, idx) => Number(savedHours[idx] || 0))
+      ? zeroHiddenSeries(
+          Array.from({ length: fhHours }, (_, idx) => Number(savedHours[idx] || 0)),
+          { general, player_input: cfg.player_input },
+          general.round_span_hours
+        )
       : null
 
     const hasAggregate = normalizedAggregate ? normalizedAggregate.some((value) => Number(value) !== 0) : false
@@ -1209,7 +1320,7 @@ export default function Player() {
     } else {
       setHours(aggregateFallback)
     }
-  }, [sessionId, biddingEnabled])
+  }, [sessionId, biddingEnabled, cfg.player_input])
 
   // Auto-load active session
   useEffect(() => {
@@ -1282,6 +1393,7 @@ export default function Player() {
           },
           market: sessionData.market || data.market || {},            // Market parameters
           markets: sessionData.markets || data.markets || {},         // Per-round availability
+          player_input: sessionData.player_input || data.player_input || { mode: 'all_hours', editable_offsets: [], hide_non_editable_hours: false, allow_other_rounds_editing: true },
           current_round: Number(sessionData.current_round || 1),
           scenario_name: sessionData.scenario_name || data.name || 'Scenario',
           campaign_name: sessionData.campaign_name || data.campaign_name || ''
@@ -1291,9 +1403,10 @@ export default function Player() {
         setCfg(cfgObj)
         // Check if bidding is enabled
         const marketParams = sessionData.market || data.market || {}
-        const bidding = Boolean(marketParams.enable_player_bidding)
+        const scenarioDevicesRaw = data.devices || []
+        const bidding = hasExplicitBiddingDevices(scenarioDevicesRaw)
         console.log('[Player] Market params:', marketParams)
-        console.log('[Player] enable_player_bidding:', bidding)
+        console.log('[Player] explicit bidding enabled:', bidding)
         console.log('[Player] Config set - forecast_horizon_hours:', cfgObj.general.forecast_horizon_hours, 'rounds:', cfgObj.general.rounds)
         setBiddingEnabled(bidding)
         setStatus(sessionData.status || 'pending')
@@ -1309,6 +1422,7 @@ export default function Player() {
             general: data.general,
             market: data.market || {},
             markets: data.markets || {},
+            player_input: sessionData.player_input || data.player_input || {},
             devices: data.devices,
             player_types: data.player_types,
             challenges: data.challenges,
@@ -1354,7 +1468,7 @@ export default function Player() {
             
             // Prepare all state updates before calling setters (so React batches them)
             const fh = Number(gen.forecast_horizon_hours||24)
-            const globalBidding = data.market?.enable_player_bidding || false
+            const globalBidding = hasExplicitBiddingDevices(data.devices || [])
             
             // Call all setters together without interruption
             setTypeDevices(devs)
@@ -1367,24 +1481,12 @@ export default function Player() {
               const next = { ...prev }
               devs.forEach(did => {
                 const deviceDef = devices.find(d => d.id === did)
-                const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
-                  ? deviceDef.enable_multi_bid 
-                  : globalBidding
+                const deviceBidding = isDeviceMultiBidEnabled(deviceDef, globalBidding)
                 
                 if (deviceBidding && !next[did]) {
-                  const defaultPrices = getDefaultBidPrices(deviceDef)
                   const baseProfile = buildDeviceProfile(deviceDef, fh)
-                  
-                  // Split capacity across three lots: A=40%, B=35%, C=25%
-                  const hoursA = baseProfile.map(v => Math.round(v * 0.40 * 100) / 100)
-                  const hoursB = baseProfile.map(v => Math.round(v * 0.35 * 100) / 100)
-                  const hoursC = baseProfile.map(v => Math.round(v * 0.25 * 100) / 100)
-                  
-                  next[did] = {
-                    A: { price: defaultPrices.A, hours: hoursA },
-                    B: { price: defaultPrices.B, hours: hoursB },
-                    C: { price: defaultPrices.C, hours: hoursC }
-                  }
+
+                  next[did] = buildInitialBidsForDevice(deviceDef, fh, baseProfile)
                 }
               })
               return next
@@ -1392,7 +1494,7 @@ export default function Player() {
             console.log('[Player] Initialized type devices:', devs.length, 'with bidding for devices:', 
               devs.filter(did => {
                 const deviceDef = devices.find(d => d.id === did)
-                return deviceDef?.enable_multi_bid !== undefined ? deviceDef.enable_multi_bid : globalBidding
+                return isDeviceMultiBidEnabled(deviceDef, globalBidding)
               })
             )
           } else if (allowed.length === 0 && devices.length > 0) {
@@ -1400,7 +1502,7 @@ export default function Player() {
             devs = devices.map(d => d.id)
             
             const fh = Number(gen.forecast_horizon_hours||24)
-            const globalBidding = data.market?.enable_player_bidding || false
+            const globalBidding = hasExplicitBiddingDevices(data.devices || [])
             
             setTypeDevices(devs)
             setDeviceHours(prev=>{
@@ -1412,24 +1514,12 @@ export default function Player() {
               const next = { ...prev }
               devs.forEach(did => {
                 const deviceDef = devices.find(d => d.id === did)
-                const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
-                  ? deviceDef.enable_multi_bid 
-                  : globalBidding
+                const deviceBidding = isDeviceMultiBidEnabled(deviceDef, globalBidding)
                 
                 if (deviceBidding && !next[did]) {
-                  const defaultPrices = getDefaultBidPrices(deviceDef)
                   const baseProfile = buildDeviceProfile(deviceDef, fh)
-                  
-                  // Split capacity across three lots: A=40%, B=35%, C=25%
-                  const hoursA = baseProfile.map(v => Math.round(v * 0.40 * 100) / 100)
-                  const hoursB = baseProfile.map(v => Math.round(v * 0.35 * 100) / 100)
-                  const hoursC = baseProfile.map(v => Math.round(v * 0.25 * 100) / 100)
-                  
-                  next[did] = {
-                    A: { price: defaultPrices.A, hours: hoursA },
-                    B: { price: defaultPrices.B, hours: hoursB },
-                    C: { price: defaultPrices.C, hours: hoursC }
-                  }
+
+                  next[did] = buildInitialBidsForDevice(deviceDef, fh, baseProfile)
                 }
               })
               return next
@@ -1832,6 +1922,12 @@ export default function Player() {
   const cur = Number(cfg.current_round || 1)
   const startIdx = (cur - 1) * span
   const endIdx = startIdx + span
+  const horizonHours = Number(cfg.general.forecast_horizon_hours || cfg.general.horizon_hours || 48)
+  const hideNonEditableHours = useMemo(() => shouldHideNonEditableHours(cfg, span), [cfg, span])
+  const visibleHourIndices = useMemo(
+    () => getVisibleHourIndices(cfg, horizonHours, span),
+    [cfg, horizonHours, span]
+  )
   
   // Determine editable hours based on hour_status
   // Hours with status "locked" are not editable
@@ -1844,13 +1940,154 @@ export default function Player() {
       const status = hourStatus[i]
       // Only "locked" hours are not editable
       // "forecast" hours are always editable
-      if (status !== 'locked') {
+      if (status !== 'locked' && isPlayerInputHourAllowed(cfg, i, span)) {
         editable.add(i)
       }
     }
     
     return editable
-  }, [daBaseline.hour_status, hours.length])
+  }, [cfg, daBaseline.hour_status, hours.length, span])
+
+  const toVisibleSeries = useCallback((series) => {
+    if (!hideNonEditableHours) return Array.isArray(series) ? series : []
+    return mapSeriesToVisibleHours(series, visibleHourIndices)
+  }, [hideNonEditableHours, visibleHourIndices])
+
+  const toVisibleStatuses = useCallback((series) => {
+    if (!hideNonEditableHours) return Array.isArray(series) ? series : []
+    return filterArrayByVisibleHours(series, visibleHourIndices)
+  }, [hideNonEditableHours, visibleHourIndices])
+
+  const chartHourIndices = useMemo(() => {
+    if (hideNonEditableHours) return visibleHourIndices
+    if (cfg?.player_input?.allow_other_rounds_editing === false) {
+      const result = []
+      for (let hourIdx = startIdx; hourIdx < Math.min(endIdx, horizonHours); hourIdx += 1) {
+        result.push(hourIdx)
+      }
+      return result
+    }
+    return Array.from({ length: horizonHours }, (_, idx) => idx)
+  }, [cfg?.player_input?.allow_other_rounds_editing, endIdx, hideNonEditableHours, horizonHours, startIdx, visibleHourIndices])
+
+  const toChartSeries = useCallback((series) => {
+    const source = Array.isArray(series) ? series : []
+    return chartHourIndices.map((hourIdx) => Number(source[hourIdx] || 0))
+  }, [chartHourIndices])
+
+  const toChartStatuses = useCallback((series) => {
+    const source = Array.isArray(series) ? series : []
+    return chartHourIndices.map((hourIdx) => source[hourIdx]).filter((value) => value !== undefined)
+  }, [chartHourIndices])
+
+  const toActualHourIndex = useCallback((visibleIdx) => {
+    if (!hideNonEditableHours) return visibleIdx
+    return visibleHourIndices[visibleIdx] ?? visibleIdx
+  }, [hideNonEditableHours, visibleHourIndices])
+
+  const toChartActualHourIndex = useCallback((chartIdx) => {
+    return chartHourIndices[chartIdx] ?? chartIdx
+  }, [chartHourIndices])
+
+  const toVisibleEditableIndices = useCallback((seriesLength) => {
+    if (!hideNonEditableHours) {
+      const result = []
+      for (let hourIdx = 0; hourIdx < seriesLength; hourIdx += 1) {
+        if (editableIdx.has(hourIdx)) result.push(hourIdx)
+      }
+      return result
+    }
+    const result = []
+    visibleHourIndices.forEach((hourIdx, visibleIdx) => {
+      if (visibleIdx < seriesLength && editableIdx.has(hourIdx)) {
+        result.push(visibleIdx)
+      }
+    })
+    return result
+  }, [editableIdx, hideNonEditableHours, visibleHourIndices])
+
+  const toChartEditableIndices = useCallback((sourceSeriesLength) => {
+    const result = []
+    chartHourIndices.forEach((hourIdx, chartIdx) => {
+      if (hourIdx < sourceSeriesLength && editableIdx.has(hourIdx)) {
+        result.push(chartIdx)
+      }
+    })
+    return result
+  }, [chartHourIndices, editableIdx])
+
+  const smoothDragRadius = cfg?.player_input?.enable_smooth_drag === false ? 0 : 3
+
+  const buildFieldGroups = useCallback((seriesLength) => {
+    if (hideNonEditableHours) {
+      const scopedHours = visibleHourIndices.filter((hourIdx) => hourIdx < seriesLength)
+      return scopedHours.length > 0 ? [{
+        label: 'Visible Hours',
+        hours: scopedHours,
+        color: isDark ? theme.palette.success.light : '#2e7d32',
+        hint: 'Only the active hour slots for this scenario are shown. Hidden hours are submitted as 0.'
+      }] : []
+    }
+
+    if (cfg?.player_input?.allow_other_rounds_editing === false) {
+      const currentRoundHours = []
+      const otherRoundHours = []
+      for (let idx = 0; idx < seriesLength; idx += 1) {
+        if (idx >= startIdx && idx < endIdx) {
+          currentRoundHours.push(idx)
+        } else {
+          otherRoundHours.push(idx)
+        }
+      }
+
+      return [
+        {
+          label: 'Current Round',
+          hours: currentRoundHours,
+          color: isDark ? theme.palette.info.light : '#2196f3',
+          hint: 'Only the active round can be edited in this scenario.'
+        },
+        {
+          label: 'Other Rounds (Locked)',
+          hours: otherRoundHours,
+          color: isDark ? theme.palette.text.disabled : '#757575',
+          hint: 'These hours belong to other rounds and are read-only until their round becomes active.'
+        }
+      ].filter((group) => group.hours.length > 0)
+    }
+
+    const freeze = Number(cfg.general.freeze_hours || 6)
+    const lockedEnd = freeze
+    const todayEnd = 24
+    const makeHours = (start, end) => {
+      const result = []
+      for (let idx = start; idx < Math.min(end, seriesLength); idx += 1) {
+        result.push(idx)
+      }
+      return result
+    }
+
+    return [
+      {
+        label: 'Locked Hours',
+        hours: makeHours(0, lockedEnd),
+        color: isDark ? theme.palette.warning.light : '#ff9800',
+        hint: 'These hours are locked after Round 1. Simulates the Intraday Market (IDM) gate closure - the point where even short-term Intraday trading closes before delivery.'
+      },
+      {
+        label: 'Today (Editable)',
+        hours: makeHours(lockedEnd, todayEnd),
+        color: isDark ? theme.palette.info.light : '#2196f3',
+        hint: 'Hours for today\'s simulation. Always editable. This represents the main trading window.'
+      },
+      {
+        label: 'Tomorrow (Editable)',
+        hours: makeHours(todayEnd, seriesLength),
+        color: isDark ? theme.palette.secondary.light : '#9c27b0',
+        hint: 'Forward planning for the next day. Always editable.'
+      }
+    ].filter((group) => group.hours.length > 0)
+  }, [cfg, endIdx, hideNonEditableHours, isDark, startIdx, theme.palette, visibleHourIndices])
 
   const sumBidVolumeInRange = useCallback((bidsObject, rangeStart, rangeEnd) => {
     if (!bidsObject || typeof bidsObject !== 'object') return 0
@@ -2359,24 +2596,9 @@ export default function Player() {
           if (!next[did]) {
             needsInit = true
             const def = scenarioById.get(did)
-            const defaultPrices = getDefaultBidPrices(def)
             const deviceHoursFallback = buildDeviceProfile(def, fh)
-            
-            // Initialize 3 bids with default prices and quantity tranches
-            next[did] = {
-              A: { 
-                price: defaultPrices.A, 
-                hours: deviceHoursFallback.map(h => Math.round(h * 0.5 * 100) / 100) // 50% in Bid A
-              },
-              B: { 
-                price: defaultPrices.B, 
-                hours: deviceHoursFallback.map(h => Math.round(h * 0.3 * 100) / 100) // 30% in Bid B
-              },
-              C: { 
-                price: defaultPrices.C, 
-                hours: deviceHoursFallback.map(h => Math.round(h * 0.2 * 100) / 100) // 20% in Bid C
-              }
-            }
+
+            next[did] = buildInitialBidsForDevice(def, fh, deviceHoursFallback)
           }
         })
         return needsInit ? next : prev
@@ -2677,34 +2899,25 @@ export default function Player() {
           const newTotal = arr[i]
           const bidsForDevice = prevBids[did]
           if (!bidsForDevice) return prevBids
+          const labels = getDeviceBidLabelsForUi(scenarioDevices.find(d => d.id === did), bidsForDevice)
           
-          // Split new total proportionally across bids A/B/C
-          const currentA = bidsForDevice.A?.hours?.[i] || 0
-          const currentB = bidsForDevice.B?.hours?.[i] || 0
-          const currentC = bidsForDevice.C?.hours?.[i] || 0
-          const currentTotal = currentA + currentB + currentC
-          
-          let newA, newB, newC
+          const currentTotal = labels.reduce((sum, label) => sum + (bidsForDevice[label]?.hours?.[i] || 0), 0)
+          const nextBids = { ...prevBids, [did]: { ...bidsForDevice } }
           if (currentTotal > 0) {
-            // Maintain proportions
-            const ratioA = currentA / currentTotal
-            const ratioB = currentB / currentTotal
-            const ratioC = currentC / currentTotal
-            newA = Math.round(newTotal * ratioA * 100) / 100
-            newB = Math.round(newTotal * ratioB * 100) / 100
-            newC = Math.round(newTotal * ratioC * 100) / 100
+            labels.forEach((label) => {
+              const currentValue = bidsForDevice[label]?.hours?.[i] || 0
+              const ratio = currentValue / currentTotal
+              const nextHours = [...(bidsForDevice[label]?.hours || [])]
+              nextHours[i] = Math.round(newTotal * ratio * 100) / 100
+              nextBids[did][label] = { ...bidsForDevice[label], hours: nextHours }
+            })
           } else {
-            // Default split: 50/30/20
-            newA = Math.round(newTotal * 0.5 * 100) / 100
-            newB = Math.round(newTotal * 0.3 * 100) / 100
-            newC = Math.round(newTotal * 0.2 * 100) / 100
-          }
-          
-          const nextBids = { ...prevBids }
-          nextBids[did] = {
-            A: { ...bidsForDevice.A, hours: [...(bidsForDevice.A?.hours || [])].map((h, idx) => idx === i ? newA : h) },
-            B: { ...bidsForDevice.B, hours: [...(bidsForDevice.B?.hours || [])].map((h, idx) => idx === i ? newB : h) },
-            C: { ...bidsForDevice.C, hours: [...(bidsForDevice.C?.hours || [])].map((h, idx) => idx === i ? newC : h) }
+            const ratios = getBidSplitRatios(labels.length)
+            labels.forEach((label, index) => {
+              const nextHours = [...(bidsForDevice[label]?.hours || [])]
+              nextHours[i] = Math.round(newTotal * (ratios[index] || 0) * 100) / 100
+              nextBids[did][label] = { ...bidsForDevice[label], hours: nextHours }
+            })
           }
           return nextBids
         })
@@ -2751,9 +2964,8 @@ export default function Player() {
       }
       
       // Update aggregate deviceHours
-      const totalAtHour = (updated[did].A?.hours?.[hourIdx] || 0) + 
-                          (updated[did].B?.hours?.[hourIdx] || 0) + 
-                          (updated[did].C?.hours?.[hourIdx] || 0)
+      const totalAtHour = getDeviceBidLabelsForUi(scenarioDevices.find(d => d.id === did), updated[did])
+        .reduce((sum, currentLabel) => sum + (updated[did][currentLabel]?.hours?.[hourIdx] || 0), 0)
       setDeviceHours(prevHours => {
         const arr = [...(prevHours[did] || [])]
         arr[hourIdx] = totalAtHour
@@ -2776,12 +2988,17 @@ export default function Player() {
     const r = Number(cfg.current_round || 1)
     const span = Number(cfg.general.round_span_hours || 6)
     const start = (r - 1) * span
-    const slice = hours
-      .slice(start, start + span)
-      .map((value) => {
-        const num = Number(value)
-        return Number.isFinite(num) ? num : 0
-      })
+    const slice = zeroHiddenSeries(
+      hours
+        .slice(start, start + span)
+        .map((value) => {
+          const num = Number(value)
+          return Number.isFinite(num) ? num : 0
+        }),
+      cfg,
+      span,
+      r
+    )
     
     // Check for overcapacity bids
     const warnings = []
@@ -2828,11 +3045,18 @@ export default function Player() {
       if(allowedTypes.length>0 && selectedType && typeDevices.length>0){
         const span = Number(cfg.general.round_span_hours || 6)
         const start = (r - 1) * span
-        payload.devices = typeDevices.map(did=> ({ device_id: did, hours: (deviceHours[did]||[]).slice(start, start+span) }))
+        payload.devices = zeroHiddenDevicePayload(
+          typeDevices.map(did=> ({ device_id: did, hours: (deviceHours[did]||[]).slice(start, start+span) })),
+          cfg,
+          span,
+          r
+        )
       }
       // Add bids if bidding is enabled (send full bid hours, not sliced)
       if (biddingEnabled && Object.keys(deviceBids).length > 0) {
-        payload.bids = deviceBids
+        payload.bids = zeroHiddenBidsPayload(deviceBids, cfg, span)
+      } else if (!biddingEnabled) {
+        payload.bids = {}
       }
       await api.post('/api/player/forecast', payload)
       showSnack(`Round ${r} submitted successfully!`, 'success')
@@ -2894,28 +3118,24 @@ export default function Player() {
     typeDevices.forEach(deviceId => {
       const device = scenarioDevices.find(d => d.id === deviceId)
       if (!device) return
+      const labels = getDeviceBidLabelsForUi(device, newBids[deviceId])
+      if (labels.length === 0) return
       
       const isConsumer = isConsumerDevice(device)
-      
-      // Producer prices: A=600+10*round, B=800+10*round, C=1000+10*round
-      // Consumer prices: A=1500-10*round, B=1200-10*round, C=1000-10*round
-      const priceA = isConsumer ? 1500 - 10 * round : 600 + 10 * round
-      const priceB = isConsumer ? 1200 - 10 * round : 800 + 10 * round
-      const priceC = isConsumer ? 1000 - 10 * round : 1000 + 10 * round
+      const priceSeries = isConsumer
+        ? [1500, 1300, 1100, 1000, 900]
+        : [600, 800, 1000, 1150, 1300]
       
       if (!newBids[deviceId]) {
-        const emptyHours = Array.from({ length: horizonHours }, () => 0)
-        newBids[deviceId] = {
-          A: { price: 0, hours: [...emptyHours] },
-          B: { price: 0, hours: [...emptyHours] },
-          C: { price: 0, hours: [...emptyHours] }
-        }
+        newBids[deviceId] = buildInitialBidsForDevice(device, horizonHours, Array.from({ length: horizonHours }, () => 0))
       }
-      
-      // Set prices for all lots (keep hours/amounts unchanged)
-      newBids[deviceId].A.price = priceA
-      newBids[deviceId].B.price = priceB
-      newBids[deviceId].C.price = priceC
+
+      labels.forEach((label, index) => {
+        if (!newBids[deviceId][label]) {
+          newBids[deviceId][label] = { price: 0, hours: Array.from({ length: horizonHours }, () => 0) }
+        }
+        newBids[deviceId][label].price = (priceSeries[index] ?? priceSeries[priceSeries.length - 1]) + (isConsumer ? -10 * round : 10 * round)
+      })
     })
     
     setDeviceBids(newBids)
@@ -2933,36 +3153,31 @@ export default function Player() {
     typeDevices.forEach(deviceId => {
       const device = scenarioDevices.find(d => d.id === deviceId)
       if (!device) return
+      const labels = getDeviceBidLabelsForUi(device, newBids[deviceId])
+      if (labels.length === 0) return
       
       if (!newBids[deviceId]) {
-        const emptyHours = Array.from({ length: horizonHours }, () => 0)
-        newBids[deviceId] = {
-          A: { price: 0, hours: [...emptyHours] },
-          B: { price: 0, hours: [...emptyHours] },
-          C: { price: 0, hours: [...emptyHours] }
-        }
+        newBids[deviceId] = buildInitialBidsForDevice(device, horizonHours, Array.from({ length: horizonHours }, () => 0))
       }
-      
-      // Calculate hours for each hour
-      const hoursA = []
-      const hoursB = []
-      const hoursC = []
+      const ratios = getBidSplitRatios(labels.length)
+      const lotHours = Object.fromEntries(labels.map((label) => [label, []]))
       
       for (let hour = 0; hour < horizonHours; hour++) {
         const day = Math.floor(hour / 24)
         const baseAmount = round + 10 * hour + 200 * day
-        
-        hoursA.push(baseAmount)       // Lot A: 100%
-        hoursB.push(baseAmount * 0.1) // Lot B: 10%
-        hoursC.push(baseAmount * 0.1) // Lot C: 10%
+
+        labels.forEach((label, index) => {
+          lotHours[label].push(baseAmount * (ratios[index] || 0))
+        })
       }
-      
-      newBids[deviceId].A.hours = hoursA
-      newBids[deviceId].B.hours = hoursB
-      newBids[deviceId].C.hours = hoursC
-      
-      // Also update deviceHours (aggregate)
-      newDeviceHours[deviceId] = hoursA.map((a, i) => a + hoursB[i] + hoursC[i])
+
+      labels.forEach((label) => {
+        newBids[deviceId][label].hours = lotHours[label]
+      })
+
+      newDeviceHours[deviceId] = Array.from({ length: horizonHours }, (_, hourIdx) => (
+        labels.reduce((sum, label) => sum + (lotHours[label][hourIdx] || 0), 0)
+      ))
     })
     
     // Update aggregate hours
@@ -3860,18 +4075,14 @@ export default function Player() {
                           <Box sx={{ mb: 2 }}>
                             {(() => {
                               // Check device-level bidding setting (fallback to global)
-                              const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
-                                ? deviceDef.enable_multi_bid 
-                                : biddingEnabled
+                              const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
                               
                               return deviceBidding && deviceBids[did]
                             })() && (
                               <>
                                 {/* Multi-Bid Price Inputs */}
                                 {(() => {
-                                  const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
-                                    ? deviceDef.enable_multi_bid 
-                                    : biddingEnabled
+                                  const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
                                   return deviceBidding && deviceBids[did]
                                 })() && (
                                   <Box sx={{ mt: 3, p: 2, bgcolor: groupedSectionSurface, borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
@@ -3879,132 +4090,46 @@ export default function Player() {
                                       <Typography variant="subtitle2">Bid Input</Typography>
                                       <InfoLabel
                                         showTitle={false}
-                                        tooltip="Set A/B/C bid prices and hourly quantities. A is typically baseload, B mid-merit, C peak. The overview chart below shows the stacked total against effective max power."
+                                        tooltip="Set explicit bid prices and hourly quantities for this device. The overview chart below shows the stacked total against effective max power when multiple bids are configured."
                                       />
                                     </Stack>
                                     <Typography variant="caption" color="text.secondary" sx={{ mb: 2, display: 'block' }}>
-                                      Set three price-quantity bid pairs. Bids are cleared from lowest to highest price until demand is met. All cleared bids receive the System Marginal Price (SMP). Enter bid volume per hour - e.g., 600 MW for 6 hours means 600 MW in each hour.
+                                      Configure up to five explicit bid layers. Bids are cleared from lowest to highest price until demand is met. All cleared bids receive the System Marginal Price (SMP).
                                     </Typography>
                                     
-                                    {/* Price Inputs */}
-                                    <Stack direction="row" spacing={2}>
-                                      <Box sx={{ flex: 1, opacity: activeLot === 'A' ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot('A')}>
-                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'A' ? 'bold' : 'normal', color: activeLot === 'A' ? 'text.primary' : 'text.secondary' }}>
-                                          Baseload {activeLot === 'A' && '✓'}
-                                        </Typography>
-                                        <TextField
-                                          label="Price"
-                                          type="number"
-                                          size="small"
-                                          fullWidth
-                                          value={deviceBids[did].A?.price || 0}
-                                          onChange={(e) => {
-                                            const newPrice = Number(e.target.value)
-                                            setDeviceBids(prev => ({
-                                              ...prev,
-                                              [did]: {
-                                                ...prev[did],
-                                                A: { ...prev[did].A, price: newPrice }
+                                    <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                                      {getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).map((label, index) => (
+                                        <Box key={label} sx={{ flex: '1 1 160px', opacity: activeLot === label ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot(label)}>
+                                          <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === label ? 'bold' : 'normal', color: activeLot === label ? 'text.primary' : 'text.secondary' }}>
+                                            {getBidLabelTitle(label, index)} {activeLot === label && '✓'}
+                                          </Typography>
+                                          <TextField
+                                            label="Price"
+                                            type="number"
+                                            size="small"
+                                            fullWidth
+                                            value={deviceBids[did][label]?.price || 0}
+                                            onChange={(e) => onBidPriceChange(did, label, e.target.value)}
+                                            onFocus={() => setActiveLot(label)}
+                                            InputProps={{
+                                              endAdornment: <Typography variant="caption" sx={{ ml: 0.5 }}>ZAR/MWh</Typography>,
+                                              sx: {
+                                                backgroundColor: activeLot === label ? lotHighlightBg : 'transparent'
                                               }
-                                            }))
-                                          }}
-                                          onFocus={() => setActiveLot('A')}
-                                          InputProps={{
-                                            endAdornment: <Typography variant="caption" sx={{ ml: 0.5 }}>ZAR/MWh</Typography>,
-                                            sx: {
-                                              backgroundColor: activeLot === 'A' ? lotHighlightBg : 'transparent'
-                                            }
-                                          }}
-                                          sx={{
-                                            '& .MuiOutlinedInput-root': {
-                                              borderColor: activeLot === 'A' ? 'primary.main' : undefined,
-                                              borderWidth: activeLot === 'A' ? 2 : 1,
-                                              backgroundColor: activeLot === 'A' ? lotHighlightBg : 'transparent'
-                                            },
-                                            '& .MuiOutlinedInput-input': {
-                                              backgroundColor: activeLot === 'A' ? lotHighlightBg : 'transparent'
-                                            }
-                                          }}
-                                        />
-                                      </Box>
-                                      <Box sx={{ flex: 1, opacity: activeLot === 'B' ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot('B')}>
-                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'B' ? 'bold' : 'normal', color: activeLot === 'B' ? 'text.primary' : 'text.secondary' }}>
-                                          Mid-Merit {activeLot === 'B' && '✓'}
-                                        </Typography>
-                                        <TextField
-                                          label="Price"
-                                          type="number"
-                                          size="small"
-                                          fullWidth
-                                          value={deviceBids[did].B?.price || 0}
-                                          onChange={(e) => {
-                                            const newPrice = Number(e.target.value)
-                                            setDeviceBids(prev => ({
-                                              ...prev,
-                                              [did]: {
-                                                ...prev[did],
-                                                B: { ...prev[did].B, price: newPrice }
+                                            }}
+                                            sx={{
+                                              '& .MuiOutlinedInput-root': {
+                                                borderColor: activeLot === label ? 'primary.main' : undefined,
+                                                borderWidth: activeLot === label ? 2 : 1,
+                                                backgroundColor: activeLot === label ? lotHighlightBg : 'transparent'
+                                              },
+                                              '& .MuiOutlinedInput-input': {
+                                                backgroundColor: activeLot === label ? lotHighlightBg : 'transparent'
                                               }
-                                            }))
-                                          }}
-                                          onFocus={() => setActiveLot('B')}
-                                          InputProps={{
-                                            endAdornment: <Typography variant="caption" sx={{ ml: 0.5 }}>ZAR/MWh</Typography>,
-                                            sx: {
-                                              backgroundColor: activeLot === 'B' ? lotHighlightBg : 'transparent'
-                                            }
-                                          }}
-                                          sx={{
-                                            '& .MuiOutlinedInput-root': {
-                                              borderColor: activeLot === 'B' ? 'primary.main' : undefined,
-                                              borderWidth: activeLot === 'B' ? 2 : 1,
-                                              backgroundColor: activeLot === 'B' ? lotHighlightBg : 'transparent'
-                                            },
-                                            '& .MuiOutlinedInput-input': {
-                                              backgroundColor: activeLot === 'B' ? lotHighlightBg : 'transparent'
-                                            }
-                                          }}
-                                        />
-                                      </Box>
-                                      <Box sx={{ flex: 1, opacity: activeLot === 'C' ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot('C')}>
-                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === 'C' ? 'bold' : 'normal', color: activeLot === 'C' ? 'text.primary' : 'text.secondary' }}>
-                                          Peak {activeLot === 'C' && '✓'}
-                                        </Typography>
-                                        <TextField
-                                          label="Price"
-                                          type="number"
-                                          size="small"
-                                          fullWidth
-                                          value={deviceBids[did].C?.price || 0}
-                                          onChange={(e) => {
-                                            const newPrice = Number(e.target.value)
-                                            setDeviceBids(prev => ({
-                                              ...prev,
-                                              [did]: {
-                                                ...prev[did],
-                                                C: { ...prev[did].C, price: newPrice }
-                                              }
-                                            }))
-                                          }}
-                                          onFocus={() => setActiveLot('C')}
-                                          InputProps={{
-                                            endAdornment: <Typography variant="caption" sx={{ ml: 0.5 }}>ZAR/MWh</Typography>,
-                                            sx: {
-                                              backgroundColor: activeLot === 'C' ? lotHighlightBg : 'transparent'
-                                            }
-                                          }}
-                                          sx={{
-                                            '& .MuiOutlinedInput-root': {
-                                              borderColor: activeLot === 'C' ? 'primary.main' : undefined,
-                                              borderWidth: activeLot === 'C' ? 2 : 1,
-                                              backgroundColor: activeLot === 'C' ? lotHighlightBg : 'transparent'
-                                            },
-                                            '& .MuiOutlinedInput-input': {
-                                              backgroundColor: activeLot === 'C' ? lotHighlightBg : 'transparent'
-                                            }
-                                          }}
-                                        />
-                                      </Box>
+                                            }}
+                                          />
+                                        </Box>
+                                      ))}
                                     </Stack>
                                   </Box>
                                 )}
@@ -4014,11 +4139,13 @@ export default function Player() {
                                     <Typography variant="subtitle2">Device Chart</Typography>
                                   </Stack>
                                   <ForecastChartEditor
-                                    hours={deviceBids[did][activeLot]?.hours || []}
-                                    lockedUntil={effectiveLockedUntil}
-                                    onChange={(i, val) => onBidQuantityChange(did, activeLot, i, val)}
+                                    hours={toChartSeries(deviceBids[did][activeLot]?.hours || [])}
+                                    hourIndices={chartHourIndices}
+                                    editableIndices={toChartEditableIndices((deviceBids[did][activeLot]?.hours || []).length)}
+                                    lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil}
+                                    onChange={(i, val) => onBidQuantityChange(did, activeLot, toChartActualHourIndex(i), val)}
                                     maxValue={deviceMax}
-                                    smoothRadius={3}
+                                    smoothRadius={smoothDragRadius}
                                     currentRound={Number(cfg.current_round || 1)}
                                     roundSpan={Number(cfg.general.round_span_hours || 6)}
                                     freezeHours={Number(cfg.general.freeze_hours || 6)}
@@ -4026,41 +4153,44 @@ export default function Player() {
                                     startTime={cfg.general.start_time || '00:00'}
                                     deviceType={deviceType}
                                     deviceParams={deviceParams}
-                                    daBaseline={daBaseline.bids?.[did]?.[activeLot]?.hours || daBaseline.devices?.[did] || null}
-                                    committedPosition={daBaseline.current_position?.bids?.[did]?.[activeLot]?.hours || daBaseline.current_position?.devices?.[did] || null}
-                                    hourStatus={effectiveHourStatus || []}
+                                    daBaseline={toChartSeries(daBaseline.bids?.[did]?.[activeLot]?.hours || daBaseline.devices?.[did] || [])}
+                                    committedPosition={toChartSeries(daBaseline.current_position?.bids?.[did]?.[activeLot]?.hours || daBaseline.current_position?.devices?.[did] || [])}
+                                    hourStatus={toChartStatuses(effectiveHourStatus || [])}
                                     totalRounds={Number(cfg.general.rounds)}
                                     daCommittedStart={daBaseline.da_committed_start}
                                     daCommittedEnd={daBaseline.da_committed_end}
                                   />
                                 </Box>
                                 
-                                <Box sx={{ mt: 3 }}>
-                                  <StackedLotsChart
-                                    bidsA={deviceBids[did].A?.hours || []}
-                                    bidsB={deviceBids[did].B?.hours || []}
-                                    bidsC={deviceBids[did].C?.hours || []}
-                                    maxValue={deviceMax}
-                                    effectiveLimitMw={deviceMax}
-                                    currentRound={Number(cfg.current_round || 1)}
-                                    roundSpan={Number(cfg.general.round_span_hours || 6)}
-                                    lockedUntil={effectiveLockedUntil}
-                                    activeLot={activeLot}
-                                    onLotChange={setActiveLot}
-                                    deviceParams={deviceParams}
-                                    deviceType={deviceType}
-                                    startTime={cfg.general.start_time || '00:00'}
-                                    fakeDate={cfg.general.fake_date || ''}
-                                    hourStatus={effectiveHourStatus || []}
-                                  />
-                                </Box>
+                                {getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).length > 1 && (
+                                  <Box sx={{ mt: 3 }}>
+                                    <StackedLotsChart
+                                      bidSeries={Object.fromEntries(
+                                        getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).map((label) => [
+                                          label,
+                                          toVisibleSeries(deviceBids[did][label]?.hours || [])
+                                        ])
+                                      )}
+                                      maxValue={deviceMax}
+                                      effectiveLimitMw={deviceMax}
+                                      currentRound={Number(cfg.current_round || 1)}
+                                      roundSpan={Number(cfg.general.round_span_hours || 6)}
+                                      lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil}
+                                      activeLot={activeLot}
+                                      onLotChange={setActiveLot}
+                                      deviceParams={deviceParams}
+                                      deviceType={deviceType}
+                                      startTime={cfg.general.start_time || '00:00'}
+                                      fakeDate={cfg.general.fake_date || ''}
+                                      hourStatus={toVisibleStatuses(effectiveHourStatus || [])}
+                                    />
+                                  </Box>
+                                )}
                               </>
                             )}
                             {(() => {
                               // Check device-level bidding setting (fallback to global)
-                              const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
-                                ? deviceDef.enable_multi_bid 
-                                : biddingEnabled
+                              const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
                               
                               return !deviceBidding
                             })() && (
@@ -4073,12 +4203,14 @@ export default function Player() {
                                   />
                                 </Stack>
                                 <ForecastChartEditor 
-                                  hours={series} 
-                                  lockedUntil={effectiveLockedUntil} 
-                                  onChange={(i, val)=> onDeviceChange(did, i, val)} 
+                                  hours={toChartSeries(series)} 
+                                  hourIndices={chartHourIndices}
+                                  editableIndices={toChartEditableIndices(series.length)}
+                                  lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil} 
+                                  onChange={(i, val)=> onDeviceChange(did, toChartActualHourIndex(i), val)} 
                                   maxValue={deviceMax} 
                                   effectiveLimitMw={deviceMax}
-                                  smoothRadius={3}
+                                  smoothRadius={smoothDragRadius}
                                   currentRound={Number(cfg.current_round || 1)}
                                   roundSpan={Number(cfg.general.round_span_hours || 6)}
                                   freezeHours={Number(cfg.general.freeze_hours || 6)}
@@ -4087,9 +4219,9 @@ export default function Player() {
                                   fakeDate={cfg.general.fake_date || ''}
                                   deviceType={deviceType}
                                   deviceParams={deviceParams}
-                                  daBaseline={daBaseline.devices?.[did] || null}
-                                  committedPosition={daBaseline.current_position?.devices?.[did] || null}
-                                  hourStatus={effectiveHourStatus || []}
+                                  daBaseline={toChartSeries(daBaseline.devices?.[did] || [])}
+                                  committedPosition={toChartSeries(daBaseline.current_position?.devices?.[did] || [])}
+                                  hourStatus={toChartStatuses(effectiveHourStatus || [])}
                                   totalRounds={Number(cfg.general.rounds)}
                                   daCommittedStart={daBaseline.da_committed_start}
                                   daCommittedEnd={daBaseline.da_committed_end}
@@ -4102,66 +4234,38 @@ export default function Player() {
                           <Box sx={{ mt: 1 }}>
                             {(() => {
                               // Check device-level bidding setting (fallback to global)
-                              const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
-                                ? deviceDef.enable_multi_bid 
-                                : biddingEnabled
+                              const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
                               return deviceBidding && deviceBids[did] ? (
                                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: groupedSectionInfoBg, borderRadius: 1 }}>
-                                  Currently editing: <strong>{activeLot === 'A' ? 'Baseload' : activeLot === 'B' ? 'Mid-Merit' : 'Peak'}</strong> (Click a price field above to switch). Enter MW for each hour.
+                                  Currently editing: <strong>{getBidLabelTitle(activeLot, BID_LABELS.indexOf(activeLot))}</strong>. Click a price field above to switch and enter MW for each hour.
                                 </Typography>
                               ) : null
                             })()}
-                            {(() => {
-                              // Check device-level bidding setting (fallback to global)
-                              const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
-                                ? deviceDef.enable_multi_bid 
-                                : biddingEnabled
-                              const series = deviceBidding && deviceBids[did] ? (deviceBids[did][activeLot]?.hours || []) : (deviceHours[did] || [])
-                              const freeze = Number(cfg.general.freeze_hours || 6)
-                              const lockedEnd = freeze
-                              const todayEnd = 24
-                              
-                              const groups = [
-                                { 
-                                  label: 'Locked Hours', 
-                                  start: 0, 
-                                  end: lockedEnd, 
-                                  color: isDark ? theme.palette.warning.light : '#ff9800', 
-                                  hint: 'These hours are locked after Round 1. Simulates the Intraday Market (IDM) gate closure - the point where even short-term Intraday trading closes before delivery.' 
-                                },
-                                { 
-                                  label: 'Today (Editable)', 
-                                  start: lockedEnd, 
-                                  end: todayEnd, 
-                                  color: isDark ? theme.palette.info.light : '#2196f3', 
-                                  hint: 'Hours for today\'s simulation. Always editable. This represents the main trading window.' 
-                                },
-                                { 
-                                  label: 'Tomorrow (Editable)', 
-                                  start: todayEnd, 
-                                  end: series.length, 
-                                  color: isDark ? theme.palette.secondary.light : '#9c27b0', 
-                                  hint: 'Forward planning for the next day. Always editable.' 
-                                }
-                              ].filter(g => g.start < g.end && g.start < series.length)
-                              
-                              return (
-                                <Stack spacing={3}>
-                                  {groups.map((group) => {
-                                    const groupHours = []
-                                    for (let i = group.start; i < Math.min(group.end, series.length); i++) {
-                                      groupHours.push(i)
-                                    }
-                                    if (groupHours.length === 0) return null
-                                    
-                                    const chunkSize = 4
-                                    const chunks = []
-                                    for (let idx = 0; idx < groupHours.length; idx += chunkSize) {
-                                      chunks.push(groupHours.slice(idx, idx + chunkSize))
-                                    }
-                                    
-                                    return (
-                                      <Box key={group.label}>
+
+                                {getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).length > 1 && (
+                                  <Box sx={{ mt: 3 }}>
+                                    <StackedLotsChart
+                                      bidSeries={Object.fromEntries(
+                                        getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).map((label) => [
+                                          label,
+                                          toVisibleSeries(deviceBids[did][label]?.hours || [])
+                                        ])
+                                      )}
+                                      maxValue={deviceMax}
+                                      effectiveLimitMw={deviceMax}
+                                      currentRound={Number(cfg.current_round || 1)}
+                                      roundSpan={Number(cfg.general.round_span_hours || 6)}
+                                      lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil}
+                                      activeLot={activeLot}
+                                      onLotChange={setActiveLot}
+                                      deviceParams={deviceParams}
+                                      deviceType={deviceType}
+                                      startTime={cfg.general.start_time || '00:00'}
+                                      fakeDate={cfg.general.fake_date || ''}
+                                      hourStatus={toVisibleStatuses(effectiveHourStatus || [])}
+                                    />
+                                  </Box>
+                                )}
                                         <Tooltip title={group.hint} placement="top-start" arrow>
                                           <Typography variant="subtitle2" sx={{ mb: 1, color: group.color, fontWeight: 'bold', cursor: 'help' }}>
                                             {group.label}
@@ -4171,10 +4275,8 @@ export default function Player() {
                                           {chunks.map((chunk, chunkIdx) => (
                                             <Grid container spacing={1} key={chunkIdx} alignItems="center">
                                               {chunk.map((i) => {
-                                                const disabled = i < effectiveLockedUntil || timeRemaining === 0
-                                                const deviceBidding = deviceDef?.enable_multi_bid !== undefined
-                                                  ? deviceDef.enable_multi_bid
-                                                  : biddingEnabled
+                                                const disabled = !editableIdx.has(i) || timeRemaining === 0
+                                                const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
                                                 const highlightLot = deviceBidding && deviceBids[did]
                                                 const v = series[i]
                                                 return (
@@ -4185,9 +4287,7 @@ export default function Player() {
                                                         value={v}
                                                         onChange={(e) => {
                                                           // Check device-level bidding setting (fallback to global)
-                                                          const deviceBidding = deviceDef?.enable_multi_bid !== undefined 
-                                                            ? deviceDef.enable_multi_bid 
-                                                            : biddingEnabled
+                                                          const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
                                                           if (deviceBidding && deviceBids[did]) {
                                                             onBidQuantityChange(did, activeLot, i, e.target.value)
                                                           } else {
@@ -4283,20 +4383,22 @@ export default function Player() {
                 {useChartEditor ? (
                   <Box sx={{ mb: 2 }}>
                     <ForecastChartEditor 
-                      hours={hours} 
-                      lockedUntil={effectiveLockedUntil} 
-                      onChange={(i, val)=> onChange(i, val)} 
+                      hours={toChartSeries(hours)} 
+                      hourIndices={chartHourIndices}
+                      editableIndices={toChartEditableIndices(hours.length)}
+                      lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil} 
+                      onChange={(i, val)=> onChange(toChartActualHourIndex(i), val)} 
                       maxValue={aggregateMax}
                       effectiveLimitMw={aggregateMax}
-                      smoothRadius={3}
+                      smoothRadius={smoothDragRadius}
                       currentRound={Number(cfg.current_round || 1)}
                       roundSpan={Number(cfg.general.round_span_hours || 6)}
                       freezeHours={Number(cfg.general.freeze_hours || 6)}
                       startTime={cfg.general.start_time || '00:00'}
                       fakeDate={cfg.general.fake_date || ''}
-                      daBaseline={daBaseline.aggregate || null}
-                      committedPosition={daBaseline.current_position?.aggregate || null}
-                      hourStatus={effectiveHourStatus || []}
+                      daBaseline={toChartSeries(daBaseline.aggregate || [])}
+                      committedPosition={toChartSeries(daBaseline.current_position?.aggregate || [])}
+                      hourStatus={toChartStatuses(effectiveHourStatus || [])}
                       totalRounds={Number(cfg.general.rounds)}
                       daCommittedStart={daBaseline.da_committed_start}
                       daCommittedEnd={daBaseline.da_committed_end}
@@ -4305,41 +4407,12 @@ export default function Player() {
                 ) : (
                   <Box sx={{ mt: 2 }}>
                     {(() => {
-                      const freeze = Number(cfg.general.freeze_hours || 6)
-                      const lockedEnd = freeze
-                      const todayEnd = 24
-                      
-                      const groups = [
-                        { 
-                          label: 'Locked Hours', 
-                          start: 0, 
-                          end: lockedEnd, 
-                                  color: isDark ? theme.palette.warning.light : '#ff9800', 
-                          hint: 'These hours are locked after Round 1. Simulates the Intraday Market (IDM) gate closure - the point where even short-term Intraday trading closes before delivery.' 
-                        },
-                        { 
-                          label: 'Today (Editable)', 
-                          start: lockedEnd, 
-                          end: todayEnd, 
-                                  color: isDark ? theme.palette.info.light : '#2196f3', 
-                          hint: 'Hours for today\'s simulation. Always editable. This represents the main trading window.' 
-                        },
-                        { 
-                          label: 'Tomorrow (Editable)', 
-                          start: todayEnd, 
-                          end: hours.length, 
-                                  color: isDark ? theme.palette.secondary.light : '#9c27b0', 
-                          hint: 'Forward planning for the next day. Always editable.' 
-                        }
-                      ].filter(g => g.start < g.end && g.start < hours.length)
+                      const groups = buildFieldGroups(hours.length)
                       
                       return (
                         <Stack spacing={3}>
                           {groups.map((group) => {
-                            const groupHours = []
-                            for (let i = group.start; i < Math.min(group.end, hours.length); i++) {
-                              groupHours.push(i)
-                            }
+                            const groupHours = group.hours || []
                             if (groupHours.length === 0) return null
                             
                             const chunkSize = 4
@@ -4359,7 +4432,7 @@ export default function Player() {
                                   {chunks.map((chunk, chunkIdx) => (
                                     <Grid container spacing={1} key={chunkIdx} alignItems="center">
                                       {chunk.map((i) => {
-                                        const disabled = i < effectiveLockedUntil || timeRemaining === 0
+                                        const disabled = !editableIdx.has(i) || timeRemaining === 0
                                         return (
                                           <Grid item xs={6} sm={3} md={3} key={i}>
                                             <Tooltip arrow title={`Hour h${i + 1}: ${disabled ? 'Locked (freeze)' : 'Editable'}`}>

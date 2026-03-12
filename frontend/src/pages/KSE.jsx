@@ -24,6 +24,24 @@ import useAuth from '../store/auth'
 // Bump this when making breaking/editor-visible changes to KSE
 const KSE_EDITOR_VERSION = '1.1.0'
 
+const normalizeBooleanFlag = (value, fallback = false) => {
+  if (value === undefined || value === null) {
+    return fallback
+  }
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value === 'number') {
+    return value !== 0
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['true', '1', 'yes', 'on', 'enabled'].includes(normalized)) return true
+    if (['false', '0', 'no', 'off', 'disabled', ''].includes(normalized)) return false
+  }
+  return Boolean(value)
+}
+
 const defaultConfig = {
   version: '1.0.0',
   objectives: '',
@@ -33,7 +51,6 @@ const defaultConfig = {
       base_volume_mwh: 20000,
       price_floor: -500,
       price_cap: 5000,
-      enable_player_bidding: true,
       // generator_mix / consumer_mix are interpreted as counts (0-1000) per group
       generator_mix: { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150, nuclear: 0 },
       consumer_mix: { industrial: 400, household: 500, agriculture: 100 },
@@ -47,6 +64,13 @@ const defaultConfig = {
     idm: {
       trading: []
     }
+  },
+  player_input: {
+    mode: 'all_hours',
+    editable_offsets: [0],
+    hide_non_editable_hours: false,
+    allow_other_rounds_editing: true,
+    enable_smooth_drag: true,
   },
   grid: { zones: 2, atc: [[0,5000],[5000,0]] },
   environment: { seed: 'preview', actual_noise_pct: 5 },
@@ -489,6 +513,17 @@ export default function KSE(){
     // Removed scoring.weights validation (replaced by challenges)
     const h = cfg.general.horizon_hours, sp = cfg.general.round_span_hours, r = cfg.general.rounds
     if(sp<=0 || Math.floor(h/sp)!==r) errs.push('horizon ÷ round_span must equal rounds')
+    const inputMode = String(cfg?.player_input?.mode || 'all_hours')
+    const customOffsets = Array.isArray(cfg?.player_input?.editable_offsets) ? cfg.player_input.editable_offsets : []
+    if (inputMode === 'custom_offsets') {
+      if (customOffsets.length === 0) errs.push('player_input.editable_offsets must contain at least one hour for custom scope')
+      customOffsets.forEach((offset) => {
+        const normalized = Number(offset)
+        if (!Number.isInteger(normalized) || normalized < 0 || normalized >= Number(sp || 0)) {
+          errs.push('player_input.editable_offsets must be integers within round_span_hours')
+        }
+      })
+    }
     setErrors(errs)
     return errs.length===0
   }
@@ -561,6 +596,26 @@ export default function KSE(){
         norm.markets = {
           dam: sanitizeMarketEntry(markets.dam),
           idm: sanitizeMarketEntry(markets.idm)
+        }
+      } catch (_) { /* ignore */ }
+      try {
+        const roundSpan = Number(norm?.general?.round_span_hours || 6)
+        const playerInput = norm.player_input || {}
+        const rawMode = String(playerInput.mode || 'all_hours').trim().toLowerCase()
+        const allowedModes = new Set(['all_hours', 'first_hour', 'first_two_hours', 'first_three_hours', 'custom_offsets'])
+        const mode = allowedModes.has(rawMode) ? rawMode : 'all_hours'
+        const editableOffsets = Array.isArray(playerInput.editable_offsets)
+          ? [...new Set(playerInput.editable_offsets
+              .map((value) => Number(value))
+              .filter((value) => Number.isInteger(value) && value >= 0 && value < roundSpan)
+            )].sort((a, b) => a - b)
+          : []
+        norm.player_input = {
+          mode,
+          editable_offsets: editableOffsets,
+          hide_non_editable_hours: Boolean(playerInput.hide_non_editable_hours),
+          allow_other_rounds_editing: playerInput.allow_other_rounds_editing !== false,
+          enable_smooth_drag: playerInput.enable_smooth_drag !== false
         }
       } catch (_) { /* ignore */ }
       // Convert frontend device shape -> backend schema
@@ -1390,6 +1445,89 @@ export default function KSE(){
                   </Box>
                 </Stack>
               </Paper>
+              <Paper sx={{ p: 2, mt: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Player Hour Scope</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Reduce player complexity by limiting which hour slots inside each round can be actively edited.
+                  Hidden non-editable hours remain part of the scenario setup, but are submitted as 0 to avoid invisible bids affecting results.
+                </Typography>
+                <Grid container spacing={2} alignItems="center">
+                  <Grid item xs={12} md={4}>
+                    <TextField
+                      select
+                      fullWidth
+                      label="Editable Hours Per Round"
+                      value={cfg?.player_input?.mode || 'all_hours'}
+                      onChange={(e) => update(['player_input', 'mode'], e.target.value)}
+                      helperText="Choose which hour positions inside each round the player can actively edit."
+                    >
+                      <MenuItem value="all_hours">All hours playable</MenuItem>
+                      <MenuItem value="first_hour">First hour only</MenuItem>
+                      <MenuItem value="first_two_hours">First two hours</MenuItem>
+                      <MenuItem value="first_three_hours">First three hours</MenuItem>
+                      <MenuItem value="custom_offsets">Custom hour offsets</MenuItem>
+                    </TextField>
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <TextField
+                      fullWidth
+                      label="Custom Offsets"
+                      value={Array.isArray(cfg?.player_input?.editable_offsets) ? cfg.player_input.editable_offsets.join(', ') : ''}
+                      onChange={(e) => {
+                        const offsets = e.target.value
+                          .split(',')
+                          .map((part) => Number(part.trim()))
+                          .filter((value) => Number.isInteger(value) && value >= 0)
+                        update(['player_input', 'editable_offsets'], offsets)
+                      }}
+                      disabled={(cfg?.player_input?.mode || 'all_hours') !== 'custom_offsets'}
+                      helperText="Comma-separated hour offsets inside one round, zero-based. Example: 0, 1, 2"
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <FormControlLabel
+                      control={(
+                        <Switch
+                          checked={Boolean(cfg?.player_input?.hide_non_editable_hours)}
+                          onChange={(e) => update(['player_input', 'hide_non_editable_hours'], e.target.checked)}
+                        />
+                      )}
+                      label="Hide non-editable hours"
+                    />
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                      When enabled, hidden hours are submitted as 0 so invisible default bids cannot change round results.
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <FormControlLabel
+                      control={(
+                        <Switch
+                          checked={cfg?.player_input?.allow_other_rounds_editing !== false}
+                          onChange={(e) => update(['player_input', 'allow_other_rounds_editing'], e.target.checked)}
+                        />
+                      )}
+                      label="Allow editing in other rounds"
+                    />
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                      Disable this to lock all hour slots outside the active round. If those hours are also hidden, they are submitted as 0 until their round becomes active.
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <FormControlLabel
+                      control={(
+                        <Switch
+                          checked={cfg?.player_input?.enable_smooth_drag !== false}
+                          onChange={(e) => update(['player_input', 'enable_smooth_drag'], e.target.checked)}
+                        />
+                      )}
+                      label="Enable smooth dragging"
+                    />
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                      When disabled, dragging changes only the selected hour. When enabled, neighboring editable hours are adjusted with falloff.
+                    </Typography>
+                  </Grid>
+                </Grid>
+              </Paper>
               <Paper sx={{ p: 2 }}>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>Market Availability per Round</Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -1722,22 +1860,9 @@ export default function KSE(){
               </Stack>
               <Paper sx={{ p: 2 }}>
                 <Stack spacing={1}>
-                  {user?.role === 'admin' && (
-                    <>
-                      <FormControlLabel
-                        control={<Switch checked={Boolean(cfg.market.enable_player_bidding)} onChange={(e)=>update(['market','enable_player_bidding'], e.target.checked)} />}
-                        label={
-                          <InfoLabel 
-                            title="Enable Multi-Bid Pricing" 
-                            tooltip="Allow players to submit 3 price bids (A/B/C) per device with 24h quantity profiles. The engine merges player bids into the merit order and tracks dispatch per bid. Default: true (enabled)."
-                          />
-                        }
-                      />
-                      <Typography variant="caption" color="text.secondary">
-                        When enabled, players can submit multiple price-quantity bid pairs for each device, enabling strategic bidding behavior.
-                      </Typography>
-                    </>
-                  )}
+                  <Typography variant="caption" color="text.secondary">
+                    Configure explicit bidding per device via Bid Count. Devices with bid count 0 stay in implicit offer mode.
+                  </Typography>
                 </Stack>
               </Paper>
               {(cfg.player_types||[]).map((pt, idx)=> (

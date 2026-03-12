@@ -12,6 +12,9 @@ import random
 from typing import Dict, List, Tuple, Any, Optional
 
 
+BID_LABELS = ["A", "B", "C", "D", "E"]
+
+
 # Preset configurations
 PRESETS = {
     'conservative': {
@@ -36,6 +39,23 @@ PRESETS = {
         'price_increment': 1.2
     }
 }
+
+
+def _get_device_bid_count(device: Dict[str, Any], scenario_config: Dict[str, Any]) -> int:
+    if device.get('bid_count') is not None:
+        try:
+            count = int(device.get('bid_count'))
+        except Exception:
+            count = 0
+        return max(0, min(len(BID_LABELS), count))
+
+    if device.get('enable_multi_bid') is not None:
+        return 3 if bool(device.get('enable_multi_bid')) else 0
+
+    legacy_global = scenario_config.get('market', {}).get('enable_player_bidding')
+    if legacy_global is None:
+        legacy_global = scenario_config.get('general', {}).get('enable_multi_bid', False)
+    return 3 if bool(legacy_global) else 0
 
 
 def generate_test_data(
@@ -90,9 +110,6 @@ def generate_test_data(
             'warnings': ['No tradeable hours available']
         }
     
-    # Check if bidding is enabled
-    bidding_enabled = scenario_config.get('general', {}).get('enable_multi_bid', False)
-    
     device_hours = {}
     device_bids = {}
     warnings = []
@@ -144,14 +161,17 @@ def generate_test_data(
         
         device_hours[device_id] = hourly_values
         
-        # Generate bids if bidding enabled and device is not consumer
-        if bidding_enabled and not is_consumer:
+        bid_count = _get_device_bid_count(device, scenario_config)
+
+        # Generate bids if explicit bidding is enabled for this device and device is not consumer
+        if bid_count > 0 and not is_consumer:
             device_bids[device_id] = generate_bids(
                 device=device,
                 hourly_values=hourly_values,
                 hours_to_generate=hours_to_generate,
                 preset_config=preset_config,
-                rng=rng
+                rng=rng,
+                bid_count=bid_count
             )
     
     # Calculate aggregate (sum of all devices)
@@ -232,10 +252,11 @@ def generate_bids(
     hourly_values: List[float],
     hours_to_generate: List[int],
     preset_config: Dict[str, Any],
-    rng: random.Random
+    rng: random.Random,
+    bid_count: int = 3
 ) -> Dict[str, Any]:
     """
-    Generate bid structure (A, B, C lots) for a device.
+    Generate bid structure (A-E lots) for a device.
     Ensures bid quantities sum to <= hourly capacity.
     """
     device_type = (device.get('type', '') or '').lower()
@@ -259,40 +280,42 @@ def generate_bids(
     price_var = preset_config['price_variance']
     price_multiplier = 1.0 + rng.uniform(-price_var, price_var)
     
-    # Calculate lot prices (monotonic: A <= B <= C)
+    bid_count = max(1, min(len(BID_LABELS), int(bid_count or 1)))
+
+    # Calculate lot prices (monotonic: A <= B <= ...)
     increment = preset_config['price_increment']
-    price_a = round(base_price * price_multiplier, 1)
-    price_b = round(price_a * increment, 1)
-    price_c = round(price_b * increment, 1)
+    lot_prices = []
+    current_price = round(base_price * price_multiplier, 1)
+    for _ in range(bid_count):
+        lot_prices.append(current_price)
+        current_price = round(current_price * increment, 1)
     
-    # Get bid split proportions
-    split_a, split_b, split_c = preset_config['bid_split']
-    
-    # Generate hourly quantities for each lot
+    split_base = list(preset_config['bid_split'])
+    while len(split_base) < bid_count:
+        split_base.append(max(split_base[-1] * 0.7, 0.02))
+    split_base = split_base[:bid_count]
+    split_total = sum(split_base) or 1.0
+    split_base = [value / split_total for value in split_base]
+
     horizon = len(hourly_values)
-    hours_a = [0.0] * horizon
-    hours_b = [0.0] * horizon
-    hours_c = [0.0] * horizon
+    lot_hours = {label: [0.0] * horizon for label in BID_LABELS[:bid_count]}
     
     for hour_idx in hours_to_generate:
         total_offered = abs(hourly_values[hour_idx])
-        
-        # Split into lots (ensure sum <= total)
-        qty_a = round(total_offered * split_a, 2)
-        qty_b = round(total_offered * split_b, 2)
-        qty_c = round(total_offered - qty_a - qty_b, 2)  # Remainder goes to C
-        
-        # Ensure non-negative
-        qty_c = max(0.0, qty_c)
-        
-        hours_a[hour_idx] = qty_a
-        hours_b[hour_idx] = qty_b
-        hours_c[hour_idx] = qty_c
-    
+
+        allocated = 0.0
+        labels = BID_LABELS[:bid_count]
+        for index, label in enumerate(labels):
+            if index == len(labels) - 1:
+                quantity = round(max(0.0, total_offered - allocated), 2)
+            else:
+                quantity = round(total_offered * split_base[index], 2)
+                allocated += quantity
+            lot_hours[label][hour_idx] = quantity
+
     return {
-        'A': {'price': price_a, 'hours': hours_a},
-        'B': {'price': price_b, 'hours': hours_b},
-        'C': {'price': price_c, 'hours': hours_c}
+        label: {'price': lot_prices[index], 'hours': lot_hours[label]}
+        for index, label in enumerate(BID_LABELS[:bid_count])
     }
 
 
@@ -338,14 +361,14 @@ def validate_capacity(
         # Check bid consistency
         if device_id in device_bids:
             bids = device_bids[device_id]
+            bid_labels = [label for label in BID_LABELS if label in bids]
             for hour_idx in tradeable_hours:
                 if hour_idx >= len(hours):
                     continue
                 
-                total_bid = (
-                    bids.get('A', {}).get('hours', [])[hour_idx] +
-                    bids.get('B', {}).get('hours', [])[hour_idx] +
-                    bids.get('C', {}).get('hours', [])[hour_idx]
+                total_bid = sum(
+                    (bids.get(label, {}).get('hours', [])[hour_idx] if hour_idx < len(bids.get(label, {}).get('hours', [])) else 0.0)
+                    for label in bid_labels
                 )
                 
                 offered = abs(hours[hour_idx])
@@ -357,14 +380,11 @@ def validate_capacity(
                     )
             
             # Check monotonicity
-            price_a = bids.get('A', {}).get('price', 0)
-            price_b = bids.get('B', {}).get('price', 0)
-            price_c = bids.get('C', {}).get('price', 0)
-            
-            if price_a > price_b:
-                errors.append(f"{device_id}: Price A ({price_a}) > Price B ({price_b})")
-            if price_b > price_c:
-                errors.append(f"{device_id}: Price B ({price_b}) > Price C ({price_c})")
+            for left_label, right_label in zip(bid_labels, bid_labels[1:]):
+                left_price = bids.get(left_label, {}).get('price', 0)
+                right_price = bids.get(right_label, {}).get('price', 0)
+                if left_price > right_price:
+                    errors.append(f"{device_id}: Price {left_label} ({left_price}) > Price {right_label} ({right_price})")
     
     return {
         'valid': len(errors) == 0,

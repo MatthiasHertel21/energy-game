@@ -14,6 +14,7 @@ import {
   TextField,
   FormControlLabel,
   Switch,
+  MenuItem,
 } from '@mui/material';
 import {
   ExpandMore as ExpandMoreIcon,
@@ -45,6 +46,15 @@ const DEVICE_ICONS = {
   commercial_load: LoadIcon,
   residential_load: LoadIcon,
 };
+
+const getBidCountValue = (device) => {
+  if (device?.bid_count != null) {
+    const normalized = Number(device.bid_count)
+    return Number.isFinite(normalized) ? Math.max(0, Math.min(5, normalized)) : 0
+  }
+  if (device?.enable_multi_bid === true) return 3
+  return 0
+}
 
 const DEVICE_COLORS = {
   coal: '#424242',
@@ -256,23 +266,19 @@ export default function DeviceCard({
                   tooltip="Carbon dioxide emissions per MWh generated. Used for environmental impact calculations."
                 />
                 
-                {/* Multi-Bid Setting */}
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={device.enable_multi_bid === true}
-                      onChange={(e) => handleFieldChange('enable_multi_bid', e.target.checked)}
-                    />
-                  }
-                  label={
-                    <Stack spacing={0.5}>
-                      <Typography variant="body2">Enable Multi-Bid for this device</Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        When enabled, players can submit 3 price bids (A/B/C) with separate quantity profiles for this specific device. If disabled, uses classic forecast-only mode.
-                      </Typography>
-                    </Stack>
-                  }
-                />
+                <TextField
+                  select
+                  fullWidth
+                  size="small"
+                  label="Bid Count"
+                  value={getBidCountValue(device)}
+                  onChange={(e) => handleFieldChange('bid_count', Number(e.target.value))}
+                  helperText="0 = implicit variable-cost offer, 1 = one explicit bid, 2-5 = multiple explicit bids."
+                >
+                  {[0, 1, 2, 3, 4, 5].map((count) => (
+                    <MenuItem key={count} value={count}>{count}</MenuItem>
+                  ))}
+                </TextField>
               </>
             ) : (
               <>
@@ -328,23 +334,19 @@ export default function DeviceCard({
                   tooltip="Maximum price this consumer is willing to pay for electricity. Consumer will NOT buy if market price exceeds this value. Used as implicit bid when multi-bid is disabled. Default: 1500 ZAR/MWh."
                 />
                 
-                {/* Multi-Bid Setting for Consumers */}
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={device.enable_multi_bid === true}
-                      onChange={(e) => handleFieldChange('enable_multi_bid', e.target.checked)}
-                    />
-                  }
-                  label={
-                    <Stack spacing={0.5}>
-                      <Typography variant="body2">Enable Multi-Bid for this consumer</Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        When enabled, players can submit 3 demand bids (A/B/C) with different willingness-to-pay prices. If disabled, uses forecast with value_of_lost_load as implicit WTP.
-                      </Typography>
-                    </Stack>
-                  }
-                />
+                <TextField
+                  select
+                  fullWidth
+                  size="small"
+                  label="Bid Count"
+                  value={getBidCountValue(device)}
+                  onChange={(e) => handleFieldChange('bid_count', Number(e.target.value))}
+                  helperText="0 = implicit willingness-to-pay bid, 1 = one explicit demand bid, 2-5 = multiple demand bids."
+                >
+                  {[0, 1, 2, 3, 4, 5].map((count) => (
+                    <MenuItem key={count} value={count}>{count}</MenuItem>
+                  ))}
+                </TextField>
               </>
             )}
 

@@ -13,6 +13,7 @@ import {
   Paper,
   Typography
 } from '@mui/material'
+import { getVisibleHourIndices, shouldHideNonEditableHours } from '../utils/playerInputScope'
 
 /**
  * DeviceDeepDiveTabs - Shows hourly breakdown per device with tabs
@@ -30,8 +31,14 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   const { my_result } = results
   const currentRound = Number(results?.round || 0)
   const roundSpan = Number(scenario?.config?.general?.round_span_hours || 6)
+  const forecastHorizon = Number(scenario?.config?.general?.forecast_horizon_hours || scenario?.config?.general?.horizon_hours || 48)
   const roundStartHour = Math.max(0, (currentRound - 1) * roundSpan)
   const roundEndHour = roundStartHour + roundSpan
+  const hideNonEditableHours = shouldHideNonEditableHours(scenario?.config || {}, roundSpan)
+  const visibleHourSet = new Set(
+    getVisibleHourIndices(scenario?.config || {}, forecastHorizon, roundSpan)
+      .filter((hourIdx) => hourIdx >= roundStartHour && hourIdx < roundEndHour)
+  )
   const isIdmRound = currentRound > 1
   const isConsumer = roleType === 'consumer'
   const roundLevelIdp = Number(my_result?.idp)
@@ -178,7 +185,9 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
 
   const effectiveHourlyResults = allHourlyResults.filter((entry) => {
     const scenarioHour = normalizeScenarioHour(entry)
-    return scenarioHour != null && scenarioHour >= roundStartHour && scenarioHour < roundEndHour
+    if (scenarioHour == null || scenarioHour < roundStartHour || scenarioHour >= roundEndHour) return false
+    if (!hideNonEditableHours) return true
+    return visibleHourSet.has(scenarioHour)
   })
 
   console.log('[DeviceDeepDive] damBidDispatch:', damBidDispatch)

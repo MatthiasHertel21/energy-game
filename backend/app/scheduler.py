@@ -467,7 +467,7 @@ def run_rounds(session_id: int, app=None):
 
                     player_dam_bid_dispatch = None
                     if isinstance(engine_dam_bid_dispatch, dict):
-                        # Shape 1: {player_id: {device_id: {A/B/C: [...]}}}
+                        # Shape 1: {player_id: {device_id: {A-E: [...]}}}
                         player_dam_bid_dispatch = engine_dam_bid_dispatch.get(pid)
                         if player_dam_bid_dispatch is None:
                             player_dam_bid_dispatch = engine_dam_bid_dispatch.get(str(pid))

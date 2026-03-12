@@ -55,6 +55,200 @@ def _normalize_market_status(status_value) -> str:
     }
     return mapping.get(value, "market_code")
 
+
+def _normalize_boolean_flag(value, fallback: bool = False) -> bool:
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"false", "0", "no", "off", "disabled", ""}:
+            return False
+    return bool(value)
+
+
+BID_LABELS = ["A", "B", "C", "D", "E"]
+
+
+def _normalize_bid_count(value, fallback: int = 0) -> int:
+    try:
+        normalized = int(value)
+    except Exception:
+        normalized = int(fallback)
+    return max(0, min(len(BID_LABELS), normalized))
+
+
+def _get_device_bid_count(device: dict | None, legacy_global_enabled: bool = False) -> int:
+    device = device or {}
+    if device.get("bid_count") is not None:
+        return _normalize_bid_count(device.get("bid_count"), 0)
+    if device.get("enable_multi_bid") is not None:
+        return 3 if _normalize_boolean_flag(device.get("enable_multi_bid"), False) else 0
+    return 3 if legacy_global_enabled else 0
+
+
+def _get_bid_labels(device_bids: dict | None = None, device: dict | None = None, legacy_global_enabled: bool = False) -> list[str]:
+    labels = []
+    configured_count = _get_device_bid_count(device, legacy_global_enabled)
+    if configured_count > 0:
+        labels.extend(BID_LABELS[:configured_count])
+
+    if isinstance(device_bids, dict):
+        for label in BID_LABELS:
+            if label in device_bids and label not in labels:
+                labels.append(label)
+        for label in device_bids.keys():
+            if label not in labels:
+                labels.append(label)
+
+    return labels
+
+
+def _config_uses_explicit_bids(config: dict, bids_payload=None) -> bool:
+    legacy_global_enabled = _normalize_boolean_flag((config or {}).get("market", {}).get("enable_player_bidding", False), False)
+    for device in (config or {}).get("devices", []) or []:
+        if _get_device_bid_count(device, legacy_global_enabled) > 0:
+            return True
+    return bool(bids_payload)
+
+
+def _normalize_player_input_scope(config: dict) -> dict:
+    general_cfg = (config or {}).get("general", {}) or {}
+    player_input = (config or {}).get("player_input", {}) or {}
+    round_span = max(1, int(general_cfg.get("round_span_hours", 6) or 6))
+    mode = str(player_input.get("mode") or "all_hours").strip().lower()
+    if mode not in {"all_hours", "first_hour", "first_two_hours", "first_three_hours", "custom_offsets"}:
+        mode = "all_hours"
+
+    raw_offsets = player_input.get("editable_offsets", [])
+    custom_offsets = []
+    if isinstance(raw_offsets, list):
+        for value in raw_offsets:
+            try:
+                normalized = int(value)
+            except Exception:
+                continue
+            if 0 <= normalized < round_span and normalized not in custom_offsets:
+                custom_offsets.append(normalized)
+    custom_offsets.sort()
+
+    if mode == "first_hour":
+        editable_offsets = [0]
+    elif mode == "first_two_hours":
+        editable_offsets = [offset for offset in [0, 1] if offset < round_span]
+    elif mode == "first_three_hours":
+        editable_offsets = [offset for offset in [0, 1, 2] if offset < round_span]
+    elif mode == "custom_offsets":
+        editable_offsets = custom_offsets or [0]
+    else:
+        editable_offsets = list(range(round_span))
+
+    return {
+        "mode": mode,
+        "editable_offsets": editable_offsets,
+        "hide_non_editable_hours": bool(player_input.get("hide_non_editable_hours", False)),
+        "allow_other_rounds_editing": player_input.get("allow_other_rounds_editing", True) is not False,
+        "round_span_hours": round_span,
+    }
+
+
+def _is_player_input_hour_allowed(config: dict, hour_idx: int, current_round: int | None = None) -> bool:
+    try:
+        normalized_hour = int(hour_idx)
+    except Exception:
+        return False
+    if normalized_hour < 0:
+        return False
+    scope = _normalize_player_input_scope(config)
+    if not scope["allow_other_rounds_editing"] and current_round is not None:
+        try:
+            normalized_round = max(1, int(current_round))
+        except Exception:
+            normalized_round = None
+        if normalized_round is not None:
+            hour_round = (normalized_hour // scope["round_span_hours"]) + 1
+            if hour_round != normalized_round:
+                return False
+    if scope["mode"] == "all_hours":
+        return True
+    return (normalized_hour % scope["round_span_hours"]) in set(scope["editable_offsets"])
+
+
+def _get_player_input_allowed_hours(config: dict, current_round: int | None = None) -> list[int]:
+    general_cfg = (config or {}).get("general", {}) or {}
+    horizon_hours = int(general_cfg.get("forecast_horizon_hours", general_cfg.get("horizon_hours", 24)) or 24)
+    return [hour_idx for hour_idx in range(horizon_hours) if _is_player_input_hour_allowed(config, hour_idx, current_round)]
+
+
+def _zero_hidden_series(series, config: dict, round_num: int | None = None) -> list[float]:
+    values = list(series or [])
+    scope = _normalize_player_input_scope(config)
+    if not scope["hide_non_editable_hours"]:
+        return values
+
+    if round_num is not None and len(values) <= scope["round_span_hours"]:
+        round_start = (max(1, int(round_num)) - 1) * scope["round_span_hours"]
+        return [
+            (float(value or 0) if _is_player_input_hour_allowed(config, round_start + idx, round_num) else 0.0)
+            for idx, value in enumerate(values)
+        ]
+
+    return [
+        (float(value or 0) if _is_player_input_hour_allowed(config, idx, round_num) else 0.0)
+        for idx, value in enumerate(values)
+    ]
+
+
+def _zero_hidden_device_payload(devices_payload, config: dict, round_num: int | None = None):
+    if not isinstance(devices_payload, list):
+        return devices_payload
+    scope = _normalize_player_input_scope(config)
+    if not scope["hide_non_editable_hours"]:
+        return devices_payload
+
+    normalized = []
+    for entry in devices_payload:
+        if not isinstance(entry, dict):
+            continue
+        normalized.append({
+            **entry,
+            "hours": _zero_hidden_series(entry.get("hours", []), config, round_num)
+        })
+    return normalized
+
+
+def _zero_hidden_bids_payload(bids_payload, config: dict, round_num: int | None = None):
+    if not isinstance(bids_payload, dict):
+        return bids_payload
+    scope = _normalize_player_input_scope(config)
+    if not scope["hide_non_editable_hours"]:
+        return bids_payload
+
+    normalized = {}
+    for device_id, lots in bids_payload.items():
+        if not isinstance(lots, dict):
+            continue
+        normalized[device_id] = {}
+        for lot_name, lot in lots.items():
+            if not isinstance(lot, dict):
+                continue
+            normalized[device_id][lot_name] = {
+                **lot,
+                "hours": _zero_hidden_series(lot.get("hours", []), config, round_num)
+            }
+    return normalized
+
+
+def _normalize_submitted_bids_payload(bids_payload, config: dict, round_num: int | None = None):
+    if not _config_uses_explicit_bids(config, bids_payload):
+        return {}
+    return _zero_hidden_bids_payload(bids_payload, config, round_num)
+
 forecast_in = ns.model(
     "ForecastIn",
     {
@@ -210,15 +404,17 @@ def _get_tradeable_hours(session: Session, round_num: int) -> list:
     # Round 1 special case: DA baseline or zero baseline
     # All hours tradeable in Round 1 for initial setup
     if round_num == 1:
-        return list(range(horizon_hours))
+        tradeable = list(range(horizon_hours))
+    else:
+        # Round 2+: Hours are tradeable if they're past the next ID gate
+        # ID gate closes at next_id_gate hour
+        next_id_gate = _calculate_next_id_gate(current_sim_hour, id_gate_interval, id_gate_base)
     
-    # Round 2+: Hours are tradeable if they're past the next ID gate
-    # ID gate closes at next_id_gate hour
-    next_id_gate = _calculate_next_id_gate(current_sim_hour, id_gate_interval, id_gate_base)
+        # Tradeable hours: from next_id_gate onwards
+        tradeable = [h for h in range(horizon_hours) if h >= next_id_gate]
     
-    # Tradeable hours: from next_id_gate onwards
-    tradeable = [h for h in range(horizon_hours) if h >= next_id_gate]
-    return tradeable
+    allowed_hours = set(_get_player_input_allowed_hours(scenario.config or {}, round_num))
+    return [h for h in tradeable if h in allowed_hours]
 
 
 def generate_market_timeline(session: Session, round_num: int) -> dict:
@@ -534,6 +730,7 @@ def _validate_bids_structure(bids_data: dict, config: dict) -> list:
     
     devices_cfg = (config or {}).get("devices", [])
     device_map = {d.get("id"): d for d in devices_cfg if isinstance(d, dict)}
+    legacy_global_enabled = _normalize_boolean_flag((config or {}).get("market", {}).get("enable_player_bidding", False), False)
 
     def _is_load_device(dev: dict) -> bool:
         if not dev:
@@ -548,12 +745,15 @@ def _validate_bids_structure(bids_data: dict, config: dict) -> list:
         if not isinstance(device_bids, dict):
             errors.append(f"Device {device_id}: bids must be a dictionary")
             continue
+
+        device_cfg = device_map.get(device_id, {})
+        allowed_labels = set(_get_bid_labels(device_bids, device_cfg, legacy_global_enabled))
         
-        for bid_label in ['A', 'B', 'C']:
-            if bid_label not in device_bids:
+        for bid_label, bid in device_bids.items():
+            if bid_label not in allowed_labels:
+                errors.append(f"Device {device_id}, Bid {bid_label}: bid label is not allowed for this device")
                 continue
-            
-            bid = device_bids[bid_label]
+
             if not isinstance(bid, dict):
                 errors.append(f"Device {device_id}, Bid {bid_label}: must be a dictionary")
                 continue
@@ -599,7 +799,7 @@ def _validate_bids_structure(bids_data: dict, config: dict) -> list:
                     break
         
         # Validate bid price monotonicity (SAWEM Market Code requirement)
-        direction = "nonincreasing" if _is_load_device(device_map.get(device_id)) else "nondecreasing"
+        direction = "nonincreasing" if _is_load_device(device_cfg) else "nondecreasing"
         monotonicity_errors = validate_bid_monotonicity(device_bids, direction=direction)
         if monotonicity_errors:
             for err in monotonicity_errors:
@@ -708,6 +908,13 @@ class ForecastAPI(Resource):
         session = Session.query.get(data["session_id"])
         if session and session.scenario:
             config = session.scenario.config or {}
+            if isinstance(data, dict):
+                data["hours"] = _zero_hidden_series(data.get("hours", []), config, data.get("round_num"))
+                if isinstance(data.get("devices"), list):
+                    data["devices"] = _zero_hidden_device_payload(data.get("devices"), config, data.get("round_num"))
+                    per_device = data.get("devices")
+                if data.get("bids") is not None:
+                    data["bids"] = _normalize_submitted_bids_payload(data.get("bids"), config, data.get("round_num"))
             
             # SAWEM Gate Closure Enforcement: Check if forecast modifies locked hours
             general_cfg = config.get("general", {})
@@ -730,7 +937,11 @@ class ForecastAPI(Resource):
                 # If we are receiving a round slice (span-sized), align indices to global hours
                 if len(new_hours) <= round_span and len(prev_hours) <= round_span:
                     start_idx = (data.get("round_num", 1) - 1) * round_span
-                    slice_allowed = set(range(start_idx, start_idx + len(new_hours)))
+                    slice_allowed = {
+                        global_idx
+                        for global_idx in range(start_idx, start_idx + len(new_hours))
+                        if global_idx in tradeable_set
+                    }
                     allowed_set = tradeable_set.union(slice_allowed)
 
                     # Prefer previous submission for the same round if it exists
@@ -940,6 +1151,13 @@ class ForecastFull(Resource):
         session = Session.query.get(data["session_id"])
         if session and session.scenario:
             config = session.scenario.config or {}
+            if isinstance(data, dict):
+                data["hours"] = _zero_hidden_series(data.get("hours", []), config, session.current_round if session else None)
+                if isinstance(data.get("devices"), list):
+                    data["devices"] = _zero_hidden_device_payload(data.get("devices"), config, session.current_round if session else None)
+                    per_device = data.get("devices")
+                if data.get("bids") is not None:
+                    data["bids"] = _normalize_submitted_bids_payload(data.get("bids"), config, session.current_round if session else None)
             
             # Validate bids structure if provided
             bids_data = data.get("bids")
