@@ -132,12 +132,12 @@ const buildInitialBidsForDevice = (device, horizonHours, baseProfile) => {
   })
   return next
 }
+
 const LOAD_PATTERN = [0.55, 0.5, 0.48, 0.47, 0.5, 0.62, 0.74, 0.86, 0.93, 0.97, 1.0, 1.0, 0.98, 0.95, 0.92, 0.94, 0.97, 0.98, 0.9, 0.82, 0.72, 0.66, 0.6, 0.58]
 const SOLAR_PATTERN = [0, 0, 0, 0, 0.05, 0.15, 0.35, 0.6, 0.78, 0.9, 0.92, 0.9, 0.78, 0.6, 0.35, 0.15, 0.05, 0, 0, 0, 0, 0, 0, 0]
 const WIND_PATTERN = [0.52, 0.5, 0.46, 0.44, 0.48, 0.55, 0.6, 0.66, 0.72, 0.75, 0.7, 0.66, 0.62, 0.58, 0.55, 0.5, 0.52, 0.56, 0.6, 0.6, 0.58, 0.55, 0.54, 0.52]
 const BATTERY_PATTERN = [0.45, 0.4, 0.35, 0.3, 0.2, 0.1, -0.05, -0.2, -0.4, -0.55, -0.6, -0.45, -0.25, 0, 0.2, 0.4, 0.6, 0.65, 0.55, 0.42, 0.3, 0.2, 0.1, 0]
 const DEFAULT_AGG_PATTERN = [0.6, 0.58, 0.55, 0.52, 0.52, 0.62, 0.78, 0.92, 1.02, 1.08, 1.1, 1.05, 0.98, 0.96, 0.98, 1.02, 1.08, 1.1, 1.0, 0.9, 0.82, 0.76, 0.7, 0.65]
-
 const zeroProfile = (len) => Array.from({ length: Math.max(1, len) }, () => 0)
 
 const normalizeBooleanFlag = (value, fallback = false) => {
@@ -157,6 +157,7 @@ const normalizeBooleanFlag = (value, fallback = false) => {
   }
   return Boolean(value)
 }
+
 const toNumber = (value, fallback = 0) => {
   const num = Number(value)
   return Number.isFinite(num) ? num : fallback
@@ -4233,91 +4234,106 @@ export default function Player() {
                         {view === 'fields' && (
                           <Box sx={{ mt: 1 }}>
                             {(() => {
-                              // Check device-level bidding setting (fallback to global)
                               const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
-                              return deviceBidding && deviceBids[did] ? (
-                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: groupedSectionInfoBg, borderRadius: 1 }}>
-                                  Currently editing: <strong>{getBidLabelTitle(activeLot, BID_LABELS.indexOf(activeLot))}</strong>. Click a price field above to switch and enter MW for each hour.
-                                </Typography>
-                              ) : null
-                            })()}
+                              const groups = buildFieldGroups(series.length)
+                              const uiBidLabels = getDeviceBidLabelsForUi(deviceDef, deviceBids[did])
 
-                                {getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).length > 1 && (
-                                  <Box sx={{ mt: 3 }}>
-                                    <StackedLotsChart
-                                      bidSeries={Object.fromEntries(
-                                        getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).map((label) => [
-                                          label,
-                                          toVisibleSeries(deviceBids[did][label]?.hours || [])
-                                        ])
-                                      )}
-                                      maxValue={deviceMax}
-                                      effectiveLimitMw={deviceMax}
-                                      currentRound={Number(cfg.current_round || 1)}
-                                      roundSpan={Number(cfg.general.round_span_hours || 6)}
-                                      lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil}
-                                      activeLot={activeLot}
-                                      onLotChange={setActiveLot}
-                                      deviceParams={deviceParams}
-                                      deviceType={deviceType}
-                                      startTime={cfg.general.start_time || '00:00'}
-                                      fakeDate={cfg.general.fake_date || ''}
-                                      hourStatus={toVisibleStatuses(effectiveHourStatus || [])}
-                                    />
-                                  </Box>
-                                )}
-                                        <Tooltip title={group.hint} placement="top-start" arrow>
-                                          <Typography variant="subtitle2" sx={{ mb: 1, color: group.color, fontWeight: 'bold', cursor: 'help' }}>
-                                            {group.label}
-                                          </Typography>
-                                        </Tooltip>
-                                        <Stack spacing={1.5}>
-                                          {chunks.map((chunk, chunkIdx) => (
-                                            <Grid container spacing={1} key={chunkIdx} alignItems="center">
-                                              {chunk.map((i) => {
-                                                const disabled = !editableIdx.has(i) || timeRemaining === 0
-                                                const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
-                                                const highlightLot = deviceBidding && deviceBids[did]
-                                                const v = series[i]
-                                                return (
-                                                  <Grid item xs={6} sm={3} md={3} key={i}>
-                                                    <Tooltip arrow title={`Hour h${i + 1}: ${disabled ? 'Locked (freeze)' : 'Editable'}`}>
-                                                      <TextField
-                                                        label={`h${i + 1}`}
-                                                        value={v}
-                                                        onChange={(e) => {
-                                                          // Check device-level bidding setting (fallback to global)
-                                                          const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
-                                                          if (deviceBidding && deviceBids[did]) {
-                                                            onBidQuantityChange(did, activeLot, i, e.target.value)
-                                                          } else {
-                                                            onDeviceChange(did, i, e.target.value)
-                                                          }
-                                                        }}
-                                                        size="small"
-                                                        type="number"
-                                                        disabled={disabled}
-                                                        fullWidth
-                                                        sx={{
-                                                          '& .MuiOutlinedInput-root': {
-                                                            backgroundColor: highlightLot ? lotHighlightBg : 'transparent'
-                                                          },
-                                                          '& .MuiOutlinedInput-input': {
-                                                            backgroundColor: highlightLot ? lotHighlightBg : 'transparent'
-                                                          }
-                                                        }}
-                                                      />
-                                                    </Tooltip>
-                                                  </Grid>
-                                                )
-                                              })}
-                                            </Grid>
-                                          ))}
-                                        </Stack>
-                                      </Box>
-                                    )
-                                  })}
-                                </Stack>
+                              return (
+                                <>
+                                  {deviceBidding && deviceBids[did] ? (
+                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: groupedSectionInfoBg, borderRadius: 1 }}>
+                                      Currently editing: <strong>{getBidLabelTitle(activeLot, BID_LABELS.indexOf(activeLot))}</strong>. Click a price field above to switch and enter MW for each hour.
+                                    </Typography>
+                                  ) : null}
+
+                                  {uiBidLabels.length > 1 && (
+                                    <Box sx={{ mt: 3 }}>
+                                      <StackedLotsChart
+                                        bidSeries={Object.fromEntries(
+                                          uiBidLabels.map((label) => [
+                                            label,
+                                            toVisibleSeries(deviceBids[did][label]?.hours || [])
+                                          ])
+                                        )}
+                                        maxValue={deviceMax}
+                                        effectiveLimitMw={deviceMax}
+                                        currentRound={Number(cfg.current_round || 1)}
+                                        roundSpan={Number(cfg.general.round_span_hours || 6)}
+                                        lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil}
+                                        activeLot={activeLot}
+                                        onLotChange={setActiveLot}
+                                        deviceParams={deviceParams}
+                                        deviceType={deviceType}
+                                        startTime={cfg.general.start_time || '00:00'}
+                                        fakeDate={cfg.general.fake_date || ''}
+                                        hourStatus={toVisibleStatuses(effectiveHourStatus || [])}
+                                      />
+                                    </Box>
+                                  )}
+
+                                  <Stack spacing={3}>
+                                    {groups.map((group) => {
+                                      const groupHours = group.hours || []
+                                      if (groupHours.length === 0) return null
+
+                                      const chunkSize = 4
+                                      const chunks = []
+                                      for (let idx = 0; idx < groupHours.length; idx += chunkSize) {
+                                        chunks.push(groupHours.slice(idx, idx + chunkSize))
+                                      }
+
+                                      return (
+                                        <Box key={group.label}>
+                                          <Tooltip title={group.hint} placement="top-start" arrow>
+                                            <Typography variant="subtitle2" sx={{ mb: 1, color: group.color, fontWeight: 'bold', cursor: 'help' }}>
+                                              {group.label}
+                                            </Typography>
+                                          </Tooltip>
+                                          <Stack spacing={1.5}>
+                                            {chunks.map((chunk, chunkIdx) => (
+                                              <Grid container spacing={1} key={chunkIdx} alignItems="center">
+                                                {chunk.map((i) => {
+                                                  const disabled = !editableIdx.has(i) || timeRemaining === 0
+                                                  const highlightLot = deviceBidding && deviceBids[did]
+                                                  const v = series[i]
+                                                  return (
+                                                    <Grid item xs={6} sm={3} md={3} key={i}>
+                                                      <Tooltip arrow title={`Hour h${i + 1}: ${disabled ? 'Locked (freeze)' : 'Editable'}`}>
+                                                        <TextField
+                                                          label={`h${i + 1}`}
+                                                          value={v}
+                                                          onChange={(e) => {
+                                                            if (deviceBidding && deviceBids[did]) {
+                                                              onBidQuantityChange(did, activeLot, i, e.target.value)
+                                                            } else {
+                                                              onDeviceChange(did, i, e.target.value)
+                                                            }
+                                                          }}
+                                                          size="small"
+                                                          type="number"
+                                                          disabled={disabled}
+                                                          fullWidth
+                                                          sx={{
+                                                            '& .MuiOutlinedInput-root': {
+                                                              backgroundColor: highlightLot ? lotHighlightBg : 'transparent'
+                                                            },
+                                                            '& .MuiOutlinedInput-input': {
+                                                              backgroundColor: highlightLot ? lotHighlightBg : 'transparent'
+                                                            }
+                                                          }}
+                                                        />
+                                                      </Tooltip>
+                                                    </Grid>
+                                                  )
+                                                })}
+                                              </Grid>
+                                            ))}
+                                          </Stack>
+                                        </Box>
+                                      )
+                                    })}
+                                  </Stack>
+                                </>
                               )
                             })()}
                           </Box>
