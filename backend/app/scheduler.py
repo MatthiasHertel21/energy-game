@@ -444,6 +444,9 @@ def run_rounds(session_id: int, app=None):
                         "device_hourly_details": device_hourly_details,
                         "challenge_result": challenge_result,
                         "player_role": player_role,
+                        "zone_results": res.get("zone_results", []),
+                        "link_results": res.get("link_results", []),
+                        "player_zone_info_by_player": res.get("player_zone_info_by_player", {}),
                     }
 
                     # Pass through round-level metadata from engine
@@ -578,6 +581,8 @@ def run_rounds(session_id: int, app=None):
                     "hourly_results": res.get("hourly_results", []),
                     "dam_hourly_results": res.get("dam_hourly_results", []),
                     "idm_hourly_results": res.get("idm_hourly_results", res.get("hourly_results", [])),
+                    "zone_results": res.get("zone_results", []),
+                    "link_results": res.get("link_results", []),
                 }
                 payload['zone'] = zone_payload
                 socketio.emit("round_results", payload, namespace="/trainer")

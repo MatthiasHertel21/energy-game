@@ -2,7 +2,7 @@
 Unit tests for multi-bid pricing feature
 """
 import pytest
-from app.engine import build_supply_from_bids, track_bid_dispatch, clear_market
+from app.engine import build_supply_from_bids, build_demand_from_bids, track_bid_dispatch, clear_market
 
 
 class TestBuildSupplyFromBids:
@@ -174,6 +174,68 @@ class TestBuildSupplyFromBids:
         assert combined == [(450.0, 25.0), (900, 100)]
         assert len(bids_meta) == 1
         assert bids_meta[0]["bid_label"] == "A"
+
+    def test_bid_count_one_empty_bids_falls_back_to_forecast_and_configured_price(self):
+        """Single-bid devices recover from empty bid payloads using forecast quantity and configured price."""
+        config = {
+            "market": {"enable_player_bidding": False},
+            "devices": [{
+                "id": "device_1",
+                "type": "gas",
+                "bid_count": 1,
+                "cost_per_mwh_zar": 300,
+                "default_bids": {"A": {"price": 450}},
+            }],
+        }
+        synthetic = []
+        forecasts = {
+            1: {
+                "devices": [{"device_id": "device_1", "hours": [25] * 24}],
+                "bids": {
+                    "device_1": {}
+                }
+            }
+        }
+
+        combined, bids_meta = build_supply_from_bids(forecasts, 0, synthetic, config)
+
+        assert combined == [(450.0, 25.0)]
+        assert len(bids_meta) == 1
+        assert bids_meta[0]["bid_label"] == "A"
+        assert bids_meta[0]["price"] == 450.0
+        assert bids_meta[0]["quantity"] == 25.0
+
+
+class TestBuildDemandFromBids:
+    def test_bid_count_one_empty_bids_falls_back_to_forecast_and_configured_price(self):
+        """Single-bid consumer devices recover from empty bid payloads using forecast quantity and configured price."""
+        config = {
+            "market": {"enable_player_bidding": False},
+            "devices": [{
+                "id": "device_1",
+                "type": "industrial_load",
+                "bid_count": 1,
+                "willingness_to_pay": 1500,
+                "default_bids": {"A": {"price": 1200}},
+            }],
+        }
+        synthetic = []
+        forecasts = {
+            1: {
+                "devices": [{"device_id": "device_1", "hours": [40] * 24}],
+                "bids": {
+                    "device_1": {}
+                }
+            }
+        }
+
+        combined, bids_meta = build_demand_from_bids(forecasts, 0, synthetic, config)
+
+        assert combined == [(1200.0, 40.0)]
+        assert len(bids_meta) == 1
+        assert bids_meta[0]["bid_label"] == "A"
+        assert bids_meta[0]["price"] == 1200.0
+        assert bids_meta[0]["quantity"] == 40.0
 
 
 class TestTrackBidDispatch:

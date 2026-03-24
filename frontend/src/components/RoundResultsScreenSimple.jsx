@@ -64,12 +64,19 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     variable_cost_zar: normalizeNumber(kpis.variable_cost_zar),
     fixed_cost_zar: normalizeNumber(kpis.fixed_cost_zar),
     imbalance_cost_zar: normalizeNumber(kpis.imbalance_cost_zar),
+    atc_dispatch_cost_zar: normalizeNumber(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar),
+    grid_constraint_cost_zar: normalizeNumber(kpis.grid_constraint_cost_zar),
+    grid_constraint_cost_per_mwh_zar: normalizeNumber(kpis.grid_constraint_cost_per_mwh_zar),
     curtailment_cost_zar: normalizeNumber(kpis.curtailment_cost_zar),
+    curtailment_mwh: normalizeNumber(kpis.curtailment_mwh),
+    imbalance_mwh: normalizeNumber(kpis.imbalance_mwh),
+    grid_curtailed_mwh: normalizeNumber(kpis.grid_curtailed_mwh),
     congestion_revenue_zar: normalizeNumber(kpis.congestion_revenue_zar),
     co2_emissions_kg: normalizeNumber(kpis.co2_emissions_kg),
     dispatched_mwh: normalizeNumber(kpis.dispatched_mwh),
     planned_mwh: normalizeNumber(kpis.planned_mwh),
-    actual_mwh: normalizeNumber(kpis.actual_mwh)
+    actual_mwh: normalizeNumber(kpis.actual_mwh),
+    zone_shortfall_mwh: normalizeNumber(kpis.zone_shortfall_mwh)
   })
 
   useEffect(() => {
@@ -105,12 +112,15 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
             variable_cost_zar: allRounds.reduce((sum, k) => sum + k.variable_cost_zar, 0),
             fixed_cost_zar: allRounds.reduce((sum, k) => sum + k.fixed_cost_zar, 0),
             imbalance_cost_zar: allRounds.reduce((sum, k) => sum + k.imbalance_cost_zar, 0),
+            atc_dispatch_cost_zar: allRounds.reduce((sum, k) => sum + k.atc_dispatch_cost_zar, 0),
+            grid_constraint_cost_zar: allRounds.reduce((sum, k) => sum + k.grid_constraint_cost_zar, 0),
             curtailment_cost_zar: allRounds.reduce((sum, k) => sum + k.curtailment_cost_zar, 0),
             congestion_revenue_zar: allRounds.reduce((sum, k) => sum + k.congestion_revenue_zar, 0),
             co2_emissions_kg: allRounds.reduce((sum, k) => sum + k.co2_emissions_kg, 0),
             dispatched_mwh: allRounds.reduce((sum, k) => sum + k.dispatched_mwh, 0),
             planned_mwh: allRounds.reduce((sum, k) => sum + k.planned_mwh, 0),
             actual_mwh: allRounds.reduce((sum, k) => sum + k.actual_mwh, 0),
+            zone_shortfall_mwh: allRounds.reduce((sum, k) => sum + k.zone_shortfall_mwh, 0),
           }
           setCumulativeKpis(cumulative)
         }
@@ -156,6 +166,10 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
   const { my_result } = results
   const currentKpis = normalizeKpis(my_result?.kpis || {})
   const kpis = showCumulative && cumulativeKpis ? cumulativeKpis : currentKpis
+  const playerZoneInfo = my_result?.player_zone_info || {}
+  const balancingSettings = my_result?.balancing_settings || {}
+  const balancingUpPrice = Number(balancingSettings?.up_price_zar_per_mwh || 1200)
+  const balancingDownPrice = Number(balancingSettings?.down_price_zar_per_mwh || 800)
   const playerRole = my_result?.player_role
   const roleFromBreakdown = my_result?.da_id_breakdown?.is_consumer
   const resolvedRole = playerRole
@@ -301,7 +315,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     },
     profit: {
       title: 'Profit breakdown',
-      description: 'Profit = Revenue - Variable Cost - Fixed Cost - Imbalance + Congestion'
+      description: 'Profit = Revenue − Variable Cost − Fixed Cost − Imbalance Cost − Dispatch Cost (ATC) + Congestion Revenue'
     },
     co2: {
       title: terms.co2BreakdownTitle,
@@ -320,8 +334,8 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       description: 'Delivered energy versus planned energy.'
     },
     costs: {
-      title: 'Total costs',
-      description: 'Total payment for consumed cleared energy in this round.'
+      title: 'Total Costs (Procurement)',
+      description: 'Procurement cost = |settlement revenue| for energy cleared at market price. Imbalance and ATC costs are separate settlement components explained in the round notes and profit breakdown, not in this procurement card.'
     }
   }
 
@@ -335,8 +349,25 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const dispatched = Number(currentKpis.dispatched_mwh || 0)
     const planned = Number(currentKpis.planned_mwh || 0)
     const co2 = Number(currentKpis.co2_emissions_kg || 0)
-    const totalCosts = Number(currentKpis.variable_cost_zar || 0) + Number(currentKpis.fixed_cost_zar || 0) + Number(currentKpis.imbalance_cost_zar || 0)
+    const totalCosts = Number(currentKpis.variable_cost_zar || 0) + Number(currentKpis.fixed_cost_zar || 0) + Number(currentKpis.imbalance_cost_zar || 0) + Number(currentKpis.atc_dispatch_cost_zar || 0)
     const demandCoveragePct = planned > 0 ? (dispatched / planned) * 100 : null
+    const zoneStatus = String(playerZoneInfo?.zone_status || '')
+    const zoneShortfall = Number(playerZoneInfo?.zone_unserved_demand_mwh || currentKpis.zone_shortfall_mwh || 0)
+    const zoneImports = Number(playerZoneInfo?.zone_imports_mwh || 0)
+    const zoneExports = Number(playerZoneInfo?.zone_exports_mwh || 0)
+    const zoneCoverage = Number(playerZoneInfo?.zone_coverage_total_pct || 0)
+    const bindingLinks = (Array.isArray(my_result?.link_results) ? my_result.link_results : []).filter((link) => Boolean(link?.binding))
+    const connectedBindingLinks = (Array.isArray(playerZoneInfo?.zone_links) ? playerZoneInfo.zone_links : []).filter((zoneLink) => {
+      return bindingLinks.some((link) => {
+        const fromZone = Number(link?.from_zone || 0)
+        const toZone = Number(link?.to_zone || 0)
+        const peerZone = Number(zoneLink?.peer_zone || 0)
+        const zoneId = Number(playerZoneInfo?.zone_id || 0)
+        return (fromZone === zoneId && toZone === peerZone) || (toZone === zoneId && fromZone === peerZone)
+      })
+    })
+    const gridConstraintCost = Number(currentKpis.atc_dispatch_cost_zar || currentKpis.grid_constraint_cost_zar || 0)
+    const gridCurtailedMwh = Number(currentKpis.grid_curtailed_mwh || 0)
 
     if (isProducer) {
       if (Math.abs(revenue) < 1) {
@@ -352,7 +383,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       }
 
       if (profit < 0) {
-        notes.push('Profit is negative: The sum of variable/fixed costs and imbalance exceeded achieved revenue.')
+        notes.push('Profit is negative: After adding any congestion revenue, the sum of variable costs, fixed costs, imbalance costs, and possible dispatch cost (ATC) still exceeded achieved revenue.')
+      }
+
+      if (gridCurtailedMwh > 0.001) {
+        notes.push(`Network constraints curtailed ${formatInt(gridCurtailedMwh)} MWh of your commercially cleared generation after market clearing. This is constrained-off energy due to limited export capability or congested paths, not classical imbalance.`)
       }
     } else {
       if (Math.abs(revenue) < 1) {
@@ -364,8 +399,30 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         notes.push(`Demand coverage is above 100% (${demandCoveragePct.toFixed(1)}%): delivered volume exceeded planned demand in this round (e.g., additional intraday procurement or balancing effects).`)
       }
       if (profit < 0) {
-        notes.push('Net result is negative: procurement and imbalance costs exceeded positive settlement effects in this round.')
+        notes.push('Net result is negative: procurement, imbalance, and possible dispatch cost (ATC), net of any congestion revenue, exceeded positive settlement effects in this round.')
       }
+    }
+
+    if (zoneStatus === 'supply_shortfall') {
+      notes.push(`Network constraints caused a zonal shortfall: your zone covered ${formatPct(zoneCoverage)} of demand, imported ${formatInt(zoneImports)} MWh, but still left ${formatInt(zoneShortfall)} MWh unserved.`)
+    } else if (zoneStatus === 'grid_supported_supply') {
+      notes.push(`Your zone depended on the network this round: local supply was insufficient and ${formatInt(zoneImports)} MWh had to be imported to avoid a shortfall.`)
+    }
+
+    if (connectedBindingLinks.length > 0) {
+      const bindingText = connectedBindingLinks
+        .slice(0, 2)
+        .map((link) => `Zone ${link.peer_zone} (${formatPct(link.utilization_pct)} utilization, ${link.direction === 'in' ? 'import path' : 'export path'})`)
+        .join(' · ')
+      notes.push(`Binding network links affected your zone: ${bindingText}${connectedBindingLinks.length > 2 ? ' …' : ''}. These links were at their transfer limit and restricted additional imports or exports.`)
+    }
+
+    if (gridConstraintCost > 0.5) {
+      notes.push(`Dispatch cost (ATC) of ${formatCurrency(gridConstraintCost)} arises from network bandwidth limits that restricted physical delivery in your zone — separate from imbalance caused by bidding or scheduling deviations.`)
+    }
+
+    if (Number(currentKpis.imbalance_cost_zar || 0) > 0.5 || Number(currentKpis.imbalance_mwh || 0) > 0.001) {
+      notes.push(`Imbalance settlement in this scenario uses configured balancing prices: ${formatCurrency(balancingUpPrice)} per MWh for positive imbalance and ${formatCurrency(balancingDownPrice)} per MWh for negative imbalance.`)
     }
 
     const previous = roundHistoryKpis
@@ -439,12 +496,36 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const variableCost = Number(currentKpis.variable_cost_zar || 0)
     const fixedCost = Number(currentKpis.fixed_cost_zar || 0)
     const imbalanceCost = Number(currentKpis.imbalance_cost_zar || 0)
+    const gridConstraintCost = Number(currentKpis.atc_dispatch_cost_zar || currentKpis.grid_constraint_cost_zar || 0)
     const congestionRevenue = Number(currentKpis.congestion_revenue_zar || 0)
-    const computedProfit = totalRevenue - variableCost - fixedCost - imbalanceCost + congestionRevenue
+    const zoneStatus = String(playerZoneInfo?.zone_status || '')
+    const zoneShortfall = Number(playerZoneInfo?.zone_unserved_demand_mwh || currentKpis.zone_shortfall_mwh || 0)
+    const zoneImports = Number(playerZoneInfo?.zone_imports_mwh || 0)
+    const zoneExports = Number(playerZoneInfo?.zone_exports_mwh || 0)
+    const zoneLocalGeneration = Number(playerZoneInfo?.zone_local_generation_mwh || 0)
+    const zoneLocalDemand = Number(playerZoneInfo?.zone_local_demand_mwh || 0)
+    const zoneLinkCount = Array.isArray(playerZoneInfo?.zone_links) ? playerZoneInfo.zone_links.length : 0
+    const gridCurtailedMwh = Number(currentKpis.grid_curtailed_mwh || 0)
+    const computedProfit = totalRevenue - variableCost - fixedCost - imbalanceCost - gridConstraintCost + congestionRevenue
     if (isConsumer) {
-      notes.push(`Net-result composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Net result: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
+      notes.push(`Net-result composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Net result: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
     } else {
-      notes.push(`Profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
+      notes.push(`Profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
+    }
+    if (gridConstraintCost > 0 || Number(currentKpis.zone_shortfall_mwh || 0) > 0) {
+      notes.push(`Dispatch cost (ATC): ${formatCurrency(gridConstraintCost)} from network capacity limits (ATC), zone shortfall ${formatInt(currentKpis.zone_shortfall_mwh || 0)} MWh.`)
+    }
+    if (zoneStatus) {
+      notes.push(`Zone context: Zone ${playerZoneInfo?.zone_id || '-'} was ${String(zoneStatus).replaceAll('_', ' ')}, with local generation ${formatInt(zoneLocalGeneration)} MWh, local demand ${formatInt(zoneLocalDemand)} MWh, imports ${formatInt(zoneImports)} MWh, exports ${formatInt(zoneExports)} MWh, and ${zoneLinkCount} connected active link${zoneLinkCount === 1 ? '' : 's'} in the round summary.`)
+    }
+    if (gridCurtailedMwh > 0.001) {
+      notes.push(`Constrained-off generation: ${formatInt(gridCurtailedMwh)} MWh were removed after market clearing because the network could not physically transport all cleared output.`)
+    }
+    if (zoneShortfall > 0.001 && isConsumer) {
+      notes.push(`Shortfall settlement: ${formatInt(zoneShortfall)} MWh in your zone were not physically served. The associated extra cost is shown as Dispatch Cost (ATC), separate from Imbalance Cost.`)
+    }
+    if (imbalanceCost > 0.5 || Number(currentKpis.imbalance_mwh || 0) > 0.001) {
+      notes.push(`Imbalance cost uses the configured balancing prices, not the market SMP: positive imbalance is settled at ${formatCurrency(balancingUpPrice)}/MWh and negative imbalance at ${formatCurrency(balancingDownPrice)}/MWh.`)
     }
 
     const deviceRevenueApprox = Object.entries(deviceBreakdown)
@@ -490,11 +571,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       const topOverbidDevices = overbidSummary.devices
         .sort((a, b) => b.overbidMw - a.overbidMw)
         .slice(0, 2)
-        .map((item) => `${item.name}: ${item.overbidMw.toFixed(1)} MW`)
+        .map((item) => `${item.name}: ${Math.round(item.overbidMw)} MW`)
         .join(' · ')
       notes.push(isConsumer
-        ? `Over-demand: requested volume above effective capacity. In this round: ${overbidSummary.total.toFixed(1)} MW across ${overbidSummary.hours} device-hours${topOverbidDevices ? ` (${topOverbidDevices})` : ''}.`
-        : `Overbid/Over-demand: offered/requested volume above effective capacity. In this round: ${overbidSummary.total.toFixed(1)} MW across ${overbidSummary.hours} device-hours${topOverbidDevices ? ` (${topOverbidDevices})` : ''}.`)
+        ? `Over-demand: requested volume above effective capacity. In this round: ${Math.round(overbidSummary.total)} MW across ${overbidSummary.hours} device-hours${topOverbidDevices ? ` (${topOverbidDevices})` : ''}.`
+        : `Overbid/Over-demand: offered/requested volume above effective capacity. In this round: ${Math.round(overbidSummary.total)} MW across ${overbidSummary.hours} device-hours${topOverbidDevices ? ` (${topOverbidDevices})` : ''}.`)
     } else {
       const totalImbalanceMwh = Number(currentKpis.imbalance_mwh || 0)
       const totalImbalanceCost = Number(currentKpis.imbalance_cost_zar || 0)
@@ -706,6 +787,74 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
           <Divider />
 
+          {!!playerZoneInfo?.zone_id && (
+            <Box>
+              <Typography variant="h6" fontWeight={600} gutterBottom>
+                Zone And Network
+              </Typography>
+              <Grid container spacing={3} sx={{ mt: 0.5 }}>
+                <Grid item xs={12} md={5}>
+                  <Card variant="outlined" sx={{ height: '100%' }}>
+                    <CardContent>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
+                        <Typography variant="subtitle1" fontWeight={600}>
+                          Zone {playerZoneInfo.zone_id}
+                        </Typography>
+                        <Chip
+                          size="small"
+                          label={String(playerZoneInfo.zone_status || 'local_supply_sufficient').replaceAll('_', ' ')}
+                          color={playerZoneInfo.zone_status === 'supply_shortfall' ? 'error' : playerZoneInfo.zone_status === 'grid_supported_supply' ? 'warning' : 'success'}
+                        />
+                      </Stack>
+                      <Stack spacing={0.75}>
+                        <Typography variant="body2" color="text.secondary">
+                          Coverage: {formatPct(playerZoneInfo.zone_coverage_total_pct)}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Local generation: {formatInt(playerZoneInfo.zone_local_generation_mwh)} MWh
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Local demand: {formatInt(playerZoneInfo.zone_local_demand_mwh)} MWh
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Imports / exports: {formatInt(playerZoneInfo.zone_imports_mwh)} / {formatInt(playerZoneInfo.zone_exports_mwh)} MWh
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Zone shortfall: {formatInt(playerZoneInfo.zone_unserved_demand_mwh)} MWh
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Dispatch cost (ATC): {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
+                        </Typography>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} md={7}>
+                  <Card variant="outlined" sx={{ height: '100%' }}>
+                    <CardContent>
+                      <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 1.5 }}>
+                        Connected Links
+                      </Typography>
+                      {Array.isArray(playerZoneInfo.zone_links) && playerZoneInfo.zone_links.length > 0 ? (
+                        <Stack spacing={1}>
+                          {playerZoneInfo.zone_links.map((link) => (
+                            <Typography key={`${link.direction}-${link.peer_zone}`} variant="body2" color="text.secondary">
+                              Zone {link.peer_zone}: {formatInt(link.flow_mwh)} / {formatInt(link.atc_mwh)} MWh, utilization {formatPct(link.utilization_pct)} ({link.direction})
+                            </Typography>
+                          ))}
+                        </Stack>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">
+                          No active interzonal flows for your zone in this round.
+                        </Typography>
+                      )}
+                    </CardContent>
+                  </Card>
+                </Grid>
+              </Grid>
+            </Box>
+          )}
+
           {/* Main KPI Cards */}
           <Box>
             <Typography variant="h6" fontWeight={600} gutterBottom>
@@ -794,7 +943,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                           </IconButton>
                         </Stack>
                         <Typography variant="h5" sx={{ fontWeight: 600, color: '#ff9800' }}>
-                          {formatInt((kpis.co2_emissions_kg || 0) / 1000)} t
+                          {((kpis.co2_emissions_kg || 0) / 1000).toFixed(1)} t
                         </Typography>
                         <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
                           {kpis.dispatched_mwh > 0 
@@ -832,6 +981,36 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                       </CardContent>
                     </Card>
                   </Grid>
+
+                  {(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0) > 0.5 && (
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Card variant="outlined" sx={{
+                        borderColor: '#f44336',
+                        borderWidth: 2,
+                        height: '100%'
+                      }}>
+                        <CardContent>
+                          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+                            <Stack direction="row" alignItems="center" spacing={2}>
+                              <CostIcon sx={{ fontSize: 32, color: '#f44336' }} />
+                              <Typography variant="subtitle2" color="text.secondary">
+                                Dispatch Cost (ATC)
+                              </Typography>
+                            </Stack>
+                            <IconButton size="small" onClick={() => openBreakdown('profit')}>
+                              <InfoIcon fontSize="small" />
+                            </IconButton>
+                          </Stack>
+                          <Typography variant="h5" sx={{ fontWeight: 600, color: '#f44336' }}>
+                            {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                            Network bandwidth limit (ATC)
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  )}
                 </>
               ) : (
                 <>
@@ -915,11 +1094,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                           </IconButton>
                         </Stack>
                         <Typography variant="h5" sx={{ fontWeight: 600, color: '#ff9800' }}>
-                          {formatInt((kpis.co2_emissions_kg || 0) / 1000)} t
+                          {((kpis.co2_emissions_kg || 0) / 1000).toFixed(1)} t
                         </Typography>
                         <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
                           {kpis.dispatched_mwh > 0 
-                            ? `${((kpis.co2_emissions_kg || 0) / 1000 / kpis.dispatched_mwh).toFixed(2)} ${terms.co2IntensityUnit}`
+                            ? `${((kpis.co2_emissions_kg || 0) / 1000 / kpis.dispatched_mwh).toFixed(3)} ${terms.co2IntensityUnit}`
                             : terms.co2FallbackUnit}
                         </Typography>
                       </CardContent>
@@ -953,6 +1132,36 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                       </CardContent>
                     </Card>
                   </Grid>
+
+                  {(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0) > 0.5 && (
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Card variant="outlined" sx={{
+                        borderColor: '#f44336',
+                        borderWidth: 2,
+                        height: '100%'
+                      }}>
+                        <CardContent>
+                          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+                            <Stack direction="row" alignItems="center" spacing={2}>
+                              <CostIcon sx={{ fontSize: 32, color: '#f44336' }} />
+                              <Typography variant="subtitle2" color="text.secondary">
+                                Dispatch Cost (ATC)
+                              </Typography>
+                            </Stack>
+                            <IconButton size="small" onClick={() => openBreakdown('profit')}>
+                              <InfoIcon fontSize="small" />
+                            </IconButton>
+                          </Stack>
+                          <Typography variant="h5" sx={{ fontWeight: 600, color: '#f44336' }}>
+                            {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                            Network bandwidth limit (ATC)
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  )}
                 </>
               )}
             </Grid>
@@ -1039,7 +1248,14 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
               }
             }}
           >
-            <DialogTitle>{breakdownConfig[breakdownKey]?.title || 'Breakdown'}</DialogTitle>
+            <DialogTitle>
+              {breakdownConfig[breakdownKey]?.title || 'Breakdown'}
+              {showCumulative && cumulativeKpis && (
+                <Typography component="span" variant="caption" color="primary" sx={{ ml: 1.5 }}>
+                  (Cumulative Rounds 1–{round})
+                </Typography>
+              )}
+            </DialogTitle>
             <DialogContent dividers>
               <Stack spacing={2}>
                 {breakdownConfig[breakdownKey]?.description && (
@@ -1053,10 +1269,13 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                       Profit Formula
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem' }}>
-                      Profit = Revenue - Variable Cost - Fixed Cost - Imbalance Cost + Congestion Revenue
+                      Profit = Revenue - Variable Cost - Fixed Cost - Imbalance Cost - Dispatch Cost (ATC) + Congestion Revenue
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', color: 'primary.main' }}>
-                      Profit = {formatInt(kpis.revenue_zar || 0)} - {formatInt(kpis.variable_cost_zar || 0)} - {formatInt(kpis.fixed_cost_zar || 0)} - {formatInt(kpis.imbalance_cost_zar || 0)} + {formatInt(kpis.congestion_revenue_zar || 0)}
+                      Profit = {formatInt(kpis.revenue_zar || 0)} - {formatInt(kpis.variable_cost_zar || 0)} - {formatInt(kpis.fixed_cost_zar || 0)} - {formatInt(kpis.imbalance_cost_zar || 0)} - {formatInt(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)} + {formatInt(kpis.congestion_revenue_zar || 0)}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Imbalance is settled with configured balancing prices: +imbalance at {formatCurrency(balancingUpPrice)}/MWh, −imbalance at {formatCurrency(balancingDownPrice)}/MWh.
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', fontWeight: 600, color: 'success.main' }}>
                       Profit = {formatCurrency(kpis.profit_zar || 0)}
@@ -1070,19 +1289,29 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                           </TableRow>
                           <TableRow>
                             <TableCell>Variable Cost</TableCell>
-                            <TableCell align="right">{formatCurrency(kpis.variable_cost_zar || 0)}</TableCell>
+                            <TableCell align="right">− {formatCurrency(kpis.variable_cost_zar || 0)}</TableCell>
                           </TableRow>
                           <TableRow>
                             <TableCell>Fixed Cost</TableCell>
-                            <TableCell align="right">{formatCurrency(kpis.fixed_cost_zar || 0)}</TableCell>
+                            <TableCell align="right">− {formatCurrency(kpis.fixed_cost_zar || 0)}</TableCell>
                           </TableRow>
                           <TableRow>
                             <TableCell>Imbalance Cost</TableCell>
-                            <TableCell align="right">{formatCurrency(kpis.imbalance_cost_zar || 0)}</TableCell>
+                            <TableCell align="right">− {formatCurrency(kpis.imbalance_cost_zar || 0)}</TableCell>
+                          </TableRow>
+                          <TableRow>
+                            <TableCell>Dispatch Cost (ATC)</TableCell>
+                            <TableCell align="right">− {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}</TableCell>
                           </TableRow>
                           <TableRow>
                             <TableCell>Congestion Revenue</TableCell>
-                            <TableCell align="right">{formatCurrency(kpis.congestion_revenue_zar || 0)}</TableCell>
+                            <TableCell align="right">+ {formatCurrency(kpis.congestion_revenue_zar || 0)}</TableCell>
+                          </TableRow>
+                          <TableRow sx={{ bgcolor: 'success.50' }}>
+                            <TableCell sx={{ fontWeight: 'bold' }}>{isConsumer ? 'Net Result' : 'Profit'}</TableCell>
+                            <TableCell align="right" sx={{ fontWeight: 'bold', color: (kpis.profit_zar || 0) >= 0 ? 'success.main' : 'error.main' }}>
+                              = {formatCurrency(kpis.profit_zar || 0)}
+                            </TableCell>
                           </TableRow>
                         </TableBody>
                       </Table>
@@ -1093,14 +1322,25 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                   const currentDeviceHourlyBreakdown = currentKpis?.device_hourly_breakdown || {}
                   const currentHourlyBreakdown = currentKpis?.hourly_breakdown || []
                   const hourColumns = deriveHourColumns(currentHourlyBreakdown, currentDeviceHourlyBreakdown)
+                  const hasSplitSettlement = Number(round) > 1 && (
+                    Math.abs(Number(my_result?.da_id_breakdown?.da_revenue_zar || 0)) > 0.5
+                    || Math.abs(Number(my_result?.da_id_breakdown?.id_revenue_zar || 0)) > 0.5
+                  )
                   return (
                   <>
                     <Typography variant="body1" fontWeight={600} gutterBottom>
                       Revenue Calculation
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem' }}>
-                      Revenue = Σ(Dispatched MWh × SMP ZAR/MWh)
+                      {hasSplitSettlement
+                        ? 'Revenue = Σ(DA dispatched MWh × DA SMP) + Σ(ID delta MWh × current market price)'
+                        : 'Revenue = Σ(Dispatched MWh × current market price)'}
                     </Typography>
+                    {hasSplitSettlement && (
+                      <Typography variant="body2" color="text.secondary">
+                        In ID-delta rounds, the day-ahead dispatched baseline stays valued at DA SMP, while only the incremental intraday delta versus that baseline is settled at the current round price.
+                      </Typography>
+                    )}
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', fontWeight: 600, color: 'success.main' }}>
                       Total Revenue = {formatCurrency(kpis.revenue_zar || 0)}
                     </Typography>
@@ -1137,7 +1377,10 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                       {terms.co2BreakdownFormula}
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', fontWeight: 600, color: 'warning.main' }}>
-                      {terms.co2TotalLinePrefix} = {formatInt(kpis.co2_emissions_kg || 0)} kg
+                      {terms.co2TotalLinePrefix} = {((kpis.co2_emissions_kg || 0) / 1000).toFixed(1)} t
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      All values in this dialog are shown in tonnes CO₂. Backend emissions are stored in kg and converted here for a consistent display.
                     </Typography>
 
                     {renderHourMatrixTable(
@@ -1158,7 +1401,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                         if (!Number.isFinite(totalCo2) || totalCo2 === 0 || !Number.isFinite(total) || total <= 0) return '0'
                         const share = row.market === 'da' ? (da / total) : (id / total)
                         const val = totalCo2 * share
-                        return `${formatInt(val)} kg`
+                        return `${(val / 1000).toFixed(2)} t`
                       },
                       'Device / Market'
                     )}
@@ -1233,14 +1476,19 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                 {breakdownKey === 'costs' && (
                   <>
                     <Typography variant="body1" fontWeight={600} gutterBottom>
-                      Total Costs
+                      Total Costs (Procurement)
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem' }}>
-                      Total Costs = |Revenue|
+                      Procurement Cost = |settlement revenue| (energy cleared × market price)
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', fontWeight: 600, color: 'primary.main' }}>
-                      Total Costs = {formatCurrency(Math.abs(kpis.revenue_zar || 0))}
+                      Procurement Cost = {formatCurrency(Math.abs(kpis.revenue_zar || 0))}
                     </Typography>
+                    {(kpis.imbalance_cost_zar > 0.5 || kpis.atc_dispatch_cost_zar > 0.5) && (
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                        Note: Imbalance Cost ({formatCurrency(kpis.imbalance_cost_zar || 0)}) and Dispatch Cost ATC ({formatCurrency(kpis.atc_dispatch_cost_zar || 0)}) are additional result components explained separately in the round notes and profit breakdown — they do not flow into this "Total Costs" card.
+                      </Typography>
+                    )}
                   </>
                 )}
               </Stack>

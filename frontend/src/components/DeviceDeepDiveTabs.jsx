@@ -226,8 +226,17 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   const selectedDeviceId = deviceIds[selectedDeviceIdx]
   const deviceConfig = deviceMap[selectedDeviceId] || {}
   const deviceName = deviceConfig.name || selectedDeviceId
-  const deviceType = deviceConfig.type || 'Unknown'
-  const deviceCapacity = Number(deviceConfig.capacity_mw || deviceConfig.max_power_mw || 0)
+  const deviceType = (deviceConfig.type || 'Unknown').toLowerCase()
+  const isBatteryDevice = deviceType === 'battery'
+  const devicePowerMw = Number(
+    deviceConfig.power_mw
+    || deviceConfig.power_rating_mw
+    || deviceConfig.max_power_mw
+    || deviceConfig.capacity_mw
+    || 0
+  )
+  const deviceEnergyMwh = Number(deviceConfig.capacity_mwh || 0)
+  const deviceCapacity = isBatteryDevice ? devicePowerMw : Number(deviceConfig.capacity_mw || deviceConfig.max_power_mw || 0)
 
   const parseStartHour = (startTime) => {
     if (!startTime || typeof startTime !== 'string') return 0
@@ -255,6 +264,10 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     if (!Number.isFinite(num)) return '0'
     return Math.round(num).toLocaleString('en-US')
   }
+
+  const deviceHeadline = isBatteryDevice
+    ? `${deviceType} • ${devicePowerMw > 0 ? `${formatNumber(devicePowerMw, 1)} MW` : '? MW'}${deviceEnergyMwh > 0 ? ` • ${formatNumber(deviceEnergyMwh, 1)} MWh` : ''}`
+    : `${deviceType} • ${deviceCapacity > 0 ? formatNumber(deviceCapacity, 1) : '?'} MW`
 
   const displayMoney = (value) => {
     const num = Number(value ?? 0)
@@ -315,6 +328,13 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     })
     return byMappedOffset || {}
   }
+
+  // Pre-build lookup for player-level grid_curtailed_mw (lives in kpis.hourly_breakdown, not device-level)
+  const playerHourlyByScenarioHour = (my_result?.kpis?.hourly_breakdown || []).reduce((acc, entry) => {
+    const key = entry?.hour ?? entry?.hour_idx ?? entry?.scenario_hour_idx ?? entry?.hour_offset
+    if (key !== undefined && key !== null) acc[Number(key)] = entry
+    return acc
+  }, {})
 
   // Build hourly data array
   const hourlyData = effectiveHourlyResults.map((hour, idx) => {
@@ -514,7 +534,13 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       netMwh: totalDispatched_DAM + totalDispatched_IDM + imbalanceMwhDisplay,
       netRevenue: (Number.isFinite(backendRevenue)
         ? backendRevenue
-        : (revenue_DAM + revenue_IDM)) - imbalanceCostDisplay
+        : (revenue_DAM + revenue_IDM)) - imbalanceCostDisplay,
+      // Network curtailment from player-level hourly_breakdown (producer only)
+      gridCurtailedMw: Number(playerHourlyByScenarioHour[Number(scenarioHourIdx)]?.grid_curtailed_mw || 0),
+      // Battery SoC fields (non-zero only for battery devices)
+      socStartPct: Number(deviceBreakdown.battery_soc_start_pct ?? 0),
+      socEndPct: Number(deviceBreakdown.battery_soc_end_pct ?? 0),
+      chargedMwh: Number(deviceBreakdown.battery_charged_mwh ?? 0),
     }
   })
 
@@ -584,7 +610,12 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     // Totals - Summed
     totalNetMwh: hourlyData.reduce((sum, h) => sum + h.netMwh, 0),
     totalNetRevenue: hourlyData.reduce((sum, h) => sum + displayMoney(h.netRevenue), 0),
-    totalCO2: hourlyData.reduce((sum, h) => sum + h.co2Kg, 0)
+    totalCO2: hourlyData.reduce((sum, h) => sum + h.co2Kg, 0),
+    totalGridCurtailed: hourlyData.reduce((sum, h) => sum + (h.gridCurtailedMw || 0), 0),
+    // Battery
+    totalChargedMwh: hourlyData.reduce((sum, h) => sum + (h.chargedMwh || 0), 0),
+    battSocStart: hourlyData.length > 0 ? hourlyData[0].socStartPct : 0,
+    battSocEnd: hourlyData.length > 0 ? hourlyData[hourlyData.length - 1].socEndPct : 0,
   }
 
   const selectedDeviceVariableRate = Math.max(0, Number(deviceConfig.variable_cost_zar_per_mwh ?? deviceConfig.cost_per_mwh_zar ?? 0))
@@ -705,8 +736,46 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       <Box sx={{ p: 2, bgcolor: 'grey.50' }}>
         <Typography variant="h6">{deviceName}</Typography>
         <Typography variant="body2" color="text.secondary">
-          {deviceType} • {deviceConfig.capacity_mw || deviceConfig.max_power_mw || '?'} MW
+          {deviceHeadline}
         </Typography>
+        {isBatteryDevice && (
+          <Box sx={{ mt: 1.5, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+              <Typography variant="caption" sx={{ fontWeight: 'bold', minWidth: 90 }}>SoC this round:</Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 160 }}>
+                <Typography variant="caption" sx={{ minWidth: 36, textAlign: 'right' }}>{roundTotals.battSocStart.toFixed(0)}%</Typography>
+                <Box sx={{ flex: 1, minWidth: 80, height: 10, bgcolor: 'grey.300', borderRadius: 1, overflow: 'hidden', position: 'relative' }}>
+                  <Box sx={{
+                    position: 'absolute', left: 0, top: 0, height: '100%',
+                    width: `${Math.min(100, roundTotals.battSocStart)}%`,
+                    bgcolor: roundTotals.battSocStart > 40 ? 'success.main' : roundTotals.battSocStart > 20 ? 'warning.main' : 'error.main',
+                    transition: 'width 0.3s'
+                  }} />
+                </Box>
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>→</Typography>
+                <Box sx={{ flex: 1, minWidth: 80, height: 10, bgcolor: 'grey.300', borderRadius: 1, overflow: 'hidden', position: 'relative' }}>
+                  <Box sx={{
+                    position: 'absolute', left: 0, top: 0, height: '100%',
+                    width: `${Math.min(100, roundTotals.battSocEnd)}%`,
+                    bgcolor: roundTotals.battSocEnd > 40 ? 'success.main' : roundTotals.battSocEnd > 20 ? 'warning.main' : 'error.main',
+                    transition: 'width 0.3s'
+                  }} />
+                </Box>
+                <Typography variant="caption" sx={{ minWidth: 36 }}>{roundTotals.battSocEnd.toFixed(0)}%</Typography>
+              </Box>
+              {roundTotals.totalChargedMwh > 0 && (
+                <Typography variant="caption" sx={{ color: 'primary.main' }}>
+                  ↑ {formatNumber(roundTotals.totalChargedMwh, 1)} MWh charged
+                </Typography>
+              )}
+              {roundTotals.totalDispatched_DAM + roundTotals.totalDispatched_IDM > 0 && (
+                <Typography variant="caption" sx={{ color: 'success.dark' }}>
+                  ↓ {formatNumber(roundTotals.totalDispatched_DAM + roundTotals.totalDispatched_IDM, 1)} MWh discharged
+                </Typography>
+              )}
+            </Box>
+          </Box>
+        )}
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
           Current round window: hours {roundStartHour + 1}-{roundEndHour}
         </Typography>
@@ -749,7 +818,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
             <TableRow hover>
               <TableCell>{isConsumer ? 'Base Demand (MW)' : 'Base Capacity (MW)'}</TableCell>
               {hourlyData.map((h) => (
-                <TableCell key={h.hourKey} align="right" sx={{ fontStyle: 'italic', color: 'text.secondary' }}>
+                <TableCell key={h.hourKey} align="right">
                   {h.baseCapacity > 0 ? formatNumber(h.baseCapacity, 1) : '-'}
                 </TableCell>
               ))}
@@ -762,7 +831,6 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               {hourlyData.map((h) => (
                 <TableCell
                   key={h.hourKey}
-                  align="right"
                   sx={{
                     fontWeight: 'medium',
                     color: h.effectiveCapacity < h.baseCapacity ? 'warning.main' : 'text.primary',
@@ -867,6 +935,26 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                 {formatNumber(roundTotals.totalDispatched_DAM, 1)}
               </TableCell>
             </TableRow>
+            {!isConsumer && roundTotals.totalGridCurtailed > 0.001 && (
+              <TableRow hover>
+                <TableCell sx={{ color: 'warning.dark', fontStyle: 'italic' }}>Grid Curtailed (MWh)</TableCell>
+                {hourlyData.map((h) => (
+                  <TableCell
+                    key={h.hourKey}
+                    align="right"
+                    sx={{
+                      color: (h.gridCurtailedMw || 0) > 0.001 ? 'warning.dark' : 'inherit',
+                      fontStyle: 'italic'
+                    }}
+                  >
+                    {(h.gridCurtailedMw || 0) > 0.001 ? formatNumber(h.gridCurtailedMw, 1) : '-'}
+                  </TableCell>
+                ))}
+                <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: 'warning.dark' }}>
+                  {formatNumber(roundTotals.totalGridCurtailed, 1)}
+                </TableCell>
+              </TableRow>
+            )}
             <TableRow hover>
               <TableCell>{isConsumer ? 'Cost (ZAR)' : 'Revenue (ZAR)'}</TableCell>
               {hourlyData.map((h) => (
@@ -1007,6 +1095,72 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
                     {formatInteger(roundTotals.revenue_IDM)}
+                  </TableCell>
+                </TableRow>
+              </>
+            )}
+
+            {/* Battery SoC Section - only for battery devices */}
+            {isBatteryDevice && (
+              <>
+                <TableRow sx={{ bgcolor: 'success.50' }}>
+                  <TableCell colSpan={hourlyData.length + 2} sx={{ fontWeight: 'bold', color: 'success.dark' }}>
+                    Battery Storage
+                  </TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell>SoC Start (%)</TableCell>
+                  {hourlyData.map((h) => (
+                    <TableCell key={h.hourKey} align="right">
+                      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.25 }}>
+                        <Typography variant="caption">{h.socStartPct != null ? `${h.socStartPct.toFixed(0)}%` : '-'}</Typography>
+                        {h.socStartPct != null && (
+                          <Box sx={{ width: 48, height: 6, bgcolor: 'grey.300', borderRadius: 0.5, overflow: 'hidden' }}>
+                            <Box sx={{
+                              height: '100%',
+                              width: `${Math.min(100, h.socStartPct)}%`,
+                              bgcolor: h.socStartPct > 40 ? 'success.main' : h.socStartPct > 20 ? 'warning.main' : 'error.main'
+                            }} />
+                          </Box>
+                        )}
+                      </Box>
+                    </TableCell>
+                  ))}
+                  <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
+                    {`${roundTotals.battSocStart.toFixed(0)}%`}
+                  </TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell>SoC End (%)</TableCell>
+                  {hourlyData.map((h) => (
+                    <TableCell key={h.hourKey} align="right">
+                      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.25 }}>
+                        <Typography variant="caption">{`${h.socEndPct.toFixed(0)}%`}</Typography>
+                        {(
+                          <Box sx={{ width: 48, height: 6, bgcolor: 'grey.300', borderRadius: 0.5, overflow: 'hidden' }}>
+                            <Box sx={{
+                              height: '100%',
+                              width: `${Math.min(100, h.socEndPct)}%`,
+                              bgcolor: h.socEndPct > 40 ? 'success.main' : h.socEndPct > 20 ? 'warning.main' : 'error.main'
+                            }} />
+                          </Box>
+                        )}
+                      </Box>
+                    </TableCell>
+                  ))}
+                  <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
+                    {`${roundTotals.battSocEnd.toFixed(0)}%`}
+                  </TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell>Charged (MWh)</TableCell>
+                  {hourlyData.map((h) => (
+                    <TableCell key={h.hourKey} align="right" sx={{ color: h.chargedMwh > 0 ? 'primary.main' : 'inherit' }}>
+                      {h.chargedMwh > 0 ? formatNumber(h.chargedMwh, 1) : '-'}
+                    </TableCell>
+                  ))}
+                  <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: roundTotals.totalChargedMwh > 0 ? 'primary.main' : 'inherit' }}>
+                    {roundTotals.totalChargedMwh > 0 ? formatNumber(roundTotals.totalChargedMwh, 1) : '-'}
                   </TableCell>
                 </TableRow>
               </>

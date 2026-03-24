@@ -50,10 +50,54 @@ const DEVICE_ICONS = {
 const getBidCountValue = (device) => {
   if (device?.bid_count != null) {
     const normalized = Number(device.bid_count)
-    return Number.isFinite(normalized) ? Math.max(0, Math.min(5, normalized)) : 0
+    return Number.isFinite(normalized) ? Math.max(0, Math.min(BID_LABELS.length, normalized)) : 0
   }
   if (device?.enable_multi_bid === true) return 3
   return 0
+}
+
+const BID_LABELS = ['A', 'B', 'C', 'D', 'E']
+const DEFAULT_BID_SPLITS = [50, 20, 15, 10, 5]
+
+const getBidLabelsForCount = (count) => BID_LABELS.slice(0, Math.max(0, Math.min(BID_LABELS.length, Number(count) || 0)))
+
+const getAutoDefaultBidPrices = (device, count) => {
+  const labels = getBidLabelsForCount(count)
+  const variableCost = Number(device?.variable_cost_zar_per_mwh ?? device?.cost_per_mwh_zar ?? 0) || 0
+  const deviceType = String(device?.type || '').toLowerCase()
+  const multipliers = deviceType.includes('load')
+    ? [1.3, 1.2, 1.1, 1.0, 0.9]
+    : [0.85, 0.95, 1.1, 1.2, 1.3]
+  const fallbackBase = deviceType.includes('load')
+    ? [1300, 1200, 1100, 1000, 900]
+    : [850, 950, 1100, 1200, 1300]
+  const prices = {}
+
+  labels.forEach((label, index) => {
+    if (variableCost > 0) {
+      prices[label] = Math.round(variableCost * (multipliers[index] ?? multipliers[multipliers.length - 1]))
+    } else {
+      prices[label] = fallbackBase[index] ?? fallbackBase[fallbackBase.length - 1]
+    }
+  })
+
+  return prices
+}
+
+const buildDefaultBidConfig = (device, count, existing = {}) => {
+  const labels = getBidLabelsForCount(count)
+  const autoPrices = getAutoDefaultBidPrices(device, count)
+  const next = {}
+
+  labels.forEach((label, index) => {
+    const current = existing?.[label] || {}
+    next[label] = {
+      price: Number.isFinite(Number(current.price)) ? Number(current.price) : (autoPrices[label] ?? 0),
+      share_pct: Number.isFinite(Number(current.share_pct)) ? Number(current.share_pct) : (DEFAULT_BID_SPLITS[index] ?? 0),
+    }
+  })
+
+  return next
 }
 
 const DEVICE_COLORS = {
@@ -68,6 +112,25 @@ const DEVICE_COLORS = {
   industrial_load: '#ef5350',
   commercial_load: '#ef5350',
   residential_load: '#ef5350',
+};
+
+const inactiveFieldSx = {
+  '& .MuiInputLabel-root': {
+    color: 'text.disabled',
+  },
+  '& .MuiInputBase-root': {
+    bgcolor: 'grey.100',
+    color: 'text.secondary',
+  },
+  '& .MuiOutlinedInput-notchedOutline': {
+    borderColor: 'grey.300',
+  },
+  '& .MuiInputAdornment-root, & .MuiIconButton-root': {
+    color: 'text.disabled',
+  },
+  '& .MuiFormHelperText-root': {
+    color: 'text.disabled',
+  },
 };
 
 /**
@@ -94,10 +157,36 @@ export default function DeviceCard({
   const isLoad = typeKey.includes('load');
   const Icon = DEVICE_ICONS[typeKey] || (isLoad ? LoadIcon : LoadIcon);
   const color = DEVICE_COLORS[typeKey] || (isLoad ? DEVICE_COLORS.load : '#757575');
+  const bidCount = getBidCountValue(device)
 
   const handleFieldChange = (field, value) => {
     onChange({ ...device, [field]: value });
   };
+
+  const handleBidCountChange = (value) => {
+    const nextBidCount = Math.max(0, Math.min(BID_LABELS.length, Number(value) || 0))
+    onChange({
+      ...device,
+      bid_count: nextBidCount,
+      default_bids: buildDefaultBidConfig(device, nextBidCount, device.default_bids),
+    })
+  }
+
+  const handleDefaultBidFieldChange = (label, field, value) => {
+    const currentDefaults = buildDefaultBidConfig(device, bidCount, device.default_bids)
+    onChange({
+      ...device,
+      default_bids: {
+        ...currentDefaults,
+        [label]: {
+          ...currentDefaults[label],
+          [field]: value,
+        },
+      },
+    })
+  }
+
+  const configuredDefaultBids = buildDefaultBidConfig(device, bidCount, device.default_bids)
 
   const summary = isLoad
     ? `${device.baseline_load_mw || 0}-${device.peak_load_mw || 0} MW`
@@ -271,8 +360,8 @@ export default function DeviceCard({
                   fullWidth
                   size="small"
                   label="Bid Count"
-                  value={getBidCountValue(device)}
-                  onChange={(e) => handleFieldChange('bid_count', Number(e.target.value))}
+                  value={bidCount}
+                  onChange={(e) => handleBidCountChange(Number(e.target.value))}
                   helperText="0 = implicit variable-cost offer, 1 = one explicit bid, 2-5 = multiple explicit bids."
                 >
                   {[0, 1, 2, 3, 4, 5].map((count) => (
@@ -300,7 +389,9 @@ export default function DeviceCard({
                   max={3000}
                   step={10}
                   unit="MW"
+                  helperText="UI only, no gameplay effect."
                   tooltip="Maximum expected consumption of this load in MW during peak hours. Must be ≥ baseline."
+                  sx={inactiveFieldSx}
                 />
                 <NumberInput
                   label="Demand Response Capacity"
@@ -310,7 +401,9 @@ export default function DeviceCard({
                   max={500}
                   step={5}
                   unit="MW"
+                  helperText="UI only, no gameplay effect."
                   tooltip="Maximum MW this load can reliably reduce on request (flexible demand). Must not exceed peak load."
+                  sx={inactiveFieldSx}
                 />
                 <NumberInput
                   label="Fixed cost per hour"
@@ -339,8 +432,8 @@ export default function DeviceCard({
                   fullWidth
                   size="small"
                   label="Bid Count"
-                  value={getBidCountValue(device)}
-                  onChange={(e) => handleFieldChange('bid_count', Number(e.target.value))}
+                  value={bidCount}
+                  onChange={(e) => handleBidCountChange(Number(e.target.value))}
                   helperText="0 = implicit willingness-to-pay bid, 1 = one explicit demand bid, 2-5 = multiple demand bids."
                 >
                   {[0, 1, 2, 3, 4, 5].map((count) => (
@@ -402,6 +495,59 @@ export default function DeviceCard({
                 step={1000}
                 unit="ZAR/MWh"
               />
+            )}
+
+            {bidCount > 0 && (
+              <Box sx={{ mt: 1, p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, bgcolor: 'grey.50' }}>
+                <Typography variant="subtitle2" gutterBottom>
+                  Default Bid Values
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+                  These values are used as the initial bid prices and lot shares when a player opens this device with explicit bidding.
+                </Typography>
+                <Stack spacing={1.5}>
+                  {getBidLabelsForCount(bidCount).map((label, index) => (
+                    <Box key={label} sx={{ p: 1.25, border: '1px solid', borderColor: 'divider', borderRadius: 1, bgcolor: 'background.paper' }}>
+                      <Typography variant="caption" sx={{ display: 'block', mb: 1, fontWeight: 700 }}>
+                        Bid {label}
+                      </Typography>
+                      <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                        <NumberInput
+                          label="Default Price"
+                          value={configuredDefaultBids[label]?.price ?? 0}
+                          onChange={(val) => handleDefaultBidFieldChange(label, 'price', val)}
+                          min={0}
+                          max={50000}
+                          step={50}
+                          unit="ZAR/MWh"
+                          helperText={`Initial price for bid ${label}.`}
+                        />
+                        <NumberInput
+                          label="Default Share"
+                          value={configuredDefaultBids[label]?.share_pct ?? 0}
+                          onChange={(val) => handleDefaultBidFieldChange(label, 'share_pct', val)}
+                          min={0}
+                          max={100}
+                          step={1}
+                          unit="%"
+                          helperText={`Initial quantity share for bid ${label}.`}
+                        />
+                      </Stack>
+                    </Box>
+                  ))}
+                  {(() => {
+                    const shareTotal = getBidLabelsForCount(bidCount).reduce(
+                      (sum, label) => sum + (configuredDefaultBids[label]?.share_pct ?? 0), 0
+                    )
+                    if (shareTotal === 100) return null
+                    return (
+                      <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.5 }}>
+                        Summe: {shareTotal} % — wird automatisch auf 100 % normalisiert.
+                      </Typography>
+                    )
+                  })()}
+                </Stack>
+              </Box>
             )}
 
             {/* Profile Editor */}

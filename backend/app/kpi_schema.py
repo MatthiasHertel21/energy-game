@@ -39,6 +39,7 @@ def canonicalize_kpis(kpis: dict | None):
         "fixed_cost_zar": to_float(raw.get("fixed_cost_zar", 0.0)),
         "imbalance_cost_zar": to_float(raw.get("imbalance_cost_zar", 0.0)),
         "imbalance_mwh": to_float(raw.get("imbalance_mwh", 0.0)),
+        "atc_dispatch_cost_zar": to_float(raw.get("atc_dispatch_cost_zar", raw.get("grid_constraint_cost_zar", 0.0))),
         "curtailment_cost_zar": to_float(raw.get("curtailment_cost_zar", 0.0)),
         "curtailment_mwh": to_float(raw.get("curtailment_mwh", 0.0)),
         "congestion_revenue_zar": to_float(raw.get("congestion_revenue_zar", 0.0)),
@@ -46,7 +47,7 @@ def canonicalize_kpis(kpis: dict | None):
         "planned_mwh": to_float(raw.get("planned_mwh", planned_from_breakdown)),
         "dispatched_mwh": to_float(raw.get("dispatched_mwh", dispatched_from_breakdown)),
         "actual_mwh": to_float(raw.get("actual_mwh", actual_from_breakdown)),
-        "_kpi_schema": "canonical_v2",
+        "_kpi_schema": "canonical_v3",
     }
 
     # Backfill top-level totals from device-hour settlement fields when present.
@@ -98,6 +99,7 @@ def canonicalize_kpis(kpis: dict | None):
             or abs(canonical["variable_cost_zar"]) >= eps
             or abs(canonical["fixed_cost_zar"]) >= eps
             or abs(canonical["imbalance_cost_zar"]) >= eps
+            or abs(canonical["atc_dispatch_cost_zar"]) >= eps
             or abs(canonical["congestion_revenue_zar"]) >= eps
         ):
             canonical["profit_zar"] = (
@@ -105,6 +107,7 @@ def canonicalize_kpis(kpis: dict | None):
                 - canonical["variable_cost_zar"]
                 - canonical["fixed_cost_zar"]
                 - canonical["imbalance_cost_zar"]
+                - canonical["atc_dispatch_cost_zar"]
                 + canonical["congestion_revenue_zar"]
             )
 

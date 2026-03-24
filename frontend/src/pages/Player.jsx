@@ -72,13 +72,13 @@ import {
 const BASELOAD_PATTERN = [0.92, 0.91, 0.9, 0.9, 0.9, 0.92, 0.94, 0.95, 0.96, 0.96, 0.95, 0.94, 0.93, 0.93, 0.94, 0.95, 0.96, 0.96, 0.95, 0.94, 0.93, 0.93, 0.92, 0.92]
 const PEAKING_PATTERN = [0.4, 0.35, 0.32, 0.32, 0.38, 0.5, 0.62, 0.75, 0.85, 0.92, 0.95, 0.96, 0.94, 0.9, 0.88, 0.9, 0.94, 0.95, 0.86, 0.75, 0.65, 0.55, 0.48, 0.42]
 const BID_LABELS = ['A', 'B', 'C', 'D', 'E']
-const DEFAULT_BID_SPLITS = [0.5, 0.2, 0.15, 0.1, 0.05]
+const DEFAULT_BID_SPLITS = [50, 20, 15, 10, 5]
 
 const getNormalizedBidCount = (device) => {
   if (device?.bid_count != null) {
     const normalized = Number(device.bid_count)
     if (Number.isFinite(normalized)) {
-      return Math.max(0, Math.min(BID_LABELS.length, normalized))
+      return Math.max(0, Math.min(BID_LABELS.length, Math.round(normalized)))
     }
   }
   if (device?.enable_multi_bid === true) return 3
@@ -94,7 +94,7 @@ const getDeviceBidLabels = (device, deviceBids = null, fallbackEnabled = false) 
     BID_LABELS.forEach((label) => {
       if (deviceBids[label] && !labels.includes(label)) labels.push(label)
     })
-    Object.keys(deviceBids).forEach((label) => {
+    Object.keys(deviceBids).filter((k) => BID_LABELS.includes(k)).forEach((label) => {
       if (!labels.includes(label)) labels.push(label)
     })
   }
@@ -112,6 +112,20 @@ const getBidSplitRatios = (count) => {
   return base.map((value) => value / total)
 }
 
+const getConfiguredBidSplitRatios = (device, labels = getDeviceBidLabels(device)) => {
+  if (!labels.length) return []
+  const configured = labels.map((label, index) => {
+    const raw = Number(device?.default_bids?.[label]?.share_pct)
+    if (Number.isFinite(raw) && raw >= 0) return raw
+    return DEFAULT_BID_SPLITS[index] ?? 0
+  })
+  const total = configured.reduce((sum, value) => sum + value, 0)
+  if (total <= 0) {
+    return getBidSplitRatios(labels.length)
+  }
+  return configured.map((value) => value / total)
+}
+
 const getBidLabelTitle = (label, index) => {
   const legacyNames = ['Baseload', 'Mid-Merit', 'Peak', 'Reserve', 'Flex']
   return legacyNames[index] ? `${label} · ${legacyNames[index]}` : `Bid ${label}`
@@ -119,8 +133,8 @@ const getBidLabelTitle = (label, index) => {
 
 const buildInitialBidsForDevice = (device, horizonHours, baseProfile) => {
   const labels = getDeviceBidLabels(device)
-  const defaultPrices = getDefaultBidPrices(device)
-  const ratios = getBidSplitRatios(labels.length)
+  const defaultPrices = getDefaultBidPrices(device, labels)
+  const ratios = getConfiguredBidSplitRatios(device, labels)
   const next = {}
   labels.forEach((label, index) => {
     const fallbackPrice = defaultPrices[label] ?? defaultPrices[BID_LABELS[Math.min(index, 2)]] ?? 0
@@ -131,6 +145,13 @@ const buildInitialBidsForDevice = (device, horizonHours, baseProfile) => {
     }
   })
   return next
+}
+
+const getBidInputDescription = (count) => {
+  if (count <= 1) {
+    return 'Configure the explicit bid price for this device. If the bid clears, the dispatched volume settles at the System Marginal Price (SMP).'
+  }
+  return `Configure the ${count} explicit bid layers for this device. Bids are cleared from lowest to highest price until demand is met. All cleared bids receive the System Marginal Price (SMP).`
 }
 
 const LOAD_PATTERN = [0.55, 0.5, 0.48, 0.47, 0.5, 0.62, 0.74, 0.86, 0.93, 0.97, 1.0, 1.0, 0.98, 0.95, 0.92, 0.94, 0.97, 0.98, 0.9, 0.82, 0.72, 0.66, 0.6, 0.58]
@@ -456,10 +477,9 @@ const buildDeviceProfile = (device, len) => {
   return buildGenericProfile(device, len)
 }
 
-const getDefaultBidPrices = (device) => {
+const getDefaultBidPrices = (device, labels = getDeviceBidLabels(device)) => {
   const variableCost = toNumber(device?.variable_cost_zar_per_mwh ?? device?.cost_per_mwh_zar ?? 0, 0)
   const deviceType = (device?.type || '').toLowerCase()
-  const labels = getDeviceBidLabels(device)
   const multipliers = deviceType.includes('load')
     ? [1.3, 1.2, 1.1, 1.0, 0.9]
     : [0.85, 0.95, 1.1, 1.2, 1.3]
@@ -472,11 +492,19 @@ const getDefaultBidPrices = (device) => {
     labels.forEach((label, index) => {
       prices[label] = fallbackBase[index] ?? fallbackBase[fallbackBase.length - 1]
     })
-    return prices
+  } else {
+    labels.forEach((label, index) => {
+      prices[label] = Math.round(variableCost * (multipliers[index] ?? multipliers[multipliers.length - 1]))
+    })
   }
-  labels.forEach((label, index) => {
-    prices[label] = Math.round(variableCost * (multipliers[index] ?? multipliers[multipliers.length - 1]))
+
+  labels.forEach((label) => {
+    const configuredPrice = Number(device?.default_bids?.[label]?.price)
+    if (Number.isFinite(configuredPrice) && configuredPrice >= 0) {
+      prices[label] = configuredPrice
+    }
   })
+
   return prices
 }
 
@@ -1119,15 +1147,18 @@ export default function Player() {
   })
 
   const isDeviceMultiBidEnabled = useCallback((deviceDef, globalBidding = biddingEnabled) => {
-    if (getNormalizedBidCount(deviceDef) > 0) {
-      return true
+    const normalizedBidCount = getNormalizedBidCount(deviceDef)
+    if (deviceDef?.bid_count != null) {
+      return normalizedBidCount > 0
     }
+    if (normalizedBidCount > 0) return true
     // Legacy fallback for scenarios that still carry the old per-device flag.
     return Boolean(globalBidding && deviceDef?.enable_multi_bid === true)
   }, [biddingEnabled])
 
   const getDeviceBidLabelsForUi = useCallback((deviceDef, existingBids = null, globalBidding = biddingEnabled) => {
-    return getDeviceBidLabels(deviceDef, existingBids, Boolean(globalBidding && deviceDef?.enable_multi_bid === true))
+    const fallbackEnabled = deviceDef?.bid_count == null && Boolean(globalBidding && deviceDef?.enable_multi_bid === true)
+    return getDeviceBidLabels(deviceDef, existingBids, fallbackEnabled)
   }, [biddingEnabled])
   
   // Persist activeLot to localStorage whenever it changes
@@ -2913,7 +2944,7 @@ export default function Player() {
               nextBids[did][label] = { ...bidsForDevice[label], hours: nextHours }
             })
           } else {
-            const ratios = getBidSplitRatios(labels.length)
+            const ratios = getConfiguredBidSplitRatios(scenarioDevices.find(d => d.id === did), labels)
             labels.forEach((label, index) => {
               const nextHours = [...(bidsForDevice[label]?.hours || [])]
               nextHours[i] = Math.round(newTotal * (ratios[index] || 0) * 100) / 100
@@ -3160,7 +3191,7 @@ export default function Player() {
       if (!newBids[deviceId]) {
         newBids[deviceId] = buildInitialBidsForDevice(device, horizonHours, Array.from({ length: horizonHours }, () => 0))
       }
-      const ratios = getBidSplitRatios(labels.length)
+      const ratios = getConfiguredBidSplitRatios(device, labels)
       const lotHours = Object.fromEntries(labels.map((label) => [label, []]))
       
       for (let hour = 0; hour < horizonHours; hour++) {
@@ -4084,7 +4115,8 @@ export default function Player() {
                                 {/* Multi-Bid Price Inputs */}
                                 {(() => {
                                   const deviceBidding = isDeviceMultiBidEnabled(deviceDef)
-                                  return deviceBidding && deviceBids[did]
+                                  const uiBidLabels = getDeviceBidLabelsForUi(deviceDef, deviceBids[did])
+                                  return deviceBidding && deviceBids[did] && uiBidLabels.length > 0
                                 })() && (
                                   <Box sx={{ mt: 3, p: 2, bgcolor: groupedSectionSurface, borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
                                     <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
@@ -4095,12 +4127,21 @@ export default function Player() {
                                       />
                                     </Stack>
                                     <Typography variant="caption" color="text.secondary" sx={{ mb: 2, display: 'block' }}>
-                                      Configure up to five explicit bid layers. Bids are cleared from lowest to highest price until demand is met. All cleared bids receive the System Marginal Price (SMP).
+                                      {getBidInputDescription(getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).length)}
                                     </Typography>
                                     
-                                    <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                                    <Box
+                                      sx={{
+                                        display: 'grid',
+                                        gap: 2,
+                                        gridTemplateColumns: {
+                                          xs: '1fr',
+                                          sm: 'repeat(auto-fit, minmax(220px, 220px))'
+                                        }
+                                      }}
+                                    >
                                       {getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).map((label, index) => (
-                                        <Box key={label} sx={{ flex: '1 1 160px', opacity: activeLot === label ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot(label)}>
+                                        <Box key={label} sx={{ width: '100%', opacity: activeLot === label ? 1 : 0.6, transition: 'opacity 0.3s', cursor: 'pointer' }} onClick={() => setActiveLot(label)}>
                                           <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: activeLot === label ? 'bold' : 'normal', color: activeLot === label ? 'text.primary' : 'text.secondary' }}>
                                             {getBidLabelTitle(label, index)} {activeLot === label && '✓'}
                                           </Typography>
@@ -4131,7 +4172,7 @@ export default function Player() {
                                           />
                                         </Box>
                                       ))}
-                                    </Stack>
+                                    </Box>
                                   </Box>
                                 )}
 
@@ -4240,9 +4281,17 @@ export default function Player() {
 
                               return (
                                 <>
-                                  {deviceBidding && deviceBids[did] ? (
+                                  {deviceBidding && deviceBids[did] && uiBidLabels.length > 0 ? (
                                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, p: 1, bgcolor: groupedSectionInfoBg, borderRadius: 1 }}>
-                                      Currently editing: <strong>{getBidLabelTitle(activeLot, BID_LABELS.indexOf(activeLot))}</strong>. Click a price field above to switch and enter MW for each hour.
+                                      {uiBidLabels.length > 1 ? (
+                                        <>
+                                          Currently editing: <strong>{getBidLabelTitle(activeLot, BID_LABELS.indexOf(activeLot))}</strong>. Click a price field above to switch and enter MW for each hour.
+                                        </>
+                                      ) : (
+                                        <>
+                                          Enter MW for each hour for <strong>{getBidLabelTitle(uiBidLabels[0], 0)}</strong>.
+                                        </>
+                                      )}
                                     </Typography>
                                   ) : null}
 
@@ -4557,12 +4606,13 @@ export default function Player() {
                     {(selectedType ? typeDevices.map(did=> scenarioDevices.find(d=> d.id===did)).filter(Boolean) : scenarioDevices).map((dev)=>{
                       const t = (dev.type||'').toLowerCase()
                       const specs = []
+                      const batteryPowerMw = dev.power_mw ?? dev.power_rating_mw ?? dev.max_power_mw ?? dev.capacity_mw
                       if (t.includes('load')){
                         if (dev.baseline_load_mw!=null) specs.push(`Baseline ${dev.baseline_load_mw} MW`)
                         if (dev.peak_load_mw!=null) specs.push(`Peak ${dev.peak_load_mw} MW`)
                         if (dev.fixed_cost_zar_per_hour!=null) specs.push(`Fixed ${dev.fixed_cost_zar_per_hour} ZAR/h`)
                       } else if (t==='battery'){
-                        if (dev.power_rating_mw!=null) specs.push(`Power ${dev.power_rating_mw} MW`)
+                        if (batteryPowerMw!=null) specs.push(`Power ${batteryPowerMw} MW`)
                         if (dev.capacity_mwh!=null || dev.capacity_mw!=null) specs.push(`Capacity ${dev.capacity_mwh||dev.capacity_mw} MWh`)
                         if (dev.efficiency_pct!=null) specs.push(`Eff. ${dev.efficiency_pct}%`)
                         if (dev.fixed_cost_zar_per_hour!=null) specs.push(`Fixed ${dev.fixed_cost_zar_per_hour} ZAR/h`)

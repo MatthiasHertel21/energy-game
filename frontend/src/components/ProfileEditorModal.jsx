@@ -84,7 +84,9 @@ const SEASONAL_PRESETS = {
  * @param {string} title - Modal title (e.g., "Solar Profile")
  * @param {Array<number>} hourlyProfile - Current 24-hour profile [0-1] values
  * @param {Array<number>} seasonalProfile - Current 12-month profile values
- * @param {function} onSave - Save callback ({hourly, seasonal}) => void
+ * @param {Array<number>} zonalDistribution - Current zonal distribution in percent
+ * @param {number} zoneCount - Number of configured zones
+ * @param {function} onSave - Save callback ({hourly, seasonal, zonal}) => void
  * @param {string} type - Device type for preset suggestions (solar, wind, residential, etc.)
  */
 export default function ProfileEditorModal({ 
@@ -93,12 +95,35 @@ export default function ProfileEditorModal({
   title, 
   hourlyProfile, 
   seasonalProfile, 
+  zonalDistribution,
+  zoneCount = 1,
   onSave, 
   type = 'baseload' 
 }) {
   const [activeTab, setActiveTab] = useState(0);
   const [localHourly, setLocalHourly] = useState(Array(24).fill(1.0));
   const [localSeasonal, setLocalSeasonal] = useState(Array(12).fill(1.0));
+  const [localZonal, setLocalZonal] = useState([100]);
+
+  const buildEqualDistribution = (count) => {
+    const safeCount = Math.max(1, Number(count) || 1);
+    const base = Math.floor((100 / safeCount) * 1000) / 1000;
+    const values = Array.from({ length: safeCount }, () => base);
+    const total = values.reduce((sum, value) => sum + value, 0);
+    values[safeCount - 1] = Math.round((values[safeCount - 1] + (100 - total)) * 1000) / 1000;
+    return values;
+  };
+
+  const normalizeDistribution = (values, count) => {
+    const safeCount = Math.max(1, Number(count) || 1);
+    if (Array.isArray(values) && values.length === safeCount) {
+      return values.map((value) => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
+      });
+    }
+    return buildEqualDistribution(safeCount);
+  };
 
   useEffect(() => {
     if (open) {
@@ -115,9 +140,10 @@ export default function ProfileEditorModal({
       } else {
         setLocalSeasonal(Array(12).fill(1.0));
       }
+      setLocalZonal(normalizeDistribution(zonalDistribution, zoneCount));
       setActiveTab(0);
     }
-  }, [open, hourlyProfile, seasonalProfile, type]);
+  }, [open, hourlyProfile, seasonalProfile, zonalDistribution, zoneCount, type]);
 
   const handleHourlySliderChange = (index, value) => {
     const updated = [...localHourly];
@@ -139,10 +165,52 @@ export default function ProfileEditorModal({
     setLocalSeasonal([...SEASONAL_PRESETS[presetKey].profile]);
   };
 
+  const handleZonalChange = (index, value) => {
+    const updated = [...localZonal];
+    updated[index] = Math.max(0, Number(value) || 0);
+    setLocalZonal(updated);
+  };
+
+  const handleZonalEqualize = () => {
+    setLocalZonal(buildEqualDistribution(zoneCount));
+  };
+
+  const handleZonalHeavyPreset = (targetIndex) => {
+    const count = Math.max(1, Number(zoneCount) || 1);
+    if (count === 1) {
+      setLocalZonal([100]);
+      return;
+    }
+    const majorShare = 60;
+    const remainingShare = 40;
+    const otherCount = count - 1;
+    const baseOther = Math.floor((remainingShare / otherCount) * 1000) / 1000;
+    const values = Array.from({ length: count }, () => baseOther);
+    values[targetIndex] = majorShare;
+    const total = values.reduce((sum, value) => sum + value, 0);
+    const adjustIndex = targetIndex === count - 1 ? 0 : count - 1;
+    values[adjustIndex] = Math.round((values[adjustIndex] + (100 - total)) * 1000) / 1000;
+    setLocalZonal(values);
+  };
+
+  const handleZonalNormalize = () => {
+    const total = localZonal.reduce((sum, value) => sum + Number(value || 0), 0);
+    if (total <= 0) {
+      setLocalZonal(buildEqualDistribution(zoneCount));
+      return;
+    }
+    const normalized = localZonal.map((value) => (Number(value || 0) / total) * 100);
+    const rounded = normalized.map((value) => Math.round(value * 1000) / 1000);
+    const roundedTotal = rounded.reduce((sum, value) => sum + value, 0);
+    rounded[rounded.length - 1] = Math.round((rounded[rounded.length - 1] + (100 - roundedTotal)) * 1000) / 1000;
+    setLocalZonal(rounded);
+  };
+
   const handleSave = () => {
     onSave({
       hourly: localHourly,
       seasonal: localSeasonal,
+      zonal: localZonal,
     });
     onClose();
   };
@@ -155,11 +223,20 @@ export default function ProfileEditorModal({
     setLocalSeasonal(Array(12).fill(1.0));
   };
 
+  const handleResetZonal = () => {
+    setLocalZonal(buildEqualDistribution(zoneCount));
+  };
+
   const isHourly = activeTab === 0;
+  const isSeasonal = activeTab === 1;
+  const isZonal = activeTab === 2;
   const currentProfile = isHourly ? localHourly : localSeasonal;
   const currentLabels = isHourly ? HOUR_LABELS : MONTH_LABELS;
   const currentPresets = isHourly ? PRESETS : SEASONAL_PRESETS;
   const maxValue = Math.max(...currentProfile, 0.1);
+  const zonalSum = localZonal.reduce((sum, value) => sum + Number(value || 0), 0);
+  const zonalSumRounded = Math.round(zonalSum * 1000) / 1000;
+  const zonalValid = Math.abs(zonalSumRounded - 100) <= 0.001;
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
@@ -170,90 +247,140 @@ export default function ProfileEditorModal({
           <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v)} variant="fullWidth">
             <Tab label="Hourly (24h)" />
             <Tab label="Seasonal (12m)" />
+            <Tab label="Zonal Distribution" />
           </Tabs>
 
-          {/* Presets */}
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>Quick Presets:</Typography>
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              {Object.entries(currentPresets).map(([key, preset]) => (
-                <Chip
-                  key={key}
-                  label={preset.name}
-                  onClick={() => isHourly ? handleHourlyPresetApply(key) : handleSeasonalPresetApply(key)}
-                  size="small"
-                  color="primary"
-                  variant="outlined"
-                />
-              ))}
-            </Stack>
-          </Box>
-
-          {/* Visual Bar Chart */}
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>Profile Visualization:</Typography>
-            <Box sx={{ display: 'flex', alignItems: 'flex-end', height: 100, gap: 0.5 }}>
-              {currentProfile.map((value, index) => (
-                <Box
-                  key={index}
-                  sx={{
-                    flex: 1,
-                    height: `${(value / maxValue) * 100}%`,
-                    bgcolor: 'primary.main',
-                    borderRadius: '2px 2px 0 0',
-                    minHeight: 2,
-                  }}
-                  title={`${currentLabels[index]} - ${value.toFixed(2)}`}
-                />
-              ))}
+          {!isZonal && (
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>Quick Presets:</Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {Object.entries(currentPresets).map(([key, preset]) => (
+                  <Chip
+                    key={key}
+                    label={preset.name}
+                    onClick={() => isHourly ? handleHourlyPresetApply(key) : handleSeasonalPresetApply(key)}
+                    size="small"
+                    color="primary"
+                    variant="outlined"
+                  />
+                ))}
+              </Stack>
             </Box>
-            {isHourly && (
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
-                <Typography variant="caption" color="text.secondary">00:00</Typography>
-                <Typography variant="caption" color="text.secondary">06:00</Typography>
-                <Typography variant="caption" color="text.secondary">12:00</Typography>
-                <Typography variant="caption" color="text.secondary">18:00</Typography>
-                <Typography variant="caption" color="text.secondary">24:00</Typography>
-              </Box>
-            )}
-            {!isHourly && (
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5, px: 0.5 }}>
-                {MONTH_LABELS.map((label, i) => (
-                  <Typography key={i} variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                    {label}
-                  </Typography>
+          )}
+
+          {isZonal && (
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>Zonal Distribution:</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                Set the physical location split across the configured network zones for this generator or consumer type. The values must sum to 100%.
+              </Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Chip label="Equal Split" onClick={handleZonalEqualize} size="small" color="primary" variant="outlined" />
+                <Chip label="Normalize To 100%" onClick={handleZonalNormalize} size="small" color="primary" variant="outlined" />
+                {Array.from({ length: Math.max(1, Number(zoneCount) || 1) }, (_, index) => (
+                  <Chip
+                    key={`zone-heavy-${index + 1}`}
+                    label={`Zone ${index + 1} Heavy`}
+                    onClick={() => handleZonalHeavyPreset(index)}
+                    size="small"
+                    color="primary"
+                    variant="outlined"
+                  />
+                ))}
+                <Chip label={`Current Sum: ${zonalSumRounded}%`} size="small" color={zonalValid ? 'success' : 'warning'} variant="filled" />
+              </Stack>
+            </Box>
+          )}
+
+          {!isZonal && (
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>Profile Visualization:</Typography>
+              <Box sx={{ display: 'flex', alignItems: 'flex-end', height: 100, gap: 0.5 }}>
+                {currentProfile.map((value, index) => (
+                  <Box
+                    key={index}
+                    sx={{
+                      flex: 1,
+                      height: `${(value / maxValue) * 100}%`,
+                      bgcolor: 'primary.main',
+                      borderRadius: '2px 2px 0 0',
+                      minHeight: 2,
+                    }}
+                    title={`${currentLabels[index]} - ${value.toFixed(2)}`}
+                  />
                 ))}
               </Box>
-            )}
-          </Box>
+              {isHourly && (
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">00:00</Typography>
+                  <Typography variant="caption" color="text.secondary">06:00</Typography>
+                  <Typography variant="caption" color="text.secondary">12:00</Typography>
+                  <Typography variant="caption" color="text.secondary">18:00</Typography>
+                  <Typography variant="caption" color="text.secondary">24:00</Typography>
+                </Box>
+              )}
+              {isSeasonal && (
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5, px: 0.5 }}>
+                  {MONTH_LABELS.map((label, i) => (
+                    <Typography key={i} variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                      {label}
+                    </Typography>
+                  ))}
+                </Box>
+              )}
+            </Box>
+          )}
 
-          {/* Sliders */}
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>
-              {isHourly ? 'Hourly Values (0.0 - 1.0):' : 'Monthly Values (Scaling Factors):'}
-            </Typography>
-            <Grid container spacing={2}>
-              {currentProfile.map((value, index) => (
-                <Grid item xs={6} sm={4} md={isHourly ? 3 : 4} key={index}>
-                  <Stack spacing={0.5}>
-                    <Typography variant="caption">{currentLabels[index]}</Typography>
-                    <Slider
-                      value={value}
-                      onChange={(_, newValue) => isHourly ? handleHourlySliderChange(index, newValue) : handleSeasonalSliderChange(index, newValue)}
-                      min={isHourly ? 0 : 0.5}
-                      max={isHourly ? 1 : 1.5}
-                      step={0.05}
-                      size="small"
-                      valueLabelDisplay="auto"
-                      valueLabelFormat={(v) => v.toFixed(2)}
-                    />
-                  </Stack>
-                </Grid>
-              ))}
-            </Grid>
-          </Box>
+          {!isZonal && (
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>
+                {isHourly ? 'Hourly Values (0.0 - 1.0):' : 'Monthly Values (Scaling Factors):'}
+              </Typography>
+              <Grid container spacing={2}>
+                {currentProfile.map((value, index) => (
+                  <Grid item xs={6} sm={4} md={isHourly ? 3 : 4} key={index}>
+                    <Stack spacing={0.5}>
+                      <Typography variant="caption">{currentLabels[index]}</Typography>
+                      <Slider
+                        value={value}
+                        onChange={(_, newValue) => isHourly ? handleHourlySliderChange(index, newValue) : handleSeasonalSliderChange(index, newValue)}
+                        min={isHourly ? 0 : 0.5}
+                        max={isHourly ? 1 : 1.5}
+                        step={0.05}
+                        size="small"
+                        valueLabelDisplay="auto"
+                        valueLabelFormat={(v) => v.toFixed(2)}
+                      />
+                    </Stack>
+                  </Grid>
+                ))}
+              </Grid>
+            </Box>
+          )}
 
-          {/* JSON Import/Export */}
+          {isZonal && (
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>Zonal Values (%):</Typography>
+              <Grid container spacing={2}>
+                {localZonal.map((value, index) => (
+                  <Grid item xs={12} sm={6} md={4} key={`zone-${index + 1}`}>
+                    <Stack spacing={1}>
+                      <Typography variant="caption">Zone {index + 1}</Typography>
+                      <TextField
+                        size="small"
+                        type="number"
+                        value={value}
+                        onChange={(e) => handleZonalChange(index, e.target.value)}
+                        inputProps={{ min: 0, max: 100, step: 0.1 }}
+                        helperText="Percentage share in this zone"
+                      />
+                    </Stack>
+                  </Grid>
+                ))}
+              </Grid>
+            </Box>
+          )}
+
           <Box>
             <Typography variant="subtitle2" gutterBottom>JSON (Copy/Paste):</Typography>
             <TextField
@@ -261,19 +388,21 @@ export default function ProfileEditorModal({
               multiline
               minRows={2}
               size="small"
-              value={JSON.stringify(currentProfile)}
+              value={JSON.stringify(isZonal ? localZonal : currentProfile)}
               onChange={(e) => {
                 try {
                   const parsed = JSON.parse(e.target.value);
-                  const expectedLength = isHourly ? 24 : 12;
+                  const expectedLength = isHourly ? 24 : isSeasonal ? 12 : Math.max(1, Number(zoneCount) || 1);
                   if (Array.isArray(parsed) && parsed.length === expectedLength) {
-                    const min = isHourly ? 0 : 0;
-                    const max = isHourly ? 1 : 2;
-                    const validated = parsed.map(v => Math.max(min, Math.min(max, Number(v) || 0)));
                     if (isHourly) {
+                      const validated = parsed.map(v => Math.max(0, Math.min(1, Number(v) || 0)));
                       setLocalHourly(validated);
-                    } else {
+                    } else if (isSeasonal) {
+                      const validated = parsed.map(v => Math.max(0, Math.min(2, Number(v) || 0)));
                       setLocalSeasonal(validated);
+                    } else {
+                      const validated = parsed.map(v => Math.max(0, Number(v) || 0));
+                      setLocalZonal(validated);
                     }
                   }
                 } catch (err) {
@@ -285,11 +414,11 @@ export default function ProfileEditorModal({
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={isHourly ? handleResetHourly : handleResetSeasonal} color="warning">
-          Reset to 1.0
+        <Button onClick={isHourly ? handleResetHourly : isSeasonal ? handleResetSeasonal : handleResetZonal} color="warning">
+          {isZonal ? 'Reset To Equal Split' : 'Reset to 1.0'}
         </Button>
         <Button onClick={onClose}>Cancel</Button>
-        <Button onClick={handleSave} variant="contained">Save</Button>
+        <Button onClick={handleSave} variant="contained" disabled={isZonal && !zonalValid}>Save</Button>
       </DialogActions>
     </Dialog>
   );

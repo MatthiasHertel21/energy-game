@@ -886,7 +886,14 @@ class RoundResults(Resource):
                 "challenge_result": r.data.get("challenge_result"),  # Challenge evaluation for this round
                 "player_role": r.data.get("player_role"),  # Player role (producer/consumer)
                 "no_clearing": bool(r.data.get("no_clearing", False)),
-                "no_clearing_reason": r.data.get("reason")
+                "no_clearing_reason": r.data.get("reason"),
+                "zone_results": r.data.get("zone_results", []),
+                "link_results": r.data.get("link_results", []),
+                "player_zone_info": (r.data.get("player_zone_info_by_player", {}) or {}).get(r.player_id) or (r.data.get("player_zone_info_by_player", {}) or {}).get(str(r.player_id)) or {},
+                "balancing_settings": {
+                    "up_price_zar_per_mwh": float((config.get("balancing") or {}).get("up_price_zar_per_mwh", 1200.0) or 1200.0),
+                    "down_price_zar_per_mwh": float((config.get("balancing") or {}).get("down_price_zar_per_mwh", 800.0) or 800.0),
+                }
             }
             
             # Calculate DA/ID breakdown for this player
@@ -1054,6 +1061,7 @@ class FinalResults(Resource):
                     "variable_cost": 0,
                     "fixed_cost": 0,
                     "imbalance_cost": 0,
+                    "atc_dispatch_cost": 0,
                     "curtailment_cost": 0,
                     "congestion_revenue": 0,
                     "co2_emissions": 0,
@@ -1070,6 +1078,7 @@ class FinalResults(Resource):
             player_totals[pid]["variable_cost"] += float(kpis.get("variable_cost_zar", 0))
             player_totals[pid]["fixed_cost"] += float(kpis.get("fixed_cost_zar", 0))
             player_totals[pid]["imbalance_cost"] += float(kpis.get("imbalance_cost_zar", 0))
+            player_totals[pid]["atc_dispatch_cost"] += float(kpis.get("atc_dispatch_cost_zar", kpis.get("grid_constraint_cost_zar", 0)))
             player_totals[pid]["curtailment_cost"] += float(kpis.get("curtailment_cost_zar", 0))
             player_totals[pid]["congestion_revenue"] += float(kpis.get("congestion_revenue_zar", 0))
             player_totals[pid]["co2_emissions"] += float(kpis.get("co2_emissions_kg", 0))
@@ -1190,6 +1199,7 @@ class FinalResults(Resource):
                 "total_variable_cost": round(totals["variable_cost"], 2),
                 "total_fixed_cost": round(totals["fixed_cost"], 2),
                 "total_imbalance_cost": round(totals["imbalance_cost"], 2),
+                "total_atc_dispatch_cost": round(totals["atc_dispatch_cost"], 2),
                 "total_curtailment_cost": round(totals["curtailment_cost"], 2),
                 "total_congestion_revenue": round(totals["congestion_revenue"], 2),
                 "total_co2_emissions": round(totals["co2_emissions"], 2),
@@ -1227,16 +1237,25 @@ class FinalResults(Resource):
                 abs(curtailment_mwh) * weights.get("curtailment", 0.1) * 1000  # Convert MWh penalty to ZAR scale
             )
             round_score = max(0, min(100, (raw_round_score / 5000)))
+            atc_dispatch_cost = float(kpis.get("atc_dispatch_cost_zar", kpis.get("grid_constraint_cost_zar", 0)))
+            total_costs_zar = round(
+                abs(float(kpis.get("variable_cost_zar", 0)))
+                + abs(float(kpis.get("fixed_cost_zar", 0)))
+                + abs(float(kpis.get("imbalance_cost_zar", 0)))
+                + abs(atc_dispatch_cost),
+                2
+            )
             round_history.append({
                 "round_num": r.round_num,
                 "profit": round(float(kpis.get("profit_zar", 0)), 2),
                 "revenue_zar": round(float(kpis.get("revenue_zar", 0)), 2),
-                "total_costs_zar": round(abs(float(kpis.get("revenue_zar", 0))), 2),
+                "total_costs_zar": total_costs_zar,
                 "co2_emissions_kg": round(float(kpis.get("co2_emissions_kg", 0)), 2),
-                "imbalance_mwh": round(imbalance_mwh, 3),  # Use MWh quantity
-                "imbalance_cost": round(float(kpis.get("imbalance_cost_zar", 0)), 2),  # Also provide cost for reference
-                "curtailment_mwh": round(curtailment_mwh, 3),  # Use MWh quantity
-                "curtailment_cost": round(float(kpis.get("curtailment_cost_zar", 0)), 2),  # Also provide cost for reference
+                "imbalance_mwh": round(imbalance_mwh, 3),
+                "imbalance_cost": round(float(kpis.get("imbalance_cost_zar", 0)), 2),
+                "atc_dispatch_cost": round(atc_dispatch_cost, 2),
+                "curtailment_mwh": round(curtailment_mwh, 3),
+                "curtailment_cost": round(float(kpis.get("curtailment_cost_zar", 0)), 2),
                 "dispatched_mwh": round(float(kpis.get("dispatched_mwh", 0)), 2),
                 "planned_mwh": round(float(kpis.get("planned_mwh", 0)), 2),
                 "total_score": round(round_score, 2)

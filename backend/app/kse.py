@@ -64,8 +64,86 @@ env_in = ns.model(
     },
 )
 
+GRID_EXTRA_COST_MODES = {"zonal_only"}
+GRID_COST_TARGETS = {"consumers_only"}
+GRID_SHORTFALL_PRICE_MODES = {"fixed_price", "smp_multiplier", "value_of_lost_load"}
+GRID_CURTAILMENT_MODES = {"pro_rata", "reverse_merit_order", "renewables_first", "renewables_last"}
+
+
+def _get_mix_blocks(entry) -> float:
+    if isinstance(entry, dict):
+        return float(entry.get("blocks", entry.get("share_pct", 0)) or 0)
+    return float(entry or 0)
+
+
+def _validate_zone_distribution(label: str, dist, zones: int, errors: list[str]) -> None:
+    if dist is None:
+        return
+    if not isinstance(dist, list):
+        errors.append(f"{label}.zone_distribution_pct must be a list")
+        return
+    if len(dist) != zones:
+        errors.append(f"{label}.zone_distribution_pct must have length = zones")
+        return
+    values = []
+    for idx, value in enumerate(dist):
+        try:
+            numeric = float(value)
+        except Exception:
+            errors.append(f"{label}.zone_distribution_pct[{idx}] must be numeric")
+            return
+        if numeric < 0:
+            errors.append(f"{label}.zone_distribution_pct[{idx}] must be >= 0")
+        values.append(numeric)
+    if abs(sum(values) - 100.0) > 1e-6:
+        errors.append(f"{label}.zone_distribution_pct must sum to 100")
+
+
+def _validate_mix_with_zone_distribution(container_label: str, mix, zones: int, errors: list[str]) -> None:
+    if mix is None:
+        return
+    if not isinstance(mix, dict):
+        errors.append(f"{container_label} must be an object")
+        return
+    for key, entry in mix.items():
+        if isinstance(entry, dict):
+            _validate_zone_distribution(f"{container_label}.{key}", entry.get("zone_distribution_pct"), zones, errors)
+
+
+def _normalize_grid_defaults(cfg: dict) -> None:
+    grid = cfg.setdefault("grid", {})
+    if grid.get("losses_pct_per_link") is None:
+        if grid.get("transmission_loss_pct") is not None:
+            grid["losses_pct_per_link"] = grid.get("transmission_loss_pct")
+        elif grid.get("losses_pct") is not None:
+            grid["losses_pct_per_link"] = grid.get("losses_pct")
+        else:
+            grid["losses_pct_per_link"] = 2.0
+    settlement = grid.get("network_settlement")
+    if not isinstance(settlement, dict):
+        settlement = {}
+    settlement.setdefault("extra_cost_mode", "zonal_only")
+    settlement.setdefault("cost_allocation_target", "consumers_only")
+    settlement.setdefault("shortfall_price_mode", "smp_multiplier")
+    settlement.setdefault("shortfall_price_value", 2.0)
+    grid["network_settlement"] = settlement
+    grid.setdefault("generator_curtailment_mode", "pro_rata")
+
+
+def _normalize_balancing_defaults(cfg: dict) -> None:
+    balancing = cfg.get("balancing")
+    if not isinstance(balancing, dict):
+        balancing = {}
+    balancing.setdefault("up_price_zar_per_mwh", 1200.0)
+    balancing.setdefault("down_price_zar_per_mwh", 800.0)
+    cfg["balancing"] = balancing
+
 
 def validate_config(cfg: dict) -> list[str]:
+    if not isinstance(cfg, dict):
+        return ["config must be an object"]
+    _normalize_grid_defaults(cfg)
+    _normalize_balancing_defaults(cfg)
     errors = []
     zones = cfg.get("grid", {}).get("zones", 2)
     if not (1 <= zones <= 5):
@@ -82,6 +160,55 @@ def validate_config(cfg: dict) -> list[str]:
                 for j in range(zones):
                     if atc[i][j] != atc[j][i]:
                         errors.append("ATC must be symmetric")
+    try:
+        losses_pct = float(cfg.get("grid", {}).get("losses_pct_per_link", 2.0) or 0.0)
+        if not (0 <= losses_pct <= 100):
+            errors.append("grid.losses_pct_per_link must be within [0, 100]")
+    except Exception:
+        errors.append("grid.losses_pct_per_link must be numeric")
+
+    settlement = cfg.get("grid", {}).get("network_settlement") or {}
+    if not isinstance(settlement, dict):
+        errors.append("grid.network_settlement must be an object")
+    else:
+        extra_cost_mode = str(settlement.get("extra_cost_mode", "zonal_only")).strip().lower()
+        if extra_cost_mode not in GRID_EXTRA_COST_MODES:
+            errors.append("grid.network_settlement.extra_cost_mode invalid")
+        allocation_target = str(settlement.get("cost_allocation_target", "consumers_only")).strip().lower()
+        if allocation_target not in GRID_COST_TARGETS:
+            errors.append("grid.network_settlement.cost_allocation_target invalid")
+        shortfall_mode = str(settlement.get("shortfall_price_mode", "smp_multiplier")).strip().lower()
+        if shortfall_mode not in GRID_SHORTFALL_PRICE_MODES:
+            errors.append("grid.network_settlement.shortfall_price_mode invalid")
+        try:
+            shortfall_value = float(settlement.get("shortfall_price_value", 2.0) or 0.0)
+            if shortfall_value <= 0:
+                errors.append("grid.network_settlement.shortfall_price_value must be > 0")
+        except Exception:
+            errors.append("grid.network_settlement.shortfall_price_value must be numeric")
+
+    curtailment_mode = str(cfg.get("grid", {}).get("generator_curtailment_mode", "pro_rata")).strip().lower()
+    if curtailment_mode not in GRID_CURTAILMENT_MODES:
+        errors.append("grid.generator_curtailment_mode invalid")
+
+    _validate_mix_with_zone_distribution("environment.groups", cfg.get("environment", {}).get("groups"), int(zones), errors)
+    _validate_mix_with_zone_distribution("market.consumer_mix", cfg.get("market", {}).get("consumer_mix"), int(zones), errors)
+    balancing = cfg.get("balancing") or {}
+    if not isinstance(balancing, dict):
+        errors.append("balancing must be an object")
+    else:
+        try:
+            up_price = float(balancing.get("up_price_zar_per_mwh", 1200.0) or 0.0)
+            if up_price <= 0:
+                errors.append("balancing.up_price_zar_per_mwh must be > 0")
+        except Exception:
+            errors.append("balancing.up_price_zar_per_mwh must be numeric")
+        try:
+            down_price = float(balancing.get("down_price_zar_per_mwh", 800.0) or 0.0)
+            if down_price <= 0:
+                errors.append("balancing.down_price_zar_per_mwh must be > 0")
+        except Exception:
+            errors.append("balancing.down_price_zar_per_mwh must be numeric")
     weights = cfg.get("scoring", {}).get("weights", {"profit": 0.6, "imbalance": 0.3, "curtailment": 0.1})
     if abs(sum(weights.values()) - 1.0) > 1e-6:
         errors.append("Scoring weights must sum to 1.0")
@@ -174,6 +301,13 @@ def validate_config(cfg: dict) -> list[str]:
                 ids.add(tid)
                 if not name:
                     errors.append(f"player_types[{tid}].name is required")
+                if pt.get("zone") is not None:
+                    try:
+                        zone_value = int(pt.get("zone"))
+                        if not (1 <= zone_value <= int(zones)):
+                            errors.append(f"player_types[{tid}].zone must be within [1, zones]")
+                    except Exception:
+                        errors.append(f"player_types[{tid}].zone must be integer")
                 dv = pt.get("devices", [])
                 if not isinstance(dv, list):
                     errors.append(f"player_types[{tid}].devices must be a list")
@@ -189,6 +323,12 @@ def validate_config(cfg: dict) -> list[str]:
                         role = detect_player_role(player_devices)
                         if role == 'unknown':
                             errors.append(f"player_types[{tid}]: No valid devices or all devices are storage only.")
+
+            if int(zones) > 1:
+                has_player_type_zones = any(isinstance(pt, dict) and pt.get("zone") is not None for pt in player_types)
+                has_legacy_player_zone = cfg.get("general", {}).get("player_zone") is not None
+                if not has_player_type_zones and not has_legacy_player_zone:
+                    errors.append("Multi-zone scenarios require player_types[].zone or legacy general.player_zone")
 
     
     # Optional storage block: not used by engine anymore, but validate if present to catch config errors in legacy scenarios

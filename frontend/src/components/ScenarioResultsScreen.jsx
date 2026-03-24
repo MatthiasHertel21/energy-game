@@ -101,7 +101,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   const safeRanking = Array.isArray(final_ranking)
     ? final_ranking.filter((row) => row && typeof row === 'object')
     : [];
-  const safeMyCumulative = (my_cumulative && typeof my_cumulative === 'object') ? my_cumulative : (safeRanking[0] || null);
+  const safeMyCumulative = (my_cumulative && typeof my_cumulative === 'object') ? my_cumulative : null;
   const myFinalRank = safeMyCumulative
     ? (safeRanking.findIndex((r) => r?.player_id === safeMyCumulative?.player_id) + 1)
     : 0;
@@ -212,7 +212,9 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
       round: Number(r.round_num || 0),
       revenue: normalizeNumber(r.revenue_zar),
       profit: normalizeNumber(r.profit),
-      costs: normalizeNumber(r.total_costs_zar ?? Math.abs(Number(r.revenue_zar ?? 0))),
+      costs: normalizeNumber(r.total_costs_zar),  // always explicit from backend
+      atc_dispatch_cost: normalizeNumber(r.atc_dispatch_cost),
+      imbalance_cost: normalizeNumber(r.imbalance_cost),
       co2: normalizeNumber(r.co2_emissions_kg),
       dispatched: normalizeNumber(r.dispatched_mwh),
       planned: normalizeNumber(r.planned_mwh),
@@ -367,9 +369,9 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
     const range = Math.max(maxVal - minVal, 1);
     const width = 900;
     const height = 240;
-    const padX = 48;
+    const padX = 80;
     const padY = 24;
-    const stepX = trendSeries.length > 1 ? (width - padX * 2) / (trendSeries.length - 1) : 0;
+    const stepX = trendSeries.length > 1 ? (900 - padX - 32) / (trendSeries.length - 1) : 0;
 
     return trendSeries.map((row, idx) => {
       const value = normalizeNumber(row[activeMetric]);
@@ -504,17 +506,36 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
               {chartPoints.length > 0 ? (
                 <>
                   <Box sx={{ width: '100%', overflowX: 'auto' }}>
-                    <svg viewBox="0 0 900 240" width="100%" height="240" role="img" aria-label="KPI trend by round">
-                      <rect x="0" y="0" width="900" height="240" fill="#fafafa" rx="8" />
-                      <path d="M 48 216 L 852 216" stroke="#e0e0e0" strokeWidth="1" />
-                      <path d={chartPath} stroke={activeChartMeta.color} strokeWidth="3" fill="none" />
-                      {chartPoints.map((p) => (
-                        <g key={p.round}>
-                          <circle cx={p.x} cy={p.y} r="4" fill={activeChartMeta.color} />
-                          <text x={p.x} y="232" fontSize="11" textAnchor="middle" fill="#666">R{p.round}</text>
-                        </g>
-                      ))}
-                    </svg>
+                    {(() => {
+                      const values = chartPoints.map((p) => p.value);
+                      const maxVal = Math.max(...values, 1);
+                      const minVal = Math.min(...values, 0);
+                      const midVal = (maxVal + minVal) / 2;
+                      const height = 240; const padX = 80; const padY = 24;
+                      const toY = (v) => height - padY - ((v - minVal) / Math.max(maxVal - minVal, 1)) * (height - padY * 2);
+                      return (
+                        <svg viewBox="0 0 900 240" width="100%" height="240" role="img" aria-label="KPI trend by round">
+                          <rect x="0" y="0" width="900" height="240" fill="#fafafa" rx="8" />
+                          {/* grid lines */}
+                          {[minVal, midVal, maxVal].map((v, i) => (
+                            <g key={i}>
+                              <line x1={padX} y1={toY(v)} x2="868" y2={toY(v)} stroke="#e0e0e0" strokeWidth="1" strokeDasharray="4 3" />
+                              <text x={padX - 6} y={toY(v) + 4} fontSize="10" textAnchor="end" fill="#888">
+                                {activeChartMeta.formatter(v).replace('ZAR ', '').replace(' MWh', '').replace(' kg', '')}
+                              </text>
+                            </g>
+                          ))}
+                          <path d="M 80 216 L 868 216" stroke="#e0e0e0" strokeWidth="1" />
+                          <path d={chartPath} stroke={activeChartMeta.color} strokeWidth="3" fill="none" />
+                          {chartPoints.map((p) => (
+                            <g key={p.round}>
+                              <circle cx={p.x} cy={p.y} r="5" fill={activeChartMeta.color} opacity="0.9" />
+                              <text x={p.x} y="232" fontSize="11" textAnchor="middle" fill="#666">R{p.round}</text>
+                            </g>
+                          ))}
+                        </svg>
+                      );
+                    })()}
                   </Box>
                   <Typography variant="body2" color="text.secondary">
                     Metric: {activeChartMeta.label} • Latest: {activeChartMeta.formatter(chartPoints[chartPoints.length - 1]?.value || 0)}
@@ -565,16 +586,16 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                               Metric: {challenge?.metric || '-'}
                             </Typography>
                             <Typography variant="body2">
-                              Ziel: {challenge?.operator || '-'} {formatChallengeValue(challenge?.target)}
+                              Target: {challenge?.operator || '-'} {formatChallengeValue(challenge?.target)}
                             </Typography>
                             <Typography variant="body2">
-                              Erreicht: {formatChallengeValue(challenge?.actual)}
+                              Achieved: {formatChallengeValue(challenge?.actual)}
                             </Typography>
                             <Typography variant="body2" sx={{ color: passed ? 'success.main' : 'error.main', fontWeight: 600 }}>
-                              {passed ? 'Erreicht' : 'Nicht erreicht'}
+                              {passed ? 'Passed' : 'Not achieved'}
                             </Typography>
                             <Typography variant="caption" color="text.secondary">
-                              Punkte: {challenge?.points || 0}/{challenge?.max_points || 0}
+                              Points: {challenge?.points || 0}/{challenge?.max_points || 0}
                             </Typography>
                           </Stack>
                         </CardContent>
@@ -634,6 +655,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                           ) : (
                             <>
                               <TableCell align="right" sx={{ fontWeight: 600 }}>Total Costs (ZAR)</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>Dispatch Cost ATC (ZAR)</TableCell>
                               <TableCell align="right" sx={{ fontWeight: 600 }}>Coverage (%)</TableCell>
                               <TableCell align="right" sx={{ fontWeight: 600 }}>Total Consumed (MWh)</TableCell>
                               <TableCell align="right" sx={{ fontWeight: 600 }}>{groupTerms.totalCo2Label} (kg)</TableCell>
@@ -670,6 +692,9 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                               ) : (
                                 <>
                                   <TableCell align="right">{formatInt(Math.abs(Number(player?.total_revenue || 0)))}</TableCell>
+                                  <TableCell align="right" sx={{ color: normalizeNumber(player?.total_atc_dispatch_cost) > 0.5 ? 'error.main' : 'text.secondary' }}>
+                                    {normalizeNumber(player?.total_atc_dispatch_cost) > 0.5 ? formatInt(player.total_atc_dispatch_cost) : '-'}
+                                  </TableCell>
                                   <TableCell align="right">{normalizeNumber(coverage).toFixed(1)}%</TableCell>
                                   <TableCell align="right">{formatInt(player?.total_dispatched_mwh)}</TableCell>
                                   <TableCell align="right" sx={{ fontWeight: 600 }}>{formatInt(player?.total_co2_emissions)}</TableCell>
@@ -695,7 +720,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           </Stack>
         </Box>
 
-        {trendSeries.length > 0 && (
+    {trendSeries.length > 0 && (
           <Box>
             <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
               Round History
@@ -709,12 +734,15 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                       <>
                         <TableCell align="right">Revenue</TableCell>
                         <TableCell align="right">Profit</TableCell>
+                        <TableCell align="right">Imbalance Cost</TableCell>
                         <TableCell align="right">{terms.co2ColumnLabel}</TableCell>
                         <TableCell align="right">Dispatched</TableCell>
                       </>
                     ) : (
                       <>
                         <TableCell align="right">Costs</TableCell>
+                        <TableCell align="right">Dispatch Cost (ATC)</TableCell>
+                        <TableCell align="right">Imbalance Cost</TableCell>
                         <TableCell align="right">Coverage</TableCell>
                         <TableCell align="right">{terms.co2ColumnLabel}</TableCell>
                         <TableCell align="right">Consumed</TableCell>
@@ -724,18 +752,27 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                 </TableHead>
                 <TableBody>
                   {trendSeries.map((round) => (
-                    <TableRow key={round.round}>
+                    <TableRow key={`round-${round.round}`}>
                       <TableCell>Round {round.round}</TableCell>
                       {resolvedIsProducer ? (
                         <>
                           <TableCell align="right">{formatCurrency(round.revenue)}</TableCell>
                           <TableCell align="right">{formatCurrency(round.profit)}</TableCell>
+                          <TableCell align="right" sx={{ color: round.imbalance_cost > 0.5 ? 'warning.main' : 'text.secondary' }}>
+                            {round.imbalance_cost > 0.5 ? formatCurrency(round.imbalance_cost) : '-'}
+                          </TableCell>
                           <TableCell align="right">{formatInt(round.co2)} kg</TableCell>
                           <TableCell align="right">{formatMwh(round.dispatched)}</TableCell>
                         </>
                       ) : (
                         <>
                           <TableCell align="right">{formatCurrency(round.costs)}</TableCell>
+                          <TableCell align="right" sx={{ color: round.atc_dispatch_cost > 0.5 ? 'error.main' : 'text.secondary' }}>
+                            {round.atc_dispatch_cost > 0.5 ? formatCurrency(round.atc_dispatch_cost) : '-'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ color: round.imbalance_cost > 0.5 ? 'warning.main' : 'text.secondary' }}>
+                            {round.imbalance_cost > 0.5 ? formatCurrency(round.imbalance_cost) : '-'}
+                          </TableCell>
                           <TableCell align="right">{normalizeNumber(round.coverage).toFixed(1)}%</TableCell>
                           <TableCell align="right">{formatInt(round.co2)} kg</TableCell>
                           <TableCell align="right">{formatMwh(round.dispatched)}</TableCell>
@@ -743,7 +780,38 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                       )}
                     </TableRow>
                   ))}
-                </TableBody>
+<TableRow sx={{ bgcolor: 'grey.100', fontWeight: 'bold' }}>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Total</TableCell>
+                      {resolvedIsProducer ? (
+                        <>
+                          <TableCell align="right" sx={{ fontWeight: 'bold' }}>{formatCurrency(trendSeries.reduce((s, r) => s + r.revenue, 0))}</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 'bold' }}>{formatCurrency(trendSeries.reduce((s, r) => s + r.profit, 0))}</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 'bold', color: trendSeries.reduce((s, r) => s + r.imbalance_cost, 0) > 0.5 ? 'warning.main' : 'text.secondary' }}>
+                            {trendSeries.reduce((s, r) => s + r.imbalance_cost, 0) > 0.5 ? formatCurrency(trendSeries.reduce((s, r) => s + r.imbalance_cost, 0)) : '-'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 'bold' }}>{formatInt(trendSeries.reduce((s, r) => s + r.co2, 0))} kg</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 'bold' }}>{formatMwh(trendSeries.reduce((s, r) => s + r.dispatched, 0))}</TableCell>
+                        </>
+                      ) : (
+                        <>
+                          <TableCell align="right" sx={{ fontWeight: 'bold' }}>{formatCurrency(trendSeries.reduce((s, r) => s + r.costs, 0))}</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 'bold', color: trendSeries.reduce((s, r) => s + r.atc_dispatch_cost, 0) > 0.5 ? 'error.main' : 'text.secondary' }}>
+                            {trendSeries.reduce((s, r) => s + r.atc_dispatch_cost, 0) > 0.5 ? formatCurrency(trendSeries.reduce((s, r) => s + r.atc_dispatch_cost, 0)) : '-'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 'bold', color: trendSeries.reduce((s, r) => s + r.imbalance_cost, 0) > 0.5 ? 'warning.main' : 'text.secondary' }}>
+                            {trendSeries.reduce((s, r) => s + r.imbalance_cost, 0) > 0.5 ? formatCurrency(trendSeries.reduce((s, r) => s + r.imbalance_cost, 0)) : '-'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 'bold' }}>
+                            {normalizeNumber(trendSeries.reduce((s, r) => s + r.planned, 0)) > 0
+                              ? `${((trendSeries.reduce((s, r) => s + r.dispatched, 0) / trendSeries.reduce((s, r) => s + r.planned, 0)) * 100).toFixed(1)}%`
+                              : '-'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 'bold' }}>{formatInt(trendSeries.reduce((s, r) => s + r.co2, 0))} kg</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 'bold' }}>{formatMwh(trendSeries.reduce((s, r) => s + r.dispatched, 0))}</TableCell>
+                        </>
+                      )}
+                    </TableRow>
+                  </TableBody>
               </Table>
             </TableContainer>
           </Box>

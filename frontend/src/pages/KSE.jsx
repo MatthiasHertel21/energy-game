@@ -42,6 +42,304 @@ const normalizeBooleanFlag = (value, fallback = false) => {
   return Boolean(value)
 }
 
+const buildEqualDistribution = (zones) => {
+  const count = Math.max(1, Number(zones) || 1)
+  const base = Math.floor((100 / count) * 1000) / 1000
+  const values = Array.from({ length: count }, () => base)
+  const total = values.reduce((sum, value) => sum + value, 0)
+  values[count - 1] = Math.round((values[count - 1] + (100 - total)) * 1000) / 1000
+  return values
+}
+
+const normalizeMixEntry = (entry, zones, fallbackBlocks = 0) => {
+  const normalized = (entry && typeof entry === 'object' && !Array.isArray(entry))
+    ? { ...entry }
+    : { blocks: Number(entry ?? fallbackBlocks) || 0 }
+
+  if (normalized.blocks == null && normalized.share_pct != null) {
+    normalized.blocks = Number(normalized.share_pct) || 0
+  }
+  normalized.blocks = Number(normalized.blocks || 0)
+
+  const distribution = Array.isArray(normalized.zone_distribution_pct)
+    ? normalized.zone_distribution_pct.map((value) => Number(value)).filter((value) => Number.isFinite(value))
+    : []
+  normalized.zone_distribution_pct = distribution.length === Number(zones)
+    ? distribution
+    : buildEqualDistribution(zones)
+
+  return normalized
+}
+
+const getMixBlocks = (entry, fallbackBlocks = 0) => {
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+    return Number(entry.blocks ?? entry.share_pct ?? fallbackBlocks) || 0
+  }
+  return Number(entry ?? fallbackBlocks) || 0
+}
+
+const getMixZoneSharesForPreview = (mix, zones) => {
+  const count = Math.max(1, Number(zones) || 1)
+  const shares = Array.from({ length: count }, () => 0)
+  if (!mix || typeof mix !== 'object') {
+    return buildEqualDistribution(count).map((value) => value / 100)
+  }
+  Object.values(mix).forEach((entry) => {
+    const blocks = Math.max(0, getMixBlocks(entry, 0))
+    if (blocks <= 0) return
+    const distribution = normalizeMixEntry(entry, count).zone_distribution_pct
+    for (let idx = 0; idx < count; idx += 1) {
+      shares[idx] += blocks * ((Number(distribution[idx]) || 0) / 100)
+    }
+  })
+  const total = shares.reduce((sum, value) => sum + value, 0)
+  if (total <= 0) {
+    return buildEqualDistribution(count).map((value) => value / 100)
+  }
+  return shares.map((value) => value / total)
+}
+
+const buildTopologyNeighbors = (atc, zones) => {
+  const count = Math.max(1, Number(zones) || 1)
+  const neighbors = Array.from({ length: count }, () => [])
+  let hasExplicitLinks = false
+  for (let i = 0; i < count; i += 1) {
+    for (let j = 0; j < count; j += 1) {
+      if (i === j) continue
+      const cap = Number(atc?.[i]?.[j] ?? 0)
+      if (cap > 0) {
+        neighbors[i].push(j)
+        hasExplicitLinks = true
+      }
+    }
+    neighbors[i].sort((a, b) => a - b)
+  }
+  if (hasExplicitLinks) return neighbors
+  return Array.from({ length: count }, (_, i) => (
+    Array.from({ length: count }, (_, j) => j).filter((j) => j !== i)
+  ))
+}
+
+const findShortestZonePath = (neighbors, source, sink) => {
+  if (source === sink) return [source]
+  const queue = [[source]]
+  const seen = new Set([source])
+  while (queue.length > 0) {
+    const path = queue.shift()
+    const node = path[path.length - 1]
+    const nextNodes = [...(neighbors[node] || [])].sort((a, b) => a - b)
+    for (const next of nextNodes) {
+      if (seen.has(next)) continue
+      const nextPath = [...path, next]
+      if (next === sink) return nextPath
+      seen.add(next)
+      queue.push(nextPath)
+    }
+  }
+  return null
+}
+
+const computeSyntheticTransferPreview = (cfg) => {
+  const zones = Math.max(1, Number(cfg?.grid?.zones || 1))
+  const baseVolume = Math.max(0, Number(cfg?.market?.base_volume_mwh || 0))
+  const lossRate = Math.max(0, Math.min(1, Number(cfg?.grid?.losses_pct_per_link ?? 2) / 100))
+  const atc = Array.isArray(cfg?.grid?.atc) ? cfg.grid.atc : []
+  const generationMix = cfg?.environment?.groups || cfg?.market?.generator_mix || {}
+  const consumerMix = cfg?.market?.consumer_mix || {}
+  const generationShares = getMixZoneSharesForPreview(generationMix, zones)
+  const demandShares = getMixZoneSharesForPreview(consumerMix, zones)
+
+  const zoneRows = Array.from({ length: zones }, (_, idx) => {
+    const generation = baseVolume * generationShares[idx]
+    const demand = baseVolume * demandShares[idx]
+    return {
+      zoneId: idx + 1,
+      generation,
+      demand,
+      net: generation - demand,
+      imports: 0,
+      exports: 0,
+      losses: 0,
+      shortfall: 0,
+    }
+  })
+
+  const surplus = zoneRows.map((row) => Math.max(0, row.net))
+  const deficit = zoneRows.map((row) => Math.max(0, -row.net))
+  const neighbors = buildTopologyNeighbors(atc, zones)
+  const linkRequirements = new Map()
+
+  for (let sink = 0; sink < zones; sink += 1) {
+    while (deficit[sink] > 1e-6) {
+      let best = null
+      for (let source = 0; source < zones; source += 1) {
+        if (surplus[source] <= 1e-6) continue
+        const path = findShortestZonePath(neighbors, source, sink)
+        if (!path) continue
+        const edgeCount = Math.max(0, path.length - 1)
+        const efficiency = edgeCount > 0 ? Math.pow(1 - lossRate, edgeCount) : 1
+        const candidate = { source, path, edgeCount, efficiency }
+        if (!best || candidate.edgeCount < best.edgeCount || (candidate.edgeCount === best.edgeCount && candidate.source < best.source)) {
+          best = candidate
+        }
+      }
+      if (!best) {
+        zoneRows[sink].shortfall += deficit[sink]
+        deficit[sink] = 0
+        break
+      }
+
+      const sendFromSource = Math.min(surplus[best.source], deficit[sink] / Math.max(best.efficiency, 1e-9))
+      if (sendFromSource <= 1e-9) {
+        zoneRows[sink].shortfall += deficit[sink]
+        deficit[sink] = 0
+        break
+      }
+
+      surplus[best.source] -= sendFromSource
+      zoneRows[best.source].exports += sendFromSource
+
+      let edgeFlow = sendFromSource
+      for (let idx = 0; idx < best.path.length - 1; idx += 1) {
+        const from = best.path[idx]
+        const to = best.path[idx + 1]
+        const key = `${from}-${to}`
+        const existing = linkRequirements.get(key) || {
+          fromZone: from + 1,
+          toZone: to + 1,
+          requiredAtc: 0,
+          losses: 0,
+          configuredAtc: Number(atc?.[from]?.[to] ?? 0),
+        }
+        const edgeLoss = edgeFlow * lossRate
+        existing.requiredAtc += edgeFlow
+        existing.losses += edgeLoss
+        linkRequirements.set(key, existing)
+        zoneRows[from].losses += edgeLoss
+        edgeFlow -= edgeLoss
+      }
+
+      const delivered = edgeFlow
+      zoneRows[sink].imports += delivered
+      deficit[sink] = Math.max(0, deficit[sink] - delivered)
+    }
+  }
+
+  const linkRows = Array.from(linkRequirements.values())
+    .map((row) => ({
+      ...row,
+      gap: Math.max(0, row.requiredAtc - row.configuredAtc),
+    }))
+    .sort((a, b) => (a.fromZone - b.fromZone) || (a.toZone - b.toZone))
+
+  return {
+    zoneRows,
+    linkRows,
+    totalShortfall: zoneRows.reduce((sum, row) => sum + row.shortfall, 0),
+  }
+}
+
+const normalizeScenarioConfig = (input) => {
+  const next = structuredClone(input || defaultConfig)
+  const zones = Math.max(1, Number(next?.grid?.zones || 2))
+
+  if (!next.market) next.market = {}
+  if (!next.environment) next.environment = {}
+  if (!next.grid) next.grid = {}
+  if (!next.balancing) next.balancing = {}
+  if (!Array.isArray(next.player_types)) next.player_types = []
+
+  const generatorDefaults = { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150, nuclear: 0 }
+  const consumerDefaults = { industrial: 400, household: 500, agriculture: 100 }
+
+  const sourceGeneratorMix = next.market.generator_mix || generatorDefaults
+  const sourceEnvironmentGroups = next.environment.groups || sourceGeneratorMix
+  const normalizedEnvironmentGroups = {}
+  Object.keys(generatorDefaults).forEach((key) => {
+    normalizedEnvironmentGroups[key] = normalizeMixEntry(sourceEnvironmentGroups[key] ?? sourceGeneratorMix[key] ?? generatorDefaults[key], zones, generatorDefaults[key])
+  })
+  next.environment.groups = normalizedEnvironmentGroups
+
+  const normalizedGeneratorMix = {}
+  Object.keys(generatorDefaults).forEach((key) => {
+    const existing = sourceGeneratorMix[key] ?? normalizedEnvironmentGroups[key]
+    normalizedGeneratorMix[key] = {
+      ...normalizeMixEntry(existing, zones, generatorDefaults[key]),
+      zone_distribution_pct: [...normalizedEnvironmentGroups[key].zone_distribution_pct],
+    }
+  })
+  next.market.generator_mix = normalizedGeneratorMix
+
+  const sourceConsumerMix = next.market.consumer_mix || consumerDefaults
+  const normalizedConsumerMix = {}
+  Object.keys(consumerDefaults).forEach((key) => {
+    normalizedConsumerMix[key] = normalizeMixEntry(sourceConsumerMix[key] ?? consumerDefaults[key], zones, consumerDefaults[key])
+  })
+  next.market.consumer_mix = normalizedConsumerMix
+
+  if (!next.grid.atc || !Array.isArray(next.grid.atc)) {
+    next.grid.atc = Array.from({ length: zones }, (_, i) => Array.from({ length: zones }, (_, j) => (i === j ? 0 : 0)))
+  }
+  next.grid.losses_pct_per_link = Number(next.grid.losses_pct_per_link ?? next.grid.transmission_loss_pct ?? next.grid.losses_pct ?? 2)
+  next.grid.network_settlement = {
+    extra_cost_mode: next.grid.network_settlement?.extra_cost_mode || 'zonal_only',
+    cost_allocation_target: next.grid.network_settlement?.cost_allocation_target || 'consumers_only',
+    shortfall_price_mode: next.grid.network_settlement?.shortfall_price_mode || 'smp_multiplier',
+    shortfall_price_value: Number(next.grid.network_settlement?.shortfall_price_value ?? 2) || 2,
+  }
+  next.grid.generator_curtailment_mode = next.grid.generator_curtailment_mode || 'pro_rata'
+  next.balancing = {
+    up_price_zar_per_mwh: Number(next.balancing?.up_price_zar_per_mwh ?? 1200) || 1200,
+    down_price_zar_per_mwh: Number(next.balancing?.down_price_zar_per_mwh ?? 800) || 800,
+  }
+
+  next.player_types = next.player_types.map((pt) => ({ ...pt, zone: pt?.zone === '' ? undefined : pt?.zone }))
+
+  return next
+}
+
+const parseDistributionInput = (value, zones) => {
+  const parts = String(value || '')
+    .split(',')
+    .map((part) => Number(part.trim()))
+    .filter((part) => Number.isFinite(part))
+  return parts.length === Number(zones) ? parts : null
+}
+
+const renderLabelWithInfo = (label, tooltip) => (
+  <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+    <Box component="span">{label}</Box>
+    <Tooltip title={tooltip} arrow enterDelay={300}>
+      <Box
+        component="span"
+        sx={{
+          width: 16,
+          height: 16,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: '50%',
+          bgcolor: 'action.hover',
+          color: 'text.secondary',
+          fontSize: 12,
+          cursor: 'help',
+          userSelect: 'none',
+          lineHeight: 1,
+        }}
+        aria-label={`More info about ${label}`}
+      >
+        i
+      </Box>
+    </Tooltip>
+  </Box>
+)
+
+const formatInt = (value) => {
+  const numeric = Number(value ?? 0)
+  if (!Number.isFinite(numeric)) return '0'
+  return Math.round(numeric).toLocaleString('en-US')
+}
+
 const defaultConfig = {
   version: '1.0.0',
   objectives: '',
@@ -52,8 +350,19 @@ const defaultConfig = {
       price_floor: -500,
       price_cap: 5000,
       // generator_mix / consumer_mix are interpreted as counts (0-1000) per group
-      generator_mix: { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150, nuclear: 0 },
-      consumer_mix: { industrial: 400, household: 500, agriculture: 100 },
+      generator_mix: {
+        pv: { blocks: 250, zone_distribution_pct: [50, 50] },
+        wind: { blocks: 200, zone_distribution_pct: [50, 50] },
+        hydro: { blocks: 100, zone_distribution_pct: [50, 50] },
+        coal: { blocks: 300, zone_distribution_pct: [50, 50] },
+        gas: { blocks: 150, zone_distribution_pct: [50, 50] },
+        nuclear: { blocks: 0, zone_distribution_pct: [50, 50] },
+      },
+      consumer_mix: {
+        industrial: { blocks: 400, zone_distribution_pct: [50, 50] },
+        household: { blocks: 500, zone_distribution_pct: [50, 50] },
+        agriculture: { blocks: 100, zone_distribution_pct: [50, 50] },
+      },
       random_capacity_pct: 10,
       random_price_pct: 10,
     },
@@ -72,8 +381,34 @@ const defaultConfig = {
     allow_other_rounds_editing: true,
     enable_smooth_drag: true,
   },
-  grid: { zones: 2, atc: [[0,5000],[5000,0]] },
-  environment: { seed: 'preview', actual_noise_pct: 5 },
+  grid: {
+    zones: 2,
+    atc: [[0,5000],[5000,0]],
+    losses_pct_per_link: 2,
+    network_settlement: {
+      extra_cost_mode: 'zonal_only',
+      cost_allocation_target: 'consumers_only',
+      shortfall_price_mode: 'smp_multiplier',
+      shortfall_price_value: 2,
+    },
+    generator_curtailment_mode: 'pro_rata',
+  },
+  balancing: {
+    up_price_zar_per_mwh: 1200,
+    down_price_zar_per_mwh: 800,
+  },
+  environment: {
+    seed: 'preview',
+    actual_noise_pct: 5,
+    groups: {
+      pv: { blocks: 250, zone_distribution_pct: [50, 50] },
+      wind: { blocks: 200, zone_distribution_pct: [50, 50] },
+      hydro: { blocks: 100, zone_distribution_pct: [50, 50] },
+      coal: { blocks: 300, zone_distribution_pct: [50, 50] },
+      gas: { blocks: 150, zone_distribution_pct: [50, 50] },
+      nuclear: { blocks: 0, zone_distribution_pct: [50, 50] },
+    },
+  },
   events: [],
   devices: [],
   challenges: [],
@@ -94,8 +429,25 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
 
     const baseP = Number(cfg.market.base_price || 1000)
     const baseV = Number(cfg.market.base_volume_mwh || 20000)
-    const mix = cfg?.market?.generator_mix || groups || { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150 }
-    const distArr = Object.entries(mix)
+    const previewSupplyCurve = Array.isArray(preview?.supply_curve)
+      ? preview.supply_curve
+          .map((step) => ({
+            q: Number(step?.quantity ?? step?.q ?? 0),
+            p: Number(step?.price ?? step?.p ?? 0),
+          }))
+          .filter((step) => Number.isFinite(step.q) && step.q > 0 && Number.isFinite(step.p))
+      : []
+    const previewDemandCurve = Array.isArray(preview?.demand_curve)
+      ? preview.demand_curve
+          .map((step) => ({
+            q: Number(step?.quantity ?? step?.q ?? 0),
+            p: Number(step?.price ?? step?.p ?? 0),
+          }))
+          .filter((step) => Number.isFinite(step.q) && step.q > 0 && Number.isFinite(step.p))
+      : []
+    const hasBackendCurves = previewSupplyCurve.length > 0 && previewDemandCurve.length > 0
+    const mix = cfg?.environment?.groups || cfg?.market?.generator_mix || groups || { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150 }
+    const distArr = Object.entries(mix).map(([type, entry]) => [type, getMixBlocks(entry, 0)])
     // Interpret generator_mix values as non-negative block counts per group
     const totalBlocksSupply = distArr.reduce((s, [, v]) => s + Math.max(0, Number(v) || 0), 0) || 1
 
@@ -140,11 +492,13 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
     sBlocks.forEach(b => { b.q = (b.q / sSum) * baseV; b.p = Math.min(cap, Math.max(floor, b.p)) })
 
     // Sort supply ascending by price
-    const supply = sBlocks.sort((a, b) => a.p - b.p)
+    const supply = hasBackendCurves
+      ? [...previewSupplyCurve].sort((a, b) => a.p - b.p)
+      : sBlocks.sort((a, b) => a.p - b.p)
 
     // Build DEMAND blocks by consumer mix with non-linear decreasing schedule and jitter
     const cmix = (cfg?.market?.consumer_mix) || { industrial: 400, household: 500, agriculture: 100 }
-    const cArr = Object.entries(cmix)
+    const cArr = Object.entries(cmix).map(([type, entry]) => [type, getMixBlocks(entry, 0)])
     // Interpret consumer_mix values as non-negative block counts per group
     const totalBlocksDemand = cArr.reduce((s, [, v]) => s + Math.max(0, Number(v) || 0), 0) || 1
     let dBlocks = []
@@ -166,7 +520,9 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
     // normalize demand volume to baseV and sort descending by price
     const dSum = dBlocks.reduce((s, b) => s + b.q, 0) || 1
     dBlocks.forEach(b => { b.q = (b.q / dSum) * baseV })
-    const demand = dBlocks.sort((a, b) => b.p - a.p)
+    const demand = hasBackendCurves
+      ? [...previewDemandCurve].sort((a, b) => b.p - a.p)
+      : dBlocks.sort((a, b) => b.p - a.p)
 
     // Build cumulative x (quantity) for step plot (price vs quantity)
     const cum = (arr) => {
@@ -180,6 +536,16 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
     const x = d3.scaleLinear().domain([0, xMax]).range([0, W]).clamp(true)
     // dynamic Y domain: scale to min/max of actual prices (with small padding)
     const allPrices = [...supply.map(d=>d.p), ...demand.map(d=>d.p)]
+    if (!allPrices.length || !Number.isFinite(d3.min(allPrices)) || !Number.isFinite(d3.max(allPrices))) {
+      g.append('text')
+        .attr('x', W / 2)
+        .attr('y', H / 2)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#666')
+        .attr('font-size', 12)
+        .text('No preview blocks configured')
+      return
+    }
     const minP = d3.min(allPrices)
     const maxP = d3.max(allPrices)
     const pad = (maxP - minP) * 0.05
@@ -209,13 +575,13 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
 
     // Compute SMP as intersection of supply and demand curves
     let smpVal = Number(preview?.smp)
-    let smpQty = null
+    let smpQty = Number(preview?.volume)
+    if (!Number.isFinite(smpQty)) smpQty = null
     
     // Find intersection point by scanning through cumulative curves
-    if (showSmp && sCum.length > 0 && dCum.length > 0) {
+    if (showSmp && sCum.length > 0 && dCum.length > 0 && !hasBackendCurves) {
       // Convert to continuous functions for intersection search
       let sIdx = 0, dIdx = 0
-      let qCur = 0
       let foundIntersection = false
       
       // Step through quantity range looking for where supply price >= demand price
@@ -298,7 +664,7 @@ export default function KSE(){
   const scenarioParam = sp.get('id')
   const [tab, setTab] = useState(0)
   const [name, setName] = useState('New Scenario')
-  const [cfg, setCfg] = useState(defaultConfig)
+  const [cfg, setCfg] = useState(normalizeScenarioConfig(defaultConfig))
   const [scenarioId, setScenarioId] = useState(null)
   const [preview, setPreview] = useState(null)
   const [errors, setErrors] = useState([])
@@ -312,6 +678,7 @@ export default function KSE(){
   const hours = Number(cfg?.general?.forecast_horizon_hours) || 24
   const smpRef = useRef(null)
   const volRef = useRef(null)
+  const syntheticTransferPreview = useMemo(() => computeSyntheticTransferPreview(cfg), [cfg])
   // generator mix now stored in cfg.market.generator_mix
   const [zoneSplit, setZoneSplit] = useState(50)
   const [envGen, setEnvGen] = useState(null)
@@ -336,6 +703,7 @@ export default function KSE(){
   const [profileEditorTitle, setProfileEditorTitle] = useState('')
   const [profileEditorCurrent, setProfileEditorCurrent] = useState(null)
   const [profileEditorPath, setProfileEditorPath] = useState([]) // path in config object
+  const [profileEditorKind, setProfileEditorKind] = useState('generator')
   // Modals (IO + Description)
   const [ioOpen, setIoOpen] = useState(false)
   const [ioTab, setIoTab] = useState(0)
@@ -377,11 +745,15 @@ export default function KSE(){
         api.get(`/api/kse/scenarios/${id}`).then(({data})=>{
           setScenarioId(id)
           setName(data.name || `Scenario ${id}`)
-          setCfg(data.config || defaultConfig)
+          setCfg(normalizeScenarioConfig(data.config || defaultConfig))
         }).catch(()=>{})
       }
     }
   },[])
+
+  useEffect(() => {
+    setCfg((prev) => normalizeScenarioConfig(prev))
+  }, [cfg?.grid?.zones])
 
   // URL hash ↔ tab sync for deep-linking and back/forward
   useEffect(()=>{
@@ -421,31 +793,41 @@ export default function KSE(){
     })
   }
 
-  const openProfileEditor = (type, title, currentHourlyProfile, currentSeasonalProfile, savePath) => {
+  const openProfileEditor = (type, title, currentHourlyProfile, currentSeasonalProfile, currentZonalDistribution, savePath, kind = 'generator') => {
     setProfileEditorType(type)
     setProfileEditorTitle(title)
-    setProfileEditorCurrent({ hourly: currentHourlyProfile, seasonal: currentSeasonalProfile })
+    setProfileEditorCurrent({ hourly: currentHourlyProfile, seasonal: currentSeasonalProfile, zonal: currentZonalDistribution })
     setProfileEditorPath(savePath)
+    setProfileEditorKind(kind)
     setProfileEditorOpen(true)
   }
 
   const handleProfileSave = (profiles) => {
     // Save both hourly and seasonal profiles to generator_mix or consumer_mix
     const current = profileEditorPath.reduce((obj, key) => obj?.[key], cfg)
-    if (typeof current === 'object' && current !== null && !Array.isArray(current)) {
-      // Already an object with blocks/profile/seasonal_profile
-      update(profileEditorPath, { 
-        ...current, 
+    const baseValue = (typeof current === 'object' && current !== null && !Array.isArray(current))
+      ? current
+      : { blocks: current || 0 }
+    const updatedValue = {
+      ...baseValue,
+      profile: profiles.hourly,
+      seasonal_profile: profiles.seasonal,
+      zone_distribution_pct: profiles.zonal,
+    }
+
+    if (profileEditorKind === 'generator') {
+      const generatorType = profileEditorPath[profileEditorPath.length - 1]
+      const currentEnv = normalizeMixEntry(cfg.environment.groups?.[generatorType], cfg.grid.zones)
+      update(profileEditorPath, updatedValue)
+      update(['environment', 'groups', generatorType], {
+        ...currentEnv,
+        blocks: updatedValue.blocks,
         profile: profiles.hourly,
-        seasonal_profile: profiles.seasonal 
+        seasonal_profile: profiles.seasonal,
+        zone_distribution_pct: profiles.zonal,
       })
     } else {
-      // Convert from number to object
-      update(profileEditorPath, { 
-        blocks: current || 0, 
-        profile: profiles.hourly,
-        seasonal_profile: profiles.seasonal
-      })
+      update(profileEditorPath, updatedValue)
     }
     setProfileEditorOpen(false)
   }
@@ -469,12 +851,22 @@ export default function KSE(){
   }
 
   const setGeneratorMixBlocks = (type, blocks) => {
-    const current = cfg.market.generator_mix?.[type]
-    if (typeof current === 'object') {
-      update(['market', 'generator_mix', type], { ...current, blocks })
-    } else {
-      update(['market', 'generator_mix', type], blocks)
-    }
+    const currentMarket = normalizeMixEntry(cfg.market.generator_mix?.[type], cfg.grid.zones)
+    const currentEnv = normalizeMixEntry(cfg.environment.groups?.[type], cfg.grid.zones)
+    update(['market', 'generator_mix', type], { ...currentMarket, blocks })
+    update(['environment', 'groups', type], { ...currentEnv, blocks })
+  }
+
+  const getGeneratorZoneDistribution = (type) => {
+    const val = cfg.environment.groups?.[type] || cfg.market.generator_mix?.[type]
+    return normalizeMixEntry(val, cfg.grid.zones).zone_distribution_pct
+  }
+
+  const setGeneratorZoneDistribution = (type, distribution) => {
+    const currentMarket = normalizeMixEntry(cfg.market.generator_mix?.[type], cfg.grid.zones)
+    const currentEnv = normalizeMixEntry(cfg.environment.groups?.[type], cfg.grid.zones)
+    update(['market', 'generator_mix', type], { ...currentMarket, zone_distribution_pct: distribution })
+    update(['environment', 'groups', type], { ...currentEnv, zone_distribution_pct: distribution })
   }
 
   const getConsumerMixValue = (type) => {
@@ -504,10 +896,53 @@ export default function KSE(){
     }
   }
 
+  const getConsumerZoneDistribution = (type) => {
+    const val = cfg.market.consumer_mix?.[type]
+    return normalizeMixEntry(val, cfg.grid.zones).zone_distribution_pct
+  }
+
+  const setConsumerZoneDistribution = (type, distribution) => {
+    const current = normalizeMixEntry(cfg.market.consumer_mix?.[type], cfg.grid.zones)
+    update(['market', 'consumer_mix', type], { ...current, zone_distribution_pct: distribution })
+  }
+
   const validate = ()=>{
     const errs = []
     const zones = cfg.grid.zones
     if(zones<1 || zones>5) errs.push('Zones must be 1–5')
+    const validateDistribution = (label, distribution) => {
+      if (!Array.isArray(distribution) || distribution.length !== Number(zones)) {
+        errs.push(`${label} must define ${zones} zone values`)
+        return
+      }
+      const values = distribution.map((value) => Number(value))
+      if (values.some((value) => !Number.isFinite(value) || value < 0)) {
+        errs.push(`${label} must contain non-negative numeric values`)
+      }
+      const sum = values.reduce((acc, value) => acc + value, 0)
+      if (Math.abs(sum - 100) > 1e-6) errs.push(`${label} must sum to 100`)
+    }
+    ;['pv','wind','hydro','coal','gas','nuclear'].forEach((type) => validateDistribution(`environment.groups.${type}.zone_distribution_pct`, getGeneratorZoneDistribution(type)))
+    ;['industrial','household','agriculture'].forEach((type) => validateDistribution(`market.consumer_mix.${type}.zone_distribution_pct`, getConsumerZoneDistribution(type)))
+    const settlement = cfg?.grid?.network_settlement || {}
+    if (!['zonal_only'].includes(String(settlement.extra_cost_mode || 'zonal_only'))) {
+      errs.push('grid.network_settlement.extra_cost_mode invalid')
+    }
+    if (!['consumers_only'].includes(String(settlement.cost_allocation_target || 'consumers_only'))) {
+      errs.push('grid.network_settlement.cost_allocation_target invalid')
+    }
+    if (!['fixed_price', 'smp_multiplier', 'value_of_lost_load'].includes(String(settlement.shortfall_price_mode || 'smp_multiplier'))) {
+      errs.push('grid.network_settlement.shortfall_price_mode invalid')
+    }
+    if (!(Number(settlement.shortfall_price_value) > 0)) errs.push('grid.network_settlement.shortfall_price_value must be > 0')
+    if (!['pro_rata', 'reverse_merit_order', 'renewables_first', 'renewables_last'].includes(String(cfg?.grid?.generator_curtailment_mode || 'pro_rata'))) {
+      errs.push('grid.generator_curtailment_mode invalid')
+    }
+    if (!(Number(cfg?.grid?.losses_pct_per_link ?? 2) >= 0 && Number(cfg?.grid?.losses_pct_per_link ?? 2) <= 100)) {
+      errs.push('grid.losses_pct_per_link must be within [0, 100]')
+    }
+    if (!(Number(cfg?.balancing?.up_price_zar_per_mwh ?? 1200) > 0)) errs.push('balancing.up_price_zar_per_mwh must be > 0')
+    if (!(Number(cfg?.balancing?.down_price_zar_per_mwh ?? 800) > 0)) errs.push('balancing.down_price_zar_per_mwh must be > 0')
     if(!cfg.general.forecast_horizon_hours || cfg.general.forecast_horizon_hours<=0) errs.push('forecast_horizon_hours must be > 0')
     if(cfg.general.forecast_horizon_hours && cfg.general.horizon_hours && Number(cfg.general.forecast_horizon_hours) < Number(cfg.general.horizon_hours)) errs.push('forecast_horizon_hours must be >= horizon_hours')
     // Removed scoring.weights validation (replaced by challenges)
@@ -521,6 +956,18 @@ export default function KSE(){
         const normalized = Number(offset)
         if (!Number.isInteger(normalized) || normalized < 0 || normalized >= Number(sp || 0)) {
           errs.push('player_input.editable_offsets must be integers within round_span_hours')
+        }
+      })
+    }
+    if (Number(zones) > 1) {
+      const playerTypes = Array.isArray(cfg.player_types) ? cfg.player_types : []
+      const missingZones = playerTypes.filter((pt) => pt?.devices?.length && (pt?.zone == null || pt?.zone === ''))
+      if (missingZones.length > 0 && (cfg?.general?.player_zone == null || cfg?.general?.player_zone === '')) {
+        errs.push('Multi-zone scenarios require player type zones or legacy player zone')
+      }
+      playerTypes.forEach((pt) => {
+        if (pt?.zone != null && pt?.zone !== '' && (Number(pt.zone) < 1 || Number(pt.zone) > Number(zones))) {
+          errs.push(`player type ${pt.name || pt.id} zone must be within 1..zones`)
         }
       })
     }
@@ -577,7 +1024,7 @@ export default function KSE(){
         })
       } catch(_) {}
       // Normalize player type IDs (required by backend)
-      const norm = structuredClone(cfg)
+      const norm = normalizeScenarioConfig(cfg)
       // Trading-only market config: drop deprecated clearing arrays
       try {
         const markets = norm.markets || {}
@@ -1239,42 +1686,42 @@ export default function KSE(){
                     <InfoLabel title="PV blocks" tooltip="Number of PV supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="PV (#)" value={getGeneratorMixValue('pv')} onChange={(val)=>setGeneratorMixBlocks('pv', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('solar', 'PV Profile', getGeneratorMixProfile('pv'), getGeneratorMixSeasonalProfile('pv'), ['market','generator_mix','pv'])} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('solar', 'PV Profile', getGeneratorMixProfile('pv'), getGeneratorMixSeasonalProfile('pv'), getGeneratorZoneDistribution('pv'), ['market','generator_mix','pv'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Wind blocks" tooltip="Number of wind supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Wind (#)" value={getGeneratorMixValue('wind')} onChange={(val)=>setGeneratorMixBlocks('wind', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('wind', 'Wind Profile', getGeneratorMixProfile('wind'), getGeneratorMixSeasonalProfile('wind'), ['market','generator_mix','wind'])} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('wind', 'Wind Profile', getGeneratorMixProfile('wind'), getGeneratorMixSeasonalProfile('wind'), getGeneratorZoneDistribution('wind'), ['market','generator_mix','wind'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Hydro blocks" tooltip="Number of hydro supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Hydro (#)" value={getGeneratorMixValue('hydro')} onChange={(val)=>setGeneratorMixBlocks('hydro', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('hydro', 'Hydro Profile', getGeneratorMixProfile('hydro'), getGeneratorMixSeasonalProfile('hydro'), ['market','generator_mix','hydro'])} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('hydro', 'Hydro Profile', getGeneratorMixProfile('hydro'), getGeneratorMixSeasonalProfile('hydro'), getGeneratorZoneDistribution('hydro'), ['market','generator_mix','hydro'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Coal blocks" tooltip="Number of coal supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Coal (#)" value={getGeneratorMixValue('coal')} onChange={(val)=>setGeneratorMixBlocks('coal', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Coal Profile', getGeneratorMixProfile('coal'), getGeneratorMixSeasonalProfile('coal'), ['market','generator_mix','coal'])} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Coal Profile', getGeneratorMixProfile('coal'), getGeneratorMixSeasonalProfile('coal'), getGeneratorZoneDistribution('coal'), ['market','generator_mix','coal'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Gas blocks" tooltip="Number of gas supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Gas (#)" value={getGeneratorMixValue('gas')} onChange={(val)=>setGeneratorMixBlocks('gas', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('peaking', 'Gas Profile', getGeneratorMixProfile('gas'), getGeneratorMixSeasonalProfile('gas'), ['market','generator_mix','gas'])} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('peaking', 'Gas Profile', getGeneratorMixProfile('gas'), getGeneratorMixSeasonalProfile('gas'), getGeneratorZoneDistribution('gas'), ['market','generator_mix','gas'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Nuclear blocks" tooltip="Number of nuclear supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Nuclear (#)" value={getGeneratorMixValue('nuclear')} onChange={(val)=>setGeneratorMixBlocks('nuclear', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Nuclear Profile', getGeneratorMixProfile('nuclear'), getGeneratorMixSeasonalProfile('nuclear'), ['market','generator_mix','nuclear'])} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Nuclear Profile', getGeneratorMixProfile('nuclear'), getGeneratorMixSeasonalProfile('nuclear'), getGeneratorZoneDistribution('nuclear'), ['market','generator_mix','nuclear'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                 </Stack>
@@ -1283,6 +1730,9 @@ export default function KSE(){
                   const sum = ['pv','wind','hydro','coal','gas','nuclear'].reduce((s,k)=> s + getGeneratorMixValue(k), 0)
                   return <Typography variant="caption" color={sum>0? 'text.secondary':'warning.main'}>Total generator blocks: {sum} (normalized in preview)</Typography>
                 })()}
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                  Edit hourly, seasonal, and zonal behavior for each generator type via its <strong>Edit</strong> profile dialog.
+                </Typography>
 
                 <Typography variant="subtitle2">Consumer Mix</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
@@ -1290,21 +1740,21 @@ export default function KSE(){
                     <InfoLabel title="Industrial blocks" tooltip="Number of industrial consumer blocks in preview demand mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Industrial (#)" value={getConsumerMixValue('industrial')} onChange={(val)=>setConsumerMixBlocks('industrial', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Industrial Load Profile', getConsumerMixProfile('industrial'), getConsumerMixSeasonalProfile('industrial'), ['market','consumer_mix','industrial'])} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Industrial Load Profile', getConsumerMixProfile('industrial'), getConsumerMixSeasonalProfile('industrial'), getConsumerZoneDistribution('industrial'), ['market','consumer_mix','industrial'], 'consumer')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Household blocks" tooltip="Number of household consumer blocks in preview demand mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Household (#)" value={getConsumerMixValue('household')} onChange={(val)=>setConsumerMixBlocks('household', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('residential', 'Household Load Profile', getConsumerMixProfile('household'), getConsumerMixSeasonalProfile('household'), ['market','consumer_mix','household'])} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('residential', 'Household Load Profile', getConsumerMixProfile('household'), getConsumerMixSeasonalProfile('household'), getConsumerZoneDistribution('household'), ['market','consumer_mix','household'], 'consumer')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Agriculture blocks" tooltip="Number of agriculture consumer blocks in preview demand mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Agriculture (#)" value={getConsumerMixValue('agriculture')} onChange={(val)=>setConsumerMixBlocks('agriculture', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Agriculture Load Profile', getConsumerMixProfile('agriculture'), getConsumerMixSeasonalProfile('agriculture'), ['market','consumer_mix','agriculture'])} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Agriculture Load Profile', getConsumerMixProfile('agriculture'), getConsumerMixSeasonalProfile('agriculture'), getConsumerZoneDistribution('agriculture'), ['market','consumer_mix','agriculture'], 'consumer')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                 </Stack>
@@ -1313,6 +1763,9 @@ export default function KSE(){
                   const sum = ['industrial','household','agriculture'].reduce((s,k)=> s + getConsumerMixValue(k), 0)
                   return <Typography variant="caption" color={sum>0? 'text.secondary':'warning.main'}>Total consumer blocks: {sum} (normalized in preview)</Typography>
                 })()}
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                  Edit hourly, seasonal, and zonal behavior for each consumer type via its <strong>Edit</strong> profile dialog.
+                </Typography>
 
                 <Typography variant="subtitle2">Randomness</Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
@@ -1441,6 +1894,38 @@ export default function KSE(){
                       step={1}
                       unit="h"
                       tooltip="Intraday Market gate closure: Hours before delivery when IDM closes. Only affects Intraday trading window. Default: 2h."
+                    />
+                  </Box>
+                </Stack>
+              </Paper>
+              <Paper sx={{ p: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Balancing Settlement</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Configure the default imbalance settlement prices. These are exogenous balancing prices, not prices formed by a separate balancing market. Standard defaults are 1200 ZAR/MWh for positive imbalance and 800 ZAR/MWh for negative imbalance.
+                </Typography>
+                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                  <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
+                    <NumberInput
+                      label="Positive Imbalance Price"
+                      value={cfg.balancing?.up_price_zar_per_mwh ?? 1200}
+                      onChange={(val)=>update(['balancing','up_price_zar_per_mwh'], Number(val) || 0)}
+                      min={0.1}
+                      max={100000}
+                      step={10}
+                      unit="ZAR/MWh"
+                      tooltip="Applied when actual energy exceeds planned energy. Default: 1200 ZAR/MWh. This is a configurable settlement parameter, not a market-cleared balancing price."
+                    />
+                  </Box>
+                  <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
+                    <NumberInput
+                      label="Negative Imbalance Price"
+                      value={cfg.balancing?.down_price_zar_per_mwh ?? 800}
+                      onChange={(val)=>update(['balancing','down_price_zar_per_mwh'], Number(val) || 0)}
+                      min={0.1}
+                      max={100000}
+                      step={10}
+                      unit="ZAR/MWh"
+                      tooltip="Applied when actual energy is below planned energy. Default: 800 ZAR/MWh. This is a configurable settlement parameter, not a market-cleared balancing price."
                     />
                   </Box>
                 </Stack>
@@ -1690,28 +2175,120 @@ export default function KSE(){
                 </Box>
                 <Box sx={{ minWidth: 220 }}>
                   <NumberInput
-                    label="Player Zone (1..zones)"
+                    label="Legacy Player Zone (fallback)"
                     value={cfg.general.player_zone||1}
                     onChange={val=>update(['general','player_zone'], val)}
                     min={1}
                     max={cfg.grid.zones||1}
                     step={1}
-                    tooltip="Default zone used for player-facing context and inputs."
+                    tooltip="Legacy fallback for older scenarios that do not assign zones per player type. In new multi-zone scenarios, physical location should come from player_types[].zone instead. This fallback is only used when a player type has no explicit zone configured."
                   />
                 </Box>
                 <Box sx={{ minWidth: 220 }}>
                   <NumberInput
-                    label="Transmission Loss (%)"
-                    value={cfg.grid.transmission_loss_pct ?? 2}
-                    onChange={val=>update(['grid','transmission_loss_pct'], val)}
+                    label="Transmission Loss Per Link (%)"
+                    value={cfg.grid.losses_pct_per_link ?? 2}
+                    onChange={val=>update(['grid','losses_pct_per_link'], val)}
                     min={0}
                     max={20}
                     step={0.5}
                     unit="%"
-                    tooltip="Percentage of energy lost during inter-zone transmission (default 2%)."
+                    tooltip="Percentage of energy lost on every traversed interzonal link. Losses compound over multi-hop paths, so higher values make indirect transfers more expensive and less effective. Example: with 2% loss per link, a two-link path delivers less energy than a direct one-link path."
                   />
                 </Box>
               </Stack>
+              <Paper sx={{ p: 2 }}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <Typography variant="subtitle2">Network Settlement</Typography>
+                  <InfoLabel
+                    title="Network Settlement"
+                    tooltip="Controls how physical network shortages are converted into player-facing economic effects. In Phase 1 the market still clears with one global SMP, but after clearing the engine checks whether energy can actually be delivered across zones. If not, shortages and constrained-off generation are settled using the settings below."
+                    showTitle={false}
+                  />
+                </Stack>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Extra grid costs are separate from imbalance and are currently allocated as zonal-only costs to consumers in the affected zone in Phase 1.
+                </Typography>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={3}>
+                    <TextField
+                      select
+                      fullWidth
+                      size="small"
+                      label={renderLabelWithInfo('Extra Cost Mode', 'Determines how network-induced shortage costs are distributed. In the current Phase 1 implementation only zonal_only is active, which means the affected zone carries its own extra cost instead of spreading it across all zones or all players.')}
+                      value={cfg.grid.network_settlement?.extra_cost_mode || 'zonal_only'}
+                      onChange={(e) => update(['grid', 'network_settlement', 'extra_cost_mode'], e.target.value)}
+                    >
+                      <MenuItem value="zonal_only">Zonal only</MenuItem>
+                    </TextField>
+                  </Grid>
+                  <Grid item xs={12} md={3}>
+                    <TextField
+                      select
+                      fullWidth
+                      size="small"
+                      label={renderLabelWithInfo('Allocation Target', 'Defines which player group pays the network-induced extra cost within the affected zone. In the current Phase 1 model, only consumers_only is supported, meaning producers are not charged these shortage costs directly.')}
+                      value={cfg.grid.network_settlement?.cost_allocation_target || 'consumers_only'}
+                      onChange={(e) => update(['grid', 'network_settlement', 'cost_allocation_target'], e.target.value)}
+                    >
+                      <MenuItem value="consumers_only">Consumers only</MenuItem>
+                    </TextField>
+                  </Grid>
+                  <Grid item xs={12} md={3}>
+                    <TextField
+                      select
+                      fullWidth
+                      size="small"
+                      label={renderLabelWithInfo('Shortfall Price Mode', 'Defines how the engine prices physically unserved demand after the network feasibility check. fixed_price uses a constant ZAR/MWh value, smp_multiplier uses the round SMP times the configured multiplier, and value_of_lost_load lets you enter a direct high penalty value representing severe scarcity.')}
+                      value={cfg.grid.network_settlement?.shortfall_price_mode || 'smp_multiplier'}
+                      onChange={(e) => update(['grid', 'network_settlement', 'shortfall_price_mode'], e.target.value)}
+                    >
+                      <MenuItem value="fixed_price">Fixed price</MenuItem>
+                      <MenuItem value="smp_multiplier">SMP multiplier</MenuItem>
+                      <MenuItem value="value_of_lost_load">Value of lost load</MenuItem>
+                    </TextField>
+                  </Grid>
+                  <Grid item xs={12} md={3}>
+                    <NumberInput
+                      label="Shortfall Price Value"
+                      value={cfg.grid.network_settlement?.shortfall_price_value ?? 2}
+                      onChange={(val) => update(['grid', 'network_settlement', 'shortfall_price_value'], Number(val) || 0)}
+                      min={0.1}
+                      max={100000}
+                      step={0.1}
+                      tooltip="Numeric parameter used by the selected Shortfall Price Mode. For fixed_price and value_of_lost_load, this is a direct ZAR/MWh penalty. For smp_multiplier, this is the multiplier applied to the round SMP. Example: multiplier 2.0 means unserved demand is priced at 2 × SMP."
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <TextField
+                      select
+                      fullWidth
+                      size="small"
+                      label={renderLabelWithInfo('Generator Curtailment Rule', 'Determines how commercially cleared generation is reduced when the network cannot physically export all surplus energy. pro_rata cuts all affected producers proportionally; reverse_merit_order cuts the highest-cost units first; renewables_first and renewables_last prioritize curtailment based on renewable share.')}
+                      value={cfg.grid.generator_curtailment_mode || 'pro_rata'}
+                      onChange={(e) => update(['grid', 'generator_curtailment_mode'], e.target.value)}
+                    >
+                      <MenuItem value="pro_rata">Pro rata</MenuItem>
+                      <MenuItem value="reverse_merit_order">Reverse merit order</MenuItem>
+                      <MenuItem value="renewables_first">Renewables first</MenuItem>
+                      <MenuItem value="renewables_last">Renewables last</MenuItem>
+                    </TextField>
+                  </Grid>
+                </Grid>
+              </Paper>
+              <Paper sx={{ p: 2 }}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <Typography variant="subtitle2">Player Zone Source</Typography>
+                  <InfoLabel
+                    title="Player Zone Source"
+                    tooltip="Explains which configuration entry determines the physical location of player assets in the grid model. In Phase 1, player_types[].zone is the authoritative source. The legacy general.player_zone setting only exists as a backward-compatible fallback for scenarios that predate explicit player-type zones."
+                    showTitle={false}
+                  />
+                </Stack>
+                <Typography variant="body2" color="text.secondary">
+                  In Phase 1, physical player location comes from <strong>player type zones</strong>. The legacy player zone above is only a fallback for older scenarios.
+                </Typography>
+              </Paper>
               <Box>
                 <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
                   <Typography variant="subtitle2">ATC Matrix (MW)</Typography>
@@ -1796,6 +2373,84 @@ export default function KSE(){
                   })()}
                 </Box>
               </Box>
+              <Paper sx={{ p: 2 }}>
+                <Stack spacing={1}>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Typography variant="subtitle2">Synthetic Transfer Requirement Preview</Typography>
+                    <InfoLabel
+                      title="Synthetic Transfer Requirement Preview"
+                      tooltip="Indicative preview of how much interzonal transfer would be needed to move the configured synthetic generation to the configured synthetic demand locations, based on the current zone distributions and base market volume. Required ATC is shown before comparing it to the configured ATC matrix."
+                      showTitle={false}
+                    />
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary">
+                    This preview uses only the configured synthetic generator and consumer distributions. It is intended as a planning aid for the grid setup, not as a full market outcome.
+                  </Typography>
+                  <Typography variant="caption" color={syntheticTransferPreview.totalShortfall > 0 ? 'warning.main' : 'text.secondary'}>
+                    {syntheticTransferPreview.totalShortfall > 0
+                      ? `Configured topology would still leave an estimated shortfall of ${formatInt(syntheticTransferPreview.totalShortfall)} MWh in this synthetic-only preview.`
+                      : 'Configured topology can route the synthetic-only zonal balances without residual shortfall in this preview.'}
+                  </Typography>
+                  <Box sx={{ overflowX: 'auto' }}>
+                    <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 720 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'left' }}>Zone</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Generation</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Demand</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Net Position</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Imports</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Exports</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Losses</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Shortfall</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {syntheticTransferPreview.zoneRows.map((row) => (
+                          <tr key={`zone-preview-${row.zoneId}`}>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee' }}>Zone {row.zoneId}</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right' }}>{formatInt(row.generation)} MWh</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right' }}>{formatInt(row.demand)} MWh</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right', color: row.net >= 0 ? '#2e7d32' : '#c62828' }}>{formatInt(row.net)} MWh</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right' }}>{formatInt(row.imports)} MWh</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right' }}>{formatInt(row.exports)} MWh</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right' }}>{formatInt(row.losses)} MWh</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right', color: row.shortfall > 0 ? '#c62828' : 'inherit' }}>{formatInt(row.shortfall)} MWh</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </Box>
+                  <Box sx={{ overflowX: 'auto' }}>
+                    <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 640 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'left' }}>Link</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Required ATC</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Configured ATC</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Gap</th>
+                          <th style={{ padding: 6, borderBottom: '1px solid #ddd', textAlign: 'right' }}>Losses</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {syntheticTransferPreview.linkRows.length > 0 ? syntheticTransferPreview.linkRows.map((row) => (
+                          <tr key={`link-preview-${row.fromZone}-${row.toZone}`}>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee' }}>Zone {row.fromZone} → Zone {row.toZone}</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right' }}>{formatInt(row.requiredAtc)} MW</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right' }}>{formatInt(row.configuredAtc)} MW</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right', color: row.gap > 0 ? '#c62828' : '#2e7d32' }}>{formatInt(row.gap)} MW</td>
+                            <td style={{ padding: 6, borderBottom: '1px solid #eee', textAlign: 'right' }}>{formatInt(row.losses)} MWh</td>
+                          </tr>
+                        )) : (
+                          <tr>
+                            <td colSpan={5} style={{ padding: 8, color: '#666' }}>No interzonal transfer is required for the current synthetic-only setup.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </Box>
+                </Stack>
+              </Paper>
             </Stack>
           )}
           {/* Environment tab removed (merged) */}
@@ -1897,7 +2552,7 @@ export default function KSE(){
                           size="small" 
                           fullWidth 
                           type="number" 
-                          label="Zone (optional)" 
+                          label={renderLabelWithInfo('Zone (optional)', 'Physical zone assigned to this player type. All devices belonging to this player type are treated as located in this zone for interzonal dispatch, import/export feasibility, shortages, and zone-specific result reporting. Leave it empty only for legacy scenarios that still rely on the fallback player zone.')}
                           value={pt.zone||''} 
                           onChange={e=>{
                             const v = e.target.value === '' ? undefined : Number(e.target.value)
@@ -2033,13 +2688,17 @@ export default function KSE(){
             </Stack>
           )}
           {/* Preview tab removed (merged) */}
+          <Stack spacing={2} sx={{ mt: 2 }}>
+            <ValidationPanel errors={errors} onSelect={onValidationSelect} />
+            {errors.length>0 && (
+              <Paper sx={{p:2}}>
+                <Typography color="error">{errors.join(' · ')}</Typography>
+              </Paper>
+            )}
+          </Stack>
         </Box>
-        <ValidationPanel errors={errors} onSelect={onValidationSelect} />
       </Stack>
       </Paper>
-      {errors.length>0 && <Paper sx={{p:2}}>
-        <Typography color="error">{errors.join(' · ')}</Typography>
-      </Paper>}
   {/* Bottom actions removed: now in toolbar and modal */}
 
       {/* ATC Matrix Editor Modal */}
@@ -2245,6 +2904,8 @@ export default function KSE(){
         title={profileEditorTitle}
         hourlyProfile={profileEditorCurrent?.hourly}
         seasonalProfile={profileEditorCurrent?.seasonal}
+        zonalDistribution={profileEditorCurrent?.zonal}
+        zoneCount={cfg.grid?.zones || 1}
         onSave={handleProfileSave}
         type={profileEditorType}
       />

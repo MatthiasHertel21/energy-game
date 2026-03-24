@@ -25,25 +25,35 @@ TEMPLATES = {
                 "price_cap": 5000,
                 "clearing_type": "uniform"
             },
+            "balancing": {
+                "up_price_zar_per_mwh": 1200.0,
+                "down_price_zar_per_mwh": 800.0
+            },
             "grid": {
                 "zones": 2,
                 "atc": [
                     [0, 5000],
                     [5000, 0]
                 ],
-                "losses_pct": 2.0
+                "losses_pct_per_link": 2.0,
+                "network_settlement": {
+                    "extra_cost_mode": "zonal_only",
+                    "cost_allocation_target": "consumers_only",
+                    "shortfall_price_mode": "smp_multiplier",
+                    "shortfall_price_value": 2.0
+                },
+                "generator_curtailment_mode": "pro_rata"
             },
             "environment": {
                 "seed": "standard-2024",
                 "groups": {
-                    "solar": 20,
-                    "wind": 15,
-                    "gas": 30,
-                    "coal": 20,
-                    "hydro": 10,
-                    "nuclear": 5
-                },
-                "zone_split": 50
+                    "solar": {"blocks": 20, "zone_distribution_pct": [50, 50]},
+                    "wind": {"blocks": 15, "zone_distribution_pct": [50, 50]},
+                    "gas": {"blocks": 30, "zone_distribution_pct": [50, 50]},
+                    "coal": {"blocks": 20, "zone_distribution_pct": [50, 50]},
+                    "hydro": {"blocks": 10, "zone_distribution_pct": [50, 50]},
+                    "nuclear": {"blocks": 5, "zone_distribution_pct": [50, 50]}
+                }
             },
             "events": [
                 {
@@ -95,7 +105,16 @@ TEMPLATES = {
                 "base_volume_mwh": 18000,
                 "price_floor": -1000,  # Allow negative prices for RE curtailment
                 "price_cap": 6000,
-                "clearing_type": "uniform"
+                "clearing_type": "uniform",
+                "consumer_mix": {
+                    "industrial": {"blocks": 400, "zone_distribution_pct": [35, 35, 30]},
+                    "household": {"blocks": 500, "zone_distribution_pct": [45, 30, 25]},
+                    "agriculture": {"blocks": 100, "zone_distribution_pct": [30, 40, 30]}
+                }
+            },
+            "balancing": {
+                "up_price_zar_per_mwh": 1200.0,
+                "down_price_zar_per_mwh": 800.0
             },
             "grid": {
                 "zones": 3,
@@ -104,19 +123,25 @@ TEMPLATES = {
                     [3000, 0, 3000],
                     [2000, 3000, 0]
                 ],
-                "losses_pct": 2.0
+                "losses_pct_per_link": 2.0,
+                "network_settlement": {
+                    "extra_cost_mode": "zonal_only",
+                    "cost_allocation_target": "consumers_only",
+                    "shortfall_price_mode": "smp_multiplier",
+                    "shortfall_price_value": 2.0
+                },
+                "generator_curtailment_mode": "pro_rata"
             },
             "environment": {
                 "seed": "renewables-2024",
                 "groups": {
-                    "solar": 40,
-                    "wind": 40,
-                    "gas": 10,
-                    "coal": 5,
-                    "hydro": 3,
-                    "nuclear": 2
-                },
-                "zone_split": 60  # More renewables in zone 1
+                    "solar": {"blocks": 40, "zone_distribution_pct": [60, 25, 15]},
+                    "wind": {"blocks": 40, "zone_distribution_pct": [20, 35, 45]},
+                    "gas": {"blocks": 10, "zone_distribution_pct": [20, 50, 30]},
+                    "coal": {"blocks": 5, "zone_distribution_pct": [25, 50, 25]},
+                    "hydro": {"blocks": 3, "zone_distribution_pct": [30, 40, 30]},
+                    "nuclear": {"blocks": 2, "zone_distribution_pct": [40, 40, 20]}
+                }
             },
             "events": [
                 {
@@ -190,7 +215,16 @@ TEMPLATES = {
                 "base_volume_mwh": 28000,  # High winter demand
                 "price_floor": 0,
                 "price_cap": 8000,
-                "clearing_type": "uniform"
+                "clearing_type": "uniform",
+                "consumer_mix": {
+                    "industrial": {"blocks": 400, "zone_distribution_pct": [35, 65]},
+                    "household": {"blocks": 500, "zone_distribution_pct": [55, 45]},
+                    "agriculture": {"blocks": 100, "zone_distribution_pct": [50, 50]}
+                }
+            },
+            "balancing": {
+                "up_price_zar_per_mwh": 1200.0,
+                "down_price_zar_per_mwh": 800.0
             },
             "grid": {
                 "zones": 2,
@@ -198,19 +232,25 @@ TEMPLATES = {
                     [0, 4000],
                     [4000, 0]
                 ],
-                "losses_pct": 2.5  # Higher losses in cold weather
+                "losses_pct_per_link": 2.5,
+                "network_settlement": {
+                    "extra_cost_mode": "zonal_only",
+                    "cost_allocation_target": "consumers_only",
+                    "shortfall_price_mode": "smp_multiplier",
+                    "shortfall_price_value": 2.0
+                },
+                "generator_curtailment_mode": "pro_rata"
             },
             "environment": {
                 "seed": "winter-2024",
                 "groups": {
-                    "solar": 8,   # Low solar in winter
-                    "wind": 12,
-                    "gas": 35,    # Peaker plants
-                    "coal": 30,   # Base load
-                    "hydro": 10,
-                    "nuclear": 5
-                },
-                "zone_split": 45
+                    "solar": {"blocks": 8, "zone_distribution_pct": [35, 65]},
+                    "wind": {"blocks": 12, "zone_distribution_pct": [40, 60]},
+                    "gas": {"blocks": 35, "zone_distribution_pct": [50, 50]},
+                    "coal": {"blocks": 30, "zone_distribution_pct": [45, 55]},
+                    "hydro": {"blocks": 10, "zone_distribution_pct": [60, 40]},
+                    "nuclear": {"blocks": 5, "zone_distribution_pct": [50, 50]}
+                }
             },
             "events": [
                 {
