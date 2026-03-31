@@ -42,14 +42,18 @@ DEVICE_SPECS = {
             "max_power_mw": 500.0,
             "min_load_pct": 40.0,
             "ramp_rate_mw_per_min": 5.0,
-            "variable_cost_zar_per_mwh": 400.0,
+            "variable_cost_tiers": [
+                {"from_pct": 0, "to_pct": 60, "cost_zar_per_mwh": 380.0},
+                {"from_pct": 60, "to_pct": 90, "cost_zar_per_mwh": 440.0},
+                {"from_pct": 90, "to_pct": 100, "cost_zar_per_mwh": 520.0},
+            ],
             "fixed_cost_zar_per_hour": 0.0,
             "co2_emissions_kg_per_mwh": 950.0,  # Coal: ~950 kg CO2/MWh
             "efficiency_pct": 35.0,
             "curtailment_priority": CurtailmentPriority.HIGH,
             "availability_profile": [1.0] * 24,  # Constant baseload
         },
-        "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_zar_per_mwh"],
+        "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_tiers"],
         "optional_params": ["efficiency_pct", "availability_profile", "fixed_cost_zar_per_hour", "co2_emissions_kg_per_mwh"],
     },
     DeviceType.GAS: {
@@ -60,14 +64,18 @@ DEVICE_SPECS = {
             "max_power_mw": 200.0,
             "min_load_pct": 20.0,
             "ramp_rate_mw_per_min": 15.0,
-            "variable_cost_zar_per_mwh": 1200.0,
+            "variable_cost_tiers": [
+                {"from_pct": 0, "to_pct": 60, "cost_zar_per_mwh": 1100.0},
+                {"from_pct": 60, "to_pct": 90, "cost_zar_per_mwh": 1300.0},
+                {"from_pct": 90, "to_pct": 100, "cost_zar_per_mwh": 1600.0},
+            ],
             "fixed_cost_zar_per_hour": 0.0,
             "co2_emissions_kg_per_mwh": 550.0,  # Gas: ~550 kg CO2/MWh
             "efficiency_pct": 30.0,
             "curtailment_priority": CurtailmentPriority.MEDIUM,
             "availability_profile": [0.8, 0.8, 0.8, 0.8, 0.8, 0.9, 1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0, 0.95, 0.9, 0.85, 0.8],  # Peaking pattern
         },
-        "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_zar_per_mwh"],
+        "required_params": ["max_power_mw", "min_load_pct", "ramp_rate_mw_per_min", "variable_cost_tiers"],
         "optional_params": ["efficiency_pct", "availability_profile", "fixed_cost_zar_per_hour", "co2_emissions_kg_per_mwh"],
     },
     DeviceType.HYDRO: {
@@ -345,7 +353,12 @@ def validate_device(device: Dict[str, Any]) -> List[str]:
         
         if "ramp_rate_mw_per_min" in dnorm and dnorm["ramp_rate_mw_per_min"] < 0:
             errors.append(f"Device {dnorm.get('id', '?')}: ramp_rate_mw_per_min must be >= 0")
-        
+
+    if device_type in [DeviceType.COAL, DeviceType.GAS]:
+        if "variable_cost_tiers" in dnorm:
+            errors.extend(validate_variable_cost_tiers(dnorm["variable_cost_tiers"], dnorm.get('id', '?')))
+
+    if device_type in [DeviceType.COAL, DeviceType.GAS, DeviceType.HYDRO, DeviceType.NUCLEAR]:
         if "efficiency_pct" in dnorm:
             eff = dnorm["efficiency_pct"]
             if eff <= 0 or eff > 100:
@@ -401,7 +414,25 @@ def validate_device(device: Dict[str, Any]) -> List[str]:
                 errors.append(f"Device {dnorm.get('id', '?')}: demand_response_capacity_mw must be >= 0")
             if "peak_load_mw" in dnorm and drc > dnorm["peak_load_mw"]:
                 errors.append(f"Device {dnorm.get('id', '?')}: demand_response_capacity_mw must be <= peak_load_mw")
-    
+
+    # Validate bid price monotonicity if default_bids are present
+    default_bids = dnorm.get('default_bids') or device.get('default_bids')
+    if default_bids and isinstance(default_bids, dict):
+        is_consumer = device_type in [
+            DeviceType.INDUSTRIAL_LOAD, DeviceType.COMMERCIAL_LOAD, DeviceType.RESIDENTIAL_LOAD
+        ]
+        direction = "nonincreasing" if is_consumer else "nondecreasing"
+        errors.extend(validate_bid_monotonicity(default_bids, direction))
+
+    # Validate bid_count range
+    bid_count = device.get('bid_count')
+    if bid_count is not None:
+        try:
+            if not (0 <= int(bid_count) <= 5):
+                errors.append(f"Device {dnorm.get('id', '?')}: bid_count must be in [0, 5]")
+        except Exception:
+            errors.append(f"Device {dnorm.get('id', '?')}: bid_count must be numeric")
+
     return errors
 
 
@@ -470,6 +501,96 @@ def validate_forecast_constraints(device: Dict[str, Any], forecast_mw: List[floa
             )
     
     return errors
+
+
+def validate_variable_cost_tiers(tiers: list, device_id: str = '?') -> List[str]:
+    """
+    Validate that variable_cost_tiers is a well-formed, gapless [0–100] coverage.
+    Boundaries are closed: [from_pct, to_pct].
+    Each tier's from_pct must equal the previous tier's to_pct (no gaps, no overlaps).
+    """
+    errors = []
+    if not tiers or not isinstance(tiers, list):
+        errors.append(f"Device {device_id}: variable_cost_tiers must be a non-empty list")
+        return errors
+
+    sorted_tiers = sorted(tiers, key=lambda t: t.get('from_pct', 0))
+
+    if sorted_tiers[0].get('from_pct', -1) != 0:
+        errors.append(f"Device {device_id}: first tier must start at 0% (got {sorted_tiers[0].get('from_pct')})")
+
+    for i, tier in enumerate(sorted_tiers):
+        fp = tier.get('from_pct')
+        tp = tier.get('to_pct')
+        cost = tier.get('cost_zar_per_mwh')
+        if fp is None or tp is None or cost is None:
+            errors.append(f"Device {device_id}: tier {i} missing from_pct / to_pct / cost_zar_per_mwh")
+            continue
+        try:
+            fp, tp, cost = float(fp), float(tp), float(cost)
+        except (TypeError, ValueError):
+            errors.append(f"Device {device_id}: tier {i} contains non-numeric values")
+            continue
+        if fp >= tp:
+            errors.append(f"Device {device_id}: tier {i} from_pct ({fp}) must be < to_pct ({tp})")
+        if not (0 <= fp <= 100):
+            errors.append(f"Device {device_id}: tier {i} from_pct ({fp}) must be in [0, 100]")
+        if not (0 <= tp <= 100):
+            errors.append(f"Device {device_id}: tier {i} to_pct ({tp}) must be in [0, 100]")
+        if cost < 0:
+            errors.append(f"Device {device_id}: tier {i} cost_zar_per_mwh must be >= 0")
+        if i > 0:
+            prev_tp = float(sorted_tiers[i - 1].get('to_pct', 0))
+            if fp != prev_tp:
+                errors.append(f"Device {device_id}: gap between tier {i-1} (to={prev_tp}%) and tier {i} (from={fp}%)")
+
+    if not errors:
+        last_tp = float(sorted_tiers[-1].get('to_pct', 0))
+        if last_tp != 100:
+            errors.append(f"Device {device_id}: last tier must end at 100% (got {last_tp})")
+
+    return errors
+
+
+def compute_tiered_variable_cost(dispatch_mwh: float, capacity_mw: float, tiers: list) -> tuple:
+    """
+    Compute total variable cost and effective average rate for a tiered cost structure.
+
+    Tier boundaries are closed: a device at exactly 60% utilization is still in tier [0, 60].
+    Each tier is applied proportionally to the MW dispatched within that tier's capacity band
+    (block / proportional model, not point-in-time step function).
+
+    Returns:
+        (total_cost_zar: float, avg_rate_zar_per_mwh: float)
+    """
+    if not tiers or capacity_mw <= 0 or dispatch_mwh <= 0:
+        return 0.0, 0.0
+
+    dispatch_mwh = max(0.0, dispatch_mwh)
+    sorted_tiers = sorted(tiers, key=lambda t: t.get('from_pct', 0))
+
+    total_cost = 0.0
+    remaining = dispatch_mwh
+
+    for tier in sorted_tiers:
+        tier_from_mw = capacity_mw * float(tier.get('from_pct', 0)) / 100.0
+        tier_to_mw = capacity_mw * float(tier.get('to_pct', 100)) / 100.0
+        tier_width_mw = max(0.0, tier_to_mw - tier_from_mw)
+        cost_rate = max(0.0, float(tier.get('cost_zar_per_mwh', 0)))
+
+        if remaining <= 0:
+            break
+        mwh_in_tier = min(remaining, tier_width_mw)
+        total_cost += mwh_in_tier * cost_rate
+        remaining -= mwh_in_tier
+
+    # Dispatch above 100% capacity (e.g. capacity violation / rounding): charge at last-tier rate
+    if remaining > 0 and sorted_tiers:
+        last_cost_rate = max(0.0, float(sorted_tiers[-1].get('cost_zar_per_mwh', 0)))
+        total_cost += remaining * last_cost_rate
+
+    avg_rate = total_cost / dispatch_mwh if dispatch_mwh > 0 else 0.0
+    return round(total_cost, 4), round(avg_rate, 4)
 
 
 def validate_bid_monotonicity(bids: Dict[str, Dict[str, Any]], direction: str = "nondecreasing") -> List[str]:

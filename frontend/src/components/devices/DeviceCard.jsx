@@ -6,6 +6,7 @@ import {
   CardActions,
   Collapse,
   IconButton,
+  Button,
   Typography,
   Stack,
   Chip,
@@ -59,11 +60,37 @@ const getBidCountValue = (device) => {
 const BID_LABELS = ['A', 'B', 'C', 'D', 'E']
 const DEFAULT_BID_SPLITS = [50, 20, 15, 10, 5]
 
+const DEFAULT_COAL_TIERS = [
+  { from_pct: 0, to_pct: 60, cost_zar_per_mwh: 380 },
+  { from_pct: 60, to_pct: 90, cost_zar_per_mwh: 440 },
+  { from_pct: 90, to_pct: 100, cost_zar_per_mwh: 520 },
+]
+const DEFAULT_GAS_TIERS = [
+  { from_pct: 0, to_pct: 60, cost_zar_per_mwh: 1100 },
+  { from_pct: 60, to_pct: 90, cost_zar_per_mwh: 1300 },
+  { from_pct: 90, to_pct: 100, cost_zar_per_mwh: 1600 },
+]
+
+const getEffectiveVariableCostBase = (device) => {
+  const tiers = device?.variable_cost_tiers
+  if (Array.isArray(tiers) && tiers.length > 0) {
+    let totalWeight = 0
+    let weightedCost = 0
+    tiers.forEach((tier) => {
+      const width = Number(tier.to_pct) - Number(tier.from_pct)
+      weightedCost += width * Number(tier.cost_zar_per_mwh || 0)
+      totalWeight += width
+    })
+    return totalWeight > 0 ? weightedCost / totalWeight : 0
+  }
+  return Number(device?.variable_cost_zar_per_mwh ?? device?.cost_per_mwh_zar ?? 0) || 0
+}
+
 const getBidLabelsForCount = (count) => BID_LABELS.slice(0, Math.max(0, Math.min(BID_LABELS.length, Number(count) || 0)))
 
 const getAutoDefaultBidPrices = (device, count) => {
   const labels = getBidLabelsForCount(count)
-  const variableCost = Number(device?.variable_cost_zar_per_mwh ?? device?.cost_per_mwh_zar ?? 0) || 0
+  const variableCost = getEffectiveVariableCostBase(device)
   const deviceType = String(device?.type || '').toLowerCase()
   const multipliers = deviceType.includes('load')
     ? [1.3, 1.2, 1.1, 1.0, 0.9]
@@ -155,6 +182,8 @@ export default function DeviceCard({
 }) {
   const typeKey = (device.type || '').toLowerCase();
   const isLoad = typeKey.includes('load');
+  const isCoalOrGas = typeKey === 'coal' || typeKey === 'gas';
+  const isThermal = ['coal', 'gas', 'hydro', 'nuclear'].includes(typeKey);
   const Icon = DEVICE_ICONS[typeKey] || (isLoad ? LoadIcon : LoadIcon);
   const color = DEVICE_COLORS[typeKey] || (isLoad ? DEVICE_COLORS.load : '#757575');
   const bidCount = getBidCountValue(device)
@@ -188,9 +217,59 @@ export default function DeviceCard({
 
   const configuredDefaultBids = buildDefaultBidConfig(device, bidCount, device.default_bids)
 
+  // ── Tier handlers (coal / gas only) ──────────────────────────────────────
+  const currentTiers = Array.isArray(device.variable_cost_tiers)
+    ? device.variable_cost_tiers
+    : (typeKey === 'coal' ? DEFAULT_COAL_TIERS : DEFAULT_GAS_TIERS)
+
+  const handleTierCostChange = (index, value) => {
+    const next = currentTiers.map((t, i) => i === index ? { ...t, cost_zar_per_mwh: value } : t)
+    onChange({ ...device, variable_cost_tiers: next })
+  }
+
+  const handleTierBreakpointChange = (index, value) => {
+    // Changes the to_pct of tier[index] and the from_pct of tier[index+1]
+    const clamped = Math.max(
+      Number(currentTiers[index - 1]?.to_pct ?? 0) + 1,
+      Math.min(99, Number(value) || 0)
+    )
+    const next = currentTiers.map((t, i) => {
+      if (i === index) return { ...t, to_pct: clamped }
+      if (i === index + 1) return { ...t, from_pct: clamped }
+      return t
+    })
+    onChange({ ...device, variable_cost_tiers: next })
+  }
+
+  const handleAddTier = () => {
+    if (currentTiers.length >= 5) return
+    const last = currentTiers[currentTiers.length - 1]
+    const splitPoint = Math.round((Number(last.from_pct) + 100) / 2)
+    const next = [
+      ...currentTiers.slice(0, -1),
+      { ...last, to_pct: splitPoint },
+      { from_pct: splitPoint, to_pct: 100, cost_zar_per_mwh: last.cost_zar_per_mwh },
+    ]
+    onChange({ ...device, variable_cost_tiers: next })
+  }
+
+  const handleRemoveTier = (index) => {
+    if (currentTiers.length <= 1) return
+    let next = currentTiers.filter((_, i) => i !== index)
+    // Re-anchor: first tier starts at 0, last ends at 100
+    next = next.map((t, i) => ({
+      ...t,
+      from_pct: i === 0 ? 0 : next[i - 1]?.to_pct ?? t.from_pct,
+    }))
+    next[next.length - 1] = { ...next[next.length - 1], to_pct: 100 }
+    onChange({ ...device, variable_cost_tiers: next })
+  }
+
   const summary = isLoad
     ? `${device.baseline_load_mw || 0}-${device.peak_load_mw || 0} MW`
-    : `${device.capacity_mw || 0} MW • ${device.cost_per_mwh_zar || 0} ZAR/MWh`;
+    : isCoalOrGas
+      ? `${device.capacity_mw || 0} MW • tiered cost`
+      : `${device.capacity_mw || 0} MW • ${device.cost_per_mwh_zar || 0} ZAR/MWh`;
 
   return (
     <Card
@@ -311,16 +390,62 @@ export default function DeviceCard({
                   unit="MW"
                   tooltip="Installed generation capacity of this device in MW. Upper bound for hourly dispatch."
                 />
-                <NumberInput
-                  label="Cost per MWh"
-                  value={device.cost_per_mwh_zar || 0}
-                  onChange={(val) => handleFieldChange('cost_per_mwh_zar', val)}
-                  min={0}
-                  max={5000}
-                  step={10}
-                  unit="ZAR/MWh"
-                  tooltip="Variable cost for each MWh produced by this device. Used as bid price in market clearing."
-                />
+                {isCoalOrGas ? (
+                  /* ── Variable Cost Tiers (coal / gas) ─────────────────── */
+                  <Box sx={{ mt: 0.5, p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, bgcolor: 'grey.50' }}>
+                    <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                      <Typography variant="subtitle2">Variable Cost Tiers</Typography>
+                      <Stack direction="row" spacing={0.5}>
+                        <Button size="small" variant="outlined" disabled={currentTiers.length >= 5} onClick={handleAddTier} sx={{ minWidth: 28, px: 0.75, fontSize: 11 }}>+</Button>
+                        <Button size="small" variant="outlined" color="error" disabled={currentTiers.length <= 1} onClick={() => handleRemoveTier(currentTiers.length - 1)} sx={{ minWidth: 28, px: 0.75, fontSize: 11 }}>−</Button>
+                      </Stack>
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+                      Cost depends on hourly utilisation as fraction of nominal capacity. Boundaries are inclusive (e.g. 60% falls in the first tier).
+                    </Typography>
+                    <Stack spacing={1}>
+                      {currentTiers.map((tier, idx) => (
+                        <Stack key={idx} direction="row" spacing={1} alignItems="center">
+                          <Typography variant="caption" sx={{ minWidth: 80, color: 'text.secondary', flexShrink: 0 }}>
+                            {tier.from_pct}%&nbsp;–&nbsp;
+                            {idx < currentTiers.length - 1 ? (
+                              <Box
+                                component="input"
+                                type="number"
+                                value={tier.to_pct}
+                                onChange={(e) => handleTierBreakpointChange(idx, e.target.value)}
+                                sx={{ width: 38, border: '1px solid', borderColor: 'divider', borderRadius: 0.5, px: 0.5, py: 0, fontSize: 12, textAlign: 'right' }}
+                              />
+                            ) : (
+                              <strong>100</strong>
+                            )}
+                            %
+                          </Typography>
+                          <NumberInput
+                            label={`Tier ${idx + 1}`}
+                            value={tier.cost_zar_per_mwh ?? 0}
+                            onChange={(val) => handleTierCostChange(idx, val)}
+                            min={0}
+                            max={50000}
+                            step={10}
+                            unit="ZAR/MWh"
+                          />
+                        </Stack>
+                      ))}
+                    </Stack>
+                  </Box>
+                ) : (
+                  <NumberInput
+                    label="Cost per MWh"
+                    value={device.cost_per_mwh_zar || 0}
+                    onChange={(val) => handleFieldChange('cost_per_mwh_zar', val)}
+                    min={0}
+                    max={5000}
+                    step={10}
+                    unit="ZAR/MWh"
+                    tooltip="Variable cost for each MWh produced by this device. Used as bid price in market clearing."
+                  />
+                )}
                 <NumberInput
                   label="Fixed cost per hour"
                   value={device.fixed_cost_zar_per_hour || 0}
@@ -354,7 +479,21 @@ export default function DeviceCard({
                   unit="kg/MWh"
                   tooltip="Carbon dioxide emissions per MWh generated. Used for environmental impact calculations."
                 />
-                
+
+                {/* Ramp Rate – only for thermal/hydro/nuclear generators */}
+                {isThermal && (
+                  <NumberInput
+                    label="Ramp Rate"
+                    value={device.ramp_rate_mw_per_min ?? ({ coal: 5, gas: 15, hydro: 30, nuclear: 1 }[typeKey] ?? 5)}
+                    onChange={(val) => handleFieldChange('ramp_rate_mw_per_min', val)}
+                    min={0}
+                    max={500}
+                    step={1}
+                    unit="MW/min"
+                    tooltip="Maximum rate at which the generator can increase or decrease output (MW per minute)."
+                  />
+                )}
+
                 <TextField
                   select
                   fullWidth
@@ -481,6 +620,25 @@ export default function DeviceCard({
                   step={10}
                   unit="%"
                 />
+                <Box sx={{ mt: 1 }}>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={Boolean(device.auto_bid_allowed)}
+                        onChange={(e) => handleFieldChange('auto_bid_allowed', e.target.checked)}
+                        size="small"
+                      />
+                    }
+                    label={
+                      <Typography variant="body2">
+                        Allow Auto-Bid (threshold mode)
+                      </Typography>
+                    }
+                  />
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', ml: 4 }}>
+                    When enabled, players can set buy/sell price thresholds instead of manually drawing a forecast curve. The battery will automatically bid its maximum possible quantity at those prices.
+                  </Typography>
+                </Box>
               </>
             )}
 
@@ -542,7 +700,7 @@ export default function DeviceCard({
                     if (shareTotal === 100) return null
                     return (
                       <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.5 }}>
-                        Summe: {shareTotal} % — wird automatisch auf 100 % normalisiert.
+                        Total: {shareTotal} % — will be automatically normalized to 100 %.
                       </Typography>
                     )
                   })()}

@@ -315,7 +315,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     },
     profit: {
       title: 'Profit breakdown',
-      description: 'Profit = Revenue − Variable Cost − Fixed Cost − Imbalance Cost − Dispatch Cost (ATC) + Congestion Revenue'
+      description: 'Profit = Revenue − Variable Cost − Fixed Cost − Imbalance Cost − Battery Charge Cost − Dispatch Cost (ATC) + Congestion Revenue'
     },
     co2: {
       title: terms.co2BreakdownTitle,
@@ -349,7 +349,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const dispatched = Number(currentKpis.dispatched_mwh || 0)
     const planned = Number(currentKpis.planned_mwh || 0)
     const co2 = Number(currentKpis.co2_emissions_kg || 0)
-    const totalCosts = Number(currentKpis.variable_cost_zar || 0) + Number(currentKpis.fixed_cost_zar || 0) + Number(currentKpis.imbalance_cost_zar || 0) + Number(currentKpis.atc_dispatch_cost_zar || 0)
+    const totalCosts = Number(currentKpis.variable_cost_zar || 0) + Number(currentKpis.fixed_cost_zar || 0) + Number(currentKpis.imbalance_cost_zar || 0) + Number(currentKpis.battery_charge_cost_zar || 0) + Number(currentKpis.atc_dispatch_cost_zar || 0)
     const demandCoveragePct = planned > 0 ? (dispatched / planned) * 100 : null
     const zoneStatus = String(playerZoneInfo?.zone_status || '')
     const zoneShortfall = Number(playerZoneInfo?.zone_unserved_demand_mwh || currentKpis.zone_shortfall_mwh || 0)
@@ -469,6 +469,27 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       acc[device.id] = device
       return acc
     }, {})
+    const parseOptionalNumber = (value) => {
+      if (value === undefined || value === null || value === '') return null
+      const num = Number(value)
+      return Number.isFinite(num) ? num : null
+    }
+    const getNormalizedOverbid = (deviceId, hour) => {
+      const deviceType = String(devicesById[deviceId]?.type || '').toLowerCase()
+      const isLoad = deviceType.includes('load')
+      const totalOffered = normalizeNumber(hour?.total_offered_mw)
+      const planned = normalizeNumber(hour?.planned_mw)
+      const actual = normalizeNumber(hour?.actual_mw)
+      const dispatched = normalizeNumber(hour?.dispatched_mw)
+      const effectiveRaw = parseOptionalNumber(hour?.effective_capacity_mw)
+      const backendOverbid = parseOptionalNumber(hour?.overbid_mw)
+      const effective = isLoad
+        ? ((effectiveRaw !== null && effectiveRaw > 0) ? effectiveRaw : Math.max(totalOffered, planned, actual, dispatched))
+        : normalizeNumber(hour?.effective_capacity_mw)
+      const fallbackOverbid = Math.max(0, totalOffered - effective)
+      const preferFallback = isLoad && totalOffered > 0 && effective > 0 && (effectiveRaw === null || effectiveRaw <= 0)
+      return (!preferFallback && backendOverbid !== null) ? backendOverbid : fallbackOverbid
+    }
 
     const daRevenue = Number(breakdown.da_revenue_zar || 0)
     const idRevenue = Number(breakdown.id_revenue_zar || 0)
@@ -496,6 +517,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const variableCost = Number(currentKpis.variable_cost_zar || 0)
     const fixedCost = Number(currentKpis.fixed_cost_zar || 0)
     const imbalanceCost = Number(currentKpis.imbalance_cost_zar || 0)
+    const batteryChargeCost = Number(currentKpis.battery_charge_cost_zar || 0)
     const gridConstraintCost = Number(currentKpis.atc_dispatch_cost_zar || currentKpis.grid_constraint_cost_zar || 0)
     const congestionRevenue = Number(currentKpis.congestion_revenue_zar || 0)
     const zoneStatus = String(playerZoneInfo?.zone_status || '')
@@ -506,11 +528,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const zoneLocalDemand = Number(playerZoneInfo?.zone_local_demand_mwh || 0)
     const zoneLinkCount = Array.isArray(playerZoneInfo?.zone_links) ? playerZoneInfo.zone_links.length : 0
     const gridCurtailedMwh = Number(currentKpis.grid_curtailed_mwh || 0)
-    const computedProfit = totalRevenue - variableCost - fixedCost - imbalanceCost - gridConstraintCost + congestionRevenue
+    const computedProfit = totalRevenue - variableCost - fixedCost - imbalanceCost - batteryChargeCost - gridConstraintCost + congestionRevenue
     if (isConsumer) {
-      notes.push(`Net-result composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Net result: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
+      notes.push(`Net-result composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(batteryChargeCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Net result: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
     } else {
-      notes.push(`Profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
+      notes.push(`Profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(batteryChargeCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
     }
     if (gridConstraintCost > 0 || Number(currentKpis.zone_shortfall_mwh || 0) > 0) {
       notes.push(`Dispatch cost (ATC): ${formatCurrency(gridConstraintCost)} from network capacity limits (ATC), zone shortfall ${formatInt(currentKpis.zone_shortfall_mwh || 0)} MWh.`)
@@ -555,10 +577,14 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     }
 
     const overbidSummary = Object.entries(deviceBreakdown).reduce((acc, [deviceId, entries]) => {
-      const deviceOverbid = (Array.isArray(entries) ? entries : []).reduce((sum, hour) => sum + Number(hour?.overbid_mw || 0), 0)
+      const normalizedEntries = (Array.isArray(entries) ? entries : []).map((hour) => ({
+        hour,
+        overbidMw: getNormalizedOverbid(deviceId, hour),
+      }))
+      const deviceOverbid = normalizedEntries.reduce((sum, item) => sum + item.overbidMw, 0)
       if (deviceOverbid > 0.001) {
         acc.total += deviceOverbid
-        acc.hours += (Array.isArray(entries) ? entries : []).filter((hour) => Number(hour?.overbid_mw || 0) > 0.001).length
+        acc.hours += normalizedEntries.filter((item) => item.overbidMw > 0.001).length
         acc.devices.push({
           name: devicesById[deviceId]?.name || deviceId,
           overbidMw: deviceOverbid
@@ -1041,6 +1067,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                             ? `${formatCurrency(Math.abs(kpis.revenue_zar) / kpis.dispatched_mwh)}/MWh`
                             : 'Cost per MWh'}
                         </Typography>
+                        {(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0) > 0.5 && (
+                          <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: '#f44336' }}>
+                            Dispatch cost (ATC): {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
+                          </Typography>
+                        )}
                       </CardContent>
                     </Card>
                   </Grid>
@@ -1133,35 +1164,6 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     </Card>
                   </Grid>
 
-                  {(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0) > 0.5 && (
-                    <Grid item xs={12} sm={6} md={3}>
-                      <Card variant="outlined" sx={{
-                        borderColor: '#f44336',
-                        borderWidth: 2,
-                        height: '100%'
-                      }}>
-                        <CardContent>
-                          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
-                            <Stack direction="row" alignItems="center" spacing={2}>
-                              <CostIcon sx={{ fontSize: 32, color: '#f44336' }} />
-                              <Typography variant="subtitle2" color="text.secondary">
-                                Dispatch Cost (ATC)
-                              </Typography>
-                            </Stack>
-                            <IconButton size="small" onClick={() => openBreakdown('profit')}>
-                              <InfoIcon fontSize="small" />
-                            </IconButton>
-                          </Stack>
-                          <Typography variant="h5" sx={{ fontWeight: 600, color: '#f44336' }}>
-                            {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                            Network bandwidth limit (ATC)
-                          </Typography>
-                        </CardContent>
-                      </Card>
-                    </Grid>
-                  )}
                 </>
               )}
             </Grid>
@@ -1269,10 +1271,10 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                       Profit Formula
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem' }}>
-                      Profit = Revenue - Variable Cost - Fixed Cost - Imbalance Cost - Dispatch Cost (ATC) + Congestion Revenue
+                      Profit = Revenue - Variable Cost - Fixed Cost - Imbalance Cost - Battery Charge Cost - Dispatch Cost (ATC) + Congestion Revenue
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', color: 'primary.main' }}>
-                      Profit = {formatInt(kpis.revenue_zar || 0)} - {formatInt(kpis.variable_cost_zar || 0)} - {formatInt(kpis.fixed_cost_zar || 0)} - {formatInt(kpis.imbalance_cost_zar || 0)} - {formatInt(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)} + {formatInt(kpis.congestion_revenue_zar || 0)}
+                      Profit = {formatInt(kpis.revenue_zar || 0)} - {formatInt(kpis.variable_cost_zar || 0)} - {formatInt(kpis.fixed_cost_zar || 0)} - {formatInt(kpis.imbalance_cost_zar || 0)} - {formatInt(kpis.battery_charge_cost_zar || 0)} - {formatInt(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)} + {formatInt(kpis.congestion_revenue_zar || 0)}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
                       Imbalance is settled with configured balancing prices: +imbalance at {formatCurrency(balancingUpPrice)}/MWh, −imbalance at {formatCurrency(balancingDownPrice)}/MWh.
@@ -1428,7 +1430,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                       devId,
                       market,
                       bidKey
-                    })))
+                    }))).filter((row) => {
+                      const marketDispatch = row.market === 'da' ? damBidDispatch : idmBidDispatch
+                      const lotRows = marketDispatch?.[row.devId]?.[row.bidKey] || []
+                      return lotRows.some((entry) => Math.abs(Number(entry?.mw_offered_signed ?? entry?.mw_offered ?? 0)) > 0)
+                    })
                   })
 
                   return (

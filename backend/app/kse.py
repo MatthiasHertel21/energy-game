@@ -108,6 +108,14 @@ def _validate_mix_with_zone_distribution(container_label: str, mix, zones: int, 
     for key, entry in mix.items():
         if isinstance(entry, dict):
             _validate_zone_distribution(f"{container_label}.{key}", entry.get("zone_distribution_pct"), zones, errors)
+            profile = entry.get("profile")
+            if profile is not None:
+                if not isinstance(profile, list) or len(profile) != 24:
+                    errors.append(f"{container_label}.{key}.profile must be an array of 24 values")
+            seasonal = entry.get("seasonal_profile")
+            if seasonal is not None:
+                if not isinstance(seasonal, list) or len(seasonal) != 12:
+                    errors.append(f"{container_label}.{key}.seasonal_profile must be an array of 12 values")
 
 
 def _normalize_grid_defaults(cfg: dict) -> None:
@@ -240,6 +248,35 @@ def validate_config(cfg: dict) -> list[str]:
         except Exception:
             pass
 
+    freeze = cfg.get("general", {}).get("freeze_hours")
+    if freeze is not None:
+        try:
+            if int(freeze) < 0 or int(freeze) > int(span):
+                errors.append("general.freeze_hours must be in [0, round_span_hours]")
+        except Exception:
+            errors.append("general.freeze_hours must be numeric")
+
+    # Validate gate timing fields
+    general_cfg = cfg.get("general", {})
+    for field, lo, hi in [
+        ("day_ahead_gate_hour", 0, 23),
+        ("id_gate_base_hour", 0, 23),
+    ]:
+        val = general_cfg.get(field)
+        if val is not None:
+            try:
+                if not (lo <= int(val) <= hi):
+                    errors.append(f"general.{field} must be in [{lo}, {hi}]")
+            except Exception:
+                errors.append(f"general.{field} must be an integer")
+    id_interval = general_cfg.get("id_gate_interval_hours")
+    if id_interval is not None:
+        try:
+            if not (1 <= int(id_interval) <= 24):
+                errors.append("general.id_gate_interval_hours must be in [1, 24]")
+        except Exception:
+            errors.append("general.id_gate_interval_hours must be an integer")
+
     player_input = cfg.get("player_input") or {}
     if player_input and not isinstance(player_input, dict):
         errors.append("player_input must be an object")
@@ -274,7 +311,14 @@ def validate_config(cfg: dict) -> list[str]:
     # Validate devices
     devices = cfg.get("devices", [])
     if isinstance(devices, list):
+        seen_device_ids: set = set()
         for device in devices:
+            if isinstance(device, dict):
+                did = device.get("id")
+                if did is not None:
+                    if did in seen_device_ids:
+                        errors.append(f"Duplicate device id: {did}")
+                    seen_device_ids.add(did)
             device_errors = validate_device(device)
             errors.extend(device_errors)
 

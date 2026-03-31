@@ -134,6 +134,38 @@ export function zeroHiddenBidsPayload(bidsPayload, configOrScenario, explicitRou
   return next
 }
 
+export function sanitizeBidsPayload(bidsPayload) {
+  if (!bidsPayload || typeof bidsPayload !== 'object') return {}
+
+  const next = {}
+  Object.entries(bidsPayload).forEach(([deviceId, lots]) => {
+    if (!lots || typeof lots !== 'object') return
+
+    const normalizedLots = {}
+    Object.entries(lots).forEach(([lotName, lot]) => {
+      if (!lot || typeof lot !== 'object') return
+
+      const hasHours = Array.isArray(lot.hours)
+      const hasPrices = Array.isArray(lot.prices)
+      const hasPrice = Number.isFinite(Number(lot.price))
+
+      if (!hasHours && !hasPrices && !hasPrice) return
+
+      normalizedLots[lotName] = {
+        ...lot,
+        ...(hasHours ? { hours: [...lot.hours] } : {}),
+        ...(hasPrices ? { prices: [...lot.prices] } : {}),
+      }
+    })
+
+    if (Object.keys(normalizedLots).length > 0) {
+      next[deviceId] = normalizedLots
+    }
+  })
+
+  return next
+}
+
 export function mapSeriesToVisibleHours(series, visibleHourIndices) {
   const values = Array.isArray(series) ? series : []
   return (visibleHourIndices || []).map((hourIdx) => Number(values[hourIdx] || 0))

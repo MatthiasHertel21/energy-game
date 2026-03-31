@@ -34,11 +34,22 @@ def _auto_submit_missing(session_id: int, round_num: int, hours_per_round: int):
     for pid in player_ids:
         exists = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=round_num).first()
         if not exists:
+            # Copy auto_bid settings from most recent previous forecast for this player
+            prev = Forecast.query.filter_by(session_id=session_id, player_id=pid).order_by(Forecast.round_num.desc()).first()
+            prev_devices = (prev.data or {}).get('devices', []) if prev else []
+            devices_with_auto_bid = [
+                {'device_id': d['device_id'], 'hours': [0.0] * hours_per_round, 'auto_bid': d['auto_bid']}
+                for d in prev_devices
+                if isinstance(d, dict) and isinstance(d.get('auto_bid'), dict) and d['auto_bid'].get('enabled')
+            ]
+            forecast_data = {"hours": [0.0] * hours_per_round}
+            if devices_with_auto_bid:
+                forecast_data["devices"] = devices_with_auto_bid
             f = Forecast(
                 session_id=session_id,
                 player_id=pid,
                 round_num=round_num,
-                data={"hours": [0.0] * hours_per_round},
+                data=forecast_data,
                 bids=None,
             )
             db.session.add(f)

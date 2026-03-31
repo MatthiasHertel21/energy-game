@@ -14,7 +14,11 @@ export const DEVICE_PRESETS = {
   coal: {
     type: 'coal',
     capacity_mw: 600,
-    cost_per_mwh_zar: 400,
+    variable_cost_tiers: [
+      { from_pct: 0, to_pct: 60, cost_zar_per_mwh: 380 },
+      { from_pct: 60, to_pct: 90, cost_zar_per_mwh: 440 },
+      { from_pct: 90, to_pct: 100, cost_zar_per_mwh: 520 },
+    ],
     fixed_cost_zar_per_hour: 0,
     efficiency_pct: 35,
     ramp_rate_mw_per_h: 120,
@@ -22,7 +26,11 @@ export const DEVICE_PRESETS = {
   gas: {
     type: 'gas',
     capacity_mw: 400,
-    cost_per_mwh_zar: 800,
+    variable_cost_tiers: [
+      { from_pct: 0, to_pct: 60, cost_zar_per_mwh: 1100 },
+      { from_pct: 60, to_pct: 90, cost_zar_per_mwh: 1300 },
+      { from_pct: 90, to_pct: 100, cost_zar_per_mwh: 1600 },
+    ],
     fixed_cost_zar_per_hour: 0,
     efficiency_pct: 50,
     ramp_rate_mw_per_h: 200,

@@ -3,6 +3,7 @@ from flask import request, current_app
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, timezone
+import math
 import os, json
 
 from .extensions import db, socketio
@@ -249,12 +250,60 @@ def _normalize_submitted_bids_payload(bids_payload, config: dict, round_num: int
         return {}
     return _zero_hidden_bids_payload(bids_payload, config, round_num)
 
+
+def _validate_auto_bid_payload(devices_payload, cfg_by_id: dict[str, dict]) -> list[str]:
+    errors = []
+    if not isinstance(devices_payload, list):
+        return errors
+
+    for entry in devices_payload:
+        if not isinstance(entry, dict):
+            continue
+        auto_bid = entry.get("auto_bid")
+        if auto_bid is None:
+            continue
+        did = entry.get("device_id")
+        if not isinstance(auto_bid, dict):
+            errors.append(f"Device {did or '?'}: auto_bid must be an object")
+            continue
+
+        if not _normalize_boolean_flag(auto_bid.get("enabled"), False):
+            continue
+
+        dev = cfg_by_id.get(did)
+        if not dev:
+            errors.append(f"Unknown device_id: {did}")
+            continue
+
+        device_type = str(dev.get("type", "")).lower()
+        if device_type != "battery":
+            errors.append(f"Device {did}: auto_bid is only supported for battery devices")
+            continue
+        if not _normalize_boolean_flag(dev.get("auto_bid_allowed"), False):
+            errors.append(f"Device {did}: auto_bid is not enabled in the scenario for this device")
+            continue
+
+        for field_name in ("buy_threshold_zar_mwh", "sell_threshold_zar_mwh"):
+            if field_name not in auto_bid:
+                errors.append(f"Device {did}: auto_bid.{field_name} is required when auto_bid is enabled")
+                continue
+            try:
+                value = float(auto_bid.get(field_name))
+            except (TypeError, ValueError):
+                errors.append(f"Device {did}: auto_bid.{field_name} must be numeric")
+                continue
+            if not math.isfinite(value):
+                errors.append(f"Device {did}: auto_bid.{field_name} must be finite")
+
+    return errors
+
 forecast_in = ns.model(
     "ForecastIn",
     {
         "session_id": fields.Integer(required=True),
         "round_num": fields.Integer(required=True),
         "hours": fields.List(fields.Float, required=True, description="Array of MWh values"),
+        "devices": fields.List(fields.Raw, required=False, description="Per-device forecast payload including optional auto_bid metadata"),
         "bids": fields.Raw(required=False, description="Multi-bid pricing structure (optional)"),
         "debug": fields.Boolean(required=False, description="Enable debug logging for this forecast (admin only)"),
     },
@@ -265,6 +314,7 @@ forecast_full_in = ns.model(
     {
         "session_id": fields.Integer(required=True),
         "hours": fields.List(fields.Float, required=True, description="Full horizon forecast values (MWh)"),
+        "devices": fields.List(fields.Raw, required=False, description="Per-device full-horizon forecast payload including optional auto_bid metadata"),
         "bids": fields.Raw(required=False, description="Multi-bid pricing structure (optional)"),
     },
 )
@@ -937,12 +987,10 @@ class ForecastAPI(Resource):
                 # If we are receiving a round slice (span-sized), align indices to global hours
                 if len(new_hours) <= round_span and len(prev_hours) <= round_span:
                     start_idx = (data.get("round_num", 1) - 1) * round_span
-                    slice_allowed = {
-                        global_idx
-                        for global_idx in range(start_idx, start_idx + len(new_hours))
-                        if global_idx in tradeable_set
-                    }
-                    allowed_set = tradeable_set.union(slice_allowed)
+                    # Always allow modification of the current round's delivery window regardless
+                    # of the ID gate position – gate closure only protects *previous* round hours.
+                    current_round_hours = set(range(start_idx, start_idx + round_span))
+                    allowed_set = tradeable_set.union(current_round_hours)
 
                     # Prefer previous submission for the same round if it exists
                     prev_same_round = Forecast.query.filter_by(
@@ -995,6 +1043,7 @@ class ForecastAPI(Resource):
                 cfg_by_id = {d.get("id"): d for d in devices_cfg if isinstance(d, dict)}
                 agg = None
                 validation_errors = []
+                validation_errors.extend(_validate_auto_bid_payload(per_device, cfg_by_id))
                 for item in per_device:
                     did = item.get("device_id")
                     hours = item.get("hours") or []
@@ -1172,6 +1221,7 @@ class ForecastFull(Resource):
                 cfg_by_id = {d.get("id"): d for d in devices_cfg if isinstance(d, dict)}
                 agg = None
                 validation_errors = []
+                validation_errors.extend(_validate_auto_bid_payload(per_device, cfg_by_id))
                 for item in per_device:
                     did = item.get("device_id")
                     hours = item.get("hours") or []

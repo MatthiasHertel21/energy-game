@@ -11,7 +11,8 @@ import {
   TableHead,
   TableRow,
   Paper,
-  Typography
+  Typography,
+  Tooltip
 } from '@mui/material'
 import { getVisibleHourIndices, shouldHideNonEditableHours } from '../utils/playerInputScope'
 
@@ -275,6 +276,12 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     return isConsumer ? Math.abs(num) : num
   }
 
+  const parseOptionalNumber = (value) => {
+    if (value === undefined || value === null || value === '') return null
+    const num = Number(value)
+    return Number.isFinite(num) ? num : null
+  }
+
   // Get hourly data for selected device - separate DAM and IDM
   const deviceBidsDAM = damBidDispatch[selectedDeviceId] || {}
   const deviceBidsIDM = idmBidDispatch[selectedDeviceId] || {}
@@ -398,8 +405,8 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     // Get capacity data from device_hourly_breakdown if available - FIND BY hour_offset
     const deviceBreakdownArray = my_result?.kpis?.device_hourly_breakdown?.[selectedDeviceId] || []
     const deviceBreakdown = deviceBreakdownArray.find(b => (b.hour_offset ?? b.hour ?? b.hour_idx) === hourOffset) || {}
-    const baseCapacityRaw = deviceBreakdown.base_capacity_mw !== undefined ? deviceBreakdown.base_capacity_mw : deviceCapacity
-    const effectiveCapacityRaw = deviceBreakdown.effective_capacity_mw !== undefined ? deviceBreakdown.effective_capacity_mw : deviceCapacity
+    const baseCapacityRaw = parseOptionalNumber(deviceBreakdown.base_capacity_mw)
+    const effectiveCapacityRaw = parseOptionalNumber(deviceBreakdown.effective_capacity_mw)
     const totalOfferedFromBreakdown = deviceBreakdown.total_offered_mw || 0
 
     // Calculate totals for DAM/IDM:
@@ -407,15 +414,14 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     const totalOffered_DAM = (lotA_DAM.mw_offered || 0) + (lotB_DAM.mw_offered || 0) + (lotC_DAM.mw_offered || 0)
     const totalOffered_IDM = getSignedOffered(lotA_IDM) + getSignedOffered(lotB_IDM) + getSignedOffered(lotC_IDM)
 
-    const backendDaDispatched = Number(deviceBreakdown.da_dispatched_mwh ?? 0)
-    const backendIdDispatched = Number(deviceBreakdown.id_dispatched_mwh ?? 0)
-    const hasBackendDispatchSplit = Number.isFinite(backendDaDispatched) || Number.isFinite(backendIdDispatched)
+    const backendDaDispatched = parseOptionalNumber(deviceBreakdown.da_dispatched_mwh)
+    const backendIdDispatched = parseOptionalNumber(deviceBreakdown.id_dispatched_mwh)
 
-    const totalDispatched_DAM = Number.isFinite(backendDaDispatched)
+    const totalDispatched_DAM = backendDaDispatched !== null
       ? backendDaDispatched
       : ((lotA_DAM.mw_dispatched || 0) + (lotB_DAM.mw_dispatched || 0) + (lotC_DAM.mw_dispatched || 0))
 
-    const totalDispatched_IDM = Number.isFinite(backendIdDispatched)
+    const totalDispatched_IDM = backendIdDispatched !== null
       ? backendIdDispatched
       : ((lotA_IDM.mw_dispatched || 0) + (lotB_IDM.mw_dispatched || 0) + (lotC_IDM.mw_dispatched || 0))
 
@@ -434,53 +440,59 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     )
 
     const baseCapacity = isConsumer
-      ? (Number(baseCapacityRaw || 0) > 0 ? Number(baseCapacityRaw || 0) : fallbackDemandBase)
-      : Number(baseCapacityRaw || 0)
+      ? (baseCapacityRaw !== null && baseCapacityRaw > 0 ? baseCapacityRaw : fallbackDemandBase)
+      : (baseCapacityRaw ?? Number(deviceCapacity || 0))
     const effectiveCapacity = isConsumer
-      ? (Number(effectiveCapacityRaw || 0) > 0 ? Number(effectiveCapacityRaw || 0) : fallbackDemandEffective)
-      : Number(effectiveCapacityRaw || 0)
+      ? (effectiveCapacityRaw !== null && effectiveCapacityRaw > 0 ? effectiveCapacityRaw : fallbackDemandEffective)
+      : (effectiveCapacityRaw ?? Number(deviceCapacity || 0))
 
     const offeredForOverbid = totalOfferedFromBreakdown > 0 ? totalOfferedFromBreakdown : totalOffered_DAM
-    const backendOverbid = Number(deviceBreakdown.overbid_mw || 0)
+    const backendOverbid = parseOptionalNumber(deviceBreakdown.overbid_mw)
     const fallbackOverbid = Math.max(0, offeredForOverbid - Number(effectiveCapacity || 0))
-    const overbidMw = backendOverbid > 0 ? backendOverbid : fallbackOverbid
+    const preferFallbackConsumerOverbid = isConsumer
+      && offeredForOverbid > 0
+      && effectiveCapacity > 0
+      && (effectiveCapacityRaw === null || effectiveCapacityRaw <= 0)
+    const overbidMw = (!preferFallbackConsumerOverbid && backendOverbid !== null)
+      ? backendOverbid
+      : fallbackOverbid
     const capacityViolation = Boolean(deviceBreakdown.capacity_violation) || overbidMw > 0.001
     
     const smp = hour.smp || 0
     const hourlyIdTradeCount = Number(hour.id_trade_count ?? 0)
-    const backendDaPrice = Number(deviceBreakdown.da_price_zar)
-    const backendIdPrice = Number(deviceBreakdown.id_price_zar)
-    const damPrice = Number.isFinite(backendDaPrice)
+    const backendDaPrice = parseOptionalNumber(deviceBreakdown.da_price_zar)
+    const backendIdPrice = parseOptionalNumber(deviceBreakdown.id_price_zar)
+    const damPrice = backendDaPrice !== null
       ? backendDaPrice
       : (Number.isFinite(roundLevelDaPrice) ? roundLevelDaPrice : smp)
     const idp = hourlyIdTradeCount > 0
-      ? ((Number.isFinite(backendIdPrice) && backendIdPrice > 0)
+      ? ((backendIdPrice !== null && backendIdPrice > 0)
         ? backendIdPrice
         : ((hour.idp !== undefined && hour.idp !== null)
           ? Number(hour.idp)
           : (Number.isFinite(roundLevelIdp) ? roundLevelIdp : smp)))
       : null
     // Revenue: always prefer backend canonical settlement values (DA+ID), otherwise fallback.
-    const backendDaRevenue = Number(deviceBreakdown.da_revenue_zar)
-    const backendIdRevenue = Number(deviceBreakdown.id_revenue_zar)
-    const backendRevenue = Number(deviceBreakdown.revenue_zar)
+    const backendDaRevenue = parseOptionalNumber(deviceBreakdown.da_revenue_zar)
+    const backendIdRevenue = parseOptionalNumber(deviceBreakdown.id_revenue_zar)
+    const backendRevenue = parseOptionalNumber(deviceBreakdown.revenue_zar)
 
-    const revenue_DAM = Number.isFinite(backendDaRevenue)
+    const revenue_DAM = backendDaRevenue !== null
       ? backendDaRevenue
       : (totalDispatched_DAM * damPrice)
 
-    const revenue_IDM = Number.isFinite(backendIdRevenue)
+    const revenue_IDM = backendIdRevenue !== null
       ? backendIdRevenue
       : (totalDispatched_IDM * (Number.isFinite(idp) ? idp : 0))
 
     const totalDispatched = totalDispatched_DAM + totalDispatched_IDM
-    const imbalanceMwhBackend = Number(deviceBreakdown.imbalance_mwh)
-    const imbalanceMwhDisplay = Number.isFinite(imbalanceMwhBackend)
+    const imbalanceMwhBackend = parseOptionalNumber(deviceBreakdown.imbalance_mwh)
+    const imbalanceMwhDisplay = imbalanceMwhBackend !== null
       ? imbalanceMwhBackend
       : Number(balancingData.imbalance_mwh || 0)
 
-    const imbalanceCostBackend = Number(deviceBreakdown.imbalance_cost_zar)
-    const imbalanceCostDisplay = Number.isFinite(imbalanceCostBackend)
+    const imbalanceCostBackend = parseOptionalNumber(deviceBreakdown.imbalance_cost_zar)
+    const imbalanceCostDisplay = imbalanceCostBackend !== null
       ? imbalanceCostBackend
       : Number(balancingData.balancing_cost_zar || 0)
 
@@ -530,17 +542,26 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       co2Kg: (Number.isFinite(Number(deviceBreakdown.co2_kg))
         ? Number(deviceBreakdown.co2_kg)
         : (co2Data.co2_kg || 0)),
-      // Totals
-      netMwh: totalDispatched_DAM + totalDispatched_IDM + imbalanceMwhDisplay,
-      netRevenue: (Number.isFinite(backendRevenue)
-        ? backendRevenue
-        : (revenue_DAM + revenue_IDM)) - imbalanceCostDisplay,
       // Network curtailment from player-level hourly_breakdown (producer only)
+      // Declared before netMwh so we can subtract it in the same object literal.
       gridCurtailedMw: Number(playerHourlyByScenarioHour[Number(scenarioHourIdx)]?.grid_curtailed_mw || 0),
+      // Totals — subtract curtailed MWh so Net MWh reflects actual delivery
+      get netMwh() { return totalDispatched_DAM + totalDispatched_IDM + imbalanceMwhDisplay - this.gridCurtailedMw },
+      netRevenue: ((backendRevenue !== null)
+        ? backendRevenue
+        : (revenue_DAM + revenue_IDM)) - imbalanceCostDisplay - Number(deviceBreakdown.battery_charge_cost_zar ?? 0),
       // Battery SoC fields (non-zero only for battery devices)
       socStartPct: Number(deviceBreakdown.battery_soc_start_pct ?? 0),
       socEndPct: Number(deviceBreakdown.battery_soc_end_pct ?? 0),
       chargedMwh: Number(deviceBreakdown.battery_charged_mwh ?? 0),
+      chargeCostZar: Number(deviceBreakdown.battery_charge_cost_zar ?? 0),
+      networkShortfallMwh: Number(deviceBreakdown.network_shortfall_mwh ?? 0),
+      networkShortfallCostZar: Number(deviceBreakdown.network_shortfall_cost_zar ?? 0),
+      // Effective average cost rate for this hour (tiered or flat, from backend)
+      variableCostRateEffective: Number(deviceBreakdown.variable_cost_rate_effective_zar ?? NaN),
+      // Backend-settled cost values (prefer over frontend-recalculated)
+      variableCostZar: Number(deviceBreakdown.variable_cost_zar ?? NaN),
+      fixedCostZar: Number(deviceBreakdown.fixed_cost_zar ?? NaN),
     }
   })
 
@@ -612,8 +633,10 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     totalNetRevenue: hourlyData.reduce((sum, h) => sum + displayMoney(h.netRevenue), 0),
     totalCO2: hourlyData.reduce((sum, h) => sum + h.co2Kg, 0),
     totalGridCurtailed: hourlyData.reduce((sum, h) => sum + (h.gridCurtailedMw || 0), 0),
+    totalNetworkShortfallCostZar: hourlyData.reduce((sum, h) => sum + (h.networkShortfallCostZar || 0), 0),
     // Battery
     totalChargedMwh: hourlyData.reduce((sum, h) => sum + (h.chargedMwh || 0), 0),
+    totalChargeCostZar: hourlyData.reduce((sum, h) => sum + (h.chargeCostZar || 0), 0),
     battSocStart: hourlyData.length > 0 ? hourlyData[0].socStartPct : 0,
     battSocEnd: hourlyData.length > 0 ? hourlyData[hourlyData.length - 1].socEndPct : 0,
   }
@@ -679,16 +702,403 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   })
 
   const rawHourlyVariableCosts = hourlyData.map((hourData) => {
+    // Prefer backend-settled value (includes tiered cost logic)
+    if (Number.isFinite(hourData.variableCostZar) && hourData.variableCostZar >= 0) return hourData.variableCostZar
+    // Fall back to frontend recalculation
     const dispatchedMwh = Math.max(0, Number(hourData.totalDispatched_DAM || 0) + Number(hourData.totalDispatched_IDM || 0))
-    return dispatchedMwh * selectedDeviceVariableRate
+    const rate = Number.isFinite(hourData.variableCostRateEffective) && hourData.variableCostRateEffective >= 0
+      ? hourData.variableCostRateEffective
+      : selectedDeviceVariableRate
+    return dispatchedMwh * rate
   })
 
-  const rawHourlyFixedCosts = hourlyData.map(() => selectedDeviceFixedPerHour)
+  const rawHourlyFixedCosts = hourlyData.map((hourData) =>
+    Number.isFinite(hourData.fixedCostZar) ? hourData.fixedCostZar : selectedDeviceFixedPerHour
+  )
 
   const hourlyVariableCosts = rawHourlyVariableCosts
   const hourlyFixedCosts = rawHourlyFixedCosts
   const hourlyVariableCostTotal = hourlyVariableCosts.reduce((sum, value) => sum + value, 0)
   const hourlyFixedCostTotal = hourlyFixedCosts.reduce((sum, value) => sum + value, 0)
+
+  // ─── Tooltip helpers ────────────────────────────────────────────────────────
+  // Returns a tooltip-wrapped label for the first (row-label) cell.
+  const RowLabel = ({ children, title }) => (
+    <Tooltip
+      title={<Typography variant="caption" sx={{ whiteSpace: 'pre-line' }}>{title}</Typography>}
+      placement="right"
+      arrow
+      enterDelay={300}
+    >
+      <span style={{ cursor: 'help', borderBottom: '1px dotted #aaa' }}>{children}</span>
+    </Tooltip>
+  )
+
+  // Returns a tooltip-wrapped cell value for an hourly data cell.
+  const HourTip = ({ children, title }) => (
+    <Tooltip
+      title={<Typography variant="caption" sx={{ whiteSpace: 'pre-line' }}>{title}</Typography>}
+      placement="top"
+      arrow
+      enterDelay={300}
+    >
+      <span style={{ cursor: 'help' }}>{children}</span>
+    </Tooltip>
+  )
+
+  // Returns a tooltip-wrapped cell value for a Round Total cell.
+  const TotalTip = ({ children, title }) => (
+    <Tooltip
+      title={<Typography variant="caption" sx={{ whiteSpace: 'pre-line' }}>{title}</Typography>}
+      placement="left"
+      arrow
+      enterDelay={300}
+    >
+      <span style={{ cursor: 'help' }}>{children}</span>
+    </Tooltip>
+  )
+
+  // Formats a number safely for use in tooltip strings.
+  const tt = (v, dec = 1) => {
+    const n = Number(v ?? 0)
+    return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }) : '—'
+  }
+  const tti = (v) => {
+    const n = Number(v ?? 0)
+    return Number.isFinite(n) ? Math.round(n).toLocaleString('en-US') : '—'
+  }
+
+  const formatTooltipMoney = (value) => {
+    const num = Number(value ?? 0)
+    if (!Number.isFinite(num)) return 'ZAR 0'
+    return `ZAR ${Math.round(Math.abs(num)).toLocaleString('en-US')}`
+  }
+
+  const rowVisibilityReason = (metricKey) => {
+    if (metricKey.startsWith('idm_')) {
+      return 'Visible because this device has non-zero intraday market data in at least one shown hour.'
+    }
+    if (metricKey.startsWith('battery_')) {
+      return 'Visible because the selected device is a battery and state-of-charge / charging data exists for battery devices only.'
+    }
+    if (metricKey === 'grid_curtailed') {
+      return 'Visible because this producer has player-level constrained-off energy in the round and the value is only shown in the single-device producer view to avoid double counting.'
+    }
+    if (metricKey === 'network_shortfall_cost') {
+      return 'Visible because dispatch cost from zonal/network shortfall is non-zero in this consumer round.'
+    }
+    if (metricKey === 'avg_cost_rate') {
+      return 'Visible because at least one hour contains an effective variable cost rate from backend settlement.'
+    }
+    return 'Visible in the standard detail table for the selected device and shown round hours.'
+  }
+
+  const getRowTooltip = (metricKey) => {
+    const roleDemand = isConsumer ? 'demand' : 'capacity'
+    const revenueLabel = isConsumer ? 'cost' : 'revenue'
+    const netRevenueLabel = isConsumer ? 'Net Cost (signed settlement after imbalance and battery charging cost at device level)' : 'Net Revenue (device-level settlement after imbalance and battery charging cost)'
+
+    const descriptions = {
+      base_capacity: `Base ${roleDemand} is the pre-adjustment technical baseline for this device in the hour. It is the reference before profiles, events, availability effects, or other effective-capacity modifiers are applied.\n\n${rowVisibilityReason('base_capacity')}`,
+      effective_capacity: `Effective ${roleDemand} is the volume that is actually available for market clearing in the hour after profiles, events, and other dynamic constraints are applied. If it is below the base value, the device was effectively derated for that hour.\n\n${rowVisibilityReason('effective_capacity')}`,
+      dam_offered: `This row shows the total day-ahead volume offered or requested by the device in the shown hour. It is the sum of the Base, Mid, and Peak DAM bid lots.\n\n${rowVisibilityReason('dam_offered')}`,
+      dam_lot_a: `This is the day-ahead Base bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. The colored cell background indicates clearing outcome: green high acceptance, yellow/orange partial acceptance, red rejection or capacity-violation context.\n\n${rowVisibilityReason('dam_lot_a')}`,
+      dam_lot_b: `This is the day-ahead Mid bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. The colored cell background indicates clearing outcome: green high acceptance, yellow/orange partial acceptance, red rejection or capacity-violation context.\n\n${rowVisibilityReason('dam_lot_b')}`,
+      dam_lot_c: `This is the day-ahead Peak bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. The colored cell background indicates clearing outcome: green high acceptance, yellow/orange partial acceptance, red rejection or capacity-violation context.\n\n${rowVisibilityReason('dam_lot_c')}`,
+      dam_price: `This row shows the day-ahead settlement price used for the DA portion of settlement in each hour. In round 1 this is effectively the SMP. In later rounds it stays the DA baseline price for previously cleared DA volume.\n\n${rowVisibilityReason('dam_price')}`,
+      dam_dispatched: `This row shows the day-ahead dispatched or consumed volume for the device. It is the awarded DA volume, preferably taken from backend-settled DA dispatch fields so the detail table stays consistent with the KPI computation.\n\n${rowVisibilityReason('dam_dispatched')}`,
+      grid_curtailed: `Grid curtailed energy is commercially cleared producer output that could not be physically transported because of network constraints. It is shown separately so delivery and profit interpretation can distinguish market clearing from feasible physical transport.\n\n${rowVisibilityReason('grid_curtailed')}`,
+      dam_revenue: `This row shows day-ahead ${revenueLabel} for the device. It is based on backend-settled DA revenue when available, otherwise approximated as DA dispatched volume × DA price.\n\n${rowVisibilityReason('dam_revenue')}`,
+      overbid: `${isConsumer ? 'Over-demand' : 'Overbid'} is the part of offered/requested volume that exceeds effective ${roleDemand}. It highlights hours where the market request was above what the device could effectively provide or absorb.\n\n${rowVisibilityReason('overbid')}`,
+      idm_offered: `This row shows the total intraday volume offered or requested by the device in the shown hour. It is the signed sum of the Base, Mid, and Peak IDM bid lots, so purchases and sales can offset each other.\n\n${rowVisibilityReason('idm_offered')}`,
+      idm_lot_a: `This is the intraday Base bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. For intraday rows the offered quantity is signed, so negative values can represent charging or buying behavior.\n\n${rowVisibilityReason('idm_lot_a')}`,
+      idm_lot_b: `This is the intraday Mid bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. For intraday rows the offered quantity is signed, so negative values can represent charging or buying behavior.\n\n${rowVisibilityReason('idm_lot_b')}`,
+      idm_lot_c: `This is the intraday Peak bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. For intraday rows the offered quantity is signed, so negative values can represent charging or buying behavior.\n\n${rowVisibilityReason('idm_lot_c')}`,
+      id_price: `This row shows the intraday settlement price used for the IDM portion of the device settlement in each hour. It is taken from the backend IDM price when available, otherwise from the hourly/round ID price fallback.\n\n${rowVisibilityReason('id_price')}`,
+      idm_dispatched: `This row shows the incremental intraday dispatched or consumed volume for the device. It is the awarded IDM delta, preferably from backend-settled ID dispatch fields so the detail table matches KPI settlement logic.\n\n${rowVisibilityReason('idm_dispatched')}`,
+      idm_revenue: `This row shows intraday ${revenueLabel} for the device. It is based on backend-settled IDM revenue when available, otherwise approximated as IDM dispatched volume × IDM price.\n\n${rowVisibilityReason('idm_revenue')}`,
+      battery_soc_start: 'SoC Start is the battery state of charge at the start of the hour, after the previous hour has been settled and before the current hour charging/discharging is applied.\n\n' + rowVisibilityReason('battery_soc_start'),
+      battery_soc_end: 'SoC End is the battery state of charge after the current hour charging/discharging has been applied in the backend battery state logic.\n\n' + rowVisibilityReason('battery_soc_end'),
+      battery_charged: 'Charged energy is the grid-side charging volume stored for the battery in the hour. It is a physical charging flow and does not itself mean positive market revenue; it usually creates a charge cost.\n\n' + rowVisibilityReason('battery_charged'),
+      battery_charge_cost: 'Charge Cost is the settlement cost caused by charging the battery in the hour. It is shown as a negative contribution because charging consumes market energy rather than selling it.\n\n' + rowVisibilityReason('battery_charge_cost'),
+      imbalance: 'Imbalance is the difference between dispatched position and actual realized device outcome in the hour, based on backend balancing detail when available. A non-zero value leads to balancing settlement.\n\n' + rowVisibilityReason('imbalance'),
+      imbalance_cost: 'Imbalance Cost is the monetary settlement of the imbalance using configured balancing prices rather than the market clearing price. Non-zero imbalance cost directly worsens profit or net result.\n\n' + rowVisibilityReason('imbalance_cost'),
+      balancing_price: 'Balancing Price is the effective price per MWh used to settle the imbalance in the hour. If the backend provides an explicit balancing price it is shown; otherwise it is inferred from imbalance cost divided by imbalance MWh.\n\n' + rowVisibilityReason('balancing_price'),
+      net_mwh: 'Net MWh is the device-level delivered energy after combining DA dispatch, IDM dispatch, imbalance, and producer-side grid curtailment. It shows what effectively remains as net physical energy contribution in the hour.\n\n' + rowVisibilityReason('net_mwh'),
+      net_revenue: `${netRevenueLabel}. It is not the same as round profit: for producers, variable cost, fixed cost, dispatch cost (ATC), and congestion revenue are handled separately at KPI level.\n\n${rowVisibilityReason('net_revenue')}`,
+      network_shortfall_cost: 'Dispatch Cost (ATC) is the network-related cost caused by zonal shortfall or transport limits. It is separate from imbalance cost and is shown only when it is present.\n\n' + rowVisibilityReason('network_shortfall_cost'),
+      variable_cost: 'Variable Cost is the backend-settled or reconstructed operating cost associated with dispatched production in the hour. It contributes negatively to producer profit.\n\n' + rowVisibilityReason('variable_cost'),
+      fixed_cost: 'Fixed Cost is the per-hour fixed operating cost attributed to this device in the hour. It contributes negatively to producer profit independently of dispatched volume.\n\n' + rowVisibilityReason('fixed_cost'),
+      avg_cost_rate: 'Average Cost Rate is the effective variable cost per dispatched MWh in the hour. It is shown only when a backend effective variable cost rate exists.\n\n' + rowVisibilityReason('avg_cost_rate'),
+      co2: `CO2 is the device-level emission contribution for the hour. Backend values are stored in kg and shown here directly in kg. It feeds the round CO2 KPI by summation over devices and hours.\n\n${rowVisibilityReason('co2')}`,
+    }
+    return descriptions[metricKey] || rowVisibilityReason(metricKey)
+  }
+
+  const getHourTooltip = (metricKey, hourData, extra = {}) => {
+    const demandLabel = isConsumer ? 'demand' : 'capacity'
+    const costLabel = isConsumer ? 'cost' : 'revenue'
+    const lines = [`Hour ${hourData.hourLabel}`]
+
+    switch (metricKey) {
+      case 'base_capacity':
+        lines.push(`Displayed value: ${tt(hourData.baseCapacity)} MW.`)
+        lines.push(`Source: frontend uses device-hour breakdown base_capacity_mw when present; otherwise a role-specific fallback baseline is derived.`)
+        break
+      case 'effective_capacity':
+        lines.push(`Displayed value: ${tt(hourData.effectiveCapacity)} MW.`)
+        lines.push(`Source: device-hour breakdown effective_capacity_mw when available, otherwise a fallback derived from actual/planned/dispatch context.`)
+        lines.push(`Interpretation: this is the effective ${demandLabel} after dynamic reductions, profiles, or event effects.`)
+        break
+      case 'dam_offered':
+        lines.push(`Formula: DAM total offered = lot A + lot B + lot C = ${tt(hourData.lotA_DAM.mw_offered || 0)} + ${tt(hourData.lotB_DAM.mw_offered || 0)} + ${tt(hourData.lotC_DAM.mw_offered || 0)} = ${tt(hourData.totalOffered_DAM)} MWh.`)
+        break
+      case 'dam_lot_a':
+      case 'dam_lot_b':
+      case 'dam_lot_c': {
+        const lot = metricKey === 'dam_lot_a' ? hourData.lotA_DAM : metricKey === 'dam_lot_b' ? hourData.lotB_DAM : hourData.lotC_DAM
+        lines.push(`Displayed value: ${tt(lot.mw_offered || 0)} MWh offered in this DAM lot at ${tti(lot.price_bid || 0)} ZAR/MWh.`)
+        lines.push(`Acceptance ratio: ${tt((lot.acceptance_ratio || 0) * 100)}%. Dispatched from this lot: ${tt(lot.mw_dispatched || 0)} MWh.`)
+        if (hourData.capacityViolation) lines.push(`The red background is consistent with a capacity-violation context because offered volume exceeds effective ${demandLabel} in this hour.`)
+        break
+      }
+      case 'dam_price':
+        lines.push(`Displayed value: ${tt(hourData.damPrice)} ZAR/MWh.`)
+        lines.push('Source priority: device-hour breakdown DA price, otherwise round-level DA price, otherwise SMP fallback.')
+        break
+      case 'dam_dispatched':
+        lines.push(`Displayed value: ${tt(hourData.totalDispatched_DAM)} MWh.`)
+        lines.push(`Source priority: backend da_dispatched_mwh, otherwise sum of DAM lot dispatches.`)
+        lines.push(`Fallback formula: ${tt(hourData.lotA_DAM.mw_dispatched || 0)} + ${tt(hourData.lotB_DAM.mw_dispatched || 0)} + ${tt(hourData.lotC_DAM.mw_dispatched || 0)} MWh.`)
+        break
+      case 'grid_curtailed':
+        lines.push(`Displayed value: ${tt(hourData.gridCurtailedMw)} MWh.`)
+        lines.push('Source: player-level hourly breakdown grid_curtailed_mw for the same scenario hour.')
+        lines.push('This is constrained-off producer volume after market clearing and is subtracted from net MWh.')
+        break
+      case 'dam_revenue':
+        lines.push(`Displayed value: ${tti(displayMoney(hourData.revenue_DAM))} ${isConsumer ? 'ZAR cost' : 'ZAR revenue'}.`)
+        lines.push(`Source priority: backend da_revenue_zar; fallback formula: ${tt(hourData.totalDispatched_DAM)} × ${tt(hourData.damPrice)} = ${tt(hourData.totalDispatched_DAM * hourData.damPrice, 1)} ZAR.`)
+        break
+      case 'overbid':
+        lines.push(`Displayed value: ${tt(hourData.overbidMw)} MW.`)
+        lines.push(`Formula: max(0, offered/requested - effective ${demandLabel}) = max(0, ${tt((hourData.totalOffered_DAM || 0))} - ${tt(hourData.effectiveCapacity)}) with backend overbid preferred when available.`)
+        break
+      case 'idm_offered':
+        lines.push(`Formula: IDM total offered = signed lot A + lot B + lot C = ${tt(getSignedOffered(hourData.lotA_IDM), 1)} + ${tt(getSignedOffered(hourData.lotB_IDM), 1)} + ${tt(getSignedOffered(hourData.lotC_IDM), 1)} = ${tt(hourData.totalOffered_IDM)} MWh.`)
+        lines.push('Signed values are intentional: buys/charging can appear negative while sells/discharging appear positive.')
+        break
+      case 'idm_lot_a':
+      case 'idm_lot_b':
+      case 'idm_lot_c': {
+        const lot = metricKey === 'idm_lot_a' ? hourData.lotA_IDM : metricKey === 'idm_lot_b' ? hourData.lotB_IDM : hourData.lotC_IDM
+        lines.push(`Displayed value: ${tt(getSignedOffered(lot))} MWh signed intraday offer at ${tti(lot.price_bid || 0)} ZAR/MWh.`)
+        lines.push(`Dispatch from this lot: ${tt(lot.mw_dispatched || 0)} MWh. Acceptance ratio: ${tt((lot.acceptance_ratio || 0) * 100)}%.`)
+        break
+      }
+      case 'id_price':
+        lines.push(`Displayed value: ${tt(hourData.idp)} ZAR/MWh.`)
+        lines.push('Source priority: backend id_price_zar when positive, otherwise hourly ID price, otherwise round-level ID price, otherwise SMP fallback.')
+        break
+      case 'idm_dispatched':
+        lines.push(`Displayed value: ${tt(hourData.totalDispatched_IDM)} MWh.`)
+        lines.push('Source priority: backend id_dispatched_mwh, otherwise sum of IDM lot dispatches.')
+        break
+      case 'idm_revenue':
+        lines.push(`Displayed value: ${tti(displayMoney(hourData.revenue_IDM))} ${isConsumer ? 'ZAR cost' : 'ZAR revenue'}.`)
+        lines.push(`Source priority: backend id_revenue_zar; fallback formula: ${tt(hourData.totalDispatched_IDM)} × ${tt(hourData.idp || 0)}.`)
+        break
+      case 'battery_soc_start':
+        lines.push(`Displayed value: ${tt(hourData.socStartPct, 0)}%.`)
+        lines.push('Source: battery_soc_start_pct from backend device-hour breakdown.')
+        break
+      case 'battery_soc_end':
+        lines.push(`Displayed value: ${tt(hourData.socEndPct, 0)}%.`)
+        lines.push('Source: battery_soc_end_pct from backend device-hour breakdown after hourly charge/discharge logic.')
+        break
+      case 'battery_charged':
+        lines.push(`Displayed value: ${tt(hourData.chargedMwh)} MWh.`)
+        lines.push('Source: battery_charged_mwh from backend device-hour breakdown.')
+        break
+      case 'battery_charge_cost':
+        lines.push(`Displayed value: -${formatTooltipMoney(hourData.chargeCostZar)}.`)
+        lines.push(`Source: battery_charge_cost_zar from backend device-hour breakdown.`)
+        lines.push('This value is subtracted in profit / net-result calculations.')
+        break
+      case 'imbalance':
+        lines.push(`Displayed value: ${tt(hourData.imbalanceMwh)} MWh.`)
+        lines.push('Source priority: backend imbalance_mwh from device breakdown; fallback balancing detail imbalance_mwh.')
+        break
+      case 'imbalance_cost':
+        lines.push(`Displayed value: ${formatTooltipMoney(hourData.imbalanceCostDisplay)}.`)
+        lines.push('Source priority: backend imbalance_cost_zar from device breakdown; fallback balancing detail balancing_cost_zar.')
+        break
+      case 'balancing_price':
+        lines.push(`Displayed value: ${tti(hourData.balancingPrice)} ZAR/MWh.`)
+        lines.push('Source: explicit backend balancing price when available; otherwise inferred as |imbalance cost / imbalance MWh|.')
+        break
+      case 'net_mwh':
+        lines.push(`Formula: net MWh = DA dispatch + IDM dispatch + imbalance - grid curtailment = ${tt(hourData.totalDispatched_DAM)} + ${tt(hourData.totalDispatched_IDM)} + ${tt(hourData.imbalanceMwh)} - ${tt(hourData.gridCurtailedMw || 0)} = ${tt(hourData.netMwh)} MWh.`)
+        break
+      case 'net_revenue':
+        lines.push(`Displayed value: ${formatTooltipMoney(displayMoney(hourData.netRevenue))} ${costLabel}.`)
+        lines.push(`Formula: (${tt(hourData.revenue_DAM)} + ${tt(hourData.revenue_IDM)}) - ${tt(hourData.imbalanceCostDisplay)} - ${tt(hourData.chargeCostZar || 0)} = ${tt(hourData.netRevenue)} ZAR, with backend revenue_zar preferred when available.`)
+        lines.push('This is a device-level settlement view, not full round profit.')
+        break
+      case 'network_shortfall_cost':
+        lines.push(`Displayed value: ${formatTooltipMoney(hourData.networkShortfallCostZar)}.`)
+        lines.push('Source: network_shortfall_cost_zar from backend device breakdown.')
+        lines.push('This contributes to round Dispatch Cost (ATC).')
+        break
+      case 'variable_cost':
+        lines.push(`Displayed value: ${formatTooltipMoney(hourlyVariableCosts[extra.hourIndex])}.`)
+        lines.push('Source priority: backend variable_cost_zar; fallback formula: dispatched MWh × effective variable cost rate.')
+        break
+      case 'fixed_cost':
+        lines.push(`Displayed value: ${formatTooltipMoney(hourlyFixedCosts[extra.hourIndex])}.`)
+        lines.push('Source priority: backend fixed_cost_zar; fallback fixed_cost_zar_per_hour from device config.')
+        break
+      case 'avg_cost_rate':
+        lines.push(`Displayed value: ${tt(hourData.variableCostRateEffective)} ZAR/MWh.`)
+        lines.push('Source: variable_cost_rate_effective_zar from backend device breakdown.')
+        break
+      case 'co2':
+        lines.push(`Displayed value: ${tt(hourData.co2Kg)} kg.`)
+        lines.push('Source priority: backend device breakdown co2_kg; fallback device CO2 detail for the hour.')
+        lines.push('This contributes directly to the round CO2 KPI by summation.')
+        break
+      default:
+        lines.push('Value explanation not defined.')
+    }
+
+    return lines.join('\n')
+  }
+
+  const getTotalTooltip = (metricKey) => {
+    const lines = ['Round total / aggregate column']
+    switch (metricKey) {
+      case 'base_capacity':
+      case 'effective_capacity':
+        lines.push('No round total is shown because these are hour-specific technical reference values and a sum would be misleading.')
+        lines.push('These values influence dispatch feasibility indirectly, not KPIs by direct aggregation.')
+        break
+      case 'dam_offered':
+        lines.push(`Formula: sum of hourly DAM total offered values = ${tt(roundTotals.totalOffered_DAM)} MWh.`)
+        lines.push('This does not feed a KPI directly, but it provides context for award rates, overbid, and price competitiveness.')
+        break
+      case 'dam_lot_a':
+      case 'dam_lot_b':
+      case 'dam_lot_c':
+        lines.push('Formula: sum of hourly offered values in this lot across the shown hours.')
+        lines.push('This is an input-side explanation row. It does not feed a KPI directly, but affects dispatch and therefore revenue/cost and imbalance outcomes.')
+        break
+      case 'dam_price':
+        lines.push(`Formula: arithmetic average of shown hourly DA prices = ${tt(roundTotals.avgDamPrice)} ZAR/MWh.`)
+        lines.push('This is explanatory only. KPI revenue is not computed from this average but from hour-by-hour price × volume settlement.')
+        break
+      case 'dam_dispatched':
+        lines.push(`Formula: sum of hourly DA dispatched values = ${tt(roundTotals.totalDispatched_DAM)} MWh.`)
+        lines.push('This contributes to dispatched_mwh KPI and, together with prices, to revenue/cost KPIs.')
+        break
+      case 'grid_curtailed':
+        lines.push(`Formula: sum of hourly grid-curtailed values = ${tt(roundTotals.totalGridCurtailed)} MWh.`)
+        lines.push('This does not appear as a standalone KPI card here, but it reduces effective net delivery and explains network-constrained producer outcomes.')
+        break
+      case 'dam_revenue':
+        lines.push(`Formula: sum of hourly DA ${isConsumer ? 'cost' : 'revenue'} values = ${tti(roundTotals.revenue_DAM)} ZAR.`)
+        lines.push('This is a settlement component of the round revenue/cost KPI, but full KPI revenue also includes IDM settlement where applicable.')
+        break
+      case 'overbid':
+        lines.push(`Formula: sum of hourly overbid / over-demand values = ${tt(roundTotals.totalOverbid)} MW.`)
+        lines.push('This does not feed a KPI directly. It explains technical infeasibility that can drive reduced dispatch and later imbalance.')
+        break
+      case 'idm_offered':
+        lines.push(`Formula: sum of signed hourly IDM offers = ${tt(roundTotals.totalOffered_IDM)} MWh.`)
+        lines.push('This does not feed a KPI directly, but it explains the intraday position that can change dispatch and settlement.')
+        break
+      case 'idm_lot_a':
+      case 'idm_lot_b':
+      case 'idm_lot_c':
+        lines.push('Formula: sum of hourly signed offered values in this intraday lot across the shown hours.')
+        lines.push('This is explanatory input data, not a KPI by itself.')
+        break
+      case 'id_price':
+        lines.push(`Formula: arithmetic average of shown hourly IDM prices = ${tt(roundTotals.avgIdPrice)} ZAR/MWh.`)
+        lines.push('This is explanatory only. KPI revenue/cost uses hour-by-hour settlement, not the displayed average.')
+        break
+      case 'idm_dispatched':
+        lines.push(`Formula: sum of hourly IDM dispatched values = ${tt(roundTotals.totalDispatched_IDM)} MWh.`)
+        lines.push('This contributes to dispatched_mwh KPI and to the IDM share of revenue/cost settlement.')
+        break
+      case 'idm_revenue':
+        lines.push(`Formula: sum of hourly IDM ${isConsumer ? 'cost' : 'revenue'} values = ${tti(roundTotals.revenue_IDM)} ZAR.`)
+        lines.push('This is the intraday settlement component of the round revenue/cost KPI.')
+        break
+      case 'battery_soc_start':
+        lines.push(`Displayed value: first shown hourly SoC start = ${tt(roundTotals.battSocStart, 0)}%.`)
+        lines.push('This is not a sum. It is the round entry state of charge and serves as battery-state context, not a KPI input.')
+        break
+      case 'battery_soc_end':
+        lines.push(`Displayed value: last shown hourly SoC end = ${tt(roundTotals.battSocEnd, 0)}%.`)
+        lines.push('This is not a sum. It is the round exit state of charge and serves as battery-state context, not a KPI input.')
+        break
+      case 'battery_charged':
+        lines.push(`Formula: sum of hourly battery charge volumes = ${tt(roundTotals.totalChargedMwh)} MWh.`)
+        lines.push('This contributes to battery activity interpretation; the associated monetary effect flows into battery charge cost and then into profit/net result.')
+        break
+      case 'battery_charge_cost':
+        lines.push(`Formula: sum of hourly battery charge costs = ${tti(roundTotals.totalChargeCostZar)} ZAR.`)
+        lines.push('This feeds the battery_charge_cost_zar KPI and is subtracted in the round profit / net-result formula.')
+        break
+      case 'imbalance':
+        lines.push(`Formula: sum of hourly imbalance values = ${tt(roundTotals.totalImbalance)} MWh.`)
+        lines.push('This feeds the imbalance_mwh KPI directly.')
+        break
+      case 'imbalance_cost':
+        lines.push(`Formula: sum of hourly imbalance costs = ${tti(roundTotals.totalBalancingCost)} ZAR.`)
+        lines.push('This feeds the imbalance_cost_zar KPI and is subtracted in the round profit / net-result formula.')
+        break
+      case 'balancing_price':
+        lines.push(`Formula: arithmetic average of non-zero hourly balancing prices = ${tti(roundTotals.avgBalancingPrice)} ZAR/MWh.`)
+        lines.push('This is explanatory only. KPI imbalance cost is based on hour-by-hour settlement, not this average.')
+        break
+      case 'net_mwh':
+        lines.push(`Formula: sum of hourly net MWh values = ${tt(roundTotals.totalNetMwh)} MWh.`)
+        lines.push('This is a device-level explanatory aggregate. It is related to dispatch and balancing outcomes, but the main KPI uses the canonical backend dispatched_mwh / actual_mwh / imbalance fields rather than this frontend-only summary row.')
+        break
+      case 'net_revenue':
+        lines.push(`Formula: sum of hourly net revenue values = ${tti(roundTotals.totalNetRevenue)} ZAR.`)
+        lines.push('This is a device-level explanatory aggregate. It is not identical to round profit because variable cost, fixed cost, dispatch cost (ATC), and congestion revenue are handled separately at KPI level.')
+        break
+      case 'network_shortfall_cost':
+        lines.push(`Formula: sum of hourly network shortfall costs = ${tti(roundTotals.totalNetworkShortfallCostZar)} ZAR.`)
+        lines.push('This contributes to Dispatch Cost (ATC) in the round KPI view.')
+        break
+      case 'variable_cost':
+        lines.push(`Formula: sum of hourly variable costs = ${tti(hourlyVariableCostTotal)} ZAR.`)
+        lines.push('This contributes to the variable_cost_zar KPI and is subtracted in producer profit.')
+        break
+      case 'fixed_cost':
+        lines.push(`Formula: sum of hourly fixed costs = ${tti(hourlyFixedCostTotal)} ZAR.`)
+        lines.push('This contributes to the fixed_cost_zar KPI and is subtracted in producer profit.')
+        break
+      case 'avg_cost_rate': {
+        const totalDispatchMwh = hourlyData.reduce((sum, h) => sum + Math.max(0, Number(h.totalDispatched_DAM || 0) + Number(h.totalDispatched_IDM || 0)), 0)
+        lines.push(`Formula: hourly variable cost total / total dispatched MWh = ${tti(hourlyVariableCostTotal)} / ${tt(totalDispatchMwh)} = ${totalDispatchMwh > 0 ? tt(hourlyVariableCostTotal / totalDispatchMwh) : '—'} ZAR/MWh.`)
+        lines.push('This is explanatory only. KPI variable cost uses monetary sums, not the displayed average rate.')
+        break
+      }
+      case 'co2':
+        lines.push(`Formula: sum of hourly CO2 values = ${tt(roundTotals.totalCO2)} kg.`)
+        lines.push('This feeds the co2_emissions_kg KPI directly.')
+        break
+      default:
+        lines.push('No aggregate explanation defined.')
+    }
+
+    return lines.join('\n')
+  }
+  // ────────────────────────────────────────────────────────────────────────────
 
   // Helper to get lot status background color with capacity_violation priority
   const getLotBgColor = (lot, hourData) => {
@@ -816,32 +1226,33 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
           </TableHead>
           <TableBody>
             <TableRow hover>
-              <TableCell>{isConsumer ? 'Base Demand (MW)' : 'Base Capacity (MW)'}</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('base_capacity')}>{isConsumer ? 'Base Demand (MW)' : 'Base Capacity (MW)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right">
-                  {h.baseCapacity > 0 ? formatNumber(h.baseCapacity, 1) : '-'}
+                  <HourTip title={getHourTooltip('base_capacity', h)}>{h.baseCapacity > 0 ? formatNumber(h.baseCapacity, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', fontStyle: 'italic', color: 'text.secondary' }}>
-                -
+                <TotalTip title={getTotalTooltip('base_capacity')}>-</TotalTip>
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell>{isConsumer ? 'Effective Demand (MW)' : 'Effective Capacity (MW)'}</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('effective_capacity')}>{isConsumer ? 'Effective Demand (MW)' : 'Effective Capacity (MW)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell
                   key={h.hourKey}
+                  align="right"
                   sx={{
                     fontWeight: 'medium',
                     color: h.effectiveCapacity < h.baseCapacity ? 'warning.main' : 'text.primary',
                     bgcolor: h.effectiveCapacity < h.baseCapacity ? 'warning.50' : 'inherit'
                   }}
                 >
-                  {h.effectiveCapacity > 0 ? formatNumber(h.effectiveCapacity, 1) : '-'}
+                  <HourTip title={getHourTooltip('effective_capacity', h)}>{h.effectiveCapacity > 0 ? formatNumber(h.effectiveCapacity, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                -
+                <TotalTip title={getTotalTooltip('effective_capacity')}>-</TotalTip>
               </TableCell>
             </TableRow>
 
@@ -852,19 +1263,19 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell>{isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)'}</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('dam_offered')}>{isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
-                  {h.totalOffered_DAM > 0 ? formatNumber(h.totalOffered_DAM, 1) : '-'}
+                  <HourTip title={getHourTooltip('dam_offered', h)}>{h.totalOffered_DAM > 0 ? formatNumber(h.totalOffered_DAM, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {formatNumber(roundTotals.totalOffered_DAM, 1)}
+                <TotalTip title={getTotalTooltip('dam_offered')}>{formatNumber(roundTotals.totalOffered_DAM, 1)}</TotalTip>
               </TableCell>
             </TableRow>
             <TableRow hover>
               <TableCell>
-                Base {roundTotals.hasLotA_DAM ? `(${formatInteger(roundTotals.avgLotA_DAM)} ZAR/MWh)` : ''}
+                <RowLabel title={getRowTooltip('dam_lot_a')}>Base {roundTotals.hasLotA_DAM ? `(${formatInteger(roundTotals.avgLotA_DAM)} ZAR/MWh)` : ''}</RowLabel>
               </TableCell>
               {hourlyData.map((h) => (
                 <TableCell 
@@ -872,16 +1283,16 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   align="right"
                   sx={{ bgcolor: getLotBgColor(h.lotA_DAM, h), fontWeight: 'medium' }}
                 >
-                  {h.lotA_DAM.mw_offered > 0 ? formatNumber(h.lotA_DAM.mw_offered, 1) : '-'}
+                  <HourTip title={getHourTooltip('dam_lot_a', h)}>{h.lotA_DAM.mw_offered > 0 ? formatNumber(h.lotA_DAM.mw_offered, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {roundTotals.totalLotAOffered_DAM > 0 ? formatNumber(roundTotals.totalLotAOffered_DAM, 1) : '-'}
+                <TotalTip title={getTotalTooltip('dam_lot_a')}>{roundTotals.totalLotAOffered_DAM > 0 ? formatNumber(roundTotals.totalLotAOffered_DAM, 1) : '-'}</TotalTip>
               </TableCell>
             </TableRow>
             <TableRow hover>
               <TableCell>
-                Mid {roundTotals.hasLotB_DAM ? `(${formatInteger(roundTotals.avgLotB_DAM)} ZAR/MWh)` : ''}
+                <RowLabel title={getRowTooltip('dam_lot_b')}>Mid {roundTotals.hasLotB_DAM ? `(${formatInteger(roundTotals.avgLotB_DAM)} ZAR/MWh)` : ''}</RowLabel>
               </TableCell>
               {hourlyData.map((h) => (
                 <TableCell 
@@ -889,16 +1300,16 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   align="right"
                   sx={{ bgcolor: getLotBgColor(h.lotB_DAM, h), fontWeight: 'medium' }}
                 >
-                  {h.lotB_DAM.mw_offered > 0 ? formatNumber(h.lotB_DAM.mw_offered, 1) : '-'}
+                  <HourTip title={getHourTooltip('dam_lot_b', h)}>{h.lotB_DAM.mw_offered > 0 ? formatNumber(h.lotB_DAM.mw_offered, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {roundTotals.totalLotBOffered_DAM > 0 ? formatNumber(roundTotals.totalLotBOffered_DAM, 1) : '-'}
+                <TotalTip title={getTotalTooltip('dam_lot_b')}>{roundTotals.totalLotBOffered_DAM > 0 ? formatNumber(roundTotals.totalLotBOffered_DAM, 1) : '-'}</TotalTip>
               </TableCell>
             </TableRow>
             <TableRow hover>
               <TableCell>
-                Peak {roundTotals.hasLotC_DAM ? `(${formatInteger(roundTotals.avgLotC_DAM)} ZAR/MWh)` : ''}
+                <RowLabel title={getRowTooltip('dam_lot_c')}>Peak {roundTotals.hasLotC_DAM ? `(${formatInteger(roundTotals.avgLotC_DAM)} ZAR/MWh)` : ''}</RowLabel>
               </TableCell>
               {hourlyData.map((h) => (
                 <TableCell 
@@ -906,38 +1317,38 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   align="right"
                   sx={{ bgcolor: getLotBgColor(h.lotC_DAM, h), fontWeight: 'medium' }}
                 >
-                  {h.lotC_DAM.mw_offered > 0 ? formatNumber(h.lotC_DAM.mw_offered, 1) : '-'}
+                  <HourTip title={getHourTooltip('dam_lot_c', h)}>{h.lotC_DAM.mw_offered > 0 ? formatNumber(h.lotC_DAM.mw_offered, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {roundTotals.totalLotCOffered_DAM > 0 ? formatNumber(roundTotals.totalLotCOffered_DAM, 1) : '-'}
+                <TotalTip title={getTotalTooltip('dam_lot_c')}>{roundTotals.totalLotCOffered_DAM > 0 ? formatNumber(roundTotals.totalLotCOffered_DAM, 1) : '-'}</TotalTip>
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell>{isIdmRound ? 'DA Price (ZAR/MWh)' : 'SMP (ZAR/MWh)'}</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('dam_price')}>{isIdmRound ? 'DA Price (ZAR/MWh)' : 'SMP (ZAR/MWh)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right">
-                  {h.damPrice > 0 ? formatNumber(h.damPrice, 1) : '-'}
+                  <HourTip title={getHourTooltip('dam_price', h)}>{h.damPrice > 0 ? formatNumber(h.damPrice, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {roundTotals.avgDamPrice > 0 ? `Ø ${formatNumber(roundTotals.avgDamPrice, 1)}` : '-'}
+                <TotalTip title={getTotalTooltip('dam_price')}>{roundTotals.avgDamPrice > 0 ? `Avg ${formatNumber(roundTotals.avgDamPrice, 1)}` : '-'}</TotalTip>
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell>{isConsumer ? 'Consumed (MWh)' : 'Dispatched (MWh)'}</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('dam_dispatched')}>{isConsumer ? 'Consumed (MWh)' : 'Dispatched (MWh)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
-                  {h.totalDispatched_DAM > 0 ? formatNumber(h.totalDispatched_DAM, 1) : '-'}
+                  <HourTip title={getHourTooltip('dam_dispatched', h)}>{h.totalDispatched_DAM > 0 ? formatNumber(h.totalDispatched_DAM, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {formatNumber(roundTotals.totalDispatched_DAM, 1)}
+                <TotalTip title={getTotalTooltip('dam_dispatched')}>{formatNumber(roundTotals.totalDispatched_DAM, 1)}</TotalTip>
               </TableCell>
             </TableRow>
-            {!isConsumer && roundTotals.totalGridCurtailed > 0.001 && (
+            {!isConsumer && deviceIds.length === 1 && roundTotals.totalGridCurtailed > 0.001 && (
               <TableRow hover>
-                <TableCell sx={{ color: 'warning.dark', fontStyle: 'italic' }}>Grid Curtailed (MWh)</TableCell>
+                <TableCell sx={{ color: 'warning.dark', fontStyle: 'italic' }}><RowLabel title={getRowTooltip('grid_curtailed')}>Grid Curtailed (MWh)</RowLabel></TableCell>
                 {hourlyData.map((h) => (
                   <TableCell
                     key={h.hourKey}
@@ -947,29 +1358,29 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                       fontStyle: 'italic'
                     }}
                   >
-                    {(h.gridCurtailedMw || 0) > 0.001 ? formatNumber(h.gridCurtailedMw, 1) : '-'}
+                    <HourTip title={getHourTooltip('grid_curtailed', h)}>{(h.gridCurtailedMw || 0) > 0.001 ? formatNumber(h.gridCurtailedMw, 1) : '-'}</HourTip>
                   </TableCell>
                 ))}
                 <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: 'warning.dark' }}>
-                  {formatNumber(roundTotals.totalGridCurtailed, 1)}
+                  <TotalTip title={getTotalTooltip('grid_curtailed')}>{formatNumber(roundTotals.totalGridCurtailed, 1)}</TotalTip>
                 </TableCell>
               </TableRow>
             )}
             <TableRow hover>
-              <TableCell>{isConsumer ? 'Cost (ZAR)' : 'Revenue (ZAR)'}</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('dam_revenue')}>{isConsumer ? 'Cost (ZAR)' : 'Revenue (ZAR)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right">
-                  {displayMoney(h.revenue_DAM) !== 0 ? formatInteger(displayMoney(h.revenue_DAM)) : '-'}
+                  <HourTip title={getHourTooltip('dam_revenue', h)}>{displayMoney(h.revenue_DAM) !== 0 ? formatInteger(displayMoney(h.revenue_DAM)) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {formatInteger(roundTotals.revenue_DAM)}
+                <TotalTip title={getTotalTooltip('dam_revenue')}>{formatInteger(roundTotals.revenue_DAM)}</TotalTip>
               </TableCell>
             </TableRow>
             
             {/* Overbid Row */}
             <TableRow hover>
-              <TableCell>{isConsumer ? 'Over-demand (MW)' : 'Overbid (MW)'}</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('overbid')}>{isConsumer ? 'Over-demand (MW)' : 'Overbid (MW)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell 
                   key={h.hourKey} 
@@ -979,7 +1390,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                     fontWeight: (h.overbidMw || 0) > 0 ? 'bold' : 'normal'
                   }}
                 >
-                  {(h.overbidMw || 0) > 0 ? formatNumber(h.overbidMw, 1) : '-'}
+                  <HourTip title={getHourTooltip('overbid', h)}>{(h.overbidMw || 0) > 0 ? formatNumber(h.overbidMw, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell 
@@ -990,7 +1401,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   color: roundTotals.totalOverbid > 0 ? 'error.main' : 'inherit'
                 }}
               >
-                {roundTotals.totalOverbid > 0 ? formatNumber(roundTotals.totalOverbid, 1) : '-'}
+                <TotalTip title={getTotalTooltip('overbid')}>{roundTotals.totalOverbid > 0 ? formatNumber(roundTotals.totalOverbid, 1) : '-'}</TotalTip>
               </TableCell>
             </TableRow>
 
@@ -1003,19 +1414,19 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>{isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)'}</TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('idm_offered')}>{isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)'}</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
-                      {h.totalOffered_IDM !== 0 ? formatNumber(h.totalOffered_IDM, 1) : '-'}
+                      <HourTip title={getHourTooltip('idm_offered', h)}>{h.totalOffered_IDM !== 0 ? formatNumber(h.totalOffered_IDM, 1) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {roundTotals.totalOffered_IDM !== 0 ? formatNumber(roundTotals.totalOffered_IDM, 1) : '-'}
+                    <TotalTip title={getTotalTooltip('idm_offered')}>{roundTotals.totalOffered_IDM !== 0 ? formatNumber(roundTotals.totalOffered_IDM, 1) : '-'}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
                   <TableCell>
-                    Base {roundTotals.hasLotA_IDM ? `(${formatInteger(roundTotals.avgLotA_IDM)} ZAR/MWh)` : ''}
+                    <RowLabel title={getRowTooltip('idm_lot_a')}>Base {roundTotals.hasLotA_IDM ? `(${formatInteger(roundTotals.avgLotA_IDM)} ZAR/MWh)` : ''}</RowLabel>
                   </TableCell>
                   {hourlyData.map((h) => (
                     <TableCell 
@@ -1023,16 +1434,16 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                       align="right"
                       sx={{ bgcolor: getLotBgColor(h.lotA_IDM, h), fontWeight: 'medium' }}
                     >
-                      {getSignedOffered(h.lotA_IDM) !== 0 ? formatNumber(getSignedOffered(h.lotA_IDM), 1) : '-'}
+                      <HourTip title={getHourTooltip('idm_lot_a', h)}>{getSignedOffered(h.lotA_IDM) !== 0 ? formatNumber(getSignedOffered(h.lotA_IDM), 1) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {roundTotals.totalLotAOffered_IDM !== 0 ? formatNumber(roundTotals.totalLotAOffered_IDM, 1) : '-'}
+                    <TotalTip title={getTotalTooltip('idm_lot_a')}>{roundTotals.totalLotAOffered_IDM !== 0 ? formatNumber(roundTotals.totalLotAOffered_IDM, 1) : '-'}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
                   <TableCell>
-                    Mid {roundTotals.hasLotB_IDM ? `(${formatInteger(roundTotals.avgLotB_IDM)} ZAR/MWh)` : ''}
+                    <RowLabel title={getRowTooltip('idm_lot_b')}>Mid {roundTotals.hasLotB_IDM ? `(${formatInteger(roundTotals.avgLotB_IDM)} ZAR/MWh)` : ''}</RowLabel>
                   </TableCell>
                   {hourlyData.map((h) => (
                     <TableCell 
@@ -1040,16 +1451,16 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                       align="right"
                       sx={{ bgcolor: getLotBgColor(h.lotB_IDM, h), fontWeight: 'medium' }}
                     >
-                      {getSignedOffered(h.lotB_IDM) !== 0 ? formatNumber(getSignedOffered(h.lotB_IDM), 1) : '-'}
+                      <HourTip title={getHourTooltip('idm_lot_b', h)}>{getSignedOffered(h.lotB_IDM) !== 0 ? formatNumber(getSignedOffered(h.lotB_IDM), 1) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {roundTotals.totalLotBOffered_IDM !== 0 ? formatNumber(roundTotals.totalLotBOffered_IDM, 1) : '-'}
+                    <TotalTip title={getTotalTooltip('idm_lot_b')}>{roundTotals.totalLotBOffered_IDM !== 0 ? formatNumber(roundTotals.totalLotBOffered_IDM, 1) : '-'}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
                   <TableCell>
-                    Peak {roundTotals.hasLotC_IDM ? `(${formatInteger(roundTotals.avgLotC_IDM)} ZAR/MWh)` : ''}
+                    <RowLabel title={getRowTooltip('idm_lot_c')}>Peak {roundTotals.hasLotC_IDM ? `(${formatInteger(roundTotals.avgLotC_IDM)} ZAR/MWh)` : ''}</RowLabel>
                   </TableCell>
                   {hourlyData.map((h) => (
                     <TableCell 
@@ -1057,44 +1468,44 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                       align="right"
                       sx={{ bgcolor: getLotBgColor(h.lotC_IDM, h), fontWeight: 'medium' }}
                     >
-                      {getSignedOffered(h.lotC_IDM) !== 0 ? formatNumber(getSignedOffered(h.lotC_IDM), 1) : '-'}
+                      <HourTip title={getHourTooltip('idm_lot_c', h)}>{getSignedOffered(h.lotC_IDM) !== 0 ? formatNumber(getSignedOffered(h.lotC_IDM), 1) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {roundTotals.totalLotCOffered_IDM !== 0 ? formatNumber(roundTotals.totalLotCOffered_IDM, 1) : '-'}
+                    <TotalTip title={getTotalTooltip('idm_lot_c')}>{roundTotals.totalLotCOffered_IDM !== 0 ? formatNumber(roundTotals.totalLotCOffered_IDM, 1) : '-'}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>ID Price (ZAR/MWh)</TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('id_price')}>ID Price (ZAR/MWh)</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right">
-                      {h.idp > 0 ? formatNumber(h.idp, 1) : '-'}
+                      <HourTip title={getHourTooltip('id_price', h)}>{h.idp > 0 ? formatNumber(h.idp, 1) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {roundTotals.avgIdPrice > 0 ? `Ø ${formatNumber(roundTotals.avgIdPrice, 1)}` : '-'}
+                    <TotalTip title={getTotalTooltip('id_price')}>{roundTotals.avgIdPrice > 0 ? `Avg ${formatNumber(roundTotals.avgIdPrice, 1)}` : '-'}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>{isConsumer ? 'Consumed (MWh)' : 'Dispatched (MWh)'}</TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('idm_dispatched')}>{isConsumer ? 'Consumed (MWh)' : 'Dispatched (MWh)'}</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
-                      {h.totalDispatched_IDM > 0 ? formatNumber(h.totalDispatched_IDM, 1) : '-'}
+                      <HourTip title={getHourTooltip('idm_dispatched', h)}>{h.totalDispatched_IDM > 0 ? formatNumber(h.totalDispatched_IDM, 1) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {formatNumber(roundTotals.totalDispatched_IDM, 1)}
+                    <TotalTip title={getTotalTooltip('idm_dispatched')}>{formatNumber(roundTotals.totalDispatched_IDM, 1)}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>{isConsumer ? 'Cost (ZAR)' : 'Revenue (ZAR)'}</TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('idm_revenue')}>{isConsumer ? 'Cost (ZAR)' : 'Revenue (ZAR)'}</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right">
-                      {displayMoney(h.revenue_IDM) !== 0 ? formatInteger(displayMoney(h.revenue_IDM)) : '-'}
+                      <HourTip title={getHourTooltip('idm_revenue', h)}>{displayMoney(h.revenue_IDM) !== 0 ? formatInteger(displayMoney(h.revenue_IDM)) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {formatInteger(roundTotals.revenue_IDM)}
+                    <TotalTip title={getTotalTooltip('idm_revenue')}>{formatInteger(roundTotals.revenue_IDM)}</TotalTip>
                   </TableCell>
                 </TableRow>
               </>
@@ -1109,10 +1520,10 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>SoC Start (%)</TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('battery_soc_start')}>SoC Start (%)</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right">
-                      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.25 }}>
+                      <HourTip title={getHourTooltip('battery_soc_start', h)}><Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.25 }}>
                         <Typography variant="caption">{h.socStartPct != null ? `${h.socStartPct.toFixed(0)}%` : '-'}</Typography>
                         {h.socStartPct != null && (
                           <Box sx={{ width: 48, height: 6, bgcolor: 'grey.300', borderRadius: 0.5, overflow: 'hidden' }}>
@@ -1123,18 +1534,18 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                             }} />
                           </Box>
                         )}
-                      </Box>
+                      </Box></HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {`${roundTotals.battSocStart.toFixed(0)}%`}
+                    <TotalTip title={getTotalTooltip('battery_soc_start')}>{`${roundTotals.battSocStart.toFixed(0)}%`}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>SoC End (%)</TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('battery_soc_end')}>SoC End (%)</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right">
-                      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.25 }}>
+                      <HourTip title={getHourTooltip('battery_soc_end', h)}><Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.25 }}>
                         <Typography variant="caption">{`${h.socEndPct.toFixed(0)}%`}</Typography>
                         {(
                           <Box sx={{ width: 48, height: 6, bgcolor: 'grey.300', borderRadius: 0.5, overflow: 'hidden' }}>
@@ -1145,22 +1556,33 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                             }} />
                           </Box>
                         )}
-                      </Box>
+                      </Box></HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {`${roundTotals.battSocEnd.toFixed(0)}%`}
+                    <TotalTip title={getTotalTooltip('battery_soc_end')}>{`${roundTotals.battSocEnd.toFixed(0)}%`}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>Charged (MWh)</TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('battery_charged')}>Charged (MWh)</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right" sx={{ color: h.chargedMwh > 0 ? 'primary.main' : 'inherit' }}>
-                      {h.chargedMwh > 0 ? formatNumber(h.chargedMwh, 1) : '-'}
+                      <HourTip title={getHourTooltip('battery_charged', h)}>{h.chargedMwh > 0 ? formatNumber(h.chargedMwh, 1) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: roundTotals.totalChargedMwh > 0 ? 'primary.main' : 'inherit' }}>
-                    {roundTotals.totalChargedMwh > 0 ? formatNumber(roundTotals.totalChargedMwh, 1) : '-'}
+                    <TotalTip title={getTotalTooltip('battery_charged')}>{roundTotals.totalChargedMwh > 0 ? formatNumber(roundTotals.totalChargedMwh, 1) : '-'}</TotalTip>
+                  </TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell><RowLabel title={getRowTooltip('battery_charge_cost')}>Charge Cost (ZAR)</RowLabel></TableCell>
+                  {hourlyData.map((h) => (
+                    <TableCell key={h.hourKey} align="right" sx={{ color: h.chargeCostZar > 0 ? 'error.main' : 'inherit' }}>
+                      <HourTip title={getHourTooltip('battery_charge_cost', h)}>{h.chargeCostZar > 0 ? `-${formatInteger(h.chargeCostZar)}` : '-'}</HourTip>
+                    </TableCell>
+                  ))}
+                  <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: roundTotals.totalChargeCostZar > 0 ? 'error.main' : 'inherit' }}>
+                    <TotalTip title={getTotalTooltip('battery_charge_cost')}>{roundTotals.totalChargeCostZar > 0 ? `-${formatInteger(roundTotals.totalChargeCostZar)}` : '-'}</TotalTip>
                   </TableCell>
                 </TableRow>
               </>
@@ -1173,44 +1595,44 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell>Imbalance (MWh)</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('imbalance')}>Imbalance (MWh)</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell 
                   key={h.hourKey} 
                   align="right"
                   sx={{ color: h.imbalanceMwh !== 0 ? 'error.main' : 'inherit' }}
                 >
-                  {h.imbalanceMwh !== 0 ? formatNumber(h.imbalanceMwh, 1) : '-'}
+                  <HourTip title={getHourTooltip('imbalance', h)}>{h.imbalanceMwh !== 0 ? formatNumber(h.imbalanceMwh, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {roundTotals.totalImbalance !== 0 ? formatNumber(roundTotals.totalImbalance, 1) : '-'}
+                <TotalTip title={getTotalTooltip('imbalance')}>{roundTotals.totalImbalance !== 0 ? formatNumber(roundTotals.totalImbalance, 1) : '-'}</TotalTip>
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell>Imbalance Cost (ZAR)</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('imbalance_cost')}>Imbalance Cost (ZAR)</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell 
                   key={h.hourKey} 
                   align="right"
                   sx={{ color: h.imbalanceCostDisplay !== 0 ? 'error.main' : 'inherit' }}
                 >
-                  {h.imbalanceCostDisplay !== 0 ? formatInteger(h.imbalanceCostDisplay) : '-'}
+                  <HourTip title={getHourTooltip('imbalance_cost', h)}>{h.imbalanceCostDisplay !== 0 ? formatInteger(h.imbalanceCostDisplay) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: roundTotals.totalBalancingCost !== 0 ? 'error.main' : 'inherit' }}>
-                {roundTotals.totalBalancingCost !== 0 ? formatInteger(roundTotals.totalBalancingCost) : '-'}
+                <TotalTip title={getTotalTooltip('imbalance_cost')}>{roundTotals.totalBalancingCost !== 0 ? formatInteger(roundTotals.totalBalancingCost) : '-'}</TotalTip>
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell>Price (ZAR/MWh)</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('balancing_price')}>Price (ZAR/MWh)</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right">
-                  {h.balancingPrice !== 0 ? formatInteger(h.balancingPrice) : '-'}
+                  <HourTip title={getHourTooltip('balancing_price', h)}>{h.balancingPrice !== 0 ? formatInteger(h.balancingPrice) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {roundTotals.avgBalancingPrice !== 0 ? `Ø ${formatInteger(roundTotals.avgBalancingPrice)}` : '-'}
+                <TotalTip title={getTotalTooltip('balancing_price')}>{roundTotals.avgBalancingPrice !== 0 ? `Avg ${formatInteger(roundTotals.avgBalancingPrice)}` : '-'}</TotalTip>
               </TableCell>
             </TableRow>
 
@@ -1221,62 +1643,98 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell sx={{ fontWeight: 'bold' }}>Net MWh</TableCell>
+              <TableCell sx={{ fontWeight: 'bold' }}><RowLabel title={getRowTooltip('net_mwh')}>Net MWh</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right" sx={{ fontWeight: 'bold' }}>
-                  {h.netMwh !== 0 ? formatNumber(h.netMwh, 1) : '-'}
+                  <HourTip title={getHourTooltip('net_mwh', h)}>{h.netMwh !== 0 ? formatNumber(h.netMwh, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {formatNumber(roundTotals.totalNetMwh, 1)}
+                <TotalTip title={getTotalTooltip('net_mwh')}>{formatNumber(roundTotals.totalNetMwh, 1)}</TotalTip>
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell sx={{ fontWeight: 'bold' }}>{isConsumer ? 'Net Cost (ZAR)' : 'Net Revenue (ZAR)'}</TableCell>
+              <TableCell sx={{ fontWeight: 'bold' }}><RowLabel title={getRowTooltip('net_revenue')}>{isConsumer ? 'Net Cost (ZAR)' : 'Net Revenue (ZAR)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right" sx={{ fontWeight: 'bold' }}>
-                  {displayMoney(h.netRevenue) !== 0 ? formatInteger(displayMoney(h.netRevenue)) : '-'}
+                  <HourTip title={getHourTooltip('net_revenue', h)}>{displayMoney(h.netRevenue) !== 0 ? formatInteger(displayMoney(h.netRevenue)) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {formatInteger(roundTotals.totalNetRevenue)}
+                <TotalTip title={getTotalTooltip('net_revenue')}>{formatInteger(roundTotals.totalNetRevenue)}</TotalTip>
               </TableCell>
             </TableRow>
+            {isConsumer && roundTotals.totalNetworkShortfallCostZar > 0.5 && (
+              <TableRow hover>
+                <TableCell sx={{ color: 'error.main' }}><RowLabel title={getRowTooltip('network_shortfall_cost')}>Dispatch Cost (ATC) (ZAR)</RowLabel></TableCell>
+                {hourlyData.map((h) => (
+                  <TableCell key={h.hourKey} align="right" sx={{ color: h.networkShortfallCostZar > 0 ? 'error.main' : 'text.secondary' }}>
+                    <HourTip title={getHourTooltip('network_shortfall_cost', h)}>{h.networkShortfallCostZar > 0 ? formatInteger(h.networkShortfallCostZar) : '-'}</HourTip>
+                  </TableCell>
+                ))}
+                <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: 'error.main' }}>
+                  <TotalTip title={getTotalTooltip('network_shortfall_cost')}>{formatInteger(roundTotals.totalNetworkShortfallCostZar)}</TotalTip>
+                </TableCell>
+              </TableRow>
+            )}
             {!isConsumer && (
               <>
                 <TableRow hover>
-                  <TableCell>Variable Cost (ZAR)</TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('variable_cost')}>Variable Cost (ZAR)</RowLabel></TableCell>
                   {hourlyData.map((h, idx) => (
                     <TableCell key={h.hourKey} align="right">
-                      {hourlyVariableCosts[idx] > 0 ? formatInteger(hourlyVariableCosts[idx]) : '-'}
+                      <HourTip title={getHourTooltip('variable_cost', h, { hourIndex: idx })}>{hourlyVariableCosts[idx] > 0 ? formatInteger(hourlyVariableCosts[idx]) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {hourlyVariableCostTotal !== 0 ? formatInteger(hourlyVariableCostTotal) : '-'}
+                    <TotalTip title={getTotalTooltip('variable_cost')}>{hourlyVariableCostTotal !== 0 ? formatInteger(hourlyVariableCostTotal) : '-'}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>Fixed Cost (ZAR)</TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('fixed_cost')}>Fixed Cost (ZAR)</RowLabel></TableCell>
                   {hourlyData.map((h, idx) => (
                     <TableCell key={h.hourKey} align="right">
-                      {hourlyFixedCosts[idx] > 0 ? formatInteger(hourlyFixedCosts[idx]) : '-'}
+                      <HourTip title={getHourTooltip('fixed_cost', h, { hourIndex: idx })}>{hourlyFixedCosts[idx] > 0 ? formatInteger(hourlyFixedCosts[idx]) : '-'}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    {hourlyFixedCostTotal !== 0 ? formatInteger(hourlyFixedCostTotal) : '-'}
+                    <TotalTip title={getTotalTooltip('fixed_cost')}>{hourlyFixedCostTotal !== 0 ? formatInteger(hourlyFixedCostTotal) : '-'}</TotalTip>
                   </TableCell>
                 </TableRow>
+                {hourlyData.some((h) => Number.isFinite(h.variableCostRateEffective)) && (
+                  <TableRow hover>
+                    <TableCell sx={{ color: 'text.secondary', fontStyle: 'italic' }}><RowLabel title={getRowTooltip('avg_cost_rate')}>Avg Cost Rate (ZAR/MWh)</RowLabel></TableCell>
+                    {hourlyData.map((h) => (
+                      <TableCell key={h.hourKey} align="right" sx={{ color: 'text.secondary', fontStyle: 'italic' }}>
+                        <HourTip title={getHourTooltip('avg_cost_rate', h)}>{Number.isFinite(h.variableCostRateEffective) && h.variableCostRateEffective > 0
+                          ? formatNumber(h.variableCostRateEffective, 1)
+                          : '-'}</HourTip>
+                      </TableCell>
+                    ))}
+                    <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: 'text.secondary', fontStyle: 'italic' }}>
+                      <TotalTip title={getTotalTooltip('avg_cost_rate')}>{(() => {
+                        const totalDispatchMwh = hourlyData.reduce(
+                          (sum, h) => sum + Math.max(0, Number(h.totalDispatched_DAM || 0) + Number(h.totalDispatched_IDM || 0)),
+                          0,
+                        )
+                        return totalDispatchMwh > 0
+                          ? formatNumber(hourlyVariableCostTotal / totalDispatchMwh, 1)
+                          : '-'
+                      })()}</TotalTip>
+                    </TableCell>
+                  </TableRow>
+                )}
               </>
             )}
             <TableRow hover>
-              <TableCell>{isConsumer ? 'CO2 Caused (kg)' : 'CO2 Emissions (kg)'}</TableCell>
+              <TableCell><RowLabel title={getRowTooltip('co2')}>{isConsumer ? 'CO2 Caused (kg)' : 'CO2 Emissions (kg)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right">
-                  {h.co2Kg > 0 ? formatNumber(h.co2Kg, 1) : '-'}
+                  <HourTip title={getHourTooltip('co2', h)}>{h.co2Kg > 0 ? formatNumber(h.co2Kg, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                {formatNumber(roundTotals.totalCO2, 1)}
+                <TotalTip title={getTotalTooltip('co2')}>{formatNumber(roundTotals.totalCO2, 1)}</TotalTip>
               </TableCell>
             </TableRow>
           </TableBody>

@@ -20,7 +20,6 @@ import {
   DialogContent,
   DialogActions,
   Checkbox,
-  FormControlLabel,
   Table,
   TableBody,
   TableCell,
@@ -63,6 +62,7 @@ import {
   getVisibleHourIndices,
   isPlayerInputHourAllowed,
   mapSeriesToVisibleHours,
+  sanitizeBidsPayload,
   shouldHideNonEditableHours,
   zeroHiddenBidsPayload,
   zeroHiddenDevicePayload,
@@ -477,8 +477,23 @@ const buildDeviceProfile = (device, len) => {
   return buildGenericProfile(device, len)
 }
 
+const getEffectiveVariableCostBase = (device) => {
+  const tiers = device?.variable_cost_tiers
+  if (Array.isArray(tiers) && tiers.length > 0) {
+    let totalWeight = 0
+    let weightedCost = 0
+    tiers.forEach((tier) => {
+      const width = Number(tier.to_pct) - Number(tier.from_pct)
+      weightedCost += width * Number(tier.cost_zar_per_mwh || 0)
+      totalWeight += width
+    })
+    return totalWeight > 0 ? weightedCost / totalWeight : 0
+  }
+  return toNumber(device?.variable_cost_zar_per_mwh ?? device?.cost_per_mwh_zar ?? 0, 0)
+}
+
 const getDefaultBidPrices = (device, labels = getDeviceBidLabels(device)) => {
-  const variableCost = toNumber(device?.variable_cost_zar_per_mwh ?? device?.cost_per_mwh_zar ?? 0, 0)
+  const variableCost = getEffectiveVariableCostBase(device)
   const deviceType = (device?.type || '').toLowerCase()
   const multipliers = deviceType.includes('load')
     ? [1.3, 1.2, 1.1, 1.0, 0.9]
@@ -1124,6 +1139,7 @@ export default function Player() {
   const [damHourlySeries, setDamHourlySeries] = useState([])
   const [idmHourlySeries, setIdmHourlySeries] = useState([])
   const [deviceBids, setDeviceBids] = useState({})
+  const [autoBidSettings, setAutoBidSettings] = useState({}) // { [device_id]: { enabled, buyThreshold, sellThreshold } }
   const [biddingEnabled, setBiddingEnabled] = useState(false)
   const [activeLot, setActiveLot] = useState(() => {
     try {
@@ -1288,10 +1304,14 @@ export default function Player() {
     
     // Load saved bids if available
     if (savedBids && biddingEnabled) {
-      setDeviceBids(zeroHiddenBidsPayload(savedBids, { general, player_input: cfg.player_input }, general.round_span_hours))
+      const normalizedSavedBids = sanitizeBidsPayload(
+        zeroHiddenBidsPayload(savedBids, { general, player_input: cfg.player_input }, general.round_span_hours)
+      )
+      setDeviceBids(normalizedSavedBids)
     }
 
     const normalizedDevices = {}
+    const loadedAutoBid = {}
     if (Array.isArray(savedDevices)) {
       savedDevices.forEach((entry) => {
         const did = entry?.device_id
@@ -1302,8 +1322,16 @@ export default function Player() {
           { general, player_input: cfg.player_input },
           general.round_span_hours
         )
+        if (entry?.auto_bid) {
+          loadedAutoBid[did] = {
+            enabled: Boolean(entry.auto_bid.enabled),
+            buyThreshold: Number(entry.auto_bid.buy_threshold_zar_mwh ?? 400),
+            sellThreshold: Number(entry.auto_bid.sell_threshold_zar_mwh ?? 800),
+          }
+        }
       })
     }
+    setAutoBidSettings(loadedAutoBid)
 
     const hasDeviceNonZero = Object.values(normalizedDevices).some(
       (series) => Array.isArray(series) && series.some((value) => Number(value) !== 0)
@@ -3078,7 +3106,16 @@ export default function Player() {
         const span = Number(cfg.general.round_span_hours || 6)
         const start = (r - 1) * span
         payload.devices = zeroHiddenDevicePayload(
-          typeDevices.map(did=> ({ device_id: did, hours: (deviceHours[did]||[]).slice(start, start+span) })),
+          typeDevices.map(did => {
+            const rawHours = (deviceHours[did] || []).slice(start, start + span)
+            const ab = autoBidSettings[did]
+            const entry = { device_id: did, hours: rawHours }
+            if (ab?.enabled) {
+              entry.auto_bid = { enabled: true, buy_threshold_zar_mwh: Number(ab.buyThreshold), sell_threshold_zar_mwh: Number(ab.sellThreshold) }
+              entry.hours = entry.hours.map(() => 0)
+            }
+            return entry
+          }),
           cfg,
           span,
           r
@@ -3086,9 +3123,10 @@ export default function Player() {
       }
       // Add bids if bidding is enabled (send full bid hours, not sliced)
       if (biddingEnabled && Object.keys(deviceBids).length > 0) {
-        payload.bids = zeroHiddenBidsPayload(deviceBids, cfg, span)
-      } else if (!biddingEnabled) {
-        payload.bids = {}
+        const sanitizedBids = sanitizeBidsPayload(zeroHiddenBidsPayload(deviceBids, cfg, span))
+        if (Object.keys(sanitizedBids).length > 0) {
+          payload.bids = sanitizedBids
+        }
       }
       await api.post('/api/player/forecast', payload)
       showSnack(`Round ${r} submitted successfully!`, 'success')
@@ -4103,7 +4141,97 @@ export default function Player() {
                           </Stack>
                         </Stack>
                         
-                        {view === 'chart' && (
+                        {/* Auto-Bid Threshold Controls (battery devices with auto_bid_allowed) */}
+                        {(deviceType === 'battery' || deviceType === 'storage') && deviceDef?.auto_bid_allowed && (() => {
+                          const autoBidEnabled = Boolean(autoBidSettings[did]?.enabled)
+                          const buyThreshold = Number(autoBidSettings[did]?.buyThreshold ?? 400)
+                          const sellThreshold = Number(autoBidSettings[did]?.sellThreshold ?? 800)
+                          const invalidThresholdOrder = autoBidEnabled && Number.isFinite(buyThreshold) && Number.isFinite(sellThreshold) && sellThreshold <= buyThreshold
+
+                          return (
+                            <Box sx={{ mb: 2, p: 2, bgcolor: 'action.hover', borderRadius: 1, border: '1px solid', borderColor: autoBidEnabled ? 'primary.main' : 'divider' }}>
+                              <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between" spacing={1.5} sx={{ mb: 1.5 }}>
+                                <Box>
+                                  <Typography variant="subtitle2">Battery Dispatch Mode</Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    Choose between manual hourly dispatch and automatic threshold-based bidding.
+                                  </Typography>
+                                </Box>
+                                <Chip
+                                  size="small"
+                                  color={autoBidEnabled ? 'primary' : 'default'}
+                                  label={autoBidEnabled ? 'Auto-Bid Active' : 'Manual Dispatch'}
+                                  variant={autoBidEnabled ? 'filled' : 'outlined'}
+                                />
+                              </Stack>
+
+                              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mb: 1.5 }}>
+                                <Button
+                                  size="small"
+                                  variant={autoBidEnabled ? 'outlined' : 'contained'}
+                                  onClick={() => setAutoBidSettings(prev => ({ ...prev, [did]: { buyThreshold: 400, sellThreshold: 800, ...prev[did], enabled: false } }))}
+                                >
+                                  Manual Dispatch
+                                </Button>
+                                <Button
+                                  size="small"
+                                  variant={autoBidEnabled ? 'contained' : 'outlined'}
+                                  onClick={() => setAutoBidSettings(prev => ({ ...prev, [did]: { buyThreshold: 400, sellThreshold: 800, ...prev[did], enabled: true } }))}
+                                >
+                                  Auto-Bid Thresholds
+                                </Button>
+                              </Stack>
+
+                              {!autoBidEnabled && (
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                  Manual mode uses the hourly curve or bid lots below. Switch to Auto-Bid to replace manual dispatch with price thresholds.
+                                </Typography>
+                              )}
+
+                              {autoBidEnabled && (
+                                <>
+                                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mt: 1 }}>
+                                    <TextField
+                                      label="Charge below price"
+                                      type="number"
+                                      size="small"
+                                      value={buyThreshold}
+                                      onChange={(e) => setAutoBidSettings(prev => ({ ...prev, [did]: { ...prev[did], buyThreshold: Number(e.target.value) } }))}
+                                      InputProps={{ endAdornment: <Typography variant="caption" sx={{ ml: 0.5, whiteSpace: 'nowrap' }}>ZAR/MWh</Typography> }}
+                                      sx={{ width: { xs: '100%', sm: 210 } }}
+                                    />
+                                    <TextField
+                                      label="Discharge above price"
+                                      type="number"
+                                      size="small"
+                                      value={sellThreshold}
+                                      onChange={(e) => setAutoBidSettings(prev => ({ ...prev, [did]: { ...prev[did], sellThreshold: Number(e.target.value) } }))}
+                                      InputProps={{ endAdornment: <Typography variant="caption" sx={{ ml: 0.5, whiteSpace: 'nowrap' }}>ZAR/MWh</Typography> }}
+                                      sx={{ width: { xs: '100%', sm: 210 } }}
+                                    />
+                                  </Stack>
+
+                                  <Box sx={{ mt: 1.5, p: 1.5, bgcolor: groupedSectionInfoBg, borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
+                                    <Typography variant="body2" sx={{ mb: 0.5 }}>
+                                      Battery charges when SMP is below {buyThreshold} ZAR/MWh and discharges when SMP is above {sellThreshold} ZAR/MWh.
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                      Quantity is capped automatically by battery power and current state of charge. Manual hourly curves and bid lots are disabled while this mode is active.
+                                    </Typography>
+                                  </Box>
+
+                                  {invalidThresholdOrder && (
+                                    <Alert severity="warning" sx={{ mt: 1.5 }}>
+                                      Discharge above price should normally be greater than charge below price. Otherwise the battery may cycle at unattractive spreads.
+                                    </Alert>
+                                  )}
+                                </>
+                              )}
+                            </Box>
+                          )
+                        })()}
+
+                        {view === 'chart' && !(autoBidSettings[did]?.enabled && (deviceType === 'battery' || deviceType === 'storage') && deviceDef?.auto_bid_allowed) && (
                           <Box sx={{ mb: 2 }}>
                             {(() => {
                               // Check device-level bidding setting (fallback to global)

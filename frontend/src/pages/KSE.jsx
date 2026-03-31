@@ -971,6 +971,15 @@ export default function KSE(){
         }
       })
     }
+    // Duplicate device IDs
+    const deviceIds = (cfg.devices || []).map((d) => d?.id).filter(Boolean)
+    if (deviceIds.length !== new Set(deviceIds).size) {
+      const seen = new Set()
+      deviceIds.forEach((id) => {
+        if (seen.has(id)) errs.push(`Duplicate device ID: ${id}`)
+        seen.add(id)
+      })
+    }
     setErrors(errs)
     return errs.length===0
   }
@@ -1079,7 +1088,7 @@ export default function KSE(){
               out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
               out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
               if (out.min_load_pct == null) out.min_load_pct = 0
-              if (out.ramp_rate_mw_per_min == null) out.ramp_rate_mw_per_min = 60
+              if (out.ramp_rate_mw_per_min == null) { const _rd = {coal:5,gas:15,hydro:30,nuclear:1}; out.ramp_rate_mw_per_min = _rd[t] ?? 5; }
             } else if ([ 'solar','wind' ].includes(t)){
               out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
               out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
