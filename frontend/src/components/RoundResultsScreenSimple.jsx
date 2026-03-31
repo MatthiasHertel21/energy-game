@@ -353,6 +353,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const demandCoveragePct = planned > 0 ? (dispatched / planned) * 100 : null
     const zoneStatus = String(playerZoneInfo?.zone_status || '')
     const zoneShortfall = Number(playerZoneInfo?.zone_unserved_demand_mwh || currentKpis.zone_shortfall_mwh || 0)
+    const zoneBalancingSupport = Number(playerZoneInfo?.zone_balancing_support_mwh || currentKpis.zone_balancing_support_mwh || 0)
     const zoneImports = Number(playerZoneInfo?.zone_imports_mwh || 0)
     const zoneExports = Number(playerZoneInfo?.zone_exports_mwh || 0)
     const zoneCoverage = Number(playerZoneInfo?.zone_coverage_total_pct || 0)
@@ -405,6 +406,8 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
     if (zoneStatus === 'supply_shortfall') {
       notes.push(`Network constraints caused a zonal shortfall: your zone covered ${formatPct(zoneCoverage)} of demand, imported ${formatInt(zoneImports)} MWh, but still left ${formatInt(zoneShortfall)} MWh unserved.`)
+    } else if (zoneStatus === 'balancing_supported_supply') {
+      notes.push(`Your zone faced a physical network shortfall, but balancing energy covered ${formatInt(zoneBalancingSupport)} MWh, so final demand coverage remained ${formatPct(zoneCoverage)}.`)
     } else if (zoneStatus === 'grid_supported_supply') {
       notes.push(`Your zone depended on the network this round: local supply was insufficient and ${formatInt(zoneImports)} MWh had to be imported to avoid a shortfall.`)
     }
@@ -418,7 +421,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     }
 
     if (gridConstraintCost > 0.5) {
-      notes.push(`Dispatch cost (ATC) of ${formatCurrency(gridConstraintCost)} arises from network bandwidth limits that restricted physical delivery in your zone — separate from imbalance caused by bidding or scheduling deviations.`)
+      notes.push(`Dispatch cost (ATC) of ${formatCurrency(gridConstraintCost)} arises from network limits and any balancing support needed to maintain delivery in your zone — separate from imbalance caused by bidding or scheduling deviations.`)
     }
 
     if (Number(currentKpis.imbalance_cost_zar || 0) > 0.5 || Number(currentKpis.imbalance_mwh || 0) > 0.001) {
@@ -522,6 +525,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const congestionRevenue = Number(currentKpis.congestion_revenue_zar || 0)
     const zoneStatus = String(playerZoneInfo?.zone_status || '')
     const zoneShortfall = Number(playerZoneInfo?.zone_unserved_demand_mwh || currentKpis.zone_shortfall_mwh || 0)
+    const zoneBalancingSupport = Number(playerZoneInfo?.zone_balancing_support_mwh || currentKpis.zone_balancing_support_mwh || 0)
     const zoneImports = Number(playerZoneInfo?.zone_imports_mwh || 0)
     const zoneExports = Number(playerZoneInfo?.zone_exports_mwh || 0)
     const zoneLocalGeneration = Number(playerZoneInfo?.zone_local_generation_mwh || 0)
@@ -534,8 +538,8 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     } else {
       notes.push(`Profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(batteryChargeCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
     }
-    if (gridConstraintCost > 0 || Number(currentKpis.zone_shortfall_mwh || 0) > 0) {
-      notes.push(`Dispatch cost (ATC): ${formatCurrency(gridConstraintCost)} from network capacity limits (ATC), zone shortfall ${formatInt(currentKpis.zone_shortfall_mwh || 0)} MWh.`)
+    if (gridConstraintCost > 0 || zoneShortfall > 0 || zoneBalancingSupport > 0) {
+      notes.push(`Dispatch cost (ATC): ${formatCurrency(gridConstraintCost)} from network capacity limits, final zone shortfall ${formatInt(zoneShortfall)} MWh, balancing support ${formatInt(zoneBalancingSupport)} MWh.`)
     }
     if (zoneStatus) {
       notes.push(`Zone context: Zone ${playerZoneInfo?.zone_id || '-'} was ${String(zoneStatus).replaceAll('_', ' ')}, with local generation ${formatInt(zoneLocalGeneration)} MWh, local demand ${formatInt(zoneLocalDemand)} MWh, imports ${formatInt(zoneImports)} MWh, exports ${formatInt(zoneExports)} MWh, and ${zoneLinkCount} connected active link${zoneLinkCount === 1 ? '' : 's'} in the round summary.`)
@@ -545,6 +549,9 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     }
     if (zoneShortfall > 0.001 && isConsumer) {
       notes.push(`Shortfall settlement: ${formatInt(zoneShortfall)} MWh in your zone were not physically served. The associated extra cost is shown as Dispatch Cost (ATC), separate from Imbalance Cost.`)
+    }
+    if (zoneBalancingSupport > 0.001 && isConsumer) {
+      notes.push(`Balancing support: ${formatInt(zoneBalancingSupport)} MWh were additionally procured to keep your demand served. The related spread is shown as Dispatch Cost (ATC), not as Imbalance Cost.`)
     }
     if (imbalanceCost > 0.5 || Number(currentKpis.imbalance_mwh || 0) > 0.001) {
       notes.push(`Imbalance cost uses the configured balancing prices, not the market SMP: positive imbalance is settled at ${formatCurrency(balancingUpPrice)}/MWh and negative imbalance at ${formatCurrency(balancingDownPrice)}/MWh.`)
@@ -829,7 +836,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                         <Chip
                           size="small"
                           label={String(playerZoneInfo.zone_status || 'local_supply_sufficient').replaceAll('_', ' ')}
-                          color={playerZoneInfo.zone_status === 'supply_shortfall' ? 'error' : playerZoneInfo.zone_status === 'grid_supported_supply' ? 'warning' : 'success'}
+                          color={playerZoneInfo.zone_status === 'supply_shortfall' ? 'error' : playerZoneInfo.zone_status === 'grid_supported_supply' || playerZoneInfo.zone_status === 'balancing_supported_supply' ? 'warning' : 'success'}
                         />
                       </Stack>
                       <Stack spacing={0.75}>
@@ -848,6 +855,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                         <Typography variant="body2" color="text.secondary">
                           Zone shortfall: {formatInt(playerZoneInfo.zone_unserved_demand_mwh)} MWh
                         </Typography>
+                        {Number(playerZoneInfo.zone_balancing_support_mwh || 0) > 0.001 && (
+                          <Typography variant="body2" color="text.secondary">
+                            Balancing support: {formatInt(playerZoneInfo.zone_balancing_support_mwh)} MWh
+                          </Typography>
+                        )}
                         <Typography variant="body2" color="text.secondary">
                           Dispatch cost (ATC): {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
                         </Typography>

@@ -466,6 +466,7 @@ def run_rounds(session_id: int, app=None):
                         "id_trade_count",
                         "id_volume_mwh",
                         "da_baseline_metadata",
+                        "battery_soc_end_state",
                         "hour_reconciliation",
                         "baseline_lookup_trace",
                         "debug_audit_payload",

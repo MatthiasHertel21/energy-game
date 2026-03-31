@@ -492,6 +492,50 @@ const getEffectiveVariableCostBase = (device) => {
   return toNumber(device?.variable_cost_zar_per_mwh ?? device?.cost_per_mwh_zar ?? 0, 0)
 }
 
+const getDeviceCostRange = (device) => {
+  const tiers = Array.isArray(device?.variable_cost_tiers) ? device.variable_cost_tiers : []
+  const validCosts = tiers
+    .map((tier) => Number(tier?.cost_zar_per_mwh))
+    .filter((cost) => Number.isFinite(cost))
+
+  if (validCosts.length > 0) {
+    const minCost = Math.min(...validCosts)
+    const maxCost = Math.max(...validCosts)
+    return minCost === maxCost ? `${minCost} ZAR/MWh` : `${minCost}-${maxCost} ZAR/MWh`
+  }
+
+  const flatCost = device?.cost_per_mwh_zar ?? device?.marginal_cost
+  return flatCost != null ? `${flatCost} ZAR/MWh` : null
+}
+
+const getDeviceCostSummary = (device) => {
+  const costRange = getDeviceCostRange(device)
+  return costRange ? `Cost: ${costRange}` : null
+}
+
+const getDeviceCapacityLabel = (device) => {
+  const type = (device?.type || '').toLowerCase()
+  const batteryPowerMw = device?.power_mw ?? device?.power_rating_mw ?? device?.max_power_mw ?? device?.capacity_mw
+
+  if (type.includes('load')) {
+    const baseline = device?.baseline_load_mw != null ? `${device.baseline_load_mw} MW base` : null
+    const peak = device?.peak_load_mw != null ? `${device.peak_load_mw} MW peak` : null
+    return [baseline, peak].filter(Boolean).join(' / ') || '-'
+  }
+
+  if (type === 'battery') {
+    const power = batteryPowerMw != null ? `${batteryPowerMw} MW power` : null
+    const capacity = (device?.capacity_mwh ?? device?.capacity_mw) != null ? `${device.capacity_mwh ?? device.capacity_mw} MWh` : null
+    return [power, capacity].filter(Boolean).join(' / ') || '-'
+  }
+
+  return device?.capacity_mw != null ? `${device.capacity_mw} MW` : '-'
+}
+
+const getDeviceFixedCostLabel = (device) => {
+  return device?.fixed_cost_zar_per_hour != null ? `${device.fixed_cost_zar_per_hour} ZAR/h` : '-'
+}
+
 const getDefaultBidPrices = (device, labels = getDeviceBidLabels(device)) => {
   const variableCost = getEffectiveVariableCostBase(device)
   const deviceType = (device?.type || '').toLowerCase()
@@ -4108,7 +4152,7 @@ export default function Player() {
                                   return [`Type: ${deviceType}`, base, peak].filter(Boolean).join(' • ')
                                 } else {
                                   const cap = deviceParams.capacity_mw != null ? `Capacity: ${deviceParams.capacity_mw} MW` : null
-                                  const cost = (deviceParams.cost_per_mwh_zar != null ? `Cost: ${deviceParams.cost_per_mwh_zar} ZAR/MWh` : (deviceParams.marginal_cost != null ? `Cost: ${deviceParams.marginal_cost} ZAR/MWh` : null))
+                                  const cost = getDeviceCostSummary(deviceParams)
                                   return [`Type: ${deviceType}`, cap, cost].filter(Boolean).join(' • ')
                                 }
                               })()}
@@ -4730,33 +4774,30 @@ export default function Player() {
               <Card>
                 <CardContent>
                   <Typography variant="h6" gutterBottom>My Devices</Typography>
-                  <Stack spacing={1}>
-                    {(selectedType ? typeDevices.map(did=> scenarioDevices.find(d=> d.id===did)).filter(Boolean) : scenarioDevices).map((dev)=>{
-                      const t = (dev.type||'').toLowerCase()
-                      const specs = []
-                      const batteryPowerMw = dev.power_mw ?? dev.power_rating_mw ?? dev.max_power_mw ?? dev.capacity_mw
-                      if (t.includes('load')){
-                        if (dev.baseline_load_mw!=null) specs.push(`Baseline ${dev.baseline_load_mw} MW`)
-                        if (dev.peak_load_mw!=null) specs.push(`Peak ${dev.peak_load_mw} MW`)
-                        if (dev.fixed_cost_zar_per_hour!=null) specs.push(`Fixed ${dev.fixed_cost_zar_per_hour} ZAR/h`)
-                      } else if (t==='battery'){
-                        if (batteryPowerMw!=null) specs.push(`Power ${batteryPowerMw} MW`)
-                        if (dev.capacity_mwh!=null || dev.capacity_mw!=null) specs.push(`Capacity ${dev.capacity_mwh||dev.capacity_mw} MWh`)
-                        if (dev.efficiency_pct!=null) specs.push(`Eff. ${dev.efficiency_pct}%`)
-                        if (dev.fixed_cost_zar_per_hour!=null) specs.push(`Fixed ${dev.fixed_cost_zar_per_hour} ZAR/h`)
-                      } else {
-                        if (dev.capacity_mw!=null) specs.push(`Capacity ${dev.capacity_mw} MW`)
-                        if (dev.cost_per_mwh_zar!=null) specs.push(`Cost ${dev.cost_per_mwh_zar} ZAR/MWh`)
-                        if (dev.fixed_cost_zar_per_hour!=null) specs.push(`Fixed ${dev.fixed_cost_zar_per_hour} ZAR/h`)
-                      }
-                      return (
-                        <Stack key={dev.id} direction="row" spacing={1} justifyContent="space-between">
-                          <Typography variant="body2">{dev.name ? dev.name : `${dev.id} (no device name)`} ({dev.type})</Typography>
-                          <Typography variant="body2" color="text.secondary">{specs.join(' • ')}</Typography>
-                        </Stack>
-                      )
-                    })}
-                  </Stack>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Device</TableCell>
+                          <TableCell>Type</TableCell>
+                          <TableCell>Capacity</TableCell>
+                          <TableCell>Variable Cost</TableCell>
+                          <TableCell align="right">Fixed Cost</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(selectedType ? typeDevices.map(did=> scenarioDevices.find(d=> d.id===did)).filter(Boolean) : scenarioDevices).map((dev)=>(
+                          <TableRow key={dev.id} hover>
+                            <TableCell>{dev.name ? dev.name : `${dev.id} (no device name)`}</TableCell>
+                            <TableCell>{dev.type || '-'}</TableCell>
+                            <TableCell>{getDeviceCapacityLabel(dev)}</TableCell>
+                            <TableCell>{getDeviceCostRange(dev) || '-'}</TableCell>
+                            <TableCell align="right">{getDeviceFixedCostLabel(dev)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
                 </CardContent>
               </Card>
             )}
