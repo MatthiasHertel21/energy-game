@@ -2540,6 +2540,24 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     # Use clearing_forecasts for market clearing (contains deltas for ID rounds)
     normalized_forecasts = clearing_forecasts
 
+    def _explicit_hours_are_round_local(explicit_hours):
+        numeric_hours = []
+        for hour_value in explicit_hours:
+            try:
+                numeric_hours.append(int(hour_value))
+            except (TypeError, ValueError):
+                continue
+
+        if not numeric_hours:
+            return False
+
+        has_window_overlap = any(
+            display_base_idx <= hour_value < (display_base_idx + display_span)
+            for hour_value in numeric_hours
+        )
+        looks_round_local = any(0 <= hour_value < display_span for hour_value in numeric_hours)
+        return looks_round_local and not has_window_overlap
+
     def _extract_dispatch_for_hour(lot_hours, target_hour_idx, target_hour_offset):
         """Extract dispatched MWh for a specific scenario hour from lot hourly payload.
 
@@ -2550,20 +2568,34 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             return 0.0
 
         # Preferred: explicit hour index in row payload
-        has_explicit_hour_idx = False
+        explicit_hours = []
         for row in lot_hours:
             if not isinstance(row, dict):
                 continue
             row_hour_idx = row.get('hour_idx', row.get('scenario_hour_idx'))
             if row_hour_idx is not None:
-                has_explicit_hour_idx = True
+                explicit_hours.append(row_hour_idx)
             if row_hour_idx is not None and int(row_hour_idx) == int(target_hour_idx):
                 return float(row.get('mw_dispatched', 0.0) or 0.0)
 
-        # If rows carry explicit hour indices but none matched, do not fall back to
-        # positional round offsets. That would incorrectly remap Round 1 hour_offset 0/1
-        # rows onto Round 2 hour_offset 0/1 delivery hours.
-        if has_explicit_hour_idx:
+        # Some stored DAM payloads carry explicit hour_idx values that are still
+        # round-local offsets (0..display_span-1) rather than absolute scenario hours.
+        # In that case, remap by round-local hour instead of dropping the DA carry-over.
+        if explicit_hours and _explicit_hours_are_round_local(explicit_hours):
+            for row in lot_hours:
+                if not isinstance(row, dict):
+                    continue
+                row_offset = row.get('round_hour_offset', row.get('hour_offset', row.get('hour')))
+                row_hour_idx = row.get('hour_idx', row.get('scenario_hour_idx'))
+                if row_offset is not None and int(row_offset) == int(target_hour_offset):
+                    return float(row.get('mw_dispatched', 0.0) or 0.0)
+                if row_hour_idx is not None and int(row_hour_idx) == int(target_hour_offset):
+                    return float(row.get('mw_dispatched', 0.0) or 0.0)
+
+        # If rows carry explicit absolute hour indices but none matched, do not fall
+        # back to positional round offsets. That would incorrectly remap Round 1
+        # hour_offset 0/1 rows onto later-round delivery hours.
+        if explicit_hours:
             return 0.0
 
         # Fallback 1: positional lookup by absolute scenario hour index
@@ -2635,19 +2667,31 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         if not isinstance(lot_hours, list):
             return None
 
-        has_explicit_hour_idx = False
+        explicit_hours = []
         for row in lot_hours:
             if not isinstance(row, dict):
                 continue
             row_hour_idx = row.get('hour_idx', row.get('scenario_hour_idx'))
             if row_hour_idx is not None:
-                has_explicit_hour_idx = True
+                explicit_hours.append(row_hour_idx)
             if row_hour_idx is not None and int(row_hour_idx) == int(target_hour_idx):
                 return row
 
-        # If rows carry explicit hour indices but none matched, do not fall back to
-        # positional lookups – that would remap R1 offset-0 rows onto R2 offset-0 delivery hours.
-        if has_explicit_hour_idx:
+        if explicit_hours and _explicit_hours_are_round_local(explicit_hours):
+            for row in lot_hours:
+                if not isinstance(row, dict):
+                    continue
+                row_offset = row.get('round_hour_offset', row.get('hour_offset', row.get('hour')))
+                row_hour_idx = row.get('hour_idx', row.get('scenario_hour_idx'))
+                if row_offset is not None and int(row_offset) == int(target_hour_offset):
+                    return row
+                if row_hour_idx is not None and int(row_hour_idx) == int(target_hour_offset):
+                    return row
+
+        # If rows carry explicit absolute hour indices but none matched, do not fall
+        # back to positional lookups – that would remap earlier-round offsets onto
+        # later delivery hours.
+        if explicit_hours:
             return None
 
         if 0 <= target_hour_idx < len(lot_hours):
@@ -2666,12 +2710,26 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         if not isinstance(rows, list):
             return None
 
+        explicit_hours = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
             row_hour_idx = row.get('scenario_hour_idx', row.get('hour_idx'))
+            if row_hour_idx is not None:
+                explicit_hours.append(row_hour_idx)
             if row_hour_idx is not None and int(row_hour_idx) == int(target_hour_idx):
                 return row
+
+        if explicit_hours and _explicit_hours_are_round_local(explicit_hours):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row_offset = row.get('round_hour_offset', row.get('hour_offset', row.get('hour')))
+                row_hour_idx = row.get('scenario_hour_idx', row.get('hour_idx'))
+                if row_offset is not None and int(row_offset) == int(target_hour_offset):
+                    return row
+                if row_hour_idx is not None and int(row_hour_idx) == int(target_hour_offset):
+                    return row
 
         if 0 <= target_hour_offset < len(rows):
             row = rows[target_hour_offset]
@@ -2679,6 +2737,28 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 return row
 
         return None
+
+    def _get_generator_actual_cap(device, device_dispatched, hour_of_day, pid):
+        if not device or device_dispatched <= 0.0:
+            return max(0.0, float(device_dispatched or 0.0))
+
+        device_type = str(device.get('type', '') or '').lower()
+        if device_type == 'battery':
+            base_capacity = _get_battery_power_limit_mw(device)
+        else:
+            base_capacity = float(device.get('capacity_mw') or device.get('max_power_mw') or 0.0)
+
+        availability = calculate_realistic_availability(device, hour_of_day, config)
+        available_capacity = max(0.0, base_capacity * availability)
+        event_mult, event_add = get_device_event_modifiers(
+            device,
+            device_type,
+            round_events,
+            pid,
+            player_type_by_player.get(int(pid))
+        )
+        effective_capacity = max(0.0, (available_capacity * event_mult) + event_add)
+        return min(max(0.0, float(device_dispatched or 0.0)), effective_capacity)
 
     def _apply_consumer_network_shortfalls(per_player, all_bid_dispatch, hourly_results, zone_shortfall_by_hour, zone_shortfall_price_by_hour):
         if not zone_shortfall_by_hour or not hourly_results:
@@ -3648,6 +3728,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             actual_before_envelope = dispatched
             actual_constrained = 0.0
             device_ids_for_noise = set()
+            device_actual_caps = {}
             
             if is_consumer:
                 # Consumers: actual = dispatched with consumption noise
@@ -3767,10 +3848,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                 device_dispatched = float(per_device_hourly_dispatched[device_id][hour_offset] or 0.0)
                             except Exception:
                                 device_dispatched = 0.0
-                        availability = calculate_realistic_availability(device, hour_of_day, config)
-                        max_available = device_dispatched * availability
-                        device_actual = min(device_dispatched, max_available)
+                        device_actual = _get_generator_actual_cap(device, device_dispatched, hour_of_day, pid)
                         
+                        device_actual_caps[device_id] = device_actual
                         actual_constrained += device_actual
                 actual = actual_constrained
                 device_ids_for_noise = set(device_ids_for_envelope)
@@ -3798,9 +3878,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             continue
 
                         device = next((d for d in devices_cfg if d.get("id") == device_id), None)
-                        availability = calculate_realistic_availability(device, hour_of_day, config) if device else 1.0
-                        max_available = device_dispatched * availability
-                        device_actual = min(device_dispatched, max_available)
+                        device_actual = _get_generator_actual_cap(device, device_dispatched, hour_of_day, pid)
+                        device_actual_caps[device_id] = device_actual
                         actual_constrained += device_actual
 
                     actual = actual_constrained
@@ -3831,43 +3910,36 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             # Add noise on top of actual (only for generators - consumers already have noise)
             if not is_consumer:
                 noise = random.uniform(-frac, frac) * max(1.0, actual)
-                actual = max(0.0, actual + noise)
+                actual = max(0.0, min(actual_constrained, actual + noise))
                 
                 # Update per-device actual with event and noise applied.
                 # Batteries are dispatchable storage and should not inherit renewable
                 # availability/noise from other devices in the same player portfolio.
                 if device_ids_for_noise:
                     battery_device_ids = set()
-                    battery_dispatched_total = 0.0
-                    non_battery_dispatched_total = 0.0
+                    battery_actual_total = 0.0
+                    non_battery_actual_total_pre_noise = 0.0
 
                     for device_id in device_ids_for_noise:
                         device = next((d for d in devices_cfg if d.get("id") == device_id), None)
                         device_type = str((device or {}).get("type", "")).lower()
-                        try:
-                            device_dispatched = float(per_device_hourly_dispatched.get(device_id, [0.0] * display_span)[hour_offset] or 0.0)
-                        except Exception:
-                            device_dispatched = 0.0
+                        device_actual_cap = float(device_actual_caps.get(device_id, 0.0) or 0.0)
                         if device_type == 'battery':
                             battery_device_ids.add(device_id)
-                            battery_dispatched_total += device_dispatched
+                            battery_actual_total += device_actual_cap
                         else:
-                            non_battery_dispatched_total += device_dispatched
+                            non_battery_actual_total_pre_noise += device_actual_cap
 
-                    non_battery_actual_total = max(0.0, actual - battery_dispatched_total)
+                    non_battery_actual_total = max(0.0, actual - battery_actual_total)
 
                     for device_id in device_ids_for_noise:
-                        device_dispatched = 0.0
-                        if device_id in per_device_hourly_dispatched:
-                            try:
-                                device_dispatched = float(per_device_hourly_dispatched[device_id][hour_offset] or 0.0)
-                            except Exception:
-                                device_dispatched = 0.0
+                        device_actual_cap = float(device_actual_caps.get(device_id, 0.0) or 0.0)
                         if device_id in battery_device_ids:
-                            device_actual_with_noise = device_dispatched
-                        elif actual_constrained > 0 and non_battery_dispatched_total > 0:
-                            # Distribute non-battery actual/noise only across non-battery devices.
-                            device_actual_with_noise = non_battery_actual_total * (device_dispatched / non_battery_dispatched_total)
+                            device_actual_with_noise = device_actual_cap
+                        elif non_battery_actual_total_pre_noise > 0:
+                            # Keep the event/availability cap distribution and only scale the
+                            # non-battery portion within the physically feasible envelope.
+                            device_actual_with_noise = non_battery_actual_total * (device_actual_cap / non_battery_actual_total_pre_noise)
                         else:
                             device_actual_with_noise = 0.0
                         
