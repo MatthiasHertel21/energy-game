@@ -2032,12 +2032,51 @@ export default function Player() {
     () => getVisibleHourIndices(cfg, horizonHours, span),
     [cfg, horizonHours, span]
   )
+
+  const effectiveHourStatus = useMemo(() => {
+    const general = cfg.general || {}
+    const horizon = Math.max(1, Number(general.forecast_horizon_hours || general.horizon_hours || 48))
+    const roundSpan = Math.max(1, Number(general.round_span_hours || 6))
+    const currentRound = Math.max(1, Number(cfg.current_round || 1))
+    const currentSimHour = (currentRound - 1) * roundSpan
+    const marketsCfg = cfg.markets || {}
+    const baseStatus = Array.isArray(daBaseline?.hour_status) ? daBaseline.hour_status : []
+
+    const idGateInterval = Math.max(1, Number(general.id_gate_interval_hours || 4))
+    const idGateBase = Number(general.id_gate_base_hour || 0)
+    const idFreezeHours = Number(general.id_freeze_hours || 0)
+    const nextIdGate = calculateNextIdGateHour(currentSimHour, idGateInterval, idGateBase)
+    const idGateWindowStart = Math.max(currentSimHour + idFreezeHours, nextIdGate)
+    const idGateWindowEnd = idGateWindowStart + idGateInterval
+
+    return Array.from({ length: horizon }, (_, hourIdx) => {
+      if (hourIdx < currentSimHour) return 'locked'
+
+      const roundNum = Math.floor(hourIdx / roundSpan) + 1
+      const idmStatus = getRoundMarketStatus(marketsCfg, 'idm', roundNum)
+      const damStatus = getRoundMarketStatus(marketsCfg, 'dam', roundNum)
+      let status = baseStatus[hourIdx] || 'forecast'
+
+      if (idmStatus === 'off' && status === 'id') {
+        status = damStatus === 'on' ? 'da' : 'forecast'
+      }
+
+      if (roundNum === currentRound && idmStatus === 'on' && status === 'id') {
+        const idIsOpenNow = hourIdx >= idGateWindowStart && hourIdx < idGateWindowEnd
+        if (!idIsOpenNow) {
+          status = 'forecast'
+        }
+      }
+
+      return status
+    })
+  }, [cfg.general, cfg.markets, cfg.current_round, daBaseline?.hour_status])
   
   // Determine editable hours based on hour_status
   // Hours with status "locked" are not editable
   // All other hours ("id", "da", "forecast") are editable
   const editableIdx = useMemo(() => {
-    const hourStatus = daBaseline.hour_status || []
+    const hourStatus = Array.isArray(effectiveHourStatus) ? effectiveHourStatus : []
     const editable = new Set()
     
     for (let i = 0; i < hours.length; i++) {
@@ -2207,45 +2246,6 @@ export default function Player() {
     })
     return total
   }, [])
-
-  const effectiveHourStatus = useMemo(() => {
-    const general = cfg.general || {}
-    const horizon = Math.max(1, Number(general.forecast_horizon_hours || general.horizon_hours || 48))
-    const roundSpan = Math.max(1, Number(general.round_span_hours || 6))
-    const currentRound = Math.max(1, Number(cfg.current_round || 1))
-    const currentSimHour = (currentRound - 1) * roundSpan
-    const marketsCfg = cfg.markets || {}
-    const baseStatus = Array.isArray(daBaseline?.hour_status) ? daBaseline.hour_status : []
-
-    const idGateInterval = Math.max(1, Number(general.id_gate_interval_hours || 4))
-    const idGateBase = Number(general.id_gate_base_hour || 0)
-    const idFreezeHours = Number(general.id_freeze_hours || 0)
-    const nextIdGate = calculateNextIdGateHour(currentSimHour, idGateInterval, idGateBase)
-    const idGateWindowStart = Math.max(currentSimHour + idFreezeHours, nextIdGate)
-    const idGateWindowEnd = idGateWindowStart + idGateInterval
-
-    return Array.from({ length: horizon }, (_, hourIdx) => {
-      if (hourIdx < currentSimHour) return 'locked'
-
-      const roundNum = Math.floor(hourIdx / roundSpan) + 1
-      const idmStatus = getRoundMarketStatus(marketsCfg, 'idm', roundNum)
-      const damStatus = getRoundMarketStatus(marketsCfg, 'dam', roundNum)
-      let status = baseStatus[hourIdx] || 'forecast'
-
-      if (idmStatus === 'off' && status === 'id') {
-        status = damStatus === 'on' ? 'da' : 'forecast'
-      }
-
-      if (roundNum === currentRound && idmStatus === 'on' && status === 'id') {
-        const idIsOpenNow = hourIdx >= idGateWindowStart && hourIdx < idGateWindowEnd
-        if (!idIsOpenNow) {
-          status = 'forecast'
-        }
-      }
-
-      return status
-    })
-  }, [cfg.general, cfg.markets, cfg.current_round, daBaseline?.hour_status])
 
   const marketOfferabilityByHour = useMemo(() => {
     const horizon = Number(cfg.general.forecast_horizon_hours || cfg.general.horizon_hours || 48)
@@ -4121,7 +4121,7 @@ export default function Player() {
                     : Array.from({length: fhLocal}, ()=> 0)
                   const view = (deviceView[did] || 'chart')
                   return (
-                    <Card key={did} variant="outlined">
+                    <Card key={did} variant="outlined" data-cy={`device-card-${did}`}>
                       <CardContent>
                         <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }}>
                           <Box sx={{ 
@@ -4171,13 +4171,13 @@ export default function Player() {
                             </Tooltip>
                             {view === 'chart' ? (
                               <Tooltip title="Fields" arrow>
-                                <IconButton size="small" onClick={()=> setDeviceView(prev=> ({...prev, [did]: 'fields'}))}>
+                                <IconButton size="small" data-cy={`device-view-fields-${did}`} onClick={()=> setDeviceView(prev=> ({...prev, [did]: 'fields'}))}>
                                   <ViewList fontSize="small" />
                                 </IconButton>
                               </Tooltip>
                             ) : (
                               <Tooltip title="Chart" arrow>
-                                <IconButton size="small" onClick={()=> setDeviceView(prev=> ({...prev, [did]: 'chart'}))}>
+                                <IconButton size="small" data-cy={`device-view-chart-${did}`} onClick={()=> setDeviceView(prev=> ({...prev, [did]: 'chart'}))}>
                                   <BarChart fontSize="small" />
                                 </IconButton>
                               </Tooltip>
@@ -4325,6 +4325,7 @@ export default function Player() {
                                             value={deviceBids[did][label]?.price || 0}
                                             onChange={(e) => onBidPriceChange(did, label, e.target.value)}
                                             onFocus={() => setActiveLot(label)}
+                                            inputProps={{ 'data-cy': `device-bid-price-${did}-${label}` }}
                                             InputProps={{
                                               endAdornment: <Typography variant="caption" sx={{ ml: 0.5 }}>ZAR/MWh</Typography>,
                                               sx: {
@@ -4534,6 +4535,7 @@ export default function Player() {
                                                           type="number"
                                                           disabled={disabled}
                                                           fullWidth
+                                                          inputProps={{ 'data-cy': `device-hour-input-${did}-${i + 1}` }}
                                                           sx={{
                                                             '& .MuiOutlinedInput-root': {
                                                               backgroundColor: highlightLot ? lotHighlightBg : 'transparent'
@@ -4708,6 +4710,7 @@ export default function Player() {
                 <span>
                   <Button
                     variant="contained"
+                    data-cy="submit-current-round"
                     onClick={() => submitCurrent(false)}
                     disabled={!isEditable || !isValid || timeRemaining === 0 || (allowedTypes.length>0 && !selectedType) || isSubmitting}
                   >
@@ -4838,11 +4841,12 @@ export default function Player() {
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setConfirmOvercapacityOpen(false)}>
+          <Button data-cy="cancel-overcapacity-submit" onClick={() => setConfirmOvercapacityOpen(false)}>
             Cancel
           </Button>
           <Button 
             variant="contained" 
+            data-cy="confirm-overcapacity-submit"
             onClick={async () => {
               const r = Number(cfg.current_round || 1)
               const span = Number(cfg.general.round_span_hours || 6)

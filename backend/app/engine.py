@@ -2902,6 +2902,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         # Curtail — consumer loses this energy, no charge
                         dispatched_after = dispatched_before - curtailed
                         row['mw_dispatched'] = round(dispatched_after, 3)
+                        offered_before = max(0.0, float(row.get('mw_offered', 0.0) or 0.0))
+                        row['acceptance_ratio'] = round((dispatched_after / offered_before), 3) if offered_before > 1e-9 else 0.0
                         if 'mw_dispatched_signed' in row:
                             sign = -1.0 if bool(row.get('is_buyback', False)) else 1.0
                             row['mw_dispatched_signed'] = round(dispatched_after * sign, 3)
@@ -5156,6 +5158,50 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 _dr['imbalance_mwh'] = round(max(0.0, _imb_mwh_d - _red_d), 3)
                 _dr['imbalance_cost_zar'] = round(max(0.0, _imb_cost_d - _red_d * _rate_d), 0)
                 _dr['profit_zar'] = round(float(_dr.get('profit_zar', 0.0) or 0.0) + _red_d * _rate_d, 2)
+
+        _device_breakdown = per_player[pid].get('device_hourly_breakdown') or {}
+        if _atc_hb and isinstance(_device_breakdown, dict) and _device_breakdown:
+            for _hour_pos, _hour_entry in enumerate(_atc_hb):
+                _scenario_hour_idx = int(
+                    _hour_entry.get('scenario_hour_idx', _hour_entry.get('hour_idx', _hour_entry.get('hour', _hour_pos)))
+                    or _hour_pos
+                )
+                _rows_for_hour = []
+                for _rows in _device_breakdown.values():
+                    _row = _find_device_hour_row(_rows, _scenario_hour_idx, _hour_pos)
+                    if isinstance(_row, dict):
+                        _rows_for_hour.append(_row)
+
+                if not _rows_for_hour:
+                    continue
+
+                _planned_sum = sum(float(_row.get('planned_mw', 0.0) or 0.0) for _row in _rows_for_hour)
+                _dispatched_sum = sum(float(_row.get('total_dispatched_mwh', _row.get('dispatched_mw', 0.0)) or 0.0) for _row in _rows_for_hour)
+                _actual_sum = sum(float(_row.get('actual_mw', 0.0) or 0.0) for _row in _rows_for_hour)
+                _revenue_sum = sum(float(_row.get('revenue_zar', 0.0) or 0.0) for _row in _rows_for_hour)
+                _variable_sum = sum(float(_row.get('variable_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
+                _fixed_sum = sum(float(_row.get('fixed_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
+                _imbalance_mwh_sum = sum(float(_row.get('imbalance_mwh', 0.0) or 0.0) for _row in _rows_for_hour)
+                _imbalance_cost_sum = sum(float(_row.get('imbalance_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
+                _battery_charge_cost_sum = sum(float(_row.get('battery_charge_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
+                _congestion_sum = sum(float(_row.get('congestion_revenue_zar', 0.0) or 0.0) for _row in _rows_for_hour)
+                _shortfall_mwh_sum = sum(float(_row.get('network_shortfall_mwh', 0.0) or 0.0) for _row in _rows_for_hour)
+                _shortfall_cost_sum = sum(float(_row.get('network_shortfall_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
+                _profit_sum = sum(float(_row.get('profit_zar', 0.0) or 0.0) for _row in _rows_for_hour)
+
+                _hour_entry['planned_mw'] = round(_planned_sum, 3)
+                _hour_entry['dispatched_mw'] = round(_dispatched_sum, 3)
+                _hour_entry['actual_mw'] = round(_actual_sum, 3)
+                _hour_entry['revenue_zar'] = round(_revenue_sum, 0)
+                _hour_entry['variable_cost_zar'] = round(_variable_sum, 0)
+                _hour_entry['fixed_cost_zar'] = round(_fixed_sum, 0)
+                _hour_entry['imbalance_mwh'] = round(_imbalance_mwh_sum, 3)
+                _hour_entry['imbalance_cost_zar'] = round(_imbalance_cost_sum, 0)
+                _hour_entry['battery_charge_cost_zar'] = round(_battery_charge_cost_sum, 2)
+                _hour_entry['congestion_revenue_zar'] = round(_congestion_sum, 0)
+                _hour_entry['network_shortfall_mwh'] = round(_shortfall_mwh_sum, 3)
+                _hour_entry['network_shortfall_cost_zar'] = round(_shortfall_cost_sum, 0)
+                _hour_entry['profit_zar'] = round(_profit_sum, 0)
         if _atc_imb_cost_reduction > 1e-9:
             per_player[pid]['imbalance_mwh'] = round(max(0.0, float(per_player[pid].get('imbalance_mwh', 0.0) or 0.0) - _atc_imb_mwh_reduction), 3)
             per_player[pid]['imbalance_cost_zar'] = round(max(0.0, float(per_player[pid].get('imbalance_cost_zar', 0.0) or 0.0) - _atc_imb_cost_reduction), 0)
@@ -5169,6 +5215,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         ) if hourly_breakdown else round(float(per_player[pid].get('profit_zar', 0.0) or 0.0), 0)
         accounted_atc_cost = round(sum(float(hour.get('network_shortfall_cost_zar', 0.0) or 0.0) for hour in hourly_breakdown), 0)
         if hourly_breakdown:
+            per_player[pid]['imbalance_mwh'] = round(sum(float(hour.get('imbalance_mwh', 0.0) or 0.0) for hour in hourly_breakdown), 3)
+            per_player[pid]['imbalance_cost_zar'] = round(sum(float(hour.get('imbalance_cost_zar', 0.0) or 0.0) for hour in hourly_breakdown), 0)
+            per_player[pid]['network_shortfall_mwh'] = round(sum(float(hour.get('network_shortfall_mwh', 0.0) or 0.0) for hour in hourly_breakdown), 3)
             per_player[pid]['atc_dispatch_cost_zar'] = accounted_atc_cost
             per_player[pid]['grid_constraint_cost_zar'] = accounted_atc_cost
             dispatched_mwh = float(per_player[pid].get('dispatched_mwh', 0.0) or 0.0)

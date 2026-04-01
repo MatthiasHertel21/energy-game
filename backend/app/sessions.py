@@ -1162,11 +1162,11 @@ class FinalResults(Resource):
             # Calculate average score per round, normalized to 0-100
             raw_score = (
                 totals["profit"] * weights.get("profit", 0.6) -
-                abs(totals["imbalance"]) * weights.get("imbalance", 0.3) -
-                abs(totals["curtailment"]) * weights.get("curtailment", 0.1)
+                abs(totals["imbalance"]) * weights.get("imbalance", 0.3) * 1000 -
+                abs(totals["curtailment"]) * weights.get("curtailment", 0.1) * 1000
             )
             avg_score = raw_score / max(1, totals["rounds"])
-            total_score = max(0, min(100, (avg_score / 5000)))
+            total_score = max(0, min(100, (avg_score + 5000000) / 100000))
             
             # Get player info
             user = User.query.get(pid)
@@ -1237,7 +1237,7 @@ class FinalResults(Resource):
                 abs(imbalance_mwh) * weights.get("imbalance", 0.3) * 1000 -  # Convert MWh penalty to ZAR scale
                 abs(curtailment_mwh) * weights.get("curtailment", 0.1) * 1000  # Convert MWh penalty to ZAR scale
             )
-            round_score = max(0, min(100, (raw_round_score / 5000)))
+            round_score = max(0, min(100, (raw_round_score + 5000000) / 100000))
             atc_dispatch_cost = float(kpis.get("atc_dispatch_cost_zar", kpis.get("grid_constraint_cost_zar", 0)))
             total_costs_zar = round(
                 abs(float(kpis.get("variable_cost_zar", 0)))
