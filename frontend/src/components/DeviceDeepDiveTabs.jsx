@@ -785,7 +785,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       return 'Visible because this producer has player-level constrained-off energy in the round and the value is only shown in the single-device producer view to avoid double counting.'
     }
     if (metricKey === 'network_shortfall_cost') {
-      return 'Visible because dispatch cost from zonal/network shortfall is non-zero in this consumer round.'
+      return 'Visible because redispatch cost from zonal/network shortfall is non-zero in this consumer round.'
     }
     if (metricKey === 'avg_cost_rate') {
       return 'Visible because at least one hour contains an effective variable cost rate from backend settlement.'
@@ -825,8 +825,8 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       imbalance_cost: 'Imbalance Cost is the monetary settlement of the imbalance using configured balancing prices rather than the market clearing price. Non-zero imbalance cost directly worsens profit or net result.\n\n' + rowVisibilityReason('imbalance_cost'),
       balancing_price: 'Balancing Price is the effective price per MWh used to settle the imbalance in the hour. If the backend provides an explicit balancing price it is shown; otherwise it is inferred from imbalance cost divided by imbalance MWh.\n\n' + rowVisibilityReason('balancing_price'),
       net_mwh: 'Net MWh is the device-level delivered energy after combining DA dispatch, IDM dispatch, imbalance, and producer-side grid curtailment. It shows what effectively remains as net physical energy contribution in the hour.\n\n' + rowVisibilityReason('net_mwh'),
-      net_revenue: `${netRevenueLabel}. It is not the same as round profit: for producers, variable cost, fixed cost, dispatch cost (ATC), and congestion revenue are handled separately at KPI level.\n\n${rowVisibilityReason('net_revenue')}`,
-      network_shortfall_cost: 'Dispatch Cost (ATC) is the network-related cost caused by zonal shortfall or transport limits. It is separate from imbalance cost and is shown only when it is present.\n\n' + rowVisibilityReason('network_shortfall_cost'),
+      net_revenue: `${netRevenueLabel}. It is not the same as round profit: for producers, variable cost, fixed cost, redispatch cost (ATC), and congestion revenue are handled separately at KPI level.\n\n${rowVisibilityReason('net_revenue')}`,
+      network_shortfall_cost: 'Redispatch Cost (ATC) is the network-related cost caused by zonal shortfall or transport limits. It is separate from imbalance cost and is shown only when it is present.\n\n' + rowVisibilityReason('network_shortfall_cost'),
       variable_cost: 'Variable Cost is the backend-settled or reconstructed operating cost associated with dispatched production in the hour. It contributes negatively to producer profit.\n\n' + rowVisibilityReason('variable_cost'),
       fixed_cost: 'Fixed Cost is the per-hour fixed operating cost attributed to this device in the hour. It contributes negatively to producer profit independently of dispatched volume.\n\n' + rowVisibilityReason('fixed_cost'),
       avg_cost_rate: 'Average Cost Rate is the effective variable cost per dispatched MWh in the hour. It is shown only when a backend effective variable cost rate exists.\n\n' + rowVisibilityReason('avg_cost_rate'),
@@ -948,7 +948,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       case 'network_shortfall_cost':
         lines.push(`Displayed value: ${formatTooltipMoney(hourData.networkShortfallCostZar)}.`)
         lines.push('Source: network_shortfall_cost_zar from backend device breakdown.')
-        lines.push('This contributes to round Dispatch Cost (ATC).')
+        lines.push('This contributes to round Redispatch Cost (ATC).')
         break
       case 'variable_cost':
         lines.push(`Displayed value: ${formatTooltipMoney(hourlyVariableCosts[extra.hourIndex])}.`)
@@ -1068,11 +1068,11 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         break
       case 'net_revenue':
         lines.push(`Formula: sum of hourly net revenue values = ${tti(roundTotals.totalNetRevenue)} ZAR.`)
-        lines.push('This is a device-level explanatory aggregate. It is not identical to round profit because variable cost, fixed cost, dispatch cost (ATC), and congestion revenue are handled separately at KPI level.')
+        lines.push('This is a device-level explanatory aggregate. It is not identical to round profit because variable cost, fixed cost, redispatch cost (ATC), and congestion revenue are handled separately at KPI level.')
         break
       case 'network_shortfall_cost':
         lines.push(`Formula: sum of hourly network shortfall costs = ${tti(roundTotals.totalNetworkShortfallCostZar)} ZAR.`)
-        lines.push('This contributes to Dispatch Cost (ATC) in the round KPI view.')
+        lines.push('This contributes to Redispatch Cost (ATC) in the round KPI view.')
         break
       case 'variable_cost':
         lines.push(`Formula: sum of hourly variable costs = ${tti(hourlyVariableCostTotal)} ZAR.`)
@@ -1666,7 +1666,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
             </TableRow>
             {isConsumer && roundTotals.totalNetworkShortfallCostZar > 0.5 && (
               <TableRow hover>
-                <TableCell sx={{ color: 'error.main' }}><RowLabel title={getRowTooltip('network_shortfall_cost')}>Dispatch Cost (ATC) (ZAR)</RowLabel></TableCell>
+                <TableCell sx={{ color: 'error.main' }}><RowLabel title={getRowTooltip('network_shortfall_cost')}>Redispatch Cost (ATC) (ZAR)</RowLabel></TableCell>
                 {hourlyData.map((h) => (
                   <TableCell key={h.hourKey} align="right" sx={{ color: h.networkShortfallCostZar > 0 ? 'error.main' : 'text.secondary' }}>
                     <HourTip title={getHourTooltip('network_shortfall_cost', h)}>{h.networkShortfallCostZar > 0 ? formatInteger(h.networkShortfallCostZar) : '-'}</HourTip>

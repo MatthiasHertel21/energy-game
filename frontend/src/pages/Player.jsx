@@ -526,7 +526,8 @@ const getDeviceCapacityLabel = (device) => {
   if (type === 'battery') {
     const power = batteryPowerMw != null ? `${batteryPowerMw} MW power` : null
     const capacity = (device?.capacity_mwh ?? device?.capacity_mw) != null ? `${device.capacity_mwh ?? device.capacity_mw} MWh` : null
-    return [power, capacity].filter(Boolean).join(' / ') || '-'
+    const efficiency = device?.efficiency_pct != null ? `Eff. ${device.efficiency_pct}%` : null
+    return [power, capacity, efficiency].filter(Boolean).join(' / ') || '-'
   }
 
   return device?.capacity_mw != null ? `${device.capacity_mw} MW` : '-'

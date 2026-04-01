@@ -655,7 +655,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                           ) : (
                             <>
                               <TableCell align="right" sx={{ fontWeight: 600 }}>Total Costs (ZAR)</TableCell>
-                              <TableCell align="right" sx={{ fontWeight: 600 }}>Dispatch Cost ATC (ZAR)</TableCell>
+                              <TableCell align="right" sx={{ fontWeight: 600 }}>Redispatch Cost ATC (ZAR)</TableCell>
                               <TableCell align="right" sx={{ fontWeight: 600 }}>Coverage (%)</TableCell>
                               <TableCell align="right" sx={{ fontWeight: 600 }}>Total Consumed (MWh)</TableCell>
                               <TableCell align="right" sx={{ fontWeight: 600 }}>{groupTerms.totalCo2Label} (kg)</TableCell>
@@ -741,7 +741,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                     ) : (
                       <>
                         <TableCell align="right">Costs</TableCell>
-                        <TableCell align="right">Dispatch Cost (ATC)</TableCell>
+                        <TableCell align="right">Redispatch Cost (ATC)</TableCell>
                         <TableCell align="right">Imbalance Cost</TableCell>
                         <TableCell align="right">Coverage</TableCell>
                         <TableCell align="right">{terms.co2ColumnLabel}</TableCell>

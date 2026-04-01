@@ -315,7 +315,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     },
     profit: {
       title: 'Profit breakdown',
-      description: 'Profit = Revenue − Variable Cost − Fixed Cost − Imbalance Cost − Battery Charge Cost − Dispatch Cost (ATC) + Congestion Revenue'
+      description: 'Profit = Revenue − Variable Cost − Fixed Cost − Imbalance Cost − Battery Charge Cost − Redispatch Cost (ATC) + Congestion Revenue'
     },
     co2: {
       title: terms.co2BreakdownTitle,
@@ -384,7 +384,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       }
 
       if (profit < 0) {
-        notes.push('Profit is negative: After adding any congestion revenue, the sum of variable costs, fixed costs, imbalance costs, and possible dispatch cost (ATC) still exceeded achieved revenue.')
+        notes.push('Profit is negative: After adding any congestion revenue, the sum of variable costs, fixed costs, imbalance costs, and possible redispatch cost (ATC) still exceeded achieved revenue.')
       }
 
       if (gridCurtailedMwh > 0.001) {
@@ -400,7 +400,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         notes.push(`Demand coverage is above 100% (${demandCoveragePct.toFixed(1)}%): delivered volume exceeded planned demand in this round (e.g., additional intraday procurement or balancing effects).`)
       }
       if (profit < 0) {
-        notes.push('Net result is negative: procurement, imbalance, and possible dispatch cost (ATC), net of any congestion revenue, exceeded positive settlement effects in this round.')
+        notes.push('Net result is negative: procurement, imbalance, and possible redispatch cost (ATC), net of any congestion revenue, exceeded positive settlement effects in this round.')
       }
     }
 
@@ -421,7 +421,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     }
 
     if (gridConstraintCost > 0.5) {
-      notes.push(`Dispatch cost (ATC) of ${formatCurrency(gridConstraintCost)} arises from network limits and any balancing support needed to maintain delivery in your zone — separate from imbalance caused by bidding or scheduling deviations.`)
+      notes.push(`Redispatch cost (ATC) of ${formatCurrency(gridConstraintCost)} arises from network limits and any balancing support needed to maintain delivery in your zone — separate from imbalance caused by bidding or scheduling deviations.`)
     }
 
     if (Number(currentKpis.imbalance_cost_zar || 0) > 0.5 || Number(currentKpis.imbalance_mwh || 0) > 0.001) {
@@ -539,7 +539,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       notes.push(`Profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(batteryChargeCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
     }
     if (gridConstraintCost > 0 || zoneShortfall > 0 || zoneBalancingSupport > 0) {
-      notes.push(`Dispatch cost (ATC): ${formatCurrency(gridConstraintCost)} from network capacity limits, final zone shortfall ${formatInt(zoneShortfall)} MWh, balancing support ${formatInt(zoneBalancingSupport)} MWh.`)
+      notes.push(`Redispatch cost (ATC): ${formatCurrency(gridConstraintCost)} from network capacity limits, final zone shortfall ${formatInt(zoneShortfall)} MWh, balancing support ${formatInt(zoneBalancingSupport)} MWh.`)
     }
     if (zoneStatus) {
       notes.push(`Zone context: Zone ${playerZoneInfo?.zone_id || '-'} was ${String(zoneStatus).replaceAll('_', ' ')}, with local generation ${formatInt(zoneLocalGeneration)} MWh, local demand ${formatInt(zoneLocalDemand)} MWh, imports ${formatInt(zoneImports)} MWh, exports ${formatInt(zoneExports)} MWh, and ${zoneLinkCount} connected active link${zoneLinkCount === 1 ? '' : 's'} in the round summary.`)
@@ -548,10 +548,10 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       notes.push(`Constrained-off generation: ${formatInt(gridCurtailedMwh)} MWh were removed after market clearing because the network could not physically transport all cleared output.`)
     }
     if (zoneShortfall > 0.001 && isConsumer) {
-      notes.push(`Shortfall settlement: ${formatInt(zoneShortfall)} MWh in your zone were not physically served. The associated extra cost is shown as Dispatch Cost (ATC), separate from Imbalance Cost.`)
+      notes.push(`Shortfall settlement: ${formatInt(zoneShortfall)} MWh in your zone were not physically served. The associated extra cost is shown as Redispatch Cost (ATC), separate from Imbalance Cost.`)
     }
     if (zoneBalancingSupport > 0.001 && isConsumer) {
-      notes.push(`Balancing support: ${formatInt(zoneBalancingSupport)} MWh were additionally procured to keep your demand served. The related spread is shown as Dispatch Cost (ATC), not as Imbalance Cost.`)
+      notes.push(`Balancing support: ${formatInt(zoneBalancingSupport)} MWh were additionally procured to keep your demand served. The related spread is shown as Redispatch Cost (ATC), not as Imbalance Cost.`)
     }
     if (imbalanceCost > 0.5 || Number(currentKpis.imbalance_mwh || 0) > 0.001) {
       notes.push(`Imbalance cost uses the configured balancing prices, not the market SMP: positive imbalance is settled at ${formatCurrency(balancingUpPrice)}/MWh and negative imbalance at ${formatCurrency(balancingDownPrice)}/MWh.`)
@@ -861,7 +861,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                           </Typography>
                         )}
                         <Typography variant="body2" color="text.secondary">
-                          Dispatch cost (ATC): {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
+                          Redispatch cost (ATC): {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
                         </Typography>
                       </Stack>
                     </CardContent>
@@ -1032,7 +1032,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                             <Stack direction="row" alignItems="center" spacing={2}>
                               <CostIcon sx={{ fontSize: 32, color: '#f44336' }} />
                               <Typography variant="subtitle2" color="text.secondary">
-                                Dispatch Cost (ATC)
+                                Redispatch Cost (ATC)
                               </Typography>
                             </Stack>
                             <IconButton size="small" onClick={() => openBreakdown('profit')}>
@@ -1081,7 +1081,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                         </Typography>
                         {(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0) > 0.5 && (
                           <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: '#f44336' }}>
-                            Dispatch cost (ATC): {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
+                            Redispatch cost (ATC): {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
                           </Typography>
                         )}
                       </CardContent>
@@ -1283,7 +1283,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                       Profit Formula
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem' }}>
-                      Profit = Revenue - Variable Cost - Fixed Cost - Imbalance Cost - Battery Charge Cost - Dispatch Cost (ATC) + Congestion Revenue
+                      Profit = Revenue - Variable Cost - Fixed Cost - Imbalance Cost - Battery Charge Cost - Redispatch Cost (ATC) + Congestion Revenue
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', color: 'primary.main' }}>
                       Profit = {formatInt(kpis.revenue_zar || 0)} - {formatInt(kpis.variable_cost_zar || 0)} - {formatInt(kpis.fixed_cost_zar || 0)} - {formatInt(kpis.imbalance_cost_zar || 0)} - {formatInt(kpis.battery_charge_cost_zar || 0)} - {formatInt(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)} + {formatInt(kpis.congestion_revenue_zar || 0)}
@@ -1314,7 +1314,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                             <TableCell align="right">− {formatCurrency(kpis.imbalance_cost_zar || 0)}</TableCell>
                           </TableRow>
                           <TableRow>
-                            <TableCell>Dispatch Cost (ATC)</TableCell>
+                            <TableCell>Redispatch Cost (ATC)</TableCell>
                             <TableCell align="right">− {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}</TableCell>
                           </TableRow>
                           <TableRow>
@@ -1504,7 +1504,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     </Typography>
                     {(kpis.imbalance_cost_zar > 0.5 || kpis.atc_dispatch_cost_zar > 0.5) && (
                       <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                        Note: Imbalance Cost ({formatCurrency(kpis.imbalance_cost_zar || 0)}) and Dispatch Cost ATC ({formatCurrency(kpis.atc_dispatch_cost_zar || 0)}) are additional result components explained separately in the round notes and profit breakdown — they do not flow into this "Total Costs" card.
+                        Note: Imbalance Cost ({formatCurrency(kpis.imbalance_cost_zar || 0)}) and Redispatch Cost ATC ({formatCurrency(kpis.atc_dispatch_cost_zar || 0)}) are additional result components explained separately in the round notes and profit breakdown — they do not flow into this "Total Costs" card.
                       </Typography>
                     )}
                   </>
