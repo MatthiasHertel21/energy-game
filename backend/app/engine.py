@@ -2938,6 +2938,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             device_row['id_dispatched_mwh'] = round(id_dispatch, 3)
                             total_dispatched_after = da_dispatch + id_dispatch
                             device_row['total_dispatched_mwh'] = round(total_dispatched_after, 3)
+                            device_row['dispatched_mw'] = round(total_dispatched_after, 3)
                             device_row['network_shortfall_mwh'] = round(float(device_row.get('network_shortfall_mwh', 0.0) or 0.0) + curtailed, 3)
 
                             actual_mwh = max(0.0, float(device_row.get('actual_mw', 0.0) or 0.0))
@@ -2997,7 +2998,10 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 continue
 
             for hour_pos, hour_entry in enumerate(hourly_breakdown):
-                scenario_hour_idx = int(hour_entry.get('scenario_hour_idx', hour_entry.get('hour_idx', hour_pos)) or hour_pos)
+                scenario_hour_idx = int(
+                    hour_entry.get('scenario_hour_idx', hour_entry.get('hour_idx', hour_entry.get('hour', hour_pos)))
+                    or hour_pos
+                )
                 device_rows_for_hour = []
                 for rows in device_breakdown.values():
                     row = _find_device_hour_row(rows, scenario_hour_idx, hour_pos)
@@ -4237,6 +4241,10 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         device_dispatched = sum(bid_info.get('mw_dispatched', 0.0) for bid_info in device_dispatch.values())
                         if device_dispatched > 0:
                             consumer_device_dispatch[device_id] = float(device_dispatched)
+                if not consumer_device_dispatch and is_delivery_hour and delivery_da_dispatch_by_device:
+                    for device_id, device_dispatch in delivery_da_dispatch_by_device.items():
+                        if float(device_dispatch or 0.0) > 0.0:
+                            consumer_device_dispatch[device_id] = float(device_dispatch)
                 hour_consumer_device_dispatch[pid] = consumer_device_dispatch
             else:
                 hour_producer_dispatched_total += max(0.0, float(dispatched))
@@ -4885,6 +4893,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         # This prevents KPI drift when legacy per_player_hourly_* arrays are missing/zero (e.g. delta rounds).
         if isinstance(device_hourly_breakdown, dict) and hourly_breakdown:
             for h_idx in range(min(len(hourly_breakdown), len(hourly_results))):
+                planned_sum = 0.0
+                dispatched_sum = 0.0
+                actual_sum = 0.0
                 revenue_sum = 0.0
                 variable_cost_sum = 0.0
                 fixed_cost_sum = 0.0
@@ -4896,6 +4907,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     if not isinstance(rows, list) or h_idx >= len(rows):
                         continue
                     row = rows[h_idx] or {}
+                    planned_sum += float(row.get('planned_mw', 0.0) or 0.0)
+                    dispatched_sum += float(row.get('total_dispatched_mwh', row.get('dispatched_mw', 0.0)) or 0.0)
+                    actual_sum += float(row.get('actual_mw', 0.0) or 0.0)
                     revenue_sum += float(row.get('revenue_zar', 0.0) or 0.0)
                     variable_cost_sum += float(row.get('variable_cost_zar', 0.0) or 0.0)
                     fixed_cost_sum += float(row.get('fixed_cost_zar', 0.0) or 0.0)
@@ -4904,6 +4918,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     congestion_sum += float(row.get('congestion_revenue_zar', 0.0) or 0.0)
                     imbalance_mwh_sum += float(row.get('imbalance_mwh', 0.0) or 0.0)
 
+                hourly_breakdown[h_idx]['planned_mw'] = round(planned_sum, 3)
+                hourly_breakdown[h_idx]['dispatched_mw'] = round(dispatched_sum, 3)
+                hourly_breakdown[h_idx]['actual_mw'] = round(actual_sum, 3)
                 hourly_breakdown[h_idx]['revenue_zar'] = round(revenue_sum, 0)
                 hourly_breakdown[h_idx]['variable_cost_zar'] = round(variable_cost_sum, 0)
                 hourly_breakdown[h_idx]['fixed_cost_zar'] = round(fixed_cost_sum, 0)
@@ -4949,6 +4966,42 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     if not isinstance(row, dict):
                         continue
                     total_co2_from_details += float(row.get('co2_kg', 0.0) or 0.0)
+
+        if abs(total_co2_from_details) < 1e-9 and isinstance(device_hourly_breakdown, dict):
+            fallback_co2_total = max(0.0, float(per_player_co2_emissions.get(pid, 0.0) or 0.0))
+            if fallback_co2_total > 1e-9:
+                dispatch_rows = []
+                total_device_dispatch_for_co2 = 0.0
+                for rows in device_hourly_breakdown.values():
+                    if not isinstance(rows, list):
+                        continue
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        dispatched_for_co2 = max(0.0, float(row.get('total_dispatched_mwh', row.get('dispatched_mw', 0.0)) or 0.0))
+                        if dispatched_for_co2 <= 1e-9:
+                            continue
+                        dispatch_rows.append((row, dispatched_for_co2))
+                        total_device_dispatch_for_co2 += dispatched_for_co2
+
+                if total_device_dispatch_for_co2 > 1e-9 and dispatch_rows:
+                    allocated_co2 = 0.0
+                    last_index = len(dispatch_rows) - 1
+                    for idx, (row, dispatched_for_co2) in enumerate(dispatch_rows):
+                        if idx == last_index:
+                            row_co2 = round(max(0.0, fallback_co2_total - allocated_co2), 2)
+                        else:
+                            row_co2 = round(fallback_co2_total * (dispatched_for_co2 / total_device_dispatch_for_co2), 2)
+                            allocated_co2 += row_co2
+                        row['co2_kg'] = row_co2
+
+                    total_co2_from_details = sum(
+                        float((row or {}).get('co2_kg', 0.0) or 0.0)
+                        for rows in device_hourly_breakdown.values()
+                        if isinstance(rows, list)
+                        for row in rows
+                        if isinstance(row, dict)
+                    )
         battery_summary = _summarize_battery_player_kpis(device_hourly_breakdown, config.get('devices', []))
 
         per_player[pid] = {
@@ -5115,23 +5168,20 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             0,
         ) if hourly_breakdown else round(float(per_player[pid].get('profit_zar', 0.0) or 0.0), 0)
         accounted_atc_cost = round(sum(float(hour.get('network_shortfall_cost_zar', 0.0) or 0.0) for hour in hourly_breakdown), 0)
+        if hourly_breakdown:
+            per_player[pid]['atc_dispatch_cost_zar'] = accounted_atc_cost
+            per_player[pid]['grid_constraint_cost_zar'] = accounted_atc_cost
+            dispatched_mwh = float(per_player[pid].get('dispatched_mwh', 0.0) or 0.0)
+            per_player[pid]['grid_constraint_cost_per_mwh_zar'] = round((accounted_atc_cost / dispatched_mwh), 2) if dispatched_mwh > 1e-9 else 0.0
         per_player[pid]['profit_zar'] = hourly_profit_sum
         unapplied_atc_cost = max(0.0, float(extra_cost or 0.0) - accounted_atc_cost)
-        if unapplied_atc_cost > 1e-9:
+        if unapplied_atc_cost > 1e-9 and not hourly_breakdown:
             per_player[pid]["profit_zar"] = round(hourly_profit_sum - unapplied_atc_cost, 0)
 
         curtailed_mwh = float(per_player_curtailed_mwh.get(pid, 0.0) or 0.0)
         lost_revenue = float(per_player_lost_revenue.get(pid, 0.0) or 0.0)
         if curtailed_mwh > 1e-9:
-            variable_unit_cost = 0.0
-            if dispatched_mwh > 1e-9:
-                variable_unit_cost = float(per_player[pid].get("variable_cost_zar", 0.0) or 0.0) / dispatched_mwh
-            saved_variable_cost = curtailed_mwh * variable_unit_cost
             per_player[pid]["grid_curtailed_mwh"] = round(curtailed_mwh, 3)
-            per_player[pid]["dispatched_mwh"] = round(max(0.0, dispatched_mwh - curtailed_mwh), 3)
-            per_player[pid]["revenue_zar"] = round(float(per_player[pid].get("revenue_zar", 0.0) or 0.0) - lost_revenue, 0)
-            per_player[pid]["variable_cost_zar"] = round(max(0.0, float(per_player[pid].get("variable_cost_zar", 0.0) or 0.0) - saved_variable_cost), 0)
-            per_player[pid]["profit_zar"] = round(float(per_player[pid].get("profit_zar", 0.0) or 0.0) - lost_revenue + saved_variable_cost, 0)
             hourly_breakdown = per_player[pid].get("hourly_breakdown") or []
             if hourly_breakdown:
                 hourly_dispatched_total = sum(max(0.0, float(hour.get("dispatched_mw", 0.0) or 0.0)) for hour in hourly_breakdown)
@@ -5143,7 +5193,6 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         continue
                     proportional = curtailed_mwh * (hour_dispatched / hourly_dispatched_total) if hourly_dispatched_total > 1e-9 else 0.0
                     hour_curtailment = min(hour_dispatched, remaining_curtailment, proportional if proportional > 1e-9 else remaining_curtailment)
-                    hour["dispatched_mw"] = round(max(0.0, hour_dispatched - hour_curtailment), 3)
                     hour["grid_curtailed_mw"] = round(hour_curtailment, 3)
                     remaining_curtailment -= hour_curtailment
     

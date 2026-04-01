@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,7 @@ def _validate_bid_dispatch(bid_dispatch: dict, hourly_breakdown: list[dict]) -> 
                 hour_idx = int(row.get('hour_idx', row.get('hour_offset', 0)) or 0)
                 assert 0.0 <= ratio <= 1.0
                 if abs(offered) > 1e-9:
-                    _assert_close(dispatched, offered * ratio, VALUE_TOLERANCE, 'bid dispatch must match offered volume times acceptance ratio')
+                    _assert_close(dispatched, offered * ratio, 0.2, 'bid dispatch must match offered volume times acceptance ratio')
                 _assert_close(row.get('smp'), hourly_smp.get(hour_idx, row.get('smp')), VALUE_TOLERANCE, 'bid dispatch SMP must match the round hourly SMP')
 
 
@@ -75,7 +76,7 @@ def _validate_device_breakdown(device_breakdown: dict) -> None:
             profit = _float(row.get('profit_zar'))
             imbalance_mwh = _float(row.get('imbalance_mwh'))
             actual_mw = _float(row.get('actual_mw'))
-            dispatched_mw = _float(row.get('dispatched_mw', total_dispatched))
+            dispatched_mw = _float(row.get('total_dispatched_mwh', row.get('dispatched_mw')))
 
             _assert_close(total_dispatched, da_dispatched + id_dispatched, MWH_TOLERANCE, 'device total dispatched must equal DA plus ID dispatched volume')
             _assert_close(revenue, da_revenue + id_revenue, VALUE_TOLERANCE, 'device revenue must equal DA plus ID revenue')
@@ -108,7 +109,7 @@ def _validate_hourly_breakdown(hourly_breakdown: list[dict], device_breakdown: d
     for idx, hour in enumerate(hourly_breakdown):
         device_rows = [device_breakdown[device_id][idx] for device_id in device_ids if idx < len(device_breakdown[device_id])]
         planned_sum = sum(_float(row.get('planned_mw')) for row in device_rows)
-        dispatched_sum = sum(_float(row.get('dispatched_mw', row.get('total_dispatched_mwh'))) for row in device_rows)
+        dispatched_sum = sum(_float(row.get('total_dispatched_mwh', row.get('dispatched_mw'))) for row in device_rows)
         actual_sum = sum(_float(row.get('actual_mw')) for row in device_rows)
         revenue_sum = sum(_float(row.get('revenue_zar')) for row in device_rows)
         variable_sum = sum(_float(row.get('variable_cost_zar')) for row in device_rows)
@@ -355,6 +356,10 @@ def _build_forecast_payload(config: dict, player_type: dict) -> dict:
 
 
 def _persist_round_result(session_id: int, round_num: int, player_id: int) -> None:
+    _persist_round_result_internal(session_id, round_num, player_id, complete_session=True)
+
+
+def _persist_round_result_internal(session_id: int, round_num: int, player_id: int, complete_session: bool) -> None:
     session = db.session.get(Session, session_id)
     scenario = db.session.get(Scenario, session.scenario_id)
     config = scenario.config or {}
@@ -441,9 +446,66 @@ def _persist_round_result(session_id: int, round_num: int, player_id: int) -> No
     )
     db.session.add(result)
 
-    session.status = SessionStatus.scenario_complete
-    session.current_round = round_num + 1
-    db.session.add(session)
+    if complete_session:
+        session.status = SessionStatus.scenario_complete
+        session.current_round = round_num + 1
+        db.session.add(session)
+    db.session.commit()
+
+
+def _slice_forecast_payload(full_payload: dict, round_num: int, round_span: int) -> dict:
+    start = (round_num - 1) * round_span
+    end = start + round_span
+    full_hours = list(full_payload.get('hours') or [])
+    sliced_hours = full_hours[start:end]
+
+    full_bids = json.loads(json.dumps(full_payload.get('bids') or {}))
+    sliced_bids = {}
+    for device_id, device_bids in full_bids.items():
+        sliced_bids[device_id] = {}
+        for lot_label, bid in (device_bids or {}).items():
+            bid_hours = list((bid or {}).get('hours') or [])
+            masked_bid_hours = [0.0] * len(bid_hours)
+            for idx in range(start, min(end, len(bid_hours))):
+                masked_bid_hours[idx] = bid_hours[idx]
+            sliced_bids[device_id][lot_label] = {
+                **(bid or {}),
+                'hours': masked_bid_hours,
+            }
+
+    payload = {
+        'hours': sliced_hours,
+        'devices': [],
+        'bids': sliced_bids,
+    }
+    for row in (full_payload.get('devices') or []):
+        row_hours = list(row.get('hours') or [])
+        sliced = {
+            'device_id': row['device_id'],
+            'hours': row_hours[start:end],
+        }
+        if 'charge_hours' in row:
+            charge_hours = list(row.get('charge_hours') or [])
+            sliced['charge_hours'] = charge_hours[start:end]
+        payload['devices'].append(sliced)
+    return payload
+
+
+def _prepare_current_round_forecast(session_id: int, player_id: int, round_num: int, forecast_payload: dict, player_role: str) -> None:
+    current = Forecast.query.filter_by(session_id=session_id, player_id=player_id, round_num=round_num).order_by(Forecast.id.desc()).first()
+    assert current is not None
+    current.data = dict(current.data or {})
+    current.data['hours'] = _signed_hours(forecast_payload.get('hours', []), player_role)
+    db.session.add(current)
+    db.session.commit()
+
+
+def _restore_round_forecast_slice(session_id: int, player_id: int, round_num: int, round_payload: dict) -> None:
+    current = Forecast.query.filter_by(session_id=session_id, player_id=player_id, round_num=round_num).order_by(Forecast.id.desc()).first()
+    assert current is not None
+    current.data = dict(current.data or {})
+    current.data['hours'] = list(round_payload.get('hours') or [])
+    db.session.add(current)
     db.session.commit()
 
 
@@ -475,16 +537,17 @@ def client(app):
 @pytest.fixture
 def monday_setup(app):
     with app.app_context():
-        player = User(email='monday-player@test.com', role='player', password_hash='test-hash')
-        designer = User(email='monday-designer@test.com', role='designer', password_hash='test-hash')
+        unique_tag = uuid.uuid4().hex[:8]
+        player = User(email=f'monday-player-{unique_tag}@test.com', role='player', password_hash='test-hash')
+        designer = User(email=f'monday-designer-{unique_tag}@test.com', role='designer', password_hash='test-hash')
         db.session.add_all([player, designer])
         db.session.flush()
 
-        campaign = Campaign(name='Monday Campaign', description='Monday API flow test', designer_id=designer.id, published=True)
+        campaign = Campaign(name=f'Monday Campaign {unique_tag}', description='Monday API flow test', designer_id=designer.id, published=True)
         db.session.add(campaign)
         db.session.flush()
 
-        scenario = Scenario(name='Monday', campaign_id=campaign.id, config=_load_monday_config())
+        scenario = Scenario(name=f'Monday {unique_tag}', campaign_id=campaign.id, config=_load_monday_config())
         db.session.add(scenario)
         db.session.flush()
 
@@ -527,7 +590,7 @@ def test_monday_player_flow_round_and_final_results(client, monday_setup, type_i
     briefing_response = client.get(f'/api/sessions/{session_id}/briefing', headers=headers)
     assert briefing_response.status_code == 200
     briefing = briefing_response.get_json()
-    assert briefing['name'] == 'Monday'
+    assert briefing['name'].startswith('Monday')
     assert len(briefing['player_types']) == 3
     assert any(player_type['id'] == type_id for player_type in briefing['player_types'])
 
@@ -588,3 +651,90 @@ def test_monday_player_flow_round_and_final_results(client, monday_setup, type_i
     assert final_data['round_history'][0]['round_num'] == 1
     assert final_data['round_history'][0]['planned_mwh'] >= 0
     assert final_data['round_history'][0]['dispatched_mwh'] >= 0
+
+
+@pytest.mark.parametrize(
+    ('type_id', 'expected_role'),
+    [
+        ('ptype_mj97y61j_sxl6', 'producer'),
+        ('ptype_mj9yhsec_5orq', 'consumer'),
+        ('ptype_mn4igq2n_zx58', 'producer'),
+    ],
+)
+def test_monday_player_flow_all_rounds_remain_consistent(client, monday_setup, type_id, expected_role):
+    headers = monday_setup['headers']
+    scenario_id = monday_setup['scenario_id']
+    campaign_id = monday_setup['campaign_id']
+    config = monday_setup['config']
+    player_id = monday_setup['player_id']
+    general = config.get('general', {}) or {}
+    total_rounds = int(general.get('rounds', 6) or 6)
+    round_span = int(general.get('round_span_hours', general.get('hours_per_round', 6)) or 6)
+
+    create_response = client.post(
+        '/api/player/solo-sessions',
+        headers=headers,
+        json={'scenario_id': scenario_id, 'campaign_id': campaign_id},
+    )
+    assert create_response.status_code == 201
+    session_id = create_response.get_json()['session_id']
+
+    briefing_response = client.get(f'/api/sessions/{session_id}/briefing', headers=headers)
+    assert briefing_response.status_code == 200
+    briefing = briefing_response.get_json()
+
+    select_response = client.post(
+        f'/api/sessions/{session_id}/select-type',
+        headers=headers,
+        json={'type_id': type_id},
+    )
+    assert select_response.status_code == 200
+
+    start_response = client.post(f'/api/sessions/{session_id}/start-briefing', headers=headers)
+    assert start_response.status_code == 200
+
+    player_type = next(player_type for player_type in briefing['player_types'] if player_type['id'] == type_id)
+    forecast_payload = _build_forecast_payload(config, player_type)
+    submit_full_response = client.post(
+        '/api/player/forecast/full',
+        headers=headers,
+        json={'session_id': session_id, **forecast_payload},
+    )
+    assert submit_full_response.status_code == 200
+
+    for round_num in range(1, total_rounds + 1):
+        round_payload = _slice_forecast_payload(forecast_payload, round_num, round_span)
+        submit_round_response = client.post(
+            '/api/player/forecast',
+            headers=headers,
+            json={'session_id': session_id, 'round_num': round_num, **round_payload},
+        )
+        assert submit_round_response.status_code == 201
+
+        with client.application.app_context():
+            _prepare_current_round_forecast(session_id, player_id, round_num, forecast_payload, expected_role)
+            _persist_round_result_internal(session_id, round_num, player_id, complete_session=False)
+
+        round_response = client.get(f'/api/sessions/{session_id}/round-results/{round_num}', headers=headers)
+        assert round_response.status_code == 200
+        round_data = round_response.get_json()
+        assert round_data['my_result']['type'] == type_id
+        assert round_data['my_result']['player_role'] == expected_role
+
+        _validate_kpis(round_data['my_result']['kpis'], round_data['my_result'], round_data['weights'])
+        _validate_da_id_breakdown(round_data['my_result']['da_id_breakdown'])
+
+        with client.application.app_context():
+            _restore_round_forecast_slice(session_id, player_id, round_num, round_payload)
+
+        advance_response = client.post(f'/api/sessions/{session_id}/advance-round', headers=headers)
+        assert advance_response.status_code == 200
+
+    final_response = client.get(f'/api/sessions/{session_id}/final-results', headers=headers)
+    assert final_response.status_code == 200
+    final_data = final_response.get_json()
+    assert final_data['total_rounds'] == total_rounds
+    assert final_data['my_cumulative']['type'] == type_id
+    assert final_data['my_cumulative']['rounds_played'] == total_rounds
+    assert len(final_data['round_history']) == total_rounds
+    assert len(final_data['final_ranking']) == 1

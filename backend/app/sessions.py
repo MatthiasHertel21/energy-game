@@ -1154,8 +1154,9 @@ class FinalResults(Resource):
         ranking = []
         my_cumulative = None
         
-        # Get number of rounds for average calculation
-        num_rounds = session.current_round - 1 if session.current_round else 1
+        # Get number of completed rounds from persisted results rather than session.current_round.
+        # current_round remains on the last playable round when the scenario is completed.
+        num_rounds = max((int(r.round_num or 0) for r in results), default=0)
         
         for pid, totals in player_totals.items():
             # Calculate average score per round, normalized to 0-100
@@ -1270,7 +1271,7 @@ class FinalResults(Resource):
             "bid_dispatch_aggregate": my_bid_aggregate,
             "round_history": round_history,
             "weights": weights,
-            "total_rounds": session.current_round - 1 if session.current_round else 0
+            "total_rounds": num_rounds
         }
 
 
