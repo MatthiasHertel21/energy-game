@@ -1,0 +1,95 @@
+{
+  "generated_at": "2026-04-02T00:34:21.388Z",
+  "run_label": "d0637c27",
+  "scenario_name": "Tester",
+  "scenario_id": 1,
+  "campaign_id": 6,
+  "total_rounds": 4,
+  "total_players": 3,
+  "total_validated_values": 10221,
+  "minimum_required_validated_values": 1000,
+  "categories": {
+    "numeric": 2976,
+    "equality": 897,
+    "bounds": 1,
+    "existence": 35,
+    "finiteness": 6312
+  },
+  "players": [
+    {
+      "type_id": "ptype_mj97y61j_sxl6",
+      "type_name": "Classic Provider",
+      "expected_role": "producer",
+      "totalChecks": 3285,
+      "rounds": [
+        {
+          "round": 1,
+          "validated_values": 805
+        },
+        {
+          "round": 2,
+          "validated_values": 805
+        },
+        {
+          "round": 3,
+          "validated_values": 805
+        },
+        {
+          "round": 4,
+          "validated_values": 805
+        }
+      ],
+      "finalResultChecks": 65
+    },
+    {
+      "type_id": "ptype_mj9yhsec_5orq",
+      "type_name": "Municipal Consumer",
+      "expected_role": "consumer",
+      "totalChecks": 3285,
+      "rounds": [
+        {
+          "round": 1,
+          "validated_values": 805
+        },
+        {
+          "round": 2,
+          "validated_values": 805
+        },
+        {
+          "round": 3,
+          "validated_values": 805
+        },
+        {
+          "round": 4,
+          "validated_values": 805
+        }
+      ],
+      "finalResultChecks": 65
+    },
+    {
+      "type_id": "ptype_mn4igq2n_zx58",
+      "type_name": "PV Bat Player",
+      "expected_role": "producer",
+      "totalChecks": 3649,
+      "rounds": [
+        {
+          "round": 1,
+          "validated_values": 896
+        },
+        {
+          "round": 2,
+          "validated_values": 896
+        },
+        {
+          "round": 3,
+          "validated_values": 896
+        },
+        {
+          "round": 4,
+          "validated_values": 896
+        }
+      ],
+      "finalResultChecks": 65
+    }
+  ]
+}
