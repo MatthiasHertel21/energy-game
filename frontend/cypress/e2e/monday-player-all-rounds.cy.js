@@ -3,6 +3,23 @@
 const ROUND_TOLERANCE = 1.0
 const VALUE_TOLERANCE = 0.05
 const MWH_TOLERANCE = 0.001
+const MIN_VALIDATED_VALUES = 1000
+const REPORT_DIR = 'cypress/results'
+const REPORT_BASENAME = 'monday-ui-validation'
+
+const validationState = {
+  runLabel: 'pending',
+  scenarioName: null,
+  totalChecks: 0,
+  categories: {
+    numeric: 0,
+    equality: 0,
+    bounds: 0,
+    existence: 0,
+    finiteness: 0,
+  },
+  players: [],
+}
 
 const ROUND_INPUTS = {
   1: { producerPrice: 0, consumerPrice: 5000, quantities: [0, 5], expectOvercapacity: false },
@@ -11,6 +28,12 @@ const ROUND_INPUTS = {
   4: { producerPrice: 9, consumerPrice: 4200, quantities: [0, 0], expectOvercapacity: false },
   5: { producerPrice: 7, consumerPrice: 4000, quantities: [5000, 1], expectOvercapacity: true },
   6: { producerPrice: 5, consumerPrice: 3800, quantities: [10, 0], expectOvercapacity: false },
+}
+
+const PREFERRED_DEVICE_IDS = {
+  ptype_mj97y61j_sxl6: 'device_mlnrjhyj_1zdt',
+  ptype_mj9yhsec_5orq: 'device_mj9yhxvk_1vml',
+  ptype_mn4igq2n_zx58: 'device_mn4ihpl8_19oy',
 }
 
 function setNumericInput(element, value) {
@@ -26,7 +49,7 @@ function setNumericInput(element, value) {
 }
 
 function getRoundPlan(roundNum, player) {
-  const base = ROUND_INPUTS[roundNum]
+  const base = ROUND_INPUTS[roundNum] || ROUND_INPUTS[6]
   const isConsumer = player?.expected_role === 'consumer'
   return {
     ...base,
@@ -34,19 +57,78 @@ function getRoundPlan(roundNum, player) {
   }
 }
 
-const PREFERRED_DEVICE_IDS = {
-  ptype_mj97y61j_sxl6: 'device_mlnrjhyj_1zdt',
-  ptype_mj9yhsec_5orq: 'device_mj9yhxvk_1vml',
-  ptype_mn4igq2n_zx58: 'device_mn4ihpl8_19oy',
-}
-
 function toFloat(value, defaultValue = 0.0) {
   const num = Number(value)
   return Number.isFinite(num) ? num : defaultValue
 }
 
+function bumpCheck(category, amount = 1) {
+  validationState.totalChecks += amount
+  validationState.categories[category] = (validationState.categories[category] || 0) + amount
+}
+
 function assertClose(actual, expected, tolerance, label) {
+  bumpCheck('numeric')
   expect(toFloat(actual), label).to.be.closeTo(toFloat(expected), tolerance)
+}
+
+function assertEqual(actual, expected, label) {
+  bumpCheck('equality')
+  expect(actual, label).to.deep.equal(expected)
+}
+
+function assertBounded(value, min, max, label) {
+  bumpCheck('bounds')
+  expect(toFloat(value), label).to.be.at.least(min)
+  bumpCheck('bounds')
+  expect(toFloat(value), label).to.be.at.most(max)
+}
+
+function assertExists(value, label) {
+  bumpCheck('existence')
+  expect(value, label).to.exist
+}
+
+function assertFiniteValue(value, label) {
+  bumpCheck('finiteness')
+  expect(Number.isFinite(Number(value)), label).to.eq(true)
+}
+
+function validatePresentNumericFields(row, fieldNames, rowLabel) {
+  fieldNames.forEach((fieldName) => {
+    if (row?.[fieldName] !== undefined && row?.[fieldName] !== null) {
+      assertFiniteValue(row[fieldName], `${rowLabel}.${fieldName} must be numeric`)
+    }
+  })
+}
+
+function pushPlayerStat(player) {
+  const stat = {
+    type_id: player.type_id,
+    type_name: player.type_name || null,
+    expected_role: player.expected_role,
+    totalChecks: 0,
+    rounds: [],
+    finalResultChecks: 0,
+  }
+  validationState.players.push(stat)
+  return stat
+}
+
+function buildValidationReport(seed) {
+  return {
+    generated_at: new Date().toISOString(),
+    run_label: validationState.runLabel,
+    scenario_name: validationState.scenarioName || seed?.scenario_name || null,
+    scenario_id: seed?.scenario_id ?? null,
+    campaign_id: seed?.campaign_id ?? null,
+    total_rounds: 6,
+    total_players: seed?.players?.length ?? 0,
+    total_validated_values: validationState.totalChecks,
+    minimum_required_validated_values: MIN_VALIDATED_VALUES,
+    categories: validationState.categories,
+    players: validationState.players,
+  }
 }
 
 function validateBidDispatch(bidDispatch, hourlyBreakdown) {
@@ -58,17 +140,19 @@ function validateBidDispatch(bidDispatch, hourlyBreakdown) {
 
   Object.values(bidDispatch || {}).forEach((deviceDispatch) => {
     Object.values(deviceDispatch || {}).forEach((lotRows) => {
-      ;(lotRows || []).forEach((row) => {
+      ;(lotRows || []).forEach((row, rowIndex) => {
+        validatePresentNumericFields(row, ['hour_idx', 'hour_offset', 'mw_offered', 'mw_dispatched', 'acceptance_ratio', 'smp'], `bid_dispatch[${rowIndex}]`)
         const offered = toFloat(row?.mw_offered)
         const dispatched = toFloat(row?.mw_dispatched)
         const ratio = toFloat(row?.acceptance_ratio)
         const hourIdx = Number(row?.hour_idx ?? row?.hour_offset ?? 0)
-        expect(ratio, 'acceptance ratio bounds').to.be.at.least(0)
-        expect(ratio, 'acceptance ratio bounds').to.be.at.most(1)
+        assertBounded(ratio, 0, 1, 'acceptance ratio bounds')
         if (Math.abs(offered) > 1e-9) {
           assertClose(ratio, dispatched / offered, 0.001, 'acceptance ratio must match dispatched divided by offered volume within ratio rounding precision')
         }
         assertClose(row?.smp, hourlySmp[hourIdx] ?? row?.smp, VALUE_TOLERANCE, 'bid dispatch SMP must match hourly SMP')
+        bumpCheck('numeric')
+        expect(Math.abs(dispatched), 'dispatched volume must not exceed offered volume').to.be.at.most(Math.abs(offered) + VALUE_TOLERANCE)
       })
     })
   })
@@ -84,8 +168,42 @@ function validateDeviceBreakdown(deviceBreakdown) {
   let lastBatterySoc = null
 
   Object.entries(deviceBreakdown || {}).forEach(([deviceId, rows]) => {
+    bumpCheck('existence')
     expect(rows, `${deviceId} rows must be array`).to.be.an('array')
-    rows.forEach((row) => {
+    rows.forEach((row, rowIndex) => {
+      const rowLabel = `${deviceId}[${rowIndex}]`
+      validatePresentNumericFields(
+        row,
+        [
+          'hour',
+          'hour_idx',
+          'planned_mw',
+          'actual_mw',
+          'dispatched_mw',
+          'total_dispatched_mwh',
+          'da_dispatched_mwh',
+          'id_dispatched_mwh',
+          'revenue_zar',
+          'da_revenue_zar',
+          'id_revenue_zar',
+          'variable_cost_zar',
+          'fixed_cost_zar',
+          'imbalance_mwh',
+          'imbalance_cost_zar',
+          'battery_charged_mwh',
+          'battery_charge_cost_zar',
+          'battery_soc_start_pct',
+          'battery_soc_end_pct',
+          'congestion_revenue_zar',
+          'network_shortfall_mwh',
+          'network_shortfall_cost_zar',
+          'profit_zar',
+          'co2_kg',
+          'curtailment_mwh',
+          'curtailment_cost_zar',
+        ],
+        rowLabel,
+      )
       const totalDispatched = toFloat(row?.total_dispatched_mwh ?? row?.dispatched_mw)
       const daDispatched = toFloat(row?.da_dispatched_mwh)
       const idDispatched = toFloat(row?.id_dispatched_mwh)
@@ -108,12 +226,22 @@ function validateDeviceBreakdown(deviceBreakdown) {
         ? rawImbalanceMwh - Math.min(networkShortfallMwh, rawImbalanceMwh)
         : rawImbalanceMwh
 
+      assertClose(totalDispatched, toFloat(row?.dispatched_mw ?? row?.total_dispatched_mwh), MWH_TOLERANCE, `${rowLabel} total dispatched aliases must match`)
+      assertClose(toFloat(row?.revenue_zar), toFloat(row?.da_revenue_zar) + toFloat(row?.id_revenue_zar), VALUE_TOLERANCE, 'device revenue must equal DA plus ID revenue')
+      assertClose(toFloat(row?.curtailment_mwh), Math.max(0, toFloat(row?.planned_mw) - toFloat(row?.actual_mw)), VALUE_TOLERANCE, `${rowLabel} curtailment must equal positive planned minus actual gap`)
+      assertClose(toFloat(row?.curtailment_cost_zar), 0, ROUND_TOLERANCE, `${rowLabel} curtailment cost is expected to stay zero in current engine output`)
       assertClose(totalDispatched, daDispatched + idDispatched, MWH_TOLERANCE, 'device total dispatched must equal DA plus ID dispatched')
-      assertClose(revenue, daRevenue + idRevenue, VALUE_TOLERANCE, 'device revenue must equal DA plus ID revenue')
       assertClose(imbalanceMwh, expectedImbalanceMwh, VALUE_TOLERANCE, 'device imbalance must equal actual minus dispatched with network shortfall only waiving positive consumer underdelivery')
 
       const expectedProfit = revenue - variableCost - fixedCost - imbalanceCost - batteryChargeCost - networkShortfallCost + congestionRevenue
       assertClose(profit, expectedProfit, ROUND_TOLERANCE, 'device profit must match device profit formula within currency rounding tolerance')
+
+      if (row?.battery_soc_start_pct !== undefined && row?.battery_soc_start_pct !== null) {
+        assertBounded(row?.battery_soc_start_pct, 0, 100, `${rowLabel} battery_soc_start_pct bounds`)
+      }
+      if (row?.battery_soc_end_pct !== undefined && row?.battery_soc_end_pct !== null) {
+        assertBounded(row?.battery_soc_end_pct, 0, 100, `${rowLabel} battery_soc_end_pct bounds`)
+      }
 
       const socStart = row?.battery_soc_start_pct
       const socEnd = row?.battery_soc_end_pct
@@ -144,6 +272,28 @@ function validateDeviceBreakdown(deviceBreakdown) {
 function validateHourlyBreakdown(hourlyBreakdown, deviceBreakdown) {
   const deviceIds = Object.keys(deviceBreakdown || {})
   ;(hourlyBreakdown || []).forEach((hour, index) => {
+    validatePresentNumericFields(
+      hour,
+      [
+        'hour',
+        'planned_mw',
+        'dispatched_mw',
+        'actual_mw',
+        'revenue_zar',
+        'variable_cost_zar',
+        'fixed_cost_zar',
+        'imbalance_mwh',
+        'imbalance_cost_zar',
+        'battery_charge_cost_zar',
+        'congestion_revenue_zar',
+        'network_shortfall_cost_zar',
+        'profit_zar',
+        'curtailment_mwh',
+        'curtailment_cost_zar',
+        'smp',
+      ],
+      `hourly_breakdown[${index}]`,
+    )
     const deviceRows = deviceIds
       .map((deviceId) => deviceBreakdown?.[deviceId]?.[index])
       .filter(Boolean)
@@ -191,17 +341,19 @@ function validateDaIdBreakdown(daIdBreakdown) {
   assertClose(daIdBreakdown?.final_volume_mwh, Math.abs(toFloat(daIdBreakdown?.final_volume_signed_mwh)), VALUE_TOLERANCE, 'absolute final volume must match signed final volume')
 
   const dailyFromHours = {}
-  hourlyDetail.forEach((entry) => {
+  hourlyDetail.forEach((entry, index) => {
+    validatePresentNumericFields(entry, ['day', 'hour', 'da_mwh', 'id_mwh', 'delta_mwh'], `da_id.hourly_detail[${index}]`)
     const day = Number(entry?.day || 0)
     dailyFromHours[day] ||= { da_mwh: 0.0, id_mwh: 0.0, delta_mwh: 0.0 }
     dailyFromHours[day].da_mwh += Math.abs(toFloat(entry?.da_mwh))
     dailyFromHours[day].id_mwh += Math.abs(toFloat(entry?.id_mwh))
     dailyFromHours[day].delta_mwh += toFloat(entry?.delta_mwh)
     assertClose(entry?.delta_mwh, toFloat(entry?.id_mwh) - toFloat(entry?.da_mwh), VALUE_TOLERANCE, 'hourly delta must equal ID minus DA')
-    expect(Boolean(entry?.is_da_locked)).to.eq(toFloat(entry?.da_mwh) !== 0.0)
+    assertEqual(Boolean(entry?.is_da_locked), toFloat(entry?.da_mwh) !== 0.0, 'hourly DA lock flag must match DA volume presence')
   })
 
-  dailySummary.forEach((entry) => {
+  dailySummary.forEach((entry, index) => {
+    validatePresentNumericFields(entry, ['day', 'da_mwh', 'id_mwh', 'delta_mwh'], `da_id.daily_summary[${index}]`)
     const day = Number(entry?.day || 0)
     const expected = dailyFromHours[day] || { da_mwh: 0.0, id_mwh: 0.0, delta_mwh: 0.0 }
     assertClose(entry?.da_mwh, Number(expected.da_mwh.toFixed(2)), VALUE_TOLERANCE, 'daily DA volume must equal sum of hourly DA volumes')
@@ -284,16 +436,18 @@ function makeRoundSnapshot(roundData) {
 }
 
 function validateFinalResults(finalData, typeId, totalRounds, snapshots) {
-  expect(finalData?.total_rounds).to.eq(totalRounds)
-  expect(finalData?.my_cumulative?.type).to.eq(typeId)
-  expect(finalData?.my_cumulative?.rounds_played).to.eq(totalRounds)
+  assertEqual(finalData?.total_rounds, totalRounds, 'final total_rounds must match scenario rounds')
+  assertEqual(finalData?.my_cumulative?.type, typeId, 'final cumulative type must match selected type')
+  assertEqual(finalData?.my_cumulative?.rounds_played, totalRounds, 'final rounds_played must match scenario rounds')
+  bumpCheck('existence')
   expect(finalData?.round_history).to.have.length(totalRounds)
+  bumpCheck('existence')
   expect(finalData?.final_ranking).to.have.length(1)
 
   const byRound = Object.fromEntries((snapshots || []).map((snapshot) => [snapshot.round_num, snapshot]))
   ;(finalData.round_history || []).forEach((entry) => {
     const expected = byRound[entry.round_num]
-    expect(expected, `missing snapshot for round ${entry.round_num}`).to.exist
+    assertExists(expected, `missing snapshot for round ${entry.round_num}`)
     assertClose(entry?.profit, expected.profit, ROUND_TOLERANCE, 'round_history profit must match round result')
     assertClose(entry?.revenue_zar, expected.revenue_zar, ROUND_TOLERANCE, 'round_history revenue must match round result')
     assertClose(entry?.total_costs_zar, expected.total_costs_zar, ROUND_TOLERANCE, 'round_history total costs must match round result')
@@ -357,16 +511,6 @@ function waitForSessionStatus(sessionId, accessToken, expectedStatuses, attempts
       return body
     }
     return cy.wait(1000).then(() => waitForSessionStatus(sessionId, accessToken, expectedStatuses, attempts - 1))
-  })
-}
-
-function visitPlayerScreen(sessionId, auth) {
-  return cy.visit(`/player?session=${sessionId}`, {
-    onBeforeLoad(win) {
-      win.localStorage.setItem('user', JSON.stringify(auth.user))
-      win.localStorage.setItem('access_token', auth.access_token)
-      win.localStorage.setItem('refresh_token', auth.refresh_token)
-    },
   })
 }
 
@@ -469,7 +613,7 @@ function applyRoundInputs(roundNum, player) {
 }
 
 function submitRoundFromUi(roundNum, sessionId, auth) {
-  const plan = ROUND_INPUTS[roundNum]
+  const plan = ROUND_INPUTS[roundNum] || ROUND_INPUTS[6]
   cy.intercept('POST', '/api/player/forecast').as(`submitForecastRound${roundNum}`)
 
   cy.get('body').then(($body) => {
@@ -520,9 +664,11 @@ function submitRoundFromUi(roundNum, sessionId, auth) {
     })
   })
 }
+
 function runPlayerType(seed, player) {
   const roundSnapshots = []
-  const generalTotalRounds = 6
+  const totalRounds = 6
+  const playerStat = pushPlayerStat(player)
 
   cy.log(`Run ${player.type_id}`)
   return cy.request('POST', '/api/auth/login', {
@@ -561,13 +707,20 @@ function runPlayerType(seed, player) {
                     url: `/api/sessions/${sessionId}/round-results/${roundNum}`,
                     headers,
                   }).then(({ body: roundData }) => {
-                    expect(roundData?.my_result?.type).to.eq(player.type_id)
-                    expect(roundData?.my_result?.player_role).to.eq(player.expected_role)
+                    const checksBeforeRound = validationState.totalChecks
+                    assertEqual(roundData?.my_result?.type, player.type_id, 'round result type must match selected type')
+                    assertEqual(roundData?.my_result?.player_role, player.expected_role, 'round result player_role must match expected role')
                     validateKpis(roundData.my_result.kpis, roundData.my_result, roundData.weights)
                     validateDaIdBreakdown(roundData.my_result.da_id_breakdown)
                     roundSnapshots.push(makeRoundSnapshot(roundData))
+                    const roundChecks = validationState.totalChecks - checksBeforeRound
+                    playerStat.rounds.push({
+                      round: roundNum,
+                      validated_values: roundChecks,
+                    })
+                    playerStat.totalChecks += roundChecks
 
-                    if (roundNum < generalTotalRounds) {
+                    if (roundNum < totalRounds) {
                       return cy.request({
                         method: 'POST',
                         url: `/api/sessions/${sessionId}/advance-round`,
@@ -590,7 +743,11 @@ function runPlayerType(seed, player) {
                         url: `/api/sessions/${sessionId}/final-results`,
                         headers,
                       }).then(({ body: finalData }) => {
-                        validateFinalResults(finalData, player.type_id, generalTotalRounds, roundSnapshots)
+                        const checksBeforeFinal = validationState.totalChecks
+                        validateFinalResults(finalData, player.type_id, totalRounds, roundSnapshots)
+                        const finalChecks = validationState.totalChecks - checksBeforeFinal
+                        playerStat.finalResultChecks = finalChecks
+                        playerStat.totalChecks += finalChecks
                       })
                     })
                   })
@@ -612,13 +769,32 @@ describe('Monday Player Screen All Rounds', () => {
   before(() => {
     cy.readFile('cypress/fixtures/monday_ui_seed.json').then((data) => {
       seed = data
+      validationState.runLabel = Cypress.env('MONDAY_RUN_LABEL') || data?.tag || 'default'
+      validationState.scenarioName = data?.scenario_name || 'Monday'
+      validationState.totalChecks = 0
+      validationState.categories = {
+        numeric: 0,
+        equality: 0,
+        bounds: 0,
+        existence: 0,
+        finiteness: 0,
+      }
+      validationState.players = []
     })
   })
 
   it('runs all Monday player types through all rounds with real player-screen input and validates every KPI aggregation', () => {
+    bumpCheck('existence')
     expect(seed?.players, 'seed players').to.have.length(3)
     return seed.players.reduce((chain, player) => {
       return chain.then(() => runPlayerType(seed, player))
-    }, cy.wrap(null))
+    }, cy.wrap(null)).then(() => {
+      bumpCheck('bounds')
+      expect(validationState.totalChecks, 'validated business and arithmetic values').to.be.greaterThan(MIN_VALIDATED_VALUES)
+      const report = buildValidationReport(seed)
+      return cy.writeFile(`${REPORT_DIR}/${REPORT_BASENAME}-${validationState.runLabel}.json`, report).then(() => {
+        cy.log(`Validated values: ${report.total_validated_values}`)
+      })
+    })
   })
 })
