@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import enum
 import uuid
 
-from .extensions import db
+from .extensions import db, bcrypt
 
 
 class Role(enum.Enum):
@@ -23,6 +23,12 @@ class User(db.Model):
     name = db.Column(db.String(255), nullable=True)
     bio = db.Column(db.Text, nullable=True)
     last_login = db.Column(db.DateTime, nullable=True)
+
+    def set_password(self, password: str) -> None:
+        self.password_hash = bcrypt.generate_password_hash(password).decode("utf-8")
+
+    def check_password(self, password: str) -> bool:
+        return bool(self.password_hash) and bcrypt.check_password_hash(self.password_hash, password)
 
     def to_dict(self):
         return {

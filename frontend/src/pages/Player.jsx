@@ -766,14 +766,14 @@ function StackedLotsChart({ bidSeries = {}, maxValue, effectiveLimitMw = null, c
   const theme = useTheme()
   const isDark = theme.palette.mode === 'dark'
   const svgRef = useRef(null)
-  const [containerWidth, setContainerWidth] = useState(700)
+  const [containerWidth, setContainerWidth] = useState(0)
 
   useEffect(() => {
     if (!svgRef.current) return
     const parent = svgRef.current.parentElement
     const update = () => {
-      const width = parent?.clientWidth || svgRef.current.clientWidth || 700
-      setContainerWidth(width)
+      const width = parent?.clientWidth || svgRef.current.clientWidth || 0
+      if (width > 0) setContainerWidth(width)
     }
     update()
     const ro = new ResizeObserver(update)
@@ -787,11 +787,12 @@ function StackedLotsChart({ bidSeries = {}, maxValue, effectiveLimitMw = null, c
   
   useEffect(() => {
     if (!svgRef.current) return
+    if (!containerWidth) return
     
     const svg = d3.select(svgRef.current)
     svg.selectAll('*').remove()
     
-    const width = Math.max(containerWidth || 700, 260)
+    const width = Math.max(containerWidth, 260)
     const H = 220
     const M = { top: 16, right: 20, bottom: 36, left: 46 }
     const iw = width - M.left - M.right
@@ -4072,7 +4073,7 @@ export default function Player() {
         </Box>
 
         {/* Middle: Forecast Editor */}
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box sx={{ flex: 1, minWidth: 0, overflowX: 'hidden' }}>
           <Box>
             {(allowedTypes.length>0 && !selectedType) && (
               <Alert severity="info" sx={{ mb: 2 }}>
@@ -4518,7 +4519,9 @@ export default function Player() {
                                                 {chunk.map((i) => {
                                                   const disabled = !editableIdx.has(i) || timeRemaining === 0
                                                   const highlightLot = deviceBidding && deviceBids[did]
-                                                  const v = series[i]
+                                                  const v = deviceBidding && deviceBids[did]
+                                                    ? (deviceBids[did][activeLot]?.hours?.[i] ?? 0)
+                                                    : series[i]
                                                   return (
                                                     <Grid item xs={6} sm={3} md={3} key={i}>
                                                       <Tooltip arrow title={`Hour h${i + 1}: ${disabled ? 'Locked (freeze)' : 'Editable'}`}>
@@ -4778,30 +4781,91 @@ export default function Player() {
               <Card>
                 <CardContent>
                   <Typography variant="h6" gutterBottom>My Devices</Typography>
-                  <TableContainer>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Device</TableCell>
-                          <TableCell>Type</TableCell>
-                          <TableCell>Capacity</TableCell>
-                          <TableCell>Variable Cost</TableCell>
-                          <TableCell align="right">Fixed Cost</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {(selectedType ? typeDevices.map(did=> scenarioDevices.find(d=> d.id===did)).filter(Boolean) : scenarioDevices).map((dev)=>(
-                          <TableRow key={dev.id} hover>
-                            <TableCell>{dev.name ? dev.name : `${dev.id} (no device name)`}</TableCell>
-                            <TableCell>{dev.type || '-'}</TableCell>
-                            <TableCell>{getDeviceCapacityLabel(dev)}</TableCell>
-                            <TableCell>{getDeviceCostRange(dev) || '-'}</TableCell>
-                            <TableCell align="right">{getDeviceFixedCostLabel(dev)}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+                  <Stack spacing={1.25}>
+                    {(selectedType ? typeDevices.map(did=> scenarioDevices.find(d=> d.id===did)).filter(Boolean) : scenarioDevices).map((dev) => (
+                      <Box
+                        key={dev.id}
+                        sx={{
+                          p: 1.25,
+                          border: '1px solid',
+                          borderColor: 'divider',
+                          borderRadius: 1.5,
+                          minWidth: 0,
+                          bgcolor: alpha(theme.palette.background.default, 0.3),
+                        }}
+                      >
+                        <Stack spacing={1}>
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              variant="subtitle2"
+                              sx={{ lineHeight: 1.3, wordBreak: 'break-word' }}
+                            >
+                              {dev.name ? dev.name : `${dev.id} (no device name)`}
+                            </Typography>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              sx={{ display: 'block', mt: 0.25, wordBreak: 'break-word' }}
+                            >
+                              ID: {dev.id}
+                            </Typography>
+                          </Box>
+
+                          <Box>
+                            <Chip
+                              size="small"
+                              label={dev.type || '-'}
+                              sx={{ maxWidth: '100%' }}
+                            />
+                          </Box>
+
+                          <Stack spacing={0.75}>
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                Capacity
+                              </Typography>
+                              <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
+                                {getDeviceCapacityLabel(dev)}
+                              </Typography>
+                            </Box>
+
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                Variable Cost
+                              </Typography>
+                              {Array.isArray(dev.variable_cost_tiers) && dev.variable_cost_tiers.length > 0 ? (
+                                <Stack spacing={0.25} sx={{ mt: 0.25 }}>
+                                  {dev.variable_cost_tiers.map((tier, i) => (
+                                    <Box key={i} sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                                      <Typography variant="caption" color="text.secondary">
+                                        {tier.from_pct}–{tier.to_pct}%
+                                      </Typography>
+                                      <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                                        {tier.cost_zar_per_mwh} ZAR/MWh
+                                      </Typography>
+                                    </Box>
+                                  ))}
+                                </Stack>
+                              ) : (
+                                <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
+                                  {getDeviceCostRange(dev) || '-'}
+                                </Typography>
+                              )}
+                            </Box>
+
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                Fixed Cost
+                              </Typography>
+                              <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
+                                {getDeviceFixedCostLabel(dev)}
+                              </Typography>
+                            </Box>
+                          </Stack>
+                        </Stack>
+                      </Box>
+                    ))}
+                  </Stack>
                 </CardContent>
               </Card>
             )}

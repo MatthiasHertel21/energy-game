@@ -23,15 +23,23 @@ class TestDeviceSpecs:
         """All specs should have defaults, required, and optional keys"""
         for device_type, spec in DEVICE_SPECS.items():
             assert 'defaults' in spec
-            assert 'required' in spec
-            assert 'optional' in spec
+            assert 'required_params' in spec
+            assert 'optional_params' in spec
             assert isinstance(spec['defaults'], dict)
-            assert isinstance(spec['required'], list)
-            assert isinstance(spec['optional'], list)
+            assert isinstance(spec['required_params'], list)
+            assert isinstance(spec['optional_params'], list)
 
 
 class TestValidateDevice:
     """Test validate_device function"""
+
+    @staticmethod
+    def _coal_cost_tiers():
+        return [
+            {'from_pct': 0, 'to_pct': 60, 'cost_zar_per_mwh': 380},
+            {'from_pct': 60, 'to_pct': 90, 'cost_zar_per_mwh': 440},
+            {'from_pct': 90, 'to_pct': 100, 'cost_zar_per_mwh': 520},
+        ]
     
     def test_valid_coal_device(self):
         """Valid Coal device should pass validation"""
@@ -40,7 +48,7 @@ class TestValidateDevice:
             'max_power_mw': 500,
             'min_load_pct': 40,
             'ramp_rate_mw_per_min': 5,
-            'cost_zar_per_mwh': 400
+            'variable_cost_tiers': self._coal_cost_tiers(),
         }
         errors = validate_device(device)
         assert errors == []
@@ -110,7 +118,7 @@ class TestValidateDevice:
         device = {
             'type': 'COAL',
             'max_power_mw': 500
-            # Missing min_load_pct, ramp_rate_mw_per_min, cost_zar_per_mwh
+            # Missing min_load_pct, ramp_rate_mw_per_min, variable_cost_tiers
         }
         errors = validate_device(device)
         assert len(errors) > 0
@@ -123,7 +131,7 @@ class TestValidateDevice:
             'max_power_mw': 500,
             'min_load_pct': 150,  # Invalid
             'ramp_rate_mw_per_min': 5,
-            'cost_zar_per_mwh': 400
+            'variable_cost_tiers': self._coal_cost_tiers(),
         }
         errors = validate_device(device)
         assert len(errors) > 0
@@ -136,7 +144,7 @@ class TestValidateDevice:
             'max_power_mw': -500,  # Invalid
             'min_load_pct': 40,
             'ramp_rate_mw_per_min': 5,
-            'cost_zar_per_mwh': 400
+            'variable_cost_tiers': self._coal_cost_tiers(),
         }
         errors = validate_device(device)
         assert len(errors) > 0
@@ -174,7 +182,7 @@ class TestValidateDevice:
             'max_power_mw': 500,
             'min_load_pct': 40,
             'ramp_rate_mw_per_min': 5,
-            'cost_zar_per_mwh': 400,
+            'variable_cost_tiers': self._coal_cost_tiers(),
             'startup_time_hours': 8  # Optional
         }
         errors = validate_device(device)
@@ -187,7 +195,7 @@ class TestValidateDevice:
             'max_power_mw': 500,
             'min_load_pct': 40,
             'ramp_rate_mw_per_min': 5,
-            'cost_zar_per_mwh': 400,
+            'variable_cost_tiers': self._coal_cost_tiers(),
             'unknown_field': 'test'  # Unknown, but ignored
         }
         errors = validate_device(device)
@@ -362,7 +370,7 @@ class TestValidateForecastConstraints:
             'max_power_mw': 500,
             'min_load_pct': 40,
             'ramp_rate_mw_per_min': 5,
-            'cost_zar_per_mwh': 400
+            'variable_cost_tiers': TestValidateDevice._coal_cost_tiers()
         }
         forecast_mw = []
         errors = validate_forecast_constraints(device, forecast_mw)
@@ -375,7 +383,7 @@ class TestValidateForecastConstraints:
             'max_power_mw': 500,
             'min_load_pct': 40,
             'ramp_rate_mw_per_min': 5,
-            'cost_zar_per_mwh': 400
+            'variable_cost_tiers': TestValidateDevice._coal_cost_tiers()
         }
         forecast_mw = [250]  # >= 200 MW min_load
         errors = validate_forecast_constraints(device, forecast_mw)
@@ -396,7 +404,7 @@ class TestDeviceTypeIntegration:
             'max_power_mw': 500,
             'min_load_pct': 40,
             'ramp_rate_mw_per_min': 5,
-            'cost_zar_per_mwh': 400
+            'variable_cost_tiers': TestValidateDevice._coal_cost_tiers()
         }
         
         # Validate device

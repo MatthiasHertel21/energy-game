@@ -48,14 +48,14 @@ export default function ForecastChartEditor({
 }){
   const ref = useRef(null)
   const dragStateRef = useRef({ index: null, engaged: false })
-  const [containerWidth, setContainerWidth] = useState(700)
+  const [containerWidth, setContainerWidth] = useState(0)
 
   useEffect(() => {
     if (!ref.current) return
     const parent = ref.current.parentElement
     const update = () => {
-      const width = parent?.clientWidth || ref.current.clientWidth || 700
-      setContainerWidth(width)
+      const width = parent?.clientWidth || ref.current.clientWidth || 0
+      if (width > 0) setContainerWidth(width)
     }
     update()
     const ro = new ResizeObserver(update)
@@ -74,11 +74,13 @@ export default function ForecastChartEditor({
       return
     }
 
+    if (!containerWidth) return
+
     const svg = d3.select(ref.current)
     svg.selectAll('*').remove()
     svg.style('touch-action', 'none')
 
-    const width = Math.max(containerWidth || 700, 260)
+    const width = Math.max(containerWidth, 260)
     const H = 420
     const M = { top: 16, right: 20, bottom: 36, left: 46 }
     const iw = width - M.left - M.right

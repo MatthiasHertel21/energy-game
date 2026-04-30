@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Tabs, Tab, Box, Stack, TextField, Button, Paper, Typography, Select, MenuItem, IconButton, Menu, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, Grid, Tooltip, InputAdornment } from '@mui/material'
-import { Edit as EditIcon, Add as AddIcon, Visibility as VisibilityIcon } from '@mui/icons-material'
+import { Edit as EditIcon, Add as AddIcon, Visibility as VisibilityIcon, CalendarMonth as CalendarIcon, AccessTime as TimeIcon } from '@mui/icons-material'
 import InfoLabel from '../components/InfoLabel'
 import NumberInput from '../components/inputs/NumberInput'
 import RangeInput from '../components/inputs/RangeInput'
@@ -76,6 +76,55 @@ const getMixBlocks = (entry, fallbackBlocks = 0) => {
     return Number(entry.blocks ?? entry.share_pct ?? fallbackBlocks) || 0
   }
   return Number(entry ?? fallbackBlocks) || 0
+}
+
+const DEFAULT_RAMP_RATE_MW_PER_MIN = { coal: 5, gas: 15, hydro: 30, nuclear: 1 }
+const DEFAULT_CO2_KG_PER_MWH = { coal: 950, gas: 550, hydro: 0, nuclear: 0, solar: 0, wind: 0, pv: 0 }
+const DEFAULT_CAPACITY_FACTOR_PCT = { solar: 25, wind: 35 }
+const DEFAULT_BATTERY_POWER_MW = 50
+const DEFAULT_BATTERY_INITIAL_SOC_PCT = 50
+const DEFAULT_BATTERY_EFFICIENCY_PCT = 85
+const DEFAULT_LOAD_VALUE_OF_LOST_LOAD = 1500
+
+const normalizeEditorDevice = (device) => {
+  const next = { ...(device || {}) }
+  const type = String(next.type || '').toLowerCase()
+  next.type = type || next.type
+
+  if ((type === 'coal' || type === 'gas') && !Array.isArray(next.variable_cost_tiers)) {
+    next.variable_cost_tiers = structuredClone(DEVICE_PRESETS[type]?.variable_cost_tiers || [])
+  }
+
+  if (DEFAULT_RAMP_RATE_MW_PER_MIN[type] != null && next.ramp_rate_mw_per_min == null) {
+    next.ramp_rate_mw_per_min = DEFAULT_RAMP_RATE_MW_PER_MIN[type]
+  }
+
+  if (DEFAULT_CO2_KG_PER_MWH[type] != null && next.co2_emissions_kg_per_mwh == null && next.co2_kg_per_mwh == null) {
+    next.co2_emissions_kg_per_mwh = DEFAULT_CO2_KG_PER_MWH[type]
+  }
+
+  if (DEFAULT_CAPACITY_FACTOR_PCT[type] != null && next.capacity_factor_pct == null) {
+    next.capacity_factor_pct = DEFAULT_CAPACITY_FACTOR_PCT[type]
+  }
+
+  if (type === 'battery') {
+    if (next.capacity_mw == null && next.capacity_mwh != null) next.capacity_mw = next.capacity_mwh
+    if (next.capacity_mwh == null && next.capacity_mw != null) next.capacity_mwh = next.capacity_mw
+    if (next.power_rating_mw == null && next.power_mw != null) next.power_rating_mw = next.power_mw
+    if (next.power_mw == null && next.power_rating_mw != null) next.power_mw = next.power_rating_mw
+    if (next.power_rating_mw == null && next.power_mw == null) {
+      next.power_rating_mw = DEFAULT_BATTERY_POWER_MW
+      next.power_mw = DEFAULT_BATTERY_POWER_MW
+    }
+    if (next.initial_soc_pct == null) next.initial_soc_pct = DEFAULT_BATTERY_INITIAL_SOC_PCT
+    if (next.efficiency_pct == null) next.efficiency_pct = DEFAULT_BATTERY_EFFICIENCY_PCT
+  }
+
+  if (type.endsWith('_load') && next.value_of_lost_load == null) {
+    next.value_of_lost_load = DEFAULT_LOAD_VALUE_OF_LOST_LOAD
+  }
+
+  return next
 }
 
 const getMixZoneSharesForPreview = (mix, zones) => {
@@ -247,6 +296,7 @@ const normalizeScenarioConfig = (input) => {
   if (!next.environment) next.environment = {}
   if (!next.grid) next.grid = {}
   if (!next.balancing) next.balancing = {}
+  if (!Array.isArray(next.devices)) next.devices = []
   if (!Array.isArray(next.player_types)) next.player_types = []
 
   const generatorDefaults = { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150, nuclear: 0 }
@@ -289,10 +339,14 @@ const normalizeScenarioConfig = (input) => {
   }
   next.grid.generator_curtailment_mode = next.grid.generator_curtailment_mode || 'pro_rata'
   next.balancing = {
+    price_mode: next.balancing?.price_mode || 'absolute',
     up_price_zar_per_mwh: Number(next.balancing?.up_price_zar_per_mwh ?? 1200) || 1200,
     down_price_zar_per_mwh: Number(next.balancing?.down_price_zar_per_mwh ?? 800) || 800,
+    up_price_smp_pct: Number(next.balancing?.up_price_smp_pct ?? 120) || 120,
+    down_price_smp_pct: Number(next.balancing?.down_price_smp_pct ?? 80) || 80,
   }
 
+  next.devices = next.devices.map((device) => normalizeEditorDevice(device))
   next.player_types = next.player_types.map((pt) => ({ ...pt, zone: pt?.zone === '' ? undefined : pt?.zone }))
 
   return next
@@ -333,6 +387,66 @@ const renderLabelWithInfo = (label, tooltip) => (
     </Tooltip>
   </Box>
 )
+
+function NativePickerField({
+  type,
+  label,
+  value,
+  onChange,
+  tooltip,
+  sx,
+  fullWidth = false,
+  size = 'small',
+}) {
+  const inputRef = useRef(null)
+  const PickerIcon = type === 'time' ? TimeIcon : CalendarIcon
+
+  const openPicker = () => {
+    const input = inputRef.current
+    if (!input) return
+    if (typeof input.showPicker === 'function') {
+      input.showPicker()
+      return
+    }
+    input.focus()
+    input.click()
+  }
+
+  return (
+    <TextField
+      type={type}
+      label={label}
+      value={value}
+      onChange={onChange}
+      inputRef={inputRef}
+      InputLabelProps={{ shrink: true }}
+      size={size}
+      fullWidth={fullWidth}
+      sx={{
+        ...sx,
+        '& input::-webkit-calendar-picker-indicator': {
+          opacity: 0,
+          position: 'absolute',
+          right: 0,
+          width: 36,
+          height: '100%',
+          cursor: 'pointer',
+        },
+      }}
+      InputProps={{
+        endAdornment: (
+          <InputAdornment position="end">
+            <Tooltip title={tooltip} arrow>
+              <IconButton size="small" onClick={openPicker} aria-label={`Open ${label}`}>
+                <PickerIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </InputAdornment>
+        )
+      }}
+    />
+  )
+}
 
 const formatInt = (value) => {
   const numeric = Number(value ?? 0)
@@ -394,8 +508,11 @@ const defaultConfig = {
     generator_curtailment_mode: 'pro_rata',
   },
   balancing: {
+    price_mode: 'absolute',
     up_price_zar_per_mwh: 1200,
     down_price_zar_per_mwh: 800,
+    up_price_smp_pct: 120,
+    down_price_smp_pct: 80,
   },
   environment: {
     seed: 'preview',
@@ -941,8 +1058,13 @@ export default function KSE(){
     if (!(Number(cfg?.grid?.losses_pct_per_link ?? 2) >= 0 && Number(cfg?.grid?.losses_pct_per_link ?? 2) <= 100)) {
       errs.push('grid.losses_pct_per_link must be within [0, 100]')
     }
-    if (!(Number(cfg?.balancing?.up_price_zar_per_mwh ?? 1200) > 0)) errs.push('balancing.up_price_zar_per_mwh must be > 0')
-    if (!(Number(cfg?.balancing?.down_price_zar_per_mwh ?? 800) > 0)) errs.push('balancing.down_price_zar_per_mwh must be > 0')
+    if ((cfg?.balancing?.price_mode || 'absolute') === 'absolute') {
+      if (!(Number(cfg?.balancing?.up_price_zar_per_mwh ?? 1200) > 0)) errs.push('balancing.up_price_zar_per_mwh must be > 0')
+      if (!(Number(cfg?.balancing?.down_price_zar_per_mwh ?? 800) > 0)) errs.push('balancing.down_price_zar_per_mwh must be > 0')
+    } else {
+      if (!(Number(cfg?.balancing?.up_price_smp_pct ?? 120) > 0)) errs.push('balancing.up_price_smp_pct must be > 0')
+      if (!(Number(cfg?.balancing?.down_price_smp_pct ?? 80) > 0)) errs.push('balancing.down_price_smp_pct must be > 0')
+    }
     if(!cfg.general.forecast_horizon_hours || cfg.general.forecast_horizon_hours<=0) errs.push('forecast_horizon_hours must be > 0')
     if(cfg.general.forecast_horizon_hours && cfg.general.horizon_hours && Number(cfg.general.forecast_horizon_hours) < Number(cfg.general.horizon_hours)) errs.push('forecast_horizon_hours must be >= horizon_hours')
     // Removed scoring.weights validation (replaced by challenges)
@@ -1083,26 +1205,31 @@ export default function KSE(){
             if (out.co2_emissions_kg_per_mwh == null && out.co2_kg_per_mwh != null) {
               out.co2_emissions_kg_per_mwh = out.co2_kg_per_mwh
             }
+            if (out.co2_emissions_kg_per_mwh == null && DEFAULT_CO2_KG_PER_MWH[t] != null) {
+              out.co2_emissions_kg_per_mwh = DEFAULT_CO2_KG_PER_MWH[t]
+            }
             if ([ 'coal','gas','hydro','nuclear' ].includes(t)){
               out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
               out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
               out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
               if (out.min_load_pct == null) out.min_load_pct = 0
-              if (out.ramp_rate_mw_per_min == null) { const _rd = {coal:5,gas:15,hydro:30,nuclear:1}; out.ramp_rate_mw_per_min = _rd[t] ?? 5; }
+              if (out.ramp_rate_mw_per_min == null) out.ramp_rate_mw_per_min = DEFAULT_RAMP_RATE_MW_PER_MIN[t] ?? 5
             } else if ([ 'solar','wind' ].includes(t)){
               out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
               out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
               out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
-              if (out.capacity_factor_pct == null) out.capacity_factor_pct = 30
+              if (out.capacity_factor_pct == null) out.capacity_factor_pct = DEFAULT_CAPACITY_FACTOR_PCT[t] ?? 30
             } else if (t === 'battery'){
               out.capacity_mwh = out.capacity_mwh ?? out.capacity_mw ?? 100
-              out.power_mw = out.power_mw ?? out.power_rating_mw ?? 50
-              out.efficiency_pct = out.efficiency_pct ?? 85
-              out.initial_soc_pct = out.initial_soc_pct ?? 50
+              out.power_mw = out.power_mw ?? out.power_rating_mw ?? DEFAULT_BATTERY_POWER_MW
+              out.power_rating_mw = out.power_rating_mw ?? out.power_mw
+              out.efficiency_pct = out.efficiency_pct ?? DEFAULT_BATTERY_EFFICIENCY_PCT
+              out.initial_soc_pct = out.initial_soc_pct ?? DEFAULT_BATTERY_INITIAL_SOC_PCT
               out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
             } else if (t.endsWith('_load')){
               // baseline_load_mw / peak_load_mw already present from UI
               out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
+              out.value_of_lost_load = out.value_of_lost_load ?? DEFAULT_LOAD_VALUE_OF_LOST_LOAD
             }
             return out
           })
@@ -1311,7 +1438,7 @@ export default function KSE(){
       alert(`Imported as #${data.id}` )
       setScenarioId(data.id)
       setName(data.name || name)
-      setCfg(data.config || cfg)
+      setCfg(normalizeScenarioConfig(data.config || cfg))
       setImportText('')
       setIoOpen(false)
     }catch(e){ alert('Invalid JSON') }
@@ -1442,45 +1569,21 @@ export default function KSE(){
                     Configure the player interface: fictional date/time, baseline generation, and forecast horizon.
                   </Typography>
                   <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-                    <TextField
+                    <NativePickerField
                       type="date"
                       label="Fictional Date"
                       value={cfg.general.fake_date || ''}
                       onChange={e=>update(['general','fake_date'], e.target.value)}
-                      InputLabelProps={{ shrink: true }}
-                      size="small"
+                      tooltip="Contextual date for briefings and charts. Not used in simulation."
                       sx={{ flex: '1 1 220px', minWidth: 220 }}
-                      InputProps={{
-                        endAdornment: (
-                          <InputAdornment position="end">
-                            <Tooltip title="Contextual date for briefings and charts. Not used in simulation." arrow>
-                              <IconButton size="small" tabIndex={-1} aria-label="help">
-                                <VisibilityIcon fontSize="small"/>
-                              </IconButton>
-                            </Tooltip>
-                          </InputAdornment>
-                        )
-                      }}
                     />
-                    <TextField
+                    <NativePickerField
                       type="time"
                       label="Fictional Start Time"
                       value={cfg.general.start_time || ''}
                       onChange={e=>update(['general','start_time'], e.target.value)}
-                      InputLabelProps={{ shrink: true }}
-                      size="small"
+                      tooltip="Fictional clock time of hour 1; used for labels."
                       sx={{ flex: '1 1 200px', minWidth: 200 }}
-                      InputProps={{
-                        endAdornment: (
-                          <InputAdornment position="end">
-                            <Tooltip title="Fictional clock time of hour 1; used for labels." arrow>
-                              <IconButton size="small" tabIndex={-1} aria-label="help">
-                                <VisibilityIcon fontSize="small"/>
-                              </IconButton>
-                            </Tooltip>
-                          </InputAdornment>
-                        )
-                      }}
                     />
                     <Box sx={{ flex: '1 1 240px', minWidth: 240 }}>
                       <TextField
@@ -1837,11 +1940,11 @@ export default function KSE(){
                   <Stack direction="row" spacing={2} alignItems="flex-start" sx={{ mt:1 }}>
                     <Stack spacing={0.5} sx={{ minWidth: 160 }}>
                       <InfoLabel title="Preview Date" tooltip="Start date for preview (affects seasonal profiles)" showTitle={false} />
-                      <TextField type="date" size="small" label="Preview Date" value={previewDate} onChange={e=>setPreviewDate(e.target.value)} sx={{ width: 160 }} />
+                      <NativePickerField type="date" size="small" label="Preview Date" value={previewDate} onChange={e=>setPreviewDate(e.target.value)} tooltip="Start date for preview (affects seasonal profiles)" sx={{ width: 160 }} />
                     </Stack>
                     <Stack spacing={0.5} sx={{ minWidth: 140 }}>
                       <InfoLabel title="Preview Time" tooltip="Start time for preview (affects hourly profiles)" showTitle={false} />
-                      <TextField type="time" size="small" label="Preview Time" value={previewTime} onChange={e=>setPreviewTime(e.target.value)} sx={{ width: 140 }} />
+                      <NativePickerField type="time" size="small" label="Preview Time" value={previewTime} onChange={e=>setPreviewTime(e.target.value)} tooltip="Start time for preview (affects hourly profiles)" sx={{ width: 140 }} />
                     </Stack>
                   </Stack>
                 </Stack>
@@ -1910,33 +2013,76 @@ export default function KSE(){
               <Paper sx={{ p: 2 }}>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>Balancing Settlement</Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  Configure the default imbalance settlement prices. These are exogenous balancing prices, not prices formed by a separate balancing market. Standard defaults are 1200 ZAR/MWh for positive imbalance and 800 ZAR/MWh for negative imbalance.
+                  Configure the imbalance settlement prices. Exogenous balancing prices, not formed by a separate balancing market.
                 </Typography>
-                <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-                  <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
-                    <NumberInput
-                      label="Positive Imbalance Price"
-                      value={cfg.balancing?.up_price_zar_per_mwh ?? 1200}
-                      onChange={(val)=>update(['balancing','up_price_zar_per_mwh'], Number(val) || 0)}
-                      min={0.1}
-                      max={100000}
-                      step={10}
-                      unit="ZAR/MWh"
-                      tooltip="Applied when actual energy exceeds planned energy. Default: 1200 ZAR/MWh. This is a configurable settlement parameter, not a market-cleared balancing price."
-                    />
-                  </Box>
-                  <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
-                    <NumberInput
-                      label="Negative Imbalance Price"
-                      value={cfg.balancing?.down_price_zar_per_mwh ?? 800}
-                      onChange={(val)=>update(['balancing','down_price_zar_per_mwh'], Number(val) || 0)}
-                      min={0.1}
-                      max={100000}
-                      step={10}
-                      unit="ZAR/MWh"
-                      tooltip="Applied when actual energy is below planned energy. Default: 800 ZAR/MWh. This is a configurable settlement parameter, not a market-cleared balancing price."
-                    />
-                  </Box>
+                <Stack spacing={2}>
+                  <TextField
+                    select
+                    fullWidth
+                    size="small"
+                    label="Price Mode"
+                    value={cfg.balancing?.price_mode || 'absolute'}
+                    onChange={(e) => update(['balancing', 'price_mode'], e.target.value)}
+                    helperText={(cfg.balancing?.price_mode || 'absolute') === 'smp_multiplier' ? 'Balancing prices are computed each hour as a percentage of the cleared SMP.' : 'Fixed ZAR/MWh values regardless of the cleared SMP.'}
+                  >
+                    <MenuItem value="absolute">Absolut (ZAR/MWh)</MenuItem>
+                    <MenuItem value="smp_multiplier">SMP-basiert (% des SMP)</MenuItem>
+                  </TextField>
+                  {(cfg.balancing?.price_mode || 'absolute') === 'absolute' ? (
+                    <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                      <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
+                        <NumberInput
+                          label="Positive Imbalance Price"
+                          value={cfg.balancing?.up_price_zar_per_mwh ?? 1200}
+                          onChange={(val)=>update(['balancing','up_price_zar_per_mwh'], Number(val) || 0)}
+                          min={0.1}
+                          max={100000}
+                          step={10}
+                          unit="ZAR/MWh"
+                          tooltip="Applied when actual energy exceeds planned energy (over-delivery). Default: 1200 ZAR/MWh."
+                        />
+                      </Box>
+                      <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
+                        <NumberInput
+                          label="Negative Imbalance Price"
+                          value={cfg.balancing?.down_price_zar_per_mwh ?? 800}
+                          onChange={(val)=>update(['balancing','down_price_zar_per_mwh'], Number(val) || 0)}
+                          min={0.1}
+                          max={100000}
+                          step={10}
+                          unit="ZAR/MWh"
+                          tooltip="Applied when actual energy is below planned energy (under-delivery). Default: 800 ZAR/MWh."
+                        />
+                      </Box>
+                    </Stack>
+                  ) : (
+                    <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                      <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
+                        <NumberInput
+                          label="Over-Delivery Penalty"
+                          value={cfg.balancing?.up_price_smp_pct ?? 120}
+                          onChange={(val)=>update(['balancing','up_price_smp_pct'], Number(val) || 0)}
+                          min={1}
+                          max={500}
+                          step={5}
+                          unit="% des SMP"
+                          tooltip="Strafpreis bei Über-Lieferung = SMP × Faktor. 120 % bedeutet SMP + 20 %. Default: 120 %."
+                        />
+                      </Box>
+                      <Box sx={{ flex: '1 1 220px', minWidth: 220 }}>
+                        <NumberInput
+                          label="Under-Delivery Penalty"
+                          value={cfg.balancing?.down_price_smp_pct ?? 80}
+                          onChange={(val)=>update(['balancing','down_price_smp_pct'], Number(val) || 0)}
+                          min={1}
+                          max={500}
+                          step={5}
+                          unit="% des SMP"
+                          tooltip="Strafpreis bei Unter-Lieferung = SMP × Faktor. 80 % bedeutet SMP − 20 %. Default: 80 %."
+                        />
+                      </Box>
+                    </Stack>
+                  )}
                 </Stack>
               </Paper>
               <Paper sx={{ p: 2, mt: 2 }}>
@@ -2887,7 +3033,7 @@ export default function KSE(){
               try{
                 const { data } = await api.get(`/api/kse/templates/${selectedTemplateId}`)
                 if (data?.name) setName(data.name)
-                if (data?.config) setCfg(data.config)
+                if (data?.config) setCfg(normalizeScenarioConfig(data.config))
                 setTemplateDialogOpen(false)
               }catch(_){ alert('Failed to load template') }
             }}

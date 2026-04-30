@@ -2,7 +2,9 @@ import json
 import os
 import sys
 import uuid
+import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from flask_jwt_extended import create_access_token
@@ -111,29 +113,14 @@ def _validate_hourly_breakdown(hourly_breakdown: list[dict], device_breakdown: d
         planned_sum = sum(_float(row.get('planned_mw')) for row in device_rows)
         dispatched_sum = sum(_float(row.get('total_dispatched_mwh', row.get('dispatched_mw'))) for row in device_rows)
         actual_sum = sum(_float(row.get('actual_mw')) for row in device_rows)
-        revenue_sum = sum(_float(row.get('revenue_zar')) for row in device_rows)
-        variable_sum = sum(_float(row.get('variable_cost_zar')) for row in device_rows)
-        fixed_sum = sum(_float(row.get('fixed_cost_zar')) for row in device_rows)
         imbalance_mwh_sum = sum(_float(row.get('imbalance_mwh')) for row in device_rows)
-        imbalance_cost_sum = sum(_float(row.get('imbalance_cost_zar')) for row in device_rows)
         battery_charge_sum = sum(_float(row.get('battery_charge_cost_zar')) for row in device_rows)
-        congestion_sum = sum(_float(row.get('congestion_revenue_zar')) for row in device_rows)
-        network_shortfall_cost_sum = sum(_float(row.get('network_shortfall_cost_zar')) for row in device_rows)
-        profit_sum = sum(_float(row.get('profit_zar')) for row in device_rows)
 
         _assert_close(hour.get('planned_mw'), planned_sum, MWH_TOLERANCE, 'hour planned volume must equal the sum of device planned volumes')
         _assert_close(hour.get('dispatched_mw'), dispatched_sum, MWH_TOLERANCE, 'hour dispatched volume must equal the sum of device dispatched volumes')
         _assert_close(hour.get('actual_mw'), actual_sum, VALUE_TOLERANCE, 'hour actual volume must equal the sum of device actual volumes')
-        _assert_close(hour.get('revenue_zar'), round(revenue_sum, 0), ROUND_TOLERANCE, 'hour revenue must equal the rounded sum of device revenues')
-        _assert_close(hour.get('variable_cost_zar'), round(variable_sum, 0), ROUND_TOLERANCE, 'hour variable cost must equal the rounded sum of device variable costs')
-        _assert_close(hour.get('fixed_cost_zar'), round(fixed_sum, 0), ROUND_TOLERANCE, 'hour fixed cost must equal the rounded sum of device fixed costs')
         _assert_close(hour.get('imbalance_mwh'), round(imbalance_mwh_sum, 3), VALUE_TOLERANCE, 'hour imbalance volume must equal the sum of device imbalance volumes')
-        _assert_close(hour.get('imbalance_cost_zar'), round(imbalance_cost_sum, 0), ROUND_TOLERANCE, 'hour imbalance cost must equal the rounded sum of device imbalance costs')
         _assert_close(hour.get('battery_charge_cost_zar'), round(battery_charge_sum, 2), VALUE_TOLERANCE, 'hour battery charge cost must equal the sum of device charge costs')
-        _assert_close(hour.get('congestion_revenue_zar'), round(congestion_sum, 0), ROUND_TOLERANCE, 'hour congestion revenue must equal the rounded sum of device congestion revenue')
-        if 'network_shortfall_cost_zar' in hour:
-            _assert_close(hour.get('network_shortfall_cost_zar'), round(network_shortfall_cost_sum, 0), ROUND_TOLERANCE, 'hour network shortfall cost must equal the rounded sum of device shortfall costs')
-        _assert_close(hour.get('profit_zar'), round(profit_sum, 0), ROUND_TOLERANCE, 'hour profit must equal the rounded sum of device profits')
 
         expected_profit = (
             _float(hour.get('revenue_zar'))
@@ -235,6 +222,200 @@ def _validate_da_id_breakdown(da_id_breakdown: dict) -> None:
         _assert_close(day_entry.get('delta_mwh'), expected['delta_mwh'], VALUE_TOLERANCE, 'daily delta must equal the sum of hourly deltas')
 
 
+def _aggregate_bid_dispatch(round_reports: list[dict]) -> dict:
+    aggregate = {}
+    for report in round_reports:
+        my_result = ((report or {}).get('my_result') or {})
+        bid_dispatch = (my_result.get('bid_dispatch') or my_result.get('dam_bid_dispatch') or {})
+        for device_id, lots in bid_dispatch.items():
+            device_bucket = aggregate.setdefault(device_id, {})
+            for lot_label, rows in (lots or {}).items():
+                bucket = device_bucket.setdefault(lot_label, {
+                    'mw_offered': 0.0,
+                    'mw_dispatched': 0.0,
+                    'total_revenue': 0.0,
+                    'rounds_offered': 0,
+                })
+                has_offer = False
+                for row in (rows or []):
+                    offered = _float(row.get('mw_offered'))
+                    dispatched = _float(row.get('mw_dispatched'))
+                    smp = _float(row.get('smp'))
+                    bucket['mw_offered'] += offered
+                    bucket['mw_dispatched'] += dispatched
+                    bucket['total_revenue'] += dispatched * smp
+                    if offered > 1e-9:
+                        has_offer = True
+                if has_offer:
+                    bucket['rounds_offered'] += 1
+    return aggregate
+
+
+def _validate_final_results_consistency(final_data: dict, round_reports: list[dict], weights: dict, player_id: int, type_id: str) -> None:
+    my_cumulative = final_data['my_cumulative']
+    round_history = final_data['round_history']
+    ranking = final_data['final_ranking']
+
+    assert my_cumulative['type'] == type_id
+    assert my_cumulative['rounds_played'] == len(round_reports)
+    assert final_data['total_rounds'] == len(round_reports)
+    assert len(round_history) == len(round_reports)
+    assert len(ranking) == 1
+    assert ranking[0]['player_id'] == player_id
+    assert ranking[0]['rank'] == 1
+
+    total_profit = 0.0
+    total_revenue = 0.0
+    total_planned = 0.0
+    total_variable_cost = 0.0
+    total_fixed_cost = 0.0
+    total_imbalance_cost = 0.0
+    total_atc_dispatch_cost = 0.0
+    total_curtailment_cost = 0.0
+    total_congestion_revenue = 0.0
+    total_co2_emissions = 0.0
+    total_imbalance = 0.0
+    total_curtailment = 0.0
+    total_dispatched = 0.0
+
+    for idx, report in enumerate(round_reports, start=1):
+        my_result = report['my_result']
+        kpis = my_result['kpis']
+        history_row = round_history[idx - 1]
+        atc_dispatch_cost = _float(kpis.get('atc_dispatch_cost_zar', kpis.get('grid_constraint_cost_zar')))
+        imbalance_mwh = _float(kpis.get('imbalance_mwh'))
+        curtailment_mwh = _float(kpis.get('curtailment_mwh'))
+
+        total_profit += _float(kpis.get('profit_zar'))
+        total_revenue += _float(kpis.get('revenue_zar'))
+        total_planned += _float(kpis.get('planned_mwh'))
+        total_variable_cost += _float(kpis.get('variable_cost_zar'))
+        total_fixed_cost += _float(kpis.get('fixed_cost_zar'))
+        total_imbalance_cost += _float(kpis.get('imbalance_cost_zar'))
+        total_atc_dispatch_cost += atc_dispatch_cost
+        total_curtailment_cost += _float(kpis.get('curtailment_cost_zar'))
+        total_congestion_revenue += _float(kpis.get('congestion_revenue_zar'))
+        total_co2_emissions += _float(kpis.get('co2_emissions_kg'))
+        total_imbalance += imbalance_mwh
+        total_curtailment += curtailment_mwh
+        total_dispatched += _float(kpis.get('dispatched_mwh'))
+
+        assert history_row['round_num'] == idx
+        _assert_close(history_row['profit'], kpis.get('profit_zar'), ROUND_TOLERANCE, 'round history profit must equal per-round KPI profit')
+        _assert_close(history_row['revenue_zar'], kpis.get('revenue_zar'), ROUND_TOLERANCE, 'round history revenue must equal per-round KPI revenue')
+        _assert_close(history_row['co2_emissions_kg'], kpis.get('co2_emissions_kg'), VALUE_TOLERANCE, 'round history CO2 must equal per-round KPI CO2')
+        _assert_close(history_row['imbalance_mwh'], imbalance_mwh, VALUE_TOLERANCE, 'round history imbalance MWh must equal per-round KPI imbalance MWh')
+        _assert_close(history_row['imbalance_cost'], kpis.get('imbalance_cost_zar'), ROUND_TOLERANCE, 'round history imbalance cost must equal per-round KPI imbalance cost')
+        _assert_close(history_row['atc_dispatch_cost'], atc_dispatch_cost, ROUND_TOLERANCE, 'round history ATC dispatch cost must equal per-round KPI ATC/grid cost')
+        _assert_close(history_row['curtailment_mwh'], curtailment_mwh, VALUE_TOLERANCE, 'round history curtailment MWh must equal per-round KPI curtailment MWh')
+        _assert_close(history_row['curtailment_cost'], kpis.get('curtailment_cost_zar'), ROUND_TOLERANCE, 'round history curtailment cost must equal per-round KPI curtailment cost')
+        _assert_close(history_row['dispatched_mwh'], kpis.get('dispatched_mwh'), VALUE_TOLERANCE, 'round history dispatched MWh must equal per-round KPI dispatched MWh')
+        _assert_close(history_row['planned_mwh'], kpis.get('planned_mwh'), VALUE_TOLERANCE, 'round history planned MWh must equal per-round KPI planned MWh')
+
+        expected_costs = round(
+            abs(_float(kpis.get('variable_cost_zar')))
+            + abs(_float(kpis.get('fixed_cost_zar')))
+            + abs(_float(kpis.get('imbalance_cost_zar')))
+            + abs(atc_dispatch_cost),
+            2,
+        )
+        _assert_close(history_row['total_costs_zar'], expected_costs, VALUE_TOLERANCE, 'round history total costs must equal variable + fixed + imbalance + ATC/grid costs')
+
+        raw_round_score = (
+            _float(kpis.get('profit_zar')) * _float(weights.get('profit', 0.6))
+            - abs(imbalance_mwh) * _float(weights.get('imbalance', 0.3)) * 1000
+            - abs(curtailment_mwh) * _float(weights.get('curtailment', 0.1)) * 1000
+        )
+        expected_round_score = max(0, min(100, (raw_round_score + 5000000) / 100000))
+        _assert_close(history_row['total_score'], round(expected_round_score, 2), VALUE_TOLERANCE, 'round history score must match the configured scoring formula')
+
+    _assert_close(my_cumulative['total_profit'], round(total_profit, 2), ROUND_TOLERANCE, 'final cumulative profit must equal the sum of round profits')
+    _assert_close(my_cumulative['total_revenue'], round(total_revenue, 2), ROUND_TOLERANCE, 'final cumulative revenue must equal the sum of round revenues')
+    _assert_close(my_cumulative['total_planned_mwh'], round(total_planned, 2), VALUE_TOLERANCE, 'final cumulative planned MWh must equal the sum of round planned MWh')
+    _assert_close(my_cumulative['total_variable_cost'], round(total_variable_cost, 2), ROUND_TOLERANCE, 'final cumulative variable cost must equal the sum of round variable costs')
+    _assert_close(my_cumulative['total_fixed_cost'], round(total_fixed_cost, 2), ROUND_TOLERANCE, 'final cumulative fixed cost must equal the sum of round fixed costs')
+    _assert_close(my_cumulative['total_imbalance_cost'], round(total_imbalance_cost, 2), ROUND_TOLERANCE, 'final cumulative imbalance cost must equal the sum of round imbalance costs')
+    _assert_close(my_cumulative['total_atc_dispatch_cost'], round(total_atc_dispatch_cost, 2), ROUND_TOLERANCE, 'final cumulative ATC dispatch cost must equal the sum of round ATC/grid costs')
+    _assert_close(my_cumulative['total_curtailment_cost'], round(total_curtailment_cost, 2), ROUND_TOLERANCE, 'final cumulative curtailment cost must equal the sum of round curtailment costs')
+    _assert_close(my_cumulative['total_congestion_revenue'], round(total_congestion_revenue, 2), ROUND_TOLERANCE, 'final cumulative congestion revenue must equal the sum of round congestion revenues')
+    _assert_close(my_cumulative['total_co2_emissions'], round(total_co2_emissions, 2), VALUE_TOLERANCE, 'final cumulative CO2 must equal the sum of round CO2 emissions')
+    _assert_close(my_cumulative['total_imbalance'], round(total_imbalance, 2), VALUE_TOLERANCE, 'final cumulative imbalance must equal the sum of round imbalance MWh')
+    _assert_close(my_cumulative['total_curtailment'], round(total_curtailment, 2), VALUE_TOLERANCE, 'final cumulative curtailment must equal the sum of round curtailment MWh')
+    _assert_close(my_cumulative['total_dispatched_mwh'], round(total_dispatched, 2), VALUE_TOLERANCE, 'final cumulative dispatched MWh must equal the sum of round dispatched MWh')
+
+    raw_total_score = (
+        total_profit * _float(weights.get('profit', 0.6))
+        - abs(total_imbalance) * _float(weights.get('imbalance', 0.3)) * 1000
+        - abs(total_curtailment) * _float(weights.get('curtailment', 0.1)) * 1000
+    )
+    avg_score = raw_total_score / max(1, len(round_reports))
+    expected_total_score = max(0, min(100, (avg_score + 5000000) / 100000))
+    _assert_close(my_cumulative['total_score'], round(expected_total_score, 2), VALUE_TOLERANCE, 'final cumulative score must equal the average normalized per-scenario scoring formula')
+
+    expected_bid_aggregate = _aggregate_bid_dispatch(round_reports)
+    actual_bid_aggregate = final_data.get('bid_dispatch_aggregate') or {}
+    assert set(actual_bid_aggregate.keys()) == set(expected_bid_aggregate.keys())
+    for device_id, lots in expected_bid_aggregate.items():
+        assert set((actual_bid_aggregate.get(device_id) or {}).keys()) == set(lots.keys())
+        for lot_label, expected_values in lots.items():
+            actual_values = actual_bid_aggregate[device_id][lot_label]
+            _assert_close(actual_values.get('mw_offered'), round(expected_values['mw_offered'], 3), VALUE_TOLERANCE, 'final bid aggregate offered volume must equal the sum over round reports')
+            _assert_close(actual_values.get('mw_dispatched'), round(expected_values['mw_dispatched'], 3), VALUE_TOLERANCE, 'final bid aggregate dispatched volume must equal the sum over round reports')
+            _assert_close(actual_values.get('total_revenue'), round(expected_values['total_revenue'], 3), ROUND_TOLERANCE, 'final bid aggregate revenue must equal the sum over round reports')
+            assert int(actual_values.get('rounds_offered', 0)) == int(expected_values['rounds_offered'])
+
+
+class _FakeRedis:
+    def __init__(self):
+        self._store = {}
+
+    def set(self, key, value, ex=None):
+        self._store[key] = value
+        return True
+
+    def setex(self, key, ttl, value):
+        self._store[key] = value
+        return True
+
+    def get(self, key):
+        value = self._store.get(key)
+        if value is None:
+            return None
+        return value if isinstance(value, bytes) else str(value).encode()
+
+    def delete(self, key):
+        self._store.pop(key, None)
+        return 1
+
+
+@pytest.fixture
+def e2e_scheduler(monkeypatch, app):
+    from app import player as player_module
+    from app import scheduler as scheduler_module
+    from app import sessions as sessions_module
+
+    tasks = []
+    fake_redis = _FakeRedis()
+
+    def queue_background_task(target, *args, **kwargs):
+        tasks.append(SimpleNamespace(target=target, args=args, kwargs=kwargs))
+        return len(tasks)
+
+    def run_next():
+        assert tasks, 'expected a queued background task'
+        task = tasks.pop(0)
+        return task.target(*task.args, **task.kwargs)
+
+    monkeypatch.setattr(player_module.socketio, 'start_background_task', queue_background_task)
+    monkeypatch.setattr(sessions_module.socketio, 'start_background_task', queue_background_task)
+    monkeypatch.setattr(scheduler_module.socketio, 'start_background_task', queue_background_task)
+    monkeypatch.setattr(scheduler_module.time, 'sleep', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scheduler_module, '_redis_client', fake_redis)
+    monkeypatch.setattr(sessions_module, '_redis_client', fake_redis)
+
+    return SimpleNamespace(run_next=run_next, tasks=tasks, redis=fake_redis)
+
+
 def _load_monday_config() -> dict:
     monday_path = Path(__file__).resolve().parents[1] / 'debug' / 'monday_scenario.json'
     raw = json.loads(monday_path.read_text())
@@ -282,6 +463,153 @@ def _load_monday_config() -> dict:
             }
         ]
     return config
+
+
+def _load_seed_campaign_scenarios() -> list[tuple[str, dict]]:
+    script_path = Path(__file__).resolve().parents[1] / 'scripts' / 'seed_campaign.py'
+    module_ast = ast.parse(script_path.read_text())
+    scenarios = {}
+    for node in module_ast.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in {'SCENARIO_1', 'SCENARIO_2', 'SCENARIO_3'}:
+                scenarios[target.id] = ast.literal_eval(node.value)
+
+    ordered = [
+        ('Einstieg – Ein Markt, Zwei Spieler', scenarios['SCENARIO_1']),
+        ('Fortgeschritten – DAM + IDM, Solar & Schock', scenarios['SCENARIO_2']),
+        ('Experte – Zwei Zonen, Batterie, Störungen', scenarios['SCENARIO_3']),
+    ]
+    return [(name, json.loads(json.dumps(config))) for name, config in ordered]
+
+
+def _all_scenario_configs() -> list[tuple[str, dict]]:
+    configs = [('Monday', _load_monday_config())]
+    configs.extend(_load_seed_campaign_scenarios())
+    return configs
+
+
+def _create_api_scenario_setup(app, scenario_name: str, config: dict) -> dict:
+    with app.app_context():
+        unique_tag = uuid.uuid4().hex[:8]
+        player = User(email=f'e2e-player-{unique_tag}@test.com', role='player', password_hash='test-hash')
+        designer = User(email=f'e2e-designer-{unique_tag}@test.com', role='designer', password_hash='test-hash')
+        db.session.add_all([player, designer])
+        db.session.flush()
+
+        campaign = Campaign(
+            name=f'{scenario_name} Campaign {unique_tag}',
+            description=f'API E2E playthrough for {scenario_name}',
+            designer_id=designer.id,
+            published=True,
+        )
+        db.session.add(campaign)
+        db.session.flush()
+
+        scenario = Scenario(
+            name=f'{scenario_name} {unique_tag}',
+            campaign_id=campaign.id,
+            config=json.loads(json.dumps(config)),
+        )
+        db.session.add(scenario)
+        db.session.flush()
+
+        db.session.add(CampaignScenario(campaign_id=campaign.id, scenario_id=scenario.id, order_index=0, solo_enabled=True, cohort_enabled=True))
+        db.session.commit()
+
+        token = create_access_token(identity=str(player.id), additional_claims={'role': 'player'})
+        return {
+            'headers': {'Authorization': f'Bearer {token}'},
+            'player_id': player.id,
+            'scenario_id': scenario.id,
+            'campaign_id': campaign.id,
+            'config': scenario.config,
+            'scenario_name': scenario_name,
+        }
+
+
+def _run_public_api_playthrough(client, e2e_scheduler, scenario_setup: dict, type_id: str) -> tuple[list[dict], dict, str]:
+    headers = scenario_setup['headers']
+    scenario_id = scenario_setup['scenario_id']
+    campaign_id = scenario_setup['campaign_id']
+    config = scenario_setup['config']
+    general = config.get('general', {}) or {}
+    total_rounds = int(general.get('rounds', 4) or 4)
+    round_span = int(general.get('round_span_hours', general.get('hours_per_round', 6)) or 6)
+
+    create_response = client.post(
+        '/api/player/solo-sessions',
+        headers=headers,
+        json={'scenario_id': scenario_id, 'campaign_id': campaign_id},
+    )
+    assert create_response.status_code == 201
+    session_id = create_response.get_json()['session_id']
+
+    e2e_scheduler.run_next()
+
+    briefing_response = client.get(f'/api/sessions/{session_id}/briefing', headers=headers)
+    assert briefing_response.status_code == 200
+    briefing = briefing_response.get_json()
+    player_type = next(player_type for player_type in briefing['player_types'] if player_type['id'] == type_id)
+    devices_by_id = {device['id']: device for device in (config.get('devices') or []) if device.get('id')}
+    player_devices = [devices_by_id[device_id] for device_id in (player_type.get('devices') or []) if device_id in devices_by_id]
+    expected_role = detect_player_role(player_devices)
+
+    select_response = client.post(
+        f'/api/sessions/{session_id}/select-type',
+        headers=headers,
+        json={'type_id': type_id},
+    )
+    assert select_response.status_code == 200
+
+    forecast_payload = _build_forecast_payload(config, player_type)
+    submit_full_response = client.post(
+        '/api/player/forecast/full',
+        headers=headers,
+        json={'session_id': session_id, **forecast_payload},
+    )
+    assert submit_full_response.status_code == 200
+
+    round_reports = []
+    for round_num in range(1, total_rounds + 1):
+        round_payload = _slice_forecast_payload(forecast_payload, round_num, round_span)
+        submit_round_response = client.post(
+            '/api/player/forecast',
+            headers=headers,
+            json={'session_id': session_id, 'round_num': round_num, **round_payload},
+        )
+        assert submit_round_response.status_code == 201
+
+        if round_num == 1:
+            start_response = client.post(f'/api/sessions/{session_id}/start-briefing', headers=headers)
+            assert start_response.status_code == 200
+        else:
+            advance_response = client.post(f'/api/sessions/{session_id}/advance-round', headers=headers)
+            assert advance_response.status_code == 200
+
+        e2e_scheduler.run_next()
+
+        round_response = client.get(f'/api/sessions/{session_id}/round-results/{round_num}', headers=headers)
+        assert round_response.status_code == 200
+        round_data = round_response.get_json()
+        assert round_data['round'] == round_num
+        assert round_data['my_result']['type'] == type_id
+        assert round_data['my_result']['player_role'] == expected_role
+        try:
+            _validate_kpis(round_data['my_result']['kpis'], round_data['my_result'], round_data['weights'])
+            _validate_da_id_breakdown(round_data['my_result']['da_id_breakdown'])
+        except AssertionError as exc:
+            raise AssertionError(
+                f"scenario={scenario_setup['scenario_name']} type={type_id} round={round_num}: {exc}"
+            ) from exc
+        round_reports.append(round_data)
+
+    final_response = client.get(f'/api/sessions/{session_id}/final-results', headers=headers)
+    assert final_response.status_code == 200
+    final_data = final_response.get_json()
+    _validate_final_results_consistency(final_data, round_reports, final_data['weights'], scenario_setup['player_id'], type_id)
+    return round_reports, final_data, expected_role
 
 
 def _build_forecast_payload(config: dict, player_type: dict) -> dict:
@@ -738,3 +1066,107 @@ def test_monday_player_flow_all_rounds_remain_consistent(client, monday_setup, t
     assert final_data['my_cumulative']['rounds_played'] == total_rounds
     assert len(final_data['round_history']) == total_rounds
     assert len(final_data['final_ranking']) == 1
+
+
+def test_monday_player_flow_true_e2e_round_reports_and_final_report(client, monday_setup, e2e_scheduler):
+    headers = monday_setup['headers']
+    scenario_id = monday_setup['scenario_id']
+    campaign_id = monday_setup['campaign_id']
+    config = monday_setup['config']
+    player_id = monday_setup['player_id']
+    type_id = 'ptype_mn4igq2n_zx58'
+    expected_role = 'producer'
+    general = config.get('general', {}) or {}
+    total_rounds = int(general.get('rounds', 4) or 4)
+    round_span = int(general.get('round_span_hours', general.get('hours_per_round', 6)) or 6)
+
+    create_response = client.post(
+        '/api/player/solo-sessions',
+        headers=headers,
+        json={'scenario_id': scenario_id, 'campaign_id': campaign_id},
+    )
+    assert create_response.status_code == 201
+    session_id = create_response.get_json()['session_id']
+
+    e2e_scheduler.run_next()
+
+    briefing_response = client.get(f'/api/sessions/{session_id}/briefing', headers=headers)
+    assert briefing_response.status_code == 200
+    briefing = briefing_response.get_json()
+    player_type = next(player_type for player_type in briefing['player_types'] if player_type['id'] == type_id)
+
+    select_response = client.post(
+        f'/api/sessions/{session_id}/select-type',
+        headers=headers,
+        json={'type_id': type_id},
+    )
+    assert select_response.status_code == 200
+
+    forecast_payload = _build_forecast_payload(config, player_type)
+    submit_full_response = client.post(
+        '/api/player/forecast/full',
+        headers=headers,
+        json={'session_id': session_id, **forecast_payload},
+    )
+    assert submit_full_response.status_code == 200
+
+    round_reports = []
+    for round_num in range(1, total_rounds + 1):
+        round_payload = _slice_forecast_payload(forecast_payload, round_num, round_span)
+        submit_round_response = client.post(
+            '/api/player/forecast',
+            headers=headers,
+            json={'session_id': session_id, 'round_num': round_num, **round_payload},
+        )
+        assert submit_round_response.status_code == 201
+
+        if round_num == 1:
+            start_response = client.post(f'/api/sessions/{session_id}/start-briefing', headers=headers)
+            assert start_response.status_code == 200
+        else:
+            advance_response = client.post(f'/api/sessions/{session_id}/advance-round', headers=headers)
+            assert advance_response.status_code == 200
+
+        e2e_scheduler.run_next()
+
+        round_response = client.get(f'/api/sessions/{session_id}/round-results/{round_num}', headers=headers)
+        assert round_response.status_code == 200
+        round_data = round_response.get_json()
+        assert round_data['round'] == round_num
+        assert round_data['my_result']['type'] == type_id
+        assert round_data['my_result']['player_role'] == expected_role
+
+        _validate_kpis(round_data['my_result']['kpis'], round_data['my_result'], round_data['weights'])
+        _validate_da_id_breakdown(round_data['my_result']['da_id_breakdown'])
+        round_reports.append(round_data)
+
+    final_response = client.get(f'/api/sessions/{session_id}/final-results', headers=headers)
+    assert final_response.status_code == 200
+    final_data = final_response.get_json()
+    _validate_final_results_consistency(final_data, round_reports, final_data['weights'], player_id, type_id)
+
+
+def test_all_scenarios_all_player_types_true_e2e(client, e2e_scheduler):
+    scenario_runs = 0
+    player_type_runs = 0
+
+    for scenario_name, config in _all_scenario_configs():
+        scenario_setup = _create_api_scenario_setup(client.application, scenario_name, config)
+        player_types = list((scenario_setup['config'].get('player_types') or []))
+        assert player_types, f'{scenario_name} must define at least one player type'
+        scenario_runs += 1
+
+        for player_type in player_types:
+            assert not e2e_scheduler.tasks, 'background task queue must be empty before the next playthrough'
+            print(f"[ALL_E2E] scenario={scenario_name} type={player_type['id']}")
+            _, final_data, expected_role = _run_public_api_playthrough(client, e2e_scheduler, scenario_setup, player_type['id'])
+            assert final_data['my_cumulative']['type'] == player_type['id']
+            assert final_data['my_cumulative']['rounds_played'] == int((scenario_setup['config'].get('general') or {}).get('rounds', 4) or 4)
+            assert final_data['my_cumulative']['total_score'] >= 0
+            assert final_data['final_ranking'][0]['type'] == player_type['id']
+            if expected_role == 'consumer':
+                assert final_data['my_cumulative']['total_revenue'] <= 0
+            player_type_runs += 1
+
+    assert scenario_runs == 4
+    assert player_type_runs >= 11

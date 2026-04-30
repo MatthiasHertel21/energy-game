@@ -70,6 +70,11 @@ const DEFAULT_GAS_TIERS = [
   { from_pct: 60, to_pct: 90, cost_zar_per_mwh: 1300 },
   { from_pct: 90, to_pct: 100, cost_zar_per_mwh: 1600 },
 ]
+const DEFAULT_RAMP_RATE_MW_PER_MIN = { coal: 5, gas: 15, hydro: 30, nuclear: 1 }
+const DEFAULT_CO2_KG_PER_MWH = { coal: 950, gas: 550, hydro: 0, nuclear: 0, solar: 0, pv: 0, wind: 0 }
+const DEFAULT_CAPACITY_FACTOR_PCT = { solar: 25, wind: 35 }
+const DEFAULT_INITIAL_SOC_PCT = 50
+const DEFAULT_LOAD_VALUE_OF_LOST_LOAD = 1500
 
 const getEffectiveVariableCostBase = (device) => {
   const tiers = device?.variable_cost_tiers
@@ -110,6 +115,10 @@ const getAutoDefaultBidPrices = (device, count) => {
 
   return prices
 }
+
+const getDefaultCo2Intensity = (deviceType) => DEFAULT_CO2_KG_PER_MWH[String(deviceType || '').toLowerCase()] ?? 0
+const getDefaultRampRate = (deviceType) => DEFAULT_RAMP_RATE_MW_PER_MIN[String(deviceType || '').toLowerCase()] ?? 5
+const getDefaultCapacityFactor = (deviceType) => DEFAULT_CAPACITY_FACTOR_PCT[String(deviceType || '').toLowerCase()] ?? 25
 
 const buildDefaultBidConfig = (device, count, existing = {}) => {
   const labels = getBidLabelsForCount(count)
@@ -462,16 +471,7 @@ export default function DeviceCard({
                   label="CO2 Footprint"
                   value={device.co2_emissions_kg_per_mwh !== undefined
                     ? device.co2_emissions_kg_per_mwh
-                    : (device.co2_kg_per_mwh !== undefined ? device.co2_kg_per_mwh : (() => {
-                    const type = device.type?.toLowerCase();
-                    if (type === 'coal') return 950;
-                    if (type === 'gas') return 450;
-                    if (type === 'nuclear') return 12;
-                    if (type === 'hydro') return 24;
-                    if (type === 'solar' || type === 'pv') return 40;
-                    if (type === 'wind') return 11;
-                    return 0;
-                  })())}
+                    : (device.co2_kg_per_mwh !== undefined ? device.co2_kg_per_mwh : getDefaultCo2Intensity(device.type))}
                   onChange={(val) => handleFieldChange('co2_emissions_kg_per_mwh', val)}
                   min={0}
                   max={2000}
@@ -484,7 +484,7 @@ export default function DeviceCard({
                 {isThermal && (
                   <NumberInput
                     label="Ramp Rate"
-                    value={device.ramp_rate_mw_per_min ?? ({ coal: 5, gas: 15, hydro: 30, nuclear: 1 }[typeKey] ?? 5)}
+                    value={device.ramp_rate_mw_per_min ?? getDefaultRampRate(typeKey)}
                     onChange={(val) => handleFieldChange('ramp_rate_mw_per_min', val)}
                     min={0}
                     max={500}
@@ -557,7 +557,7 @@ export default function DeviceCard({
                 
                 <NumberInput
                   label="Max Price (Willingness-to-Pay)"
-                  value={device.value_of_lost_load || 1500}
+                  value={device.value_of_lost_load ?? DEFAULT_LOAD_VALUE_OF_LOST_LOAD}
                   onChange={(val) => handleFieldChange('value_of_lost_load', val)}
                   min={0}
                   max={50000}
@@ -586,7 +586,7 @@ export default function DeviceCard({
             {['solar', 'wind'].includes(device.type?.toLowerCase()) && (
               <RangeInput
                 label="Capacity Factor"
-                value={device.capacity_factor_pct || 50}
+                value={device.capacity_factor_pct ?? getDefaultCapacityFactor(device.type)}
                 onChange={(val) => handleFieldChange('capacity_factor_pct', val)}
                 min={0}
                 max={100}
@@ -604,7 +604,7 @@ export default function DeviceCard({
               <>
                 <NumberInput
                   label="Power Rating"
-                  value={device.power_rating_mw || 0}
+                  value={device.power_rating_mw ?? device.power_mw ?? 0}
                   onChange={(val) => handleFieldChange('power_rating_mw', val)}
                   min={0}
                   max={1000}
@@ -613,7 +613,7 @@ export default function DeviceCard({
                 />
                 <RangeInput
                   label="Initial State of Charge"
-                  value={device.initial_soc_pct || 50}
+                  value={device.initial_soc_pct ?? DEFAULT_INITIAL_SOC_PCT}
                   onChange={(val) => handleFieldChange('initial_soc_pct', val)}
                   min={0}
                   max={100}

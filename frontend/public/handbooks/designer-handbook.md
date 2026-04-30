@@ -1,6 +1,6 @@
 # Designer Guide
 
-Last updated: 2026-02-25  
+Last updated: 2026-04-30  
 Audience: Scenario/Campaign Designers
 
 ## 1) What good scenario design means here
@@ -29,11 +29,12 @@ Designers own:
 
 Treat config blocks as separate design layers:
 - `general`: time mechanics and round structure.
-- `market` + `markets`: price/volume envelope and DA/ID availability.
+- `market` + `markets`: price/volume envelope and DA/ID availability per round.
 - `devices` + `player_types`: who controls which assets.
 - `events`: controlled disruption and adaptation pressure.
 - `challenges` + `scoring`: what behavior is rewarded.
-- `environment` + `grid`: context realism and variability.
+- `environment` + `grid`: context realism and multi-zone topology.
+- `player_input`: which hours players can edit and how.
 
 Design quality improves when each layer has a clear teaching purpose.
 
@@ -57,6 +58,50 @@ Each `player_type` should have a coherent strategic identity:
 - naming is explicit enough for debrief discussion.
 
 Do not rename IDs in active ecosystems unless migration is planned.
+
+### Variable cost tiers (coal and gas)
+
+Coal and gas devices support a tiered cost structure that models increasing marginal cost at higher utilization:
+
+```json
+"variable_cost_tiers": [
+  { "from_pct": 0,  "to_pct": 60,  "cost_zar_per_mwh": 380 },
+  { "from_pct": 60, "to_pct": 90,  "cost_zar_per_mwh": 440 },
+  { "from_pct": 90, "to_pct": 100, "cost_zar_per_mwh": 520 }
+]
+```
+
+All tiers are shown in the player’s My Devices card so players can reason about marginal cost before bidding. A weighted average of the tiers is used for default bid price suggestions.
+
+### Battery auto-bid configuration
+
+Batteries can be configured to allow auto-mode for players:
+- `auto_bid_allowed: true` enables the auto-mode toggle on the player screen.
+- Players set a `buy_threshold_zar_mwh` (charge below this SMP) and a `sell_threshold_zar_mwh` (discharge above this SMP).
+- Manual bid curves are disabled while auto-mode is active.
+
+### Grid and zone configuration
+
+Scenarios can model multi-zone electricity grids:
+
+- `grid.zones`: number of zones (1–5).
+- `grid.atc`: Available Transmission Capacity matrix (zones × zones, diagonal is 0).
+- `grid.losses_pct_per_link`: percentage loss per transmission link.
+- `grid.network_settlement`: how shortfall costs are allocated (`extra_cost_mode`, `cost_allocation_target`, `shortfall_price_mode`, `shortfall_price_value`).
+- `grid.generator_curtailment_mode`: how generation is curtailed when surplus occurs (`pro_rata` or minimum-cost).
+
+Each `player_type` can be assigned a `zone` field to locate their devices on the grid.
+
+### Player input scope
+
+Control which hours players can actively edit:
+
+- `player_input.mode`: `"all_hours"` (default) or restricted.
+- `player_input.editable_offsets`: list of hour offsets (relative to round start) that are editable.
+- `player_input.hide_non_editable_hours`: if `true`, non-editable hour slots are hidden from the chart.
+- `player_input.allow_other_rounds_editing`: whether players can pre-fill future-round hours.
+
+Note: hidden non-editable hours are always submitted as 0 to prevent invisible bids from affecting clearing results.
 
 ## 7) Event design patterns
 

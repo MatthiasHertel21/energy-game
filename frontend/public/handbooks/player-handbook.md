@@ -1,6 +1,6 @@
 # Player Guide
 
-Last updated: 2026-02-25  
+Last updated: 2026-04-30  
 Audience: Players
 
 ## 1) Purpose of this guide
@@ -36,6 +36,23 @@ Each round follows the same basic loop:
 - `Round Results`: KPI cards, detail tables, and interpretation hints.
 - `Scenario Complete`: final summary and debrief screens.
 
+### Layout of the running screen
+
+The player screen has three columns:
+
+- **Left** – active events, tasks, and scenario challenges.
+- **Middle** – forecast chart editor (hourly bid curves, lot visualization).
+- **Right** – market insights (DAM/IDM price and volume charts) and **My Devices** card.
+
+### My Devices card
+
+The right column shows all devices assigned to your player type:
+
+- **Device name** and type badge.
+- **Capacity**: MW for generators; power/energy/efficiency for batteries; baseline and peak MW for loads.
+- **Variable Cost**: for coal and gas devices the cost tiers are listed by utilization range (e.g., 0–60 % → 380 ZAR/MWh, 60–90 % → 440 ZAR/MWh, 90–100 % → 520 ZAR/MWh). For other device types a single ZAR/MWh value is shown.
+- **Fixed Cost**: ZAR/hour if configured.
+
 ## 4) Shared-market behavior after submit
 
 In trainer-led shared sessions, once you submit:
@@ -65,6 +82,23 @@ Expected message: “Please wait: The trainer will advance to the next phase.”
 1. **Stability pattern**: large base lot, limited peak lot.  
 2. **Price-seeking pattern**: moderate base, bigger mid/peak spread.  
 3. **Risk-control pattern**: reduced offered quantity in uncertain/event rounds.
+
+### Battery auto-mode
+
+If the scenario enables it, batteries can operate in automatic mode:
+
+- Set a **charge-below price** (buy threshold in ZAR/MWh): battery charges when SMP is at or below this level.
+- Set a **discharge-above price** (sell threshold in ZAR/MWh): battery discharges when SMP is at or above this level.
+
+While auto-mode is active, manual hourly curves and bid lots for the battery are disabled. The system automatically caps quantities by available power and current state of charge.
+
+Guideline: the discharge threshold should normally be higher than the charge threshold. A reversed order may cause unattractive charge/discharge cycles.
+
+### Market insight tabs (right panel)
+
+The market insights card offers two tabs:
+- **DAM** (Day-Ahead Market): shows supply/demand curves, SMP, and cleared volume for the current round.
+- **IDM** (Intra-Day Market): shows IDP and IDM volume if intra-day trading is active in the scenario.
 
 ## 6) Market timing, gate logic, and editable hours
 

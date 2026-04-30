@@ -456,12 +456,10 @@ def _get_tradeable_hours(session: Session, round_num: int) -> list:
     if round_num == 1:
         tradeable = list(range(horizon_hours))
     else:
-        # Round 2+: Hours are tradeable if they're past the next ID gate
-        # ID gate closes at next_id_gate hour
-        next_id_gate = _calculate_next_id_gate(current_sim_hour, id_gate_interval, id_gate_base)
-    
-        # Tradeable hours: from next_id_gate onwards
-        tradeable = [h for h in range(horizon_hours) if h >= next_id_gate]
+        # Round 2+: gate closures lock the delivered horizon cumulatively.
+        # `get_gate_hour_index()` returns the last horizon-relative hour that is
+        # already locked for the current simulation time.
+        tradeable = [h for h in range(horizon_hours) if h > locked_until_hour]
     
     allowed_hours = set(_get_player_input_allowed_hours(scenario.config or {}, round_num))
     return [h for h in tradeable if h in allowed_hours]

@@ -1,6 +1,6 @@
 # Admin Guide
 
-Last updated: 2026-02-25  
+Last updated: 2026-04-30  
 Audience: Platform Administrators
 
 ## 1) Admin mission

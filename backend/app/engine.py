@@ -2104,6 +2104,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     """
     general_cfg = config.get("general", {})
     balancing_cfg = config.get("balancing") or {}
+    balancing_price_mode = str(balancing_cfg.get("price_mode", "absolute") or "absolute").strip().lower()
     try:
         balancing_up_price = float(balancing_cfg.get("up_price_zar_per_mwh", 1200.0) or 1200.0)
     except Exception:
@@ -2112,6 +2113,14 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         balancing_down_price = float(balancing_cfg.get("down_price_zar_per_mwh", 800.0) or 800.0)
     except Exception:
         balancing_down_price = 800.0
+    try:
+        balancing_up_smp_pct = float(balancing_cfg.get("up_price_smp_pct", 120.0) or 120.0)
+    except Exception:
+        balancing_up_smp_pct = 120.0
+    try:
+        balancing_down_smp_pct = float(balancing_cfg.get("down_price_smp_pct", 80.0) or 80.0)
+    except Exception:
+        balancing_down_smp_pct = 80.0
     player_type_by_player: Dict[int, str] = {}
     try:
         from .models import SessionPlayerType
@@ -2132,6 +2141,40 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         start_hour = int(start_time_str.split(":")[0])
     except:
         start_hour = 0
+
+    # Legacy compatibility: older tests/configs pass plain device arrays without
+    # ids or ownership metadata and pair them with flat per-player forecast lists.
+    # Normalize those devices once so later KPI/detail code can resolve them
+    # consistently across the round.
+    normalized_devices = []
+    raw_devices = config.get("devices", []) or []
+    legacy_devices_unowned = all(
+        isinstance(device, dict)
+        and not device.get("id")
+        and device.get("owner_id") is None
+        and device.get("player_id") is None
+        for device in raw_devices
+    )
+    assign_devices_by_player_order = legacy_devices_unowned and len(raw_devices) == len(players)
+    assign_all_devices_to_single_player = legacy_devices_unowned and len(players) == 1
+    for device_idx, raw_device in enumerate(raw_devices):
+        if not isinstance(raw_device, dict):
+            normalized_devices.append(raw_device)
+            continue
+
+        normalized_device = dict(raw_device)
+        normalized_device.setdefault("id", f"legacy_device_{device_idx + 1}")
+
+        if normalized_device.get("owner_id") is None and normalized_device.get("player_id") is None:
+            if assign_devices_by_player_order:
+                normalized_device["owner_id"] = players[device_idx]
+            elif assign_all_devices_to_single_player:
+                normalized_device["owner_id"] = players[0]
+
+        normalized_devices.append(normalized_device)
+
+    if normalized_devices is not raw_devices:
+        config = {**config, "devices": normalized_devices}
     
     # Day 1 Baseline option (Zero, Preset, Edit Round 1)
     # - Zero: DAM offering = 0 for all day 1 hours (no DAM market, starts with IDM)
@@ -3145,6 +3188,54 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     per_player_id_delta = {pid: 0.0 for pid in players}
     per_player_da_revenue = {pid: 0.0 for pid in players}
     per_player_id_revenue = {pid: 0.0 for pid in players}
+
+    def _validate_player_rollups(pid: int, player_kpi: dict) -> None:
+        """Fail fast if round KPIs drift away from their canonical hourly/device sources."""
+        hourly_breakdown = player_kpi.get('hourly_breakdown') or []
+        device_breakdown = player_kpi.get('device_hourly_breakdown') or {}
+        if not hourly_breakdown:
+            return
+
+        def _sum_hourly(field: str) -> float:
+            return sum(float(hour.get(field, 0.0) or 0.0) for hour in hourly_breakdown)
+
+        def _sum_device(field: str) -> float:
+            total = 0.0
+            for rows in device_breakdown.values():
+                if not isinstance(rows, list):
+                    continue
+                for row in rows:
+                    if isinstance(row, dict):
+                        total += float(row.get(field, 0.0) or 0.0)
+            return total
+
+        mismatches = []
+
+        def _check(field: str, actual: float, expected: float, tol: float) -> None:
+            if abs(float(actual) - float(expected)) > tol:
+                mismatches.append(f"{field}: actual={actual}, expected={expected}, tol={tol}")
+
+        _check('planned_mwh', player_kpi.get('planned_mwh', 0.0), _sum_hourly('planned_mw'), 0.005)
+        _check('dispatched_mwh', player_kpi.get('dispatched_mwh', 0.0), _sum_hourly('dispatched_mw'), 0.005)
+        _check('actual_mwh', player_kpi.get('actual_mwh', 0.0), _sum_hourly('actual_mw'), 0.005)
+        _check('revenue_zar', player_kpi.get('revenue_zar', 0.0), _sum_hourly('revenue_zar'), 0.5)
+        _check('variable_cost_zar', player_kpi.get('variable_cost_zar', 0.0), _sum_hourly('variable_cost_zar'), 0.5)
+        _check('fixed_cost_zar', player_kpi.get('fixed_cost_zar', 0.0), _sum_hourly('fixed_cost_zar'), 0.5)
+        _check('imbalance_cost_zar', player_kpi.get('imbalance_cost_zar', 0.0), _sum_hourly('imbalance_cost_zar'), 0.5)
+        _check('congestion_revenue_zar', player_kpi.get('congestion_revenue_zar', 0.0), _sum_hourly('congestion_revenue_zar'), 0.5)
+        _check('profit_zar', player_kpi.get('profit_zar', 0.0), _sum_hourly('profit_zar'), 0.5)
+        _check('battery_charge_cost_zar', player_kpi.get('battery_charge_cost_zar', 0.0), _sum_hourly('battery_charge_cost_zar'), 0.05)
+        _check('curtailment_mwh', player_kpi.get('curtailment_mwh', 0.0), _sum_hourly('curtailment_mwh'), 0.005)
+        _check('curtailment_cost_zar', player_kpi.get('curtailment_cost_zar', 0.0), _sum_hourly('curtailment_cost_zar'), 0.5)
+        _check('imbalance_mwh', player_kpi.get('imbalance_mwh', 0.0), _sum_hourly('imbalance_mwh'), 0.005)
+        _check('network_shortfall_mwh', player_kpi.get('network_shortfall_mwh', 0.0), _sum_hourly('network_shortfall_mwh'), 0.005)
+        _check('atc_dispatch_cost_zar', player_kpi.get('atc_dispatch_cost_zar', 0.0), _sum_hourly('network_shortfall_cost_zar'), 0.5)
+        _check('co2_emissions_kg', player_kpi.get('co2_emissions_kg', 0.0), _sum_device('co2_kg'), 0.05)
+
+        if mismatches:
+            raise RuntimeError(
+                f"[KPI_CONSISTENCY] Player {pid} rollup drift detected: " + "; ".join(mismatches)
+            )
     
     # Per-device hourly tracking for detailed breakdown
     per_device_hourly_planned = {}
@@ -3639,6 +3730,45 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             else:
                 dispatched = planned * dispatch_factor
 
+                # Legacy/non-bid compatibility: retain per-device hourly quantities so
+                # KPI rollups and device breakdowns still work for flat forecast inputs.
+                device_forecast = normalized_forecasts.get(pid, {})
+                explicit_devices_data = device_forecast.get('devices', []) if isinstance(device_forecast, dict) else []
+                player_devices = [
+                    device for device in devices_cfg
+                    if device.get('id') and (device.get('owner_id') == pid or device.get('player_id') == pid)
+                ]
+
+                device_plans = []
+                if player_devices and explicit_devices_data:
+                    for device in player_devices:
+                        device_hours = _get_device_forecast_hours(explicit_devices_data, device.get('id'))
+                        device_plan = float(device_hours[hour_idx] or 0.0) if hour_idx < len(device_hours) else 0.0
+                        device_plans.append((device.get('id'), device_plan))
+                elif len(player_devices) == 1:
+                    device_plans = [(player_devices[0].get('id'), float(planned or 0.0))]
+                elif player_devices:
+                    per_device_plan = float(planned or 0.0) / float(len(player_devices))
+                    device_plans = [(device.get('id'), per_device_plan) for device in player_devices]
+
+                total_device_plan = sum(device_plan for _, device_plan in device_plans)
+                for device_id, device_plan in device_plans:
+                    if not device_id:
+                        continue
+                    if device_id not in per_device_hourly_planned:
+                        per_device_hourly_planned[device_id] = [0.0] * display_span
+                    if device_id not in per_device_hourly_dispatched:
+                        per_device_hourly_dispatched[device_id] = [0.0] * display_span
+                    if device_id not in per_device_hourly_actual:
+                        per_device_hourly_actual[device_id] = [0.0] * display_span
+
+                    per_device_hourly_planned[device_id][hour_offset] = float(device_plan)
+                    if abs(total_device_plan) > 0.000001:
+                        dispatched_share = float(dispatched) * (float(device_plan) / float(total_device_plan))
+                    else:
+                        dispatched_share = 0.0
+                    per_device_hourly_dispatched[device_id][hour_offset] = dispatched_share
+
             # Keep ID-only dispatched before optional delivery-time DA fallback
             id_dispatched_only = dispatched
 
@@ -3815,10 +3945,15 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             total_dispatched = da_dispatched_for_device + id_dispatched_for_device
                             device_imbalance_mwh = device_actual - total_dispatched
                             
+                            if balancing_price_mode == 'smp_multiplier':
+                                _eff_up = max(0.0, float(price or 0.0) * balancing_up_smp_pct / 100.0)
+                                _eff_down = max(0.0, float(price or 0.0) * balancing_down_smp_pct / 100.0)
+                            else:
+                                _eff_up, _eff_down = balancing_up_price, balancing_down_price
                             if device_imbalance_mwh > 0:  # Over-consumption
-                                device_imbalance_cost = device_imbalance_mwh * balancing_up_price
+                                device_imbalance_cost = device_imbalance_mwh * _eff_up
                             elif device_imbalance_mwh < 0:  # Under-consumption
-                                device_imbalance_cost = abs(device_imbalance_mwh) * balancing_down_price
+                                device_imbalance_cost = abs(device_imbalance_mwh) * _eff_down
                             else:
                                 device_imbalance_cost = 0.0
                             
@@ -3915,9 +4050,6 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             
             # Add noise on top of actual (only for generators - consumers already have noise)
             if not is_consumer:
-                noise = random.uniform(-frac, frac) * max(1.0, actual)
-                actual = max(0.0, min(actual_constrained, actual + noise))
-                
                 # Update per-device actual with event and noise applied.
                 # Batteries are dispatchable storage and should not inherit renewable
                 # availability/noise from other devices in the same player portfolio.
@@ -3936,10 +4068,23 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         else:
                             non_battery_actual_total_pre_noise += device_actual_cap
 
-                    non_battery_actual_total = max(0.0, actual - battery_actual_total)
+                    if non_battery_actual_total_pre_noise > 0.0:
+                        noise = random.uniform(-frac, frac) * max(1.0, non_battery_actual_total_pre_noise)
+                        non_battery_actual_total = max(
+                            0.0,
+                            min(non_battery_actual_total_pre_noise, non_battery_actual_total_pre_noise + noise),
+                        )
+                    else:
+                        non_battery_actual_total = 0.0
+
+                    actual = battery_actual_total + non_battery_actual_total
 
                     for device_id in device_ids_for_noise:
                         device_actual_cap = float(device_actual_caps.get(device_id, 0.0) or 0.0)
+                        try:
+                            device_dispatched = float(per_device_hourly_dispatched.get(device_id, [0.0] * display_span)[hour_offset] or 0.0)
+                        except Exception:
+                            device_dispatched = 0.0
                         if device_id in battery_device_ids:
                             device_actual_with_noise = device_actual_cap
                         elif non_battery_actual_total_pre_noise > 0:
@@ -3971,10 +4116,15 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         total_dispatched = da_dispatched_for_device + id_dispatched_for_device
                         device_imbalance_mwh = device_actual_with_noise - total_dispatched
 
+                        if balancing_price_mode == 'smp_multiplier':
+                            _eff_up = max(0.0, float(price or 0.0) * balancing_up_smp_pct / 100.0)
+                            _eff_down = max(0.0, float(price or 0.0) * balancing_down_smp_pct / 100.0)
+                        else:
+                            _eff_up, _eff_down = balancing_up_price, balancing_down_price
                         if device_imbalance_mwh > 0:  # Over-delivery
-                            device_imbalance_cost = device_imbalance_mwh * balancing_up_price
+                            device_imbalance_cost = device_imbalance_mwh * _eff_up
                         elif device_imbalance_mwh < 0:  # Under-delivery
-                            device_imbalance_cost = abs(device_imbalance_mwh) * balancing_down_price
+                            device_imbalance_cost = abs(device_imbalance_mwh) * _eff_down
                         else:
                             device_imbalance_cost = 0.0
 
@@ -3989,8 +4139,11 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             'actual_mwh': round(device_actual_with_noise, 3),
                             'imbalance_mwh': round(device_imbalance_mwh, 3),
                             'balancing_cost_zar': round(device_imbalance_cost, 2),
-                            'balancing_price': balancing_up_price if device_imbalance_mwh > 0 else (balancing_down_price if device_imbalance_mwh < 0 else 0)
+                            'balancing_price': _eff_up if device_imbalance_mwh > 0 else (_eff_down if device_imbalance_mwh < 0 else 0)
                         })
+                else:
+                    noise = random.uniform(-frac, frac) * max(1.0, actual)
+                    actual = max(0.0, min(actual_constrained, actual + noise))
             
             # Settlement mode:
             # - absolute_clearing_round: normal revenue at current price
@@ -4006,11 +4159,6 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 else:
                     # ID: Split settlement (use cleared DAM dispatch as baseline when available)
                     da_volume = float(da_committed_total or 0.0) if (round_num > 1 and id_delta_round) else 0.0
-                    if da_volume == 0.0:
-                        forecast_data = normalized_forecasts.get(pid, {})
-                        da_hours = forecast_data.get('da_hours', [])
-                        if hour_idx < len(da_hours):
-                            da_volume = float(da_hours[hour_idx] or 0.0)
 
                     id_delta = float(id_dispatched_only or 0.0)
                     da_revenue = -round(da_volume * (da_smp or price), 0)
@@ -4035,11 +4183,6 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 else:
                     # ID: Split settlement (use cleared DAM dispatch as baseline when available)
                     da_volume = float(da_committed_total or 0.0) if (round_num > 1 and id_delta_round) else 0.0
-                    if da_volume == 0.0:
-                        forecast_data = normalized_forecasts.get(pid, {})
-                        da_hours = forecast_data.get('da_hours', [])
-                        if hour_idx < len(da_hours):
-                            da_volume = float(da_hours[hour_idx] or 0.0)
 
                     id_delta = float(id_dispatched_only or 0.0)
                     da_revenue = round(da_volume * (da_smp or price), 0)
@@ -4202,7 +4345,12 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             
             # Only calculate imbalance if volume > 0 OR player has must-run units
             if vol > 0 or has_must_run:
-                imbalance_cost = settle_balancing(dispatched, actual, up_price=balancing_up_price, down_price=balancing_down_price)
+                if balancing_price_mode == 'smp_multiplier':
+                    _eff_up = max(0.0, float(price or 0.0) * balancing_up_smp_pct / 100.0)
+                    _eff_down = max(0.0, float(price or 0.0) * balancing_down_smp_pct / 100.0)
+                else:
+                    _eff_up, _eff_down = balancing_up_price, balancing_down_price
+                imbalance_cost = settle_balancing(dispatched, actual, up_price=_eff_up, down_price=_eff_down)
             # Else: No market clearing, no dispatch plan → no imbalance penalty
             
             # Curtailment: Only for GENERATORS (planned > dispatched = not sold)
@@ -4485,12 +4633,18 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 # If actual > dispatched (over-delivery/consumption): up_price from config
                 # If actual < dispatched (under-delivery/consumption): down_price from config
                 imbalance_h = actual_h - dispatched_h
+                if balancing_price_mode == 'smp_multiplier':
+                    _hr_smp = float(hour_result.get('smp', 0.0) or 0.0)
+                    _eff_up = max(0.0, _hr_smp * balancing_up_smp_pct / 100.0)
+                    _eff_down = max(0.0, _hr_smp * balancing_down_smp_pct / 100.0)
+                else:
+                    _eff_up, _eff_down = balancing_up_price, balancing_down_price
                 if imbalance_h > 0:  # Over-delivery/consumption
                     hour_detail["imbalance_mwh"] += imbalance_h
-                    hour_detail["imbalance_cost_zar"] += imbalance_h * balancing_up_price
+                    hour_detail["imbalance_cost_zar"] += imbalance_h * _eff_up
                 elif imbalance_h < 0:  # Under-delivery/consumption
                     hour_detail["imbalance_mwh"] += abs(imbalance_h)
-                    hour_detail["imbalance_cost_zar"] += abs(imbalance_h) * balancing_down_price
+                    hour_detail["imbalance_cost_zar"] += abs(imbalance_h) * _eff_down
                 
                 if not is_consumer:
                     # Curtailment = planned - dispatched (not sold, informational only)
@@ -4529,6 +4683,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         device_forecast = normalized_forecasts.get(pid, {})
         device_bids_all = device_forecast.get('bids') or {}
         devices_cfg = config.get("devices", [])
+        from .device_types import enrich_device_with_defaults
+        devices_cfg = [enrich_device_with_defaults(device) for device in devices_cfg]
 
         player_device_ids = set(device_bids_all.keys()) if device_bids_all else set()
 
@@ -4786,14 +4942,24 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     hour_entry["imbalance_mwh"] = round(actual_h - dispatched_h, 3)
                     # Mirror settle_balancing price logic
                     imbalance_h = float(actual_h) - float(dispatched_h)
+                    if balancing_price_mode == 'smp_multiplier':
+                        _fb_smp = float(hour_result.get('smp', 0.0) or 0.0)
+                        _eff_up = max(0.0, _fb_smp * balancing_up_smp_pct / 100.0)
+                        _eff_down = max(0.0, _fb_smp * balancing_down_smp_pct / 100.0)
+                    else:
+                        _eff_up, _eff_down = balancing_up_price, balancing_down_price
                     if imbalance_h > 0:
-                        hour_entry["imbalance_cost_zar"] = round(imbalance_h * balancing_up_price, 2)
+                        hour_entry["imbalance_cost_zar"] = round(imbalance_h * _eff_up, 2)
                     elif imbalance_h < 0:
-                        hour_entry["imbalance_cost_zar"] = round(abs(imbalance_h) * balancing_down_price, 2)
+                        hour_entry["imbalance_cost_zar"] = round(abs(imbalance_h) * _eff_down, 2)
                     else:
                         hour_entry["imbalance_cost_zar"] = 0.0
 
-                # Canonical financials / CO2 per device-hour: derived from the same DA/ID settlement basis
+                # Explanatory per-device-hour financials / CO2.
+                # These rows are used to explain the hour at device granularity and to
+                # aggregate physical/device-native fields upward. Settlement KPIs remain
+                # canonical on the player-hour path and must not be rebuilt from these
+                # rows later without an explicit allocation rule.
                 device_type = (device_cfg.get('type', '') if device_cfg else '').lower()
                 is_load = 'load' in device_type
 
@@ -4891,19 +5057,21 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 
                 device_hourly_breakdown[dev_id].append(hour_entry)
 
-        # Derive canonical per-player hourly financials from device-hour settlement fields.
-        # This prevents KPI drift when legacy per_player_hourly_* arrays are missing/zero (e.g. delta rounds).
+        # Update per-player hourly physical quantities from device-hour detail rows.
+        # Financial fields (revenue, costs, congestion, profit) are NOT overwritten here —
+        # they were already set from the authoritative Pipeline A per-hour accumulators
+        # (per_player_hourly_revenue / variable_cost / fixed_cost / imbalance_cost /
+        # congestion_revenue) in the first sub-pass above.  Overwriting them with device-
+        # level sums would reintroduce the DA/ID dispatch-split error that caused KPI
+        # divergence when da_committed_by_device is empty (forecast-mode rounds).
+        #
+        # battery_charge_cost_zar is the sole exception: it only exists at device level.
         if isinstance(device_hourly_breakdown, dict) and hourly_breakdown:
             for h_idx in range(min(len(hourly_breakdown), len(hourly_results))):
                 planned_sum = 0.0
                 dispatched_sum = 0.0
                 actual_sum = 0.0
-                revenue_sum = 0.0
-                variable_cost_sum = 0.0
-                fixed_cost_sum = 0.0
-                imbalance_cost_sum = 0.0
                 battery_charge_cost_sum = 0.0
-                congestion_sum = 0.0
                 imbalance_mwh_sum = 0.0
                 for _dev_id, rows in device_hourly_breakdown.items():
                     if not isinstance(rows, list) or h_idx >= len(rows):
@@ -4912,31 +5080,24 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     planned_sum += float(row.get('planned_mw', 0.0) or 0.0)
                     dispatched_sum += float(row.get('total_dispatched_mwh', row.get('dispatched_mw', 0.0)) or 0.0)
                     actual_sum += float(row.get('actual_mw', 0.0) or 0.0)
-                    revenue_sum += float(row.get('revenue_zar', 0.0) or 0.0)
-                    variable_cost_sum += float(row.get('variable_cost_zar', 0.0) or 0.0)
-                    fixed_cost_sum += float(row.get('fixed_cost_zar', 0.0) or 0.0)
-                    imbalance_cost_sum += float(row.get('imbalance_cost_zar', 0.0) or 0.0)
                     battery_charge_cost_sum += float(row.get('battery_charge_cost_zar', 0.0) or 0.0)
-                    congestion_sum += float(row.get('congestion_revenue_zar', 0.0) or 0.0)
                     imbalance_mwh_sum += float(row.get('imbalance_mwh', 0.0) or 0.0)
 
+                # Physical quantities from device-level detail (authoritative).
                 hourly_breakdown[h_idx]['planned_mw'] = round(planned_sum, 3)
                 hourly_breakdown[h_idx]['dispatched_mw'] = round(dispatched_sum, 3)
                 hourly_breakdown[h_idx]['actual_mw'] = round(actual_sum, 3)
-                hourly_breakdown[h_idx]['revenue_zar'] = round(revenue_sum, 0)
-                hourly_breakdown[h_idx]['variable_cost_zar'] = round(variable_cost_sum, 0)
-                hourly_breakdown[h_idx]['fixed_cost_zar'] = round(fixed_cost_sum, 0)
-                hourly_breakdown[h_idx]['imbalance_cost_zar'] = round(imbalance_cost_sum, 0)
-                hourly_breakdown[h_idx]['battery_charge_cost_zar'] = round(battery_charge_cost_sum, 2)
-                hourly_breakdown[h_idx]['congestion_revenue_zar'] = round(congestion_sum, 0)
                 hourly_breakdown[h_idx]['imbalance_mwh'] = round(imbalance_mwh_sum, 3)
+                # Battery charge cost: device-level only.
+                hourly_breakdown[h_idx]['battery_charge_cost_zar'] = round(battery_charge_cost_sum, 2)
+                # Profit: recompute from the now-canonical per-hour financial fields.
                 hourly_breakdown[h_idx]['profit_zar'] = round(
-                    revenue_sum
-                    - variable_cost_sum
-                    - fixed_cost_sum
-                    - imbalance_cost_sum
+                    hourly_breakdown[h_idx]['revenue_zar']
+                    - hourly_breakdown[h_idx]['variable_cost_zar']
+                    - hourly_breakdown[h_idx]['fixed_cost_zar']
+                    - hourly_breakdown[h_idx]['imbalance_cost_zar']
                     - battery_charge_cost_sum
-                    + congestion_sum,
+                    + hourly_breakdown[h_idx]['congestion_revenue_zar'],
                     0
                 )
         
@@ -4945,13 +5106,22 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         total_dispatched = sum(h["dispatched_mw"] for h in hourly_breakdown)
         print(f"[HOURLY_DEBUG] Player {pid} breakdown complete: {len(hourly_breakdown)} hours, total_planned={total_planned:.2f}, total_dispatched={total_dispatched:.2f}")
         
-        # Aggregate MWh quantities (not costs) from hourly_breakdown for KPIs
-        total_revenue_from_details = sum(h.get("revenue_zar", 0.0) for h in hourly_breakdown)
-        total_variable_cost_from_details = sum(h.get("variable_cost_zar", 0.0) for h in hourly_breakdown)
-        total_fixed_cost_from_details = sum(h.get("fixed_cost_zar", 0.0) for h in hourly_breakdown)
-        total_imbalance_cost_from_details = sum(h.get("imbalance_cost_zar", 0.0) for h in hourly_breakdown)
-        total_congestion_revenue_from_details = sum(h.get("congestion_revenue_zar", 0.0) for h in hourly_breakdown)
-        total_profit_from_details = sum(h.get("profit_zar", 0.0) for h in hourly_breakdown)
+        # Aggregate KPI totals.
+        # Financial fields: read directly from Pipeline A accumulators — the single
+        # authoritative source for revenue/costs/profit (DA/ID-aware, settled per hour).
+        # Physical quantities (MWh, curtailment): derived from per-device hourly_breakdown.
+        total_revenue_from_details = float(per_player_revenue.get(pid, 0.0))
+        total_variable_cost_from_details = float(per_player_variable_cost.get(pid, 0.0))
+        total_fixed_cost_from_details = float(per_player_fixed_cost.get(pid, 0.0))
+        total_imbalance_cost_from_details = float(per_player_imbalance_cost.get(pid, 0.0))
+        total_congestion_revenue_from_details = float(per_player_congestion_revenue.get(pid, 0.0))
+        total_profit_from_details = (
+            total_revenue_from_details
+            - total_variable_cost_from_details
+            - total_fixed_cost_from_details
+            - total_imbalance_cost_from_details
+            + total_congestion_revenue_from_details
+        )
         total_planned_from_details = sum(h.get("planned_mw", 0.0) for h in hourly_breakdown)
         total_dispatched_from_details = sum(h.get("dispatched_mw", 0.0) for h in hourly_breakdown)
         total_actual_from_details = sum(h.get("actual_mw", 0.0) for h in hourly_breakdown)
@@ -4968,42 +5138,6 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     if not isinstance(row, dict):
                         continue
                     total_co2_from_details += float(row.get('co2_kg', 0.0) or 0.0)
-
-        if abs(total_co2_from_details) < 1e-9 and isinstance(device_hourly_breakdown, dict):
-            fallback_co2_total = max(0.0, float(per_player_co2_emissions.get(pid, 0.0) or 0.0))
-            if fallback_co2_total > 1e-9:
-                dispatch_rows = []
-                total_device_dispatch_for_co2 = 0.0
-                for rows in device_hourly_breakdown.values():
-                    if not isinstance(rows, list):
-                        continue
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-                        dispatched_for_co2 = max(0.0, float(row.get('total_dispatched_mwh', row.get('dispatched_mw', 0.0)) or 0.0))
-                        if dispatched_for_co2 <= 1e-9:
-                            continue
-                        dispatch_rows.append((row, dispatched_for_co2))
-                        total_device_dispatch_for_co2 += dispatched_for_co2
-
-                if total_device_dispatch_for_co2 > 1e-9 and dispatch_rows:
-                    allocated_co2 = 0.0
-                    last_index = len(dispatch_rows) - 1
-                    for idx, (row, dispatched_for_co2) in enumerate(dispatch_rows):
-                        if idx == last_index:
-                            row_co2 = round(max(0.0, fallback_co2_total - allocated_co2), 2)
-                        else:
-                            row_co2 = round(fallback_co2_total * (dispatched_for_co2 / total_device_dispatch_for_co2), 2)
-                            allocated_co2 += row_co2
-                        row['co2_kg'] = row_co2
-
-                    total_co2_from_details = sum(
-                        float((row or {}).get('co2_kg', 0.0) or 0.0)
-                        for rows in device_hourly_breakdown.values()
-                        if isinstance(rows, list)
-                        for row in rows
-                        if isinstance(row, dict)
-                    )
         battery_summary = _summarize_battery_player_kpis(device_hourly_breakdown, config.get('devices', []))
 
         per_player[pid] = {
@@ -5018,8 +5152,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             "curtailment_cost_zar": round(total_curtailment_cost_from_details, 0),
             "curtailment_mwh": round(total_curtailment_mwh, 3),  # Quantity in MWh (not cost)
             "congestion_revenue_zar": round(total_congestion_revenue_from_details, 0),
-            "co2_emissions_kg": round(total_co2_from_details, 2) if total_co2_from_details else round(per_player_co2_emissions[pid], 2),  # CO2 emissions in kg
-            "profit_zar": round(total_profit_from_details, 0),
+            "co2_emissions_kg": round(total_co2_from_details, 2),  # CO2 emissions in kg
+            "profit_zar": round(total_profit_from_details - battery_summary["charge_cost_zar"], 0),
             # Battery-specific round KPIs (zero / None for non-battery players)
             "battery_charged_mwh": round(battery_summary["charged_mwh"], 3),
             "battery_discharged_mwh": round(battery_summary["discharged_mwh"], 3),
@@ -5178,30 +5312,20 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 _planned_sum = sum(float(_row.get('planned_mw', 0.0) or 0.0) for _row in _rows_for_hour)
                 _dispatched_sum = sum(float(_row.get('total_dispatched_mwh', _row.get('dispatched_mw', 0.0)) or 0.0) for _row in _rows_for_hour)
                 _actual_sum = sum(float(_row.get('actual_mw', 0.0) or 0.0) for _row in _rows_for_hour)
-                _revenue_sum = sum(float(_row.get('revenue_zar', 0.0) or 0.0) for _row in _rows_for_hour)
-                _variable_sum = sum(float(_row.get('variable_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
-                _fixed_sum = sum(float(_row.get('fixed_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
-                _imbalance_mwh_sum = sum(float(_row.get('imbalance_mwh', 0.0) or 0.0) for _row in _rows_for_hour)
-                _imbalance_cost_sum = sum(float(_row.get('imbalance_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
                 _battery_charge_cost_sum = sum(float(_row.get('battery_charge_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
-                _congestion_sum = sum(float(_row.get('congestion_revenue_zar', 0.0) or 0.0) for _row in _rows_for_hour)
                 _shortfall_mwh_sum = sum(float(_row.get('network_shortfall_mwh', 0.0) or 0.0) for _row in _rows_for_hour)
                 _shortfall_cost_sum = sum(float(_row.get('network_shortfall_cost_zar', 0.0) or 0.0) for _row in _rows_for_hour)
-                _profit_sum = sum(float(_row.get('profit_zar', 0.0) or 0.0) for _row in _rows_for_hour)
 
+                # Canonical source split:
+                # - physical/device-specific fields come from device-hour rows
+                # - settlement fields (revenue, fixed/variable cost, imbalance, congestion,
+                #   profit) stay on the player-hour path already updated above
                 _hour_entry['planned_mw'] = round(_planned_sum, 3)
                 _hour_entry['dispatched_mw'] = round(_dispatched_sum, 3)
                 _hour_entry['actual_mw'] = round(_actual_sum, 3)
-                _hour_entry['revenue_zar'] = round(_revenue_sum, 0)
-                _hour_entry['variable_cost_zar'] = round(_variable_sum, 0)
-                _hour_entry['fixed_cost_zar'] = round(_fixed_sum, 0)
-                _hour_entry['imbalance_mwh'] = round(_imbalance_mwh_sum, 3)
-                _hour_entry['imbalance_cost_zar'] = round(_imbalance_cost_sum, 0)
                 _hour_entry['battery_charge_cost_zar'] = round(_battery_charge_cost_sum, 2)
-                _hour_entry['congestion_revenue_zar'] = round(_congestion_sum, 0)
                 _hour_entry['network_shortfall_mwh'] = round(_shortfall_mwh_sum, 3)
                 _hour_entry['network_shortfall_cost_zar'] = round(_shortfall_cost_sum, 0)
-                _hour_entry['profit_zar'] = round(_profit_sum, 0)
         if _atc_imb_cost_reduction > 1e-9:
             per_player[pid]['imbalance_mwh'] = round(max(0.0, float(per_player[pid].get('imbalance_mwh', 0.0) or 0.0) - _atc_imb_mwh_reduction), 3)
             per_player[pid]['imbalance_cost_zar'] = round(max(0.0, float(per_player[pid].get('imbalance_cost_zar', 0.0) or 0.0) - _atc_imb_cost_reduction), 0)
@@ -5244,6 +5368,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     hour_curtailment = min(hour_dispatched, remaining_curtailment, proportional if proportional > 1e-9 else remaining_curtailment)
                     hour["grid_curtailed_mw"] = round(hour_curtailment, 3)
                     remaining_curtailment -= hour_curtailment
+
+                _validate_player_rollups(pid, per_player[pid])
     
     # SAWEM Phase 2B: Add delta metadata for ID rounds
     if round_num > 1:

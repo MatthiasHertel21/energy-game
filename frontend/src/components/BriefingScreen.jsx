@@ -1,4 +1,6 @@
 import React, { useMemo, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Box,
   Paper,
@@ -179,9 +181,9 @@ export default function BriefingScreen({ session, scenario, onStart, selectedTyp
           )}
 
           {/* Short Description */}
-          <Box>
-            <Typography variant="body1" color="text.secondary">
-              {description}
+          <Box sx={{ '& p': { margin: 0 }, '& ul, & ol': { paddingLeft: 2.5 }, '& h1,& h2,& h3,& h4': { marginTop: 1, marginBottom: 0.5 } }}>
+            <Typography variant="body1" color="text.secondary" component="div">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{description}</ReactMarkdown>
             </Typography>
           </Box>
 

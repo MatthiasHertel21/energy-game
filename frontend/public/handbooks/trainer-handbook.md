@@ -1,6 +1,6 @@
 # Trainer Guide
 
-Last updated: 2026-02-25  
+Last updated: 2026-04-30  
 Audience: Trainers / Facilitators
 
 ## 1) Goal of trainer facilitation
@@ -32,8 +32,8 @@ Your job is to keep the simulation both **didactic** and **operationally stable*
 
 ## 3) Core trainer pages and their use
 
-- `/trainer`: session creation, monitoring entry point, high-level controls.
-- `/session-control`: live operation panel during active rounds.
+- `/trainer`: **Cohort management** – create and manage cohorts (participant groups), assign campaigns, manage cohort tokens and membership. This is the pre-session setup entry point.
+- `/session-control`: **Live session panel** – active round controls, submit status monitor, participant overview, KPI charts, and leaderboard. Open this during an active session.
 - `/leaderboard`: ranking and performance overview.
 - `/comparison`: cross-player KPI comparison.
 - `/replay`: timeline-like recap of outcomes.

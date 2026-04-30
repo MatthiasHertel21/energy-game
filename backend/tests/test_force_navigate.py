@@ -1,7 +1,7 @@
 import pytest
 from app import create_app, db
 from app.models import User, Cohort, CohortMember
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def player_auth_headers(app):
         db.session.add(player)
         db.session.commit()
         
-        token = create_access_token(identity=player.id)
+        token = create_access_token(identity=str(player.id), additional_claims={'role': 'player'})
         return {'Authorization': f'Bearer {token}'}, player.id
 
 
@@ -45,10 +45,10 @@ def test_navigate_endpoint_returns_null_when_no_navigation(app, client, player_a
     
     with app.app_context():
         # Create cohort and add player as member
-        cohort = Cohort(name='Test Cohort')
+        cohort = Cohort(name='Test Cohort', trainer_id=player_id)
         db.session.add(cohort)
         db.session.commit()
-        
+
         member = CohortMember(cohort_id=cohort.id, user_id=player_id)
         db.session.add(member)
         db.session.commit()
@@ -70,10 +70,10 @@ def test_navigate_endpoint_returns_url_when_force_navigate_active(app, client, p
     
     with app.app_context():
         # Create cohort and add player as member
-        cohort = Cohort(name='Test Cohort')
+        cohort = Cohort(name='Test Cohort', trainer_id=player_id)
         db.session.add(cohort)
         db.session.commit()
-        
+
         member = CohortMember(cohort_id=cohort.id, user_id=player_id)
         db.session.add(member)
         db.session.commit()
@@ -95,12 +95,11 @@ def test_navigate_endpoint_checks_all_user_cohorts(app, client, player_auth_head
     
     with app.app_context():
         # Create multiple cohorts
-        cohort1 = Cohort(name='Cohort 1')
-        cohort2 = Cohort(name='Cohort 2')
+        cohort1 = Cohort(name='Cohort 1', trainer_id=player_id)
+        cohort2 = Cohort(name='Cohort 2', trainer_id=player_id)
         db.session.add_all([cohort1, cohort2])
         db.session.commit()
-        
-        # Add player to both cohorts
+
         member1 = CohortMember(cohort_id=cohort1.id, user_id=player_id)
         member2 = CohortMember(cohort_id=cohort2.id, user_id=player_id)
         db.session.add_all([member1, member2])
@@ -145,21 +144,21 @@ def test_navigate_endpoint_handles_no_cohort_membership(app, client, player_auth
 def test_navigate_endpoint_handles_redis_unavailable(app, client, player_auth_headers):
     """Test /api/me/navigate handles gracefully when Redis is unavailable."""
     headers, player_id = player_auth_headers
-    
+
     with app.app_context():
         # Create cohort and add player
-        cohort = Cohort(name='Test Cohort')
+        cohort = Cohort(name='Test Cohort', trainer_id=player_id)
         db.session.add(cohort)
         db.session.commit()
-        
+
         member = CohortMember(cohort_id=cohort.id, user_id=player_id)
         db.session.add(member)
         db.session.commit()
-        
+
         # Mock Redis as None (unavailable)
         with patch('app.me._redis_client', None):
             response = client.get('/api/me/navigate', headers=headers)
-            
+
             assert response.status_code == 200
             data = response.get_json()
             assert data['url'] is None

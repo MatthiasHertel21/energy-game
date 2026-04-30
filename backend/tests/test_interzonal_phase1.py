@@ -122,7 +122,7 @@ class TestInterzonalPhase1(unittest.TestCase):
             },
         }
 
-        zone_results, link_results, player_zone_info, per_player_grid_cost, per_player_curtailed_mwh, per_player_lost_revenue = _compute_interzonal_round_outputs(
+        zone_results, link_results, player_zone_info, per_player_grid_cost, per_player_curtailed_mwh, per_player_lost_revenue, _, _ = _compute_interzonal_round_outputs(
             hourly_results,
             per_player,
             config,
@@ -183,7 +183,7 @@ class TestInterzonalPhase1(unittest.TestCase):
             },
         }
 
-        zone_results, link_results, player_zone_info, per_player_grid_cost, per_player_curtailed_mwh, per_player_lost_revenue = _compute_interzonal_round_outputs(
+        zone_results, link_results, player_zone_info, per_player_grid_cost, per_player_curtailed_mwh, per_player_lost_revenue, _, _ = _compute_interzonal_round_outputs(
             hourly_results,
             per_player,
             config,
@@ -236,7 +236,7 @@ class TestInterzonalPhase1(unittest.TestCase):
             },
         }
 
-        zone_results, _, _, per_player_grid_cost, _, _ = _compute_interzonal_round_outputs(
+        zone_results, _, _, per_player_grid_cost, _, _, _, _ = _compute_interzonal_round_outputs(
             hourly_results,
             per_player,
             config,
@@ -288,7 +288,7 @@ class TestInterzonalPhase1(unittest.TestCase):
             },
         }
 
-        zone_results, link_results, _, _, _, _ = _compute_interzonal_round_outputs(
+        zone_results, link_results, _, _, _, _, _, _ = _compute_interzonal_round_outputs(
             hourly_results,
             per_player,
             config,

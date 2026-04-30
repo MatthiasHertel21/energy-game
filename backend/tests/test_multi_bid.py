@@ -285,8 +285,10 @@ class TestTrackBidDispatch:
         
         tracking = track_bid_dispatch(supply_bids, smp, volume, synthetic)
         
-        # Should be empty - bid too expensive
-        assert tracking == {}
+        assert tracking[1]['dev1']['A']['mw_offered'] == 100
+        assert tracking[1]['dev1']['A']['mw_dispatched'] == 0.0
+        assert tracking[1]['dev1']['A']['price_bid'] == 600
+        assert tracking[1]['dev1']['A']['smp'] == 500
     
     def test_mixed_synthetic_and_player_bids(self):
         """Synthetic supply dispatched before expensive player bids"""

@@ -1,11 +1,60 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Paper, Typography, Table, TableHead, TableBody, TableRow, TableCell, Select, MenuItem, TextField, Button, Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, Box, Skeleton, Tabs, Tab, Grid, Card, CardContent, Chip, IconButton, Tooltip } from '@mui/material'
-import { PersonAdd as PersonAddIcon, LockReset as LockResetIcon, Delete as DeleteIcon, GroupAdd as GroupAddIcon } from '@mui/icons-material'
+import { Paper, Typography, Table, TableHead, TableBody, TableRow, TableCell, Select, MenuItem, TextField, Button, Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, Box, Skeleton, Tabs, Tab, Grid, Card, CardContent, Chip, IconButton, Tooltip, InputAdornment } from '@mui/material'
+import { PersonAdd as PersonAddIcon, LockReset as LockResetIcon, Delete as DeleteIcon, GroupAdd as GroupAddIcon, CalendarMonth as CalendarIcon } from '@mui/icons-material'
 import api from '../services/api'
 import DocsFab from '../components/DocsFab'
 import EmptyState from '../components/EmptyState'
 
 const roles = ['player','trainer','designer','admin']
+
+function NativeDateField({ label, value, onChange, sx }) {
+  const inputRef = React.useRef(null)
+
+  const openPicker = () => {
+    const input = inputRef.current
+    if (!input) return
+    if (typeof input.showPicker === 'function') {
+      input.showPicker()
+      return
+    }
+    input.focus()
+    input.click()
+  }
+
+  return (
+    <TextField
+      size="small"
+      type="date"
+      label={label}
+      InputLabelProps={{ shrink:true }}
+      value={value}
+      onChange={onChange}
+      inputRef={inputRef}
+      sx={{
+        ...sx,
+        '& input::-webkit-calendar-picker-indicator': {
+          opacity: 0,
+          position: 'absolute',
+          right: 0,
+          width: 36,
+          height: '100%',
+          cursor: 'pointer',
+        },
+      }}
+      InputProps={{
+        endAdornment: (
+          <InputAdornment position="end">
+            <Tooltip title={`Open ${label}`} arrow>
+              <IconButton size="small" onClick={openPicker} aria-label={`Open ${label}`}>
+                <CalendarIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </InputAdornment>
+        )
+      }}
+    />
+  )
+}
 
 function LineChart({ data = [], color = '#1976d2', height = 120 }){
   const width = 360
@@ -581,8 +630,8 @@ export default function AdminUsers(){
               {['created','running','paused','ended'].map(s=> <MenuItem key={s} value={s}>{s}</MenuItem>)}
             </Select>
             <TextField size="small" label="Scenario ID" value={sessFilters.scenario_id} onChange={e=> setSessFilters(f=>({ ...f, scenario_id: e.target.value }))} sx={{ width: 140 }} />
-            <TextField size="small" type="date" label="From" InputLabelProps={{ shrink:true }} value={sessFilters.date_from} onChange={e=> setSessFilters(f=>({ ...f, date_from: e.target.value }))} />
-            <TextField size="small" type="date" label="To" InputLabelProps={{ shrink:true }} value={sessFilters.date_to} onChange={e=> setSessFilters(f=>({ ...f, date_to: e.target.value }))} />
+            <NativeDateField label="From" value={sessFilters.date_from} onChange={e=> setSessFilters(f=>({ ...f, date_from: e.target.value }))} />
+            <NativeDateField label="To" value={sessFilters.date_to} onChange={e=> setSessFilters(f=>({ ...f, date_to: e.target.value }))} />
             <Button variant="outlined" onClick={()=> setSessPage(0)} disabled={sessLoading}>Apply</Button>
             <Button variant="text" onClick={()=> { setSessFilters({ status:'', scenario_id:'', date_from:'', date_to:'' }); setSessPage(0) }}>Reset</Button>
             <Box sx={{ flexGrow:1 }} />
