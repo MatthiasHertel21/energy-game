@@ -45,7 +45,9 @@ function extractScenarioJson(text) {
 // ─── Einzelne Nachrichtenblase ─────────────────────────────────────────────────
 function MessageBubble({ msg, onOpenInEditor, onSaveToScenario, selectedScenario }) {
   const isUser = msg.role === 'user'
-  const scenarioJson = !isUser ? extractScenarioJson(msg.content) : null
+  // scenario_json can be stored directly on the message object (from API response)
+  // or extracted from legacy text blocks
+  const scenarioJson = !isUser ? (msg.scenario_json || extractScenarioJson(msg.content)) : null
   const [copied, setCopied] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -165,9 +167,9 @@ export default function KSEChat() {
         'Hi! I am your KSE assistant. I help you create and edit game scenarios.\n\n' +
         '**To edit an existing scenario:**\n' +
         '1. Select it from the *Scenario context* dropdown (top right)\n' +
-        '2. Describe the changes you want ("Add a 200 MW wind turbine", "Change round 3 demand to 1500 MW"…)\n' +
-        '3. When I reply with a JSON block, click **Save to "…"** to overwrite the scenario directly, or **Open in editor** to review it first.\n\n' +
-        '**To create a new scenario:** just describe it — no context needed.',
+        '2. Describe the changes you want in plain language — I\'ll ask if anything is unclear\n' +
+        '3. I\'ll confirm what I changed, then you can **Save** directly or **Open in editor** to review\n\n' +
+        '**I can also explain how calculations work** — market clearing, dispatch, KPIs, balancing — just ask.',
     },
   ])
   const [input, setInput] = useState('')
@@ -210,7 +212,10 @@ export default function KSEChat() {
       }
       const { data } = await api.post('/api/ksechat/chat', payload)
       if (data.provider) setProviderInfo({ provider: data.provider, model: data.model })
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }])
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: data.reply, scenario_json: data.scenario_json || null },
+      ])
     } catch (err) {
       setError(err.response?.data?.message || 'Network error – please try again.')
     } finally {

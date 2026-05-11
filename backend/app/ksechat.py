@@ -1,15 +1,16 @@
 """
-KSE Chat – LLM-gestützte Szenarienerstellung für Designer
-Heimlicher Zugang über /ksechat (nur designer + admin)
+KSE Chat – LLM-assisted scenario editor for designers
+Hidden access via /ksechat (designer + admin only)
 
-Unterstützte Provider (via KSECHAT_PROVIDER):
-  groq   – Groq Cloud API (llama-3.3-70b-versatile, mixtral-8x7b-32768, …)
-  gemini – Google Gemini API (gemini-1.5-flash, gemini-1.5-pro, …)
-  openai – OpenAI API (gpt-4o-mini, gpt-4o, …)
+Supported providers (KSECHAT_PROVIDER env var):
+  groq   – Groq Cloud API (llama-3.3-70b-versatile, …)
+  gemini – Google Gemini API (gemini-2.0-flash, …)
+  openai – OpenAI API (gpt-4o-mini, …)
 """
 import json
 import os
 import re
+import pathlib
 
 from flask import request
 from flask_restx import Namespace, Resource, fields
@@ -18,75 +19,106 @@ from flask_jwt_extended import jwt_required
 from .utils import role_required
 from .models import Scenario
 
-ns = Namespace("ksechat", description="KSE Chat – LLM-gestützte Szenarienerstellung")
+ns = Namespace("ksechat", description="KSE Chat – LLM-assisted scenario editor")
 
-# ─── API-Modelle ──────────────────────────────────────────────────────────────
+# ─── API models ───────────────────────────────────────────────────────────────
 
 chat_in = ns.model(
     "KSEChatIn",
     {
-        "messages": fields.List(
-            fields.Raw, required=True,
-            description="Gesprächsverlauf [{role, content}]"
-        ),
-        "scenario_id": fields.Integer(
-            required=False,
-            description="Optional: bestehende Szenario-ID als Kontext laden"
-        ),
-        "scenario_context": fields.Raw(
-            required=False,
-            description="Optional: Szenario-Config direkt mitgeben"
-        ),
+        "messages": fields.List(fields.Raw, required=True, description="Conversation history [{role, content}]"),
+        "scenario_id": fields.Integer(required=False, description="Optional: load existing scenario as context"),
+        "scenario_context": fields.Raw(required=False, description="Optional: pass scenario config directly"),
     },
 )
 
 chat_out = ns.model(
     "KSEChatOut",
     {
-        "reply": fields.String(description="Antworttext des LLM"),
-        "scenario_json": fields.Raw(description="Extrahiertes Szenario-JSON, falls vorhanden"),
-        "provider": fields.String(description="Genutzter LLM-Provider"),
-        "model": fields.String(description="Genutztes Modell"),
+        "reply": fields.String(description="LLM reply text (JSON blocks stripped)"),
+        "scenario_json": fields.Raw(description="Extracted scenario JSON if present"),
+        "provider": fields.String(description="LLM provider used"),
+        "model": fields.String(description="Model used"),
     },
 )
 
-# ─── System-Prompt ────────────────────────────────────────────────────────────
+# ─── Load source code context at startup ─────────────────────────────────────
+
+def _load_code_context() -> str:
+    """Read key source files so the LLM can explain calculations."""
+    app_dir = pathlib.Path(__file__).parent
+    files = [
+        ("engine.py", app_dir / "engine.py"),
+        ("device_types.py", app_dir / "device_types.py"),
+        ("models.py", app_dir / "models.py"),
+    ]
+    parts = []
+    for label, path in files:
+        try:
+            parts.append(f"### {label}\n```python\n{path.read_text(encoding='utf-8')}\n```")
+        except OSError:
+            pass
+    return "\n\n".join(parts)
+
+_CODE_KEYWORDS = re.compile(
+    r"\b(how|why|explain|calculate|formula|algorithm|code|engine|function|dispatch|"
+    r"clearing|balancing|kpi|profit|imbalance|curtailment|settlement|merit.?order|"
+    r"bid|offer|smp|mcp|ramp|tier|variable.cost|capacity.factor|battery|soc)\b",
+    re.IGNORECASE,
+)
+
+def _needs_code_context(messages: list) -> bool:
+    """Return True only when the latest user message asks about calculations/code."""
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user":
+            return bool(_CODE_KEYWORDS.search(str(m.get("content", ""))))
+    return False
+
+# ─── System prompt ────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are an AI assistant for the Electricity Market Simulation Game (EMSG/KSE).
-Your role is to help designers create and edit game scenarios.
+You are an expert AI assistant for the Electricity Market Simulation Game (EMSG/KSE).
+You help game designers create and modify scenarios through natural conversation.
 
-## Game concept
+## Your behaviour
 
-The EMSG is an energy market simulation game. Players act as electricity generating companies
-that submit bids in a Day-Ahead market over multiple rounds. A scenario defines:
-- Market parameters (prices, capacities, clearing type)
-- Grid structure (zones, ATC values, losses)
-- Player devices (generators controlled by players)
-- Environment generators (not controlled by players)
-- Events (demand_surge, outage, price_spike, …)
-- Challenges (optional learning tasks)
+- **Always respond in plain English.** Be concise and conversational — like a knowledgeable colleague.
+- **Never show raw JSON to the user.** When you produce a modified scenario, describe the changes in
+  plain language ("I've added a 200 MW wind turbine for Player 2 in Zone 1, reduced the base price
+  to 900 ZAR/MWh, and changed clearing to pay-as-bid. Ready to save?") and then append the JSON in
+  the hidden marker block described below.
+- **Ask before acting if the request is ambiguous.** For example, if the user says "make it harder",
+  ask what aspect they want harder (prices, capacity, events, …).
+- **Explain calculations when asked.** The full source code of the calculation engine is provided
+  below — use it to give accurate, code-grounded explanations.
+- **Summarise every change you make** so the designer can quickly verify it.
 
-## Full scenario config structure
+## Hidden JSON format
+
+When you generate a modified or new scenario config, append it at the very end of your message
+using EXACTLY this format (no extra text after the closing marker):
+
+<!-- SCENARIO_JSON_START -->
+```json
+{ ... }
+```
+<!-- SCENARIO_JSON_END -->
+
+The frontend will strip this block from the displayed message automatically.
+If you are only answering a question (no config change), do NOT include this block.
+
+## Scenario config schema
 
 ```json
 {
   "general": {
-    "horizon_hours": 24,
-    "forecast_horizon_hours": 48,
-    "rounds": 4,
-    "round_span_hours": 6,
-    "round_duration_seconds": 300,
-    "player_zone": 1,
-    "fake_date": "2024-06-15",
-    "start_time": "00:00"
+    "horizon_hours": 24, "forecast_horizon_hours": 48, "rounds": 4,
+    "round_span_hours": 6, "round_duration_seconds": 300,
+    "player_zone": 1, "fake_date": "2024-06-15", "start_time": "00:00"
   },
   "market": {
-    "base_price": 1000,
-    "base_volume_mwh": 20000,
-    "price_floor": -500,
-    "price_cap": 5000,
-    "clearing_type": "uniform",
+    "base_price": 1000, "base_volume_mwh": 20000,
+    "price_floor": -500, "price_cap": 5000, "clearing_type": "uniform",
     "generator_mix": {
       "coal":    {"blocks": 20, "zone_distribution_pct": [50, 50]},
       "gas":     {"blocks": 30, "zone_distribution_pct": [50, 50]},
@@ -96,161 +128,115 @@ that submit bids in a Day-Ahead market over multiple rounds. A scenario defines:
       "nuclear": {"blocks":  5, "zone_distribution_pct": [50, 50]}
     }
   },
-  "balancing": {
-    "up_price_zar_per_mwh": 1200.0,
-    "down_price_zar_per_mwh": 800.0
-  },
+  "balancing": {"up_price_zar_per_mwh": 1200.0, "down_price_zar_per_mwh": 800.0},
   "grid": {
-    "zones": 2,
-    "atc": [[0, 5000], [5000, 0]],
-    "losses_pct_per_link": 2.0,
+    "zones": 2, "atc": [[0, 5000], [5000, 0]], "losses_pct_per_link": 2.0,
     "network_settlement": {
-      "extra_cost_mode": "zonal_only",
-      "cost_allocation_target": "consumers_only",
-      "shortfall_price_mode": "smp_multiplier",
-      "shortfall_price_value": 2.0
+      "extra_cost_mode": "zonal_only", "cost_allocation_target": "consumers_only",
+      "shortfall_price_mode": "smp_multiplier", "shortfall_price_value": 2.0
     },
     "generator_curtailment_mode": "pro_rata"
   },
   "environment": {
     "seed": "my-seed-2024",
     "groups": {
-      "solar":   {"blocks": 20, "zone_distribution_pct": [50, 50]},
-      "wind":    {"blocks": 15, "zone_distribution_pct": [50, 50]},
-      "gas":     {"blocks": 30, "zone_distribution_pct": [50, 50]},
-      "coal":    {"blocks": 20, "zone_distribution_pct": [50, 50]},
-      "hydro":   {"blocks": 10, "zone_distribution_pct": [50, 50]},
-      "nuclear": {"blocks":  5, "zone_distribution_pct": [50, 50]}
+      "solar": {"blocks": 20, "zone_distribution_pct": [50, 50]},
+      "wind":  {"blocks": 15, "zone_distribution_pct": [50, 50]},
+      "gas":   {"blocks": 30, "zone_distribution_pct": [50, 50]},
+      "coal":  {"blocks": 20, "zone_distribution_pct": [50, 50]}
     }
   },
   "devices": [
     {
-      "id": "device_coal_001",
-      "type": "coal",
-      "name": "Coal Plant A",
-      "player_id": 1,
-      "zone": 1,
-      "capacity_mw": 600,
+      "id": "device_coal_001", "type": "coal", "name": "Coal Plant A",
+      "player_id": 1, "zone": 1, "capacity_mw": 600,
       "variable_cost_tiers": [
         {"from_pct": 0,  "to_pct": 60,  "cost_zar_per_mwh": 380},
-        {"from_pct": 60, "to_pct": 90,  "cost_zar_per_mwh": 440},
-        {"from_pct": 90, "to_pct": 100, "cost_zar_per_mwh": 520}
+        {"from_pct": 60, "to_pct": 100, "cost_zar_per_mwh": 480}
       ],
-      "fixed_cost_zar_per_hour": 0,
-      "efficiency_pct": 35,
-      "ramp_rate_mw_per_h": 120
-    },
-    {
-      "id": "device_solar_001",
-      "type": "solar",
-      "name": "Solar Farm B",
-      "player_id": 2,
-      "zone": 2,
-      "capacity_mw": 200,
-      "cost_per_mwh_zar": 50,
-      "capacity_factor_pct": 25
+      "efficiency_pct": 35, "ramp_rate_mw_per_h": 120
     }
   ],
   "events": [
     {
-      "id": "event_evening_peak",
-      "type": "demand_surge",
-      "name": "Evening Peak",
+      "id": "event_peak_001", "type": "demand_surge", "name": "Evening Peak",
       "trigger": {"type": "round", "value": 3},
-      "multiplier": 1.15,
-      "additive": 0,
-      "duration_rounds": 1,
-      "target": "demand"
+      "multiplier": 1.15, "additive": 0, "duration_rounds": 1, "target": "demand"
     }
   ],
   "challenges": [],
-  "scoring": {
-    "weights": {"profit": 0.6, "imbalance": 0.3, "curtailment": 0.1}
-  }
+  "scoring": {"weights": {"profit": 0.6, "imbalance": 0.3, "curtailment": 0.1}}
 }
 ```
 
 ## Device types
 
-| Type             | Required fields                  | Optional fields                        |
-|------------------|----------------------------------|----------------------------------------|
-| coal             | capacity_mw, variable_cost_tiers | efficiency_pct, ramp_rate_mw_per_h     |
-| gas              | capacity_mw, variable_cost_tiers | efficiency_pct, ramp_rate_mw_per_h     |
-| hydro            | capacity_mw, cost_per_mwh_zar   | efficiency_pct, ramp_rate_mw_per_h     |
-| nuclear          | capacity_mw, cost_per_mwh_zar   | efficiency_pct, ramp_rate_mw_per_h     |
-| solar            | capacity_mw, cost_per_mwh_zar   | capacity_factor_pct                    |
-| wind             | capacity_mw, cost_per_mwh_zar   | capacity_factor_pct                    |
-| battery          | capacity_mw, power_rating_mw    | efficiency_pct, initial_soc_pct        |
-| industrial_load  | baseline_load_mw, peak_load_mw  | drm_capable                            |
-| commercial_load  | baseline_load_mw, peak_load_mw  | drm_capable                            |
-| residential_load | baseline_load_mw, peak_load_mw  | drm_capable                            |
+| Type             | Required fields                   | Optional fields                   |
+|------------------|-----------------------------------|-----------------------------------|
+| coal / gas       | capacity_mw, variable_cost_tiers  | efficiency_pct, ramp_rate_mw_per_h |
+| hydro / nuclear  | capacity_mw, cost_per_mwh_zar    | efficiency_pct, ramp_rate_mw_per_h |
+| solar / wind     | capacity_mw, cost_per_mwh_zar    | capacity_factor_pct               |
+| battery          | capacity_mw, power_rating_mw     | efficiency_pct, initial_soc_pct   |
+| industrial/commercial/residential_load | baseline_load_mw, peak_load_mw | drm_capable |
+
+Device ID format: `device_<type>_<3-digit>` e.g. `device_wind_003`
 
 ## Event types
 
-| type            | Description                                              |
-|-----------------|----------------------------------------------------------|
-| demand_surge    | Demand rises (multiplier on base demand)                 |
-| outage          | A device goes offline for duration_rounds rounds         |
-| price_spike     | Market price cap is temporarily raised                   |
-| renewable_boost | Renewables produce more (multiplier)                     |
+| type            | Key fields                                          |
+|-----------------|-----------------------------------------------------|
+| demand_surge    | multiplier on demand, duration_rounds               |
+| outage          | target_device_id, duration_rounds                  |
+| price_spike     | new_price_cap, duration_rounds                     |
+| renewable_boost | multiplier on renewables                           |
+
+## Clearing types
+
+- `uniform` — all accepted generators receive the marginal clearing price (MCP)
+- `pay_as_bid` — each generator is paid its own bid price
 
 ## Rules
 
-- Always respond in English.
-- When generating JSON, ALWAYS wrap it in ```json ... ``` code blocks.
-- If the user gives a modification instruction ("Add X", "Change Y"), ALWAYS return the complete, modified config.
-- Device ID format: "device_<type>_<3-digit-number>", e.g. "device_coal_001".
-- Do not invent fields that are not in the schema.
-- If a scenario context is provided, use it as the base for your response.
+- Do NOT invent fields not in the schema above.
+- Always produce the COMPLETE config (not just the changed section).
+- Device IDs must be unique within a scenario.
+- If a scenario context is provided, base your response on it.
 """
 
-# ─── Provider-Logik ──────────────────────────────────────────────────────────
+# ─── Provider logic ───────────────────────────────────────────────────────────
 
 def _call_groq(messages: list, model: str, api_key: str) -> str:
     from groq import Groq
     client = Groq(api_key=api_key)
     resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.7,
-        max_tokens=4096,
+        model=model, messages=messages, temperature=0.7, max_tokens=4096,
     )
     return resp.choices[0].message.content or ""
 
 
 def _call_gemini(messages: list, model: str, api_key: str) -> str:
-    # Nutzt das neue google-genai SDK (>= 1.0) mit OpenAI-kompatiblem Endpunkt
     from google import genai
     from google.genai import types as gtypes
-
     client = genai.Client(api_key=api_key)
-
-    # System-Nachricht extrahieren
-    system_parts = []
-    chat_msgs = []
+    system_parts, chat_msgs = [], []
     for m in messages:
         if m["role"] == "system":
             system_parts.append(gtypes.Part.from_text(text=m["content"]))
         else:
             chat_msgs.append(m)
-
-    # Verlauf aufbauen (alle außer letzter Nachricht)
-    history = []
-    for m in chat_msgs[:-1]:
-        history.append(gtypes.Content(
+    history = [
+        gtypes.Content(
             role="user" if m["role"] == "user" else "model",
             parts=[gtypes.Part.from_text(text=m["content"])],
-        ))
-
-    config = gtypes.GenerateContentConfig(
+        )
+        for m in chat_msgs[:-1]
+    ]
+    cfg = gtypes.GenerateContentConfig(
         system_instruction=gtypes.Content(parts=system_parts) if system_parts else None,
-        temperature=0.7,
-        max_output_tokens=4096,
+        temperature=0.7, max_output_tokens=4096,
     )
-
-    chat = client.chats.create(model=model, history=history, config=config)
-    last_content = chat_msgs[-1]["content"] if chat_msgs else ""
-    resp = chat.send_message(last_content)
+    chat = client.chats.create(model=model, history=history, config=cfg)
+    resp = chat.send_message(chat_msgs[-1]["content"] if chat_msgs else "")
     return resp.text or ""
 
 
@@ -258,61 +244,108 @@ def _call_openai(messages: list, model: str, api_key: str) -> str:
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
     resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.7,
-        max_tokens=4096,
+        model=model, messages=messages, temperature=0.7, max_tokens=4096,
     )
     return resp.choices[0].message.content or ""
 
 
 def _llm_call(messages: list) -> tuple[str, str, str]:
-    """Ruft den konfigurierten Provider auf. Gibt (reply_text, provider, model) zurueck."""
-    provider = os.getenv("KSECHAT_PROVIDER", "groq").lower()
-
-    defaults = {
-        "groq":   ("GROQ_API_KEY",   "llama-3.3-70b-versatile"),
-        "gemini": ("GEMINI_API_KEY",  "gemini-2.0-flash"),
-        "openai": ("OPENAI_API_KEY",  "gpt-4o-mini"),
+    """Dispatch to configured provider with automatic fallback chain.
+    Returns (reply, provider, model). Raises RuntimeError if all fail.
+    """
+    PROVIDER_DEFAULTS = {
+        "groq":   [
+            ("GROQ_API_KEY",   "llama-3.3-70b-versatile"),
+            ("GROQ_API_KEY_2", "llama-3.3-70b-versatile"),
+        ],
+        "gemini": [
+            ("GEMINI_API_KEY",   "gemini-2.0-flash"),
+            ("GEMINI_API_KEY_2", "gemini-2.0-flash"),
+        ],
+        "openai": [
+            ("OPENAI_API_KEY", "gpt-4o-mini"),
+        ],
+    }
+    CALLERS = {
+        "groq":   _call_groq,
+        "gemini": _call_gemini,
+        "openai": _call_openai,
     }
 
-    if provider not in defaults:
-        raise ValueError(f"Unbekannter Provider: {provider}. Erlaubt: {list(defaults)}")
+    primary = os.getenv("KSECHAT_PROVIDER", "groq").lower()
+    fallbacks_raw = os.getenv("KSECHAT_FALLBACK_PROVIDERS", "").strip()
+    fallback_providers = [p.strip().lower() for p in fallbacks_raw.split(",") if p.strip()]
 
-    key_env, default_model = defaults[provider]
-    api_key = os.getenv(key_env, "").strip()
-    model = os.getenv("KSECHAT_MODEL", default_model)
-
-    if not api_key:
-        raise RuntimeError(
-            f"Kein API-Key fuer Provider '{provider}' konfiguriert. "
-            f"Bitte {key_env} in der .env-Datei setzen."
-        )
-
-    if provider == "groq":
-        reply = _call_groq(messages, model, api_key)
-    elif provider == "gemini":
-        reply = _call_gemini(messages, model, api_key)
-    else:
-        reply = _call_openai(messages, model, api_key)
-
-    return reply, provider, model
-
-
-# ─── JSON-Extraktion ─────────────────────────────────────────────────────────
-
-def _extract_scenario_json(text: str):
-    for raw in re.findall(r"```json\s*([\s\S]*?)```", text, re.IGNORECASE):
-        try:
-            data = json.loads(raw.strip())
-            if isinstance(data, dict):
-                return data
-        except (json.JSONDecodeError, ValueError):
+    # Build ordered list of (provider, key_env, model) attempts
+    attempts = []
+    primary_model = os.getenv("KSECHAT_MODEL", "")
+    for provider in [primary] + fallback_providers:
+        if provider not in PROVIDER_DEFAULTS:
             continue
-    return None
+        for key_env, default_model in PROVIDER_DEFAULTS[provider]:
+            api_key = os.getenv(key_env, "").strip()
+            if api_key:
+                model = primary_model if provider == primary and primary_model else default_model
+                attempts.append((provider, api_key, model))
+
+    if not attempts:
+        raise RuntimeError("No API keys configured for any provider.")
+
+    last_exc = None
+    for provider, api_key, model in attempts:
+        try:
+            reply = CALLERS[provider](messages, model, api_key)
+            return reply, provider, model
+        except Exception as exc:
+            last_exc = exc
+            # Continue to next key/provider on any error (rate limit, quota, auth, …)
+            continue
+
+    raise RuntimeError(f"All providers failed. Last error: {last_exc}")
 
 
-# ─── Endpunkt ────────────────────────────────────────────────────────────────
+# ─── JSON extraction & reply cleaning ────────────────────────────────────────
+
+_MARKER_RE = re.compile(
+    r"<!--\s*SCENARIO_JSON_START\s*-->\s*```json\s*([\s\S]*?)```\s*<!--\s*SCENARIO_JSON_END\s*-->",
+    re.IGNORECASE,
+)
+_LOOSE_JSON_RE = re.compile(r"```json\s*([\s\S]*?)```", re.IGNORECASE)
+
+
+def _extract_and_strip(text: str) -> tuple[dict | None, str]:
+    """Extract scenario JSON and return (json_obj, clean_reply_without_json_blocks)."""
+    scenario_json = None
+
+    # Try marker-delimited block first (preferred)
+    m = _MARKER_RE.search(text)
+    if m:
+        try:
+            data = json.loads(m.group(1).strip())
+            if isinstance(data, dict):
+                scenario_json = data
+        except (json.JSONDecodeError, ValueError):
+            pass
+        text = _MARKER_RE.sub("", text).strip()
+
+    # Fall back to bare ```json``` block if no marker found
+    if scenario_json is None:
+        for raw in _LOOSE_JSON_RE.findall(text):
+            try:
+                data = json.loads(raw.strip())
+                if isinstance(data, dict):
+                    scenario_json = data
+                    break
+            except (json.JSONDecodeError, ValueError):
+                continue
+        if scenario_json is not None:
+            # Strip all json code blocks from visible reply
+            text = _LOOSE_JSON_RE.sub("", text).strip()
+
+    return scenario_json, text
+
+
+# ─── Endpoint ─────────────────────────────────────────────────────────────────
 
 @ns.route("/chat")
 class KSEChatResource(Resource):
@@ -321,23 +354,28 @@ class KSEChatResource(Resource):
     @ns.expect(chat_in)
     @ns.marshal_with(chat_out)
     def post(self):
-        """Chat mit LLM zur Szenarioerstellung/-bearbeitung"""
+        """Chat with LLM for scenario creation/editing"""
         data = request.json or {}
         messages = data.get("messages", [])
         scenario_id = data.get("scenario_id")
         scenario_context = data.get("scenario_context")
 
-        # Szenario-Kontext aus DB laden
+        # Load scenario context from DB
         if scenario_id and not scenario_context:
             sc = Scenario.query.get(scenario_id)
             if sc and sc.config:
                 scenario_context = sc.config
 
-        # System-Prompt aufbauen
+        # Build system prompt: schema + optional code reference + optional scenario context
         system_content = SYSTEM_PROMPT
+        if _needs_code_context(messages):
+            system_content += (
+                "\n\n---\n## Source code reference (for answering calculation questions)\n\n"
+                + _load_code_context()
+            )
         if scenario_context:
             system_content += (
-                "\n\n## Current scenario context (use this as the base for your response)\n"
+                "\n\n---\n## Current scenario (base for your changes)\n"
                 "```json\n"
                 + json.dumps(scenario_context, indent=2, ensure_ascii=False)
                 + "\n```\n"
@@ -354,17 +392,15 @@ class KSEChatResource(Resource):
         except (RuntimeError, ValueError) as exc:
             return {"reply": f"⚠️ {exc}", "scenario_json": None, "provider": "", "model": ""}, 200
         except ImportError as exc:
-            return {
-                "reply": f"⚠️ Benoetiges Paket nicht installiert: {exc}.",
-                "scenario_json": None, "provider": "", "model": "",
-            }, 200
+            return {"reply": f"⚠️ Missing package: {exc}.", "scenario_json": None, "provider": "", "model": ""}, 200
         except Exception as exc:
-            return {"reply": f"⚠️ LLM-Fehler: {exc}", "scenario_json": None, "provider": "", "model": ""}, 200
+            return {"reply": f"⚠️ LLM error: {exc}", "scenario_json": None, "provider": "", "model": ""}, 200
 
-        scenario_json = _extract_scenario_json(reply_text)
+        scenario_json, clean_reply = _extract_and_strip(reply_text)
         return {
-            "reply": reply_text,
+            "reply": clean_reply,
             "scenario_json": scenario_json,
             "provider": provider,
             "model": model,
         }
+
