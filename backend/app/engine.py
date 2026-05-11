@@ -217,10 +217,52 @@ def _has_explicit_bid_hours(
     return False
 
 
-def _get_default_device_market_price(device: dict | None, is_consumer: bool = False) -> float:
+def _get_tiered_device_market_price(device: dict | None, quantity_hint: float | None = None) -> float:
+    device = device or {}
+    tiers = device.get('variable_cost_tiers')
+    if not isinstance(tiers, list) or not tiers:
+        return 0.0
+
+    sorted_tiers = sorted(
+        [tier for tier in tiers if isinstance(tier, dict)],
+        key=lambda tier: float(tier.get('from_pct', 0) or 0.0),
+    )
+    if not sorted_tiers:
+        return 0.0
+
+    try:
+        capacity_mw = float(device.get('max_power_mw') or device.get('capacity_mw') or 0.0)
+    except Exception:
+        capacity_mw = 0.0
+
+    if quantity_hint is None or capacity_mw <= 0:
+        return float(sorted_tiers[0].get('cost_zar_per_mwh', 0.0) or 0.0)
+
+    try:
+        dispatch_pct = max(0.0, float(quantity_hint)) / capacity_mw * 100.0
+    except Exception:
+        dispatch_pct = 0.0
+
+    for tier in sorted_tiers:
+        try:
+            tier_to_pct = float(tier.get('to_pct', 100) or 100.0)
+        except Exception:
+            tier_to_pct = 100.0
+        if dispatch_pct <= tier_to_pct + 1e-9:
+            return float(tier.get('cost_zar_per_mwh', 0.0) or 0.0)
+
+    return float(sorted_tiers[-1].get('cost_zar_per_mwh', 0.0) or 0.0)
+
+
+def _get_default_device_market_price(device: dict | None, is_consumer: bool = False, quantity_hint: float | None = None) -> float:
     device = device or {}
     if is_consumer:
         return float(device.get('value_of_lost_load', device.get('willingness_to_pay', 1500)) or 1500.0)
+    device_type = str(device.get('type', '') or '').lower()
+    if device_type in {'coal', 'gas'} and device.get('variable_cost_tiers'):
+        tier_price = _get_tiered_device_market_price(device, quantity_hint)
+        if tier_price > 0:
+            return tier_price
     return float(device.get('variable_cost_zar_per_mwh', device.get('cost_per_mwh_zar', 0.0)) or 0.0)
 
 
@@ -920,7 +962,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                 price = (
                     _get_single_bid_fallback_price(device, device_bids, hour_idx, global_bidding_enabled)
                     if use_single_bid_fallback
-                    else _get_default_device_market_price(device)
+                    else _get_default_device_market_price(device, quantity_hint=quantity)
                 )
                 bid_label = bid_labels[0] if use_single_bid_fallback and bid_labels else 'CLASSIC'
                 

@@ -5,6 +5,7 @@ from .extensions import db, migrate, bcrypt, jwt, api, socketio, limiter, talism
 from .auth import ns as auth_ns
 from .admin import ns as admin_ns
 from .kse import ns as kse_ns
+from .ksechat import ns as ksechat_ns
 from .sessions import ns as sessions_ns
 from .player import ns as player_ns
 from .engine_api import ns as engine_ns
@@ -49,6 +50,7 @@ def create_app() -> Flask:
     api.add_namespace(auth_ns)
     api.add_namespace(admin_ns)
     api.add_namespace(kse_ns)
+    api.add_namespace(ksechat_ns)
     api.add_namespace(sessions_ns)
     api.add_namespace(player_ns)
     api.add_namespace(engine_ns)

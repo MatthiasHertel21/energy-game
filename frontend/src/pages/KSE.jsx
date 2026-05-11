@@ -855,6 +855,31 @@ export default function KSE(){
   useEffect(()=>{
     // Load device types on mount
     api.get('/api/kse/device-types').then(res=> setDeviceTypes(res.data)).catch(()=>{})
+
+    // KSE-Chat prefill: Szenario-JSON aus Chat-Assistent laden
+    const prefillRaw = sessionStorage.getItem('ksechat_prefill')
+    const prefillId = sessionStorage.getItem('ksechat_prefill_id')
+    if (prefillRaw) {
+      try {
+        const prefill = JSON.parse(prefillRaw)
+        setCfg(normalizeScenarioConfig(prefill))
+        if (prefill.name) setName(prefill.name)
+      } catch (_) {}
+      sessionStorage.removeItem('ksechat_prefill')
+      if (prefillId) {
+        const id = Number(prefillId)
+        if (id > 0) {
+          setScenarioId(id)
+          // also load name from existing scenario so save updates it correctly
+          api.get(`/api/kse/scenarios/${id}`).then(({ data }) => {
+            setName((n) => n || data.name || `Scenario ${id}`)
+          }).catch(() => {})
+        }
+        sessionStorage.removeItem('ksechat_prefill_id')
+      }
+      return
+    }
+
     // Load existing scenario if id is provided
     if (scenarioParam) {
       const id = Number(scenarioParam)

@@ -40,6 +40,7 @@ const CampaignDetail = React.lazy(()=> import('./pages/CampaignDetail'))
 const Designer = React.lazy(()=> import('./pages/Designer'))
 const Profile = React.lazy(()=> import('./pages/Profile'))
 const KSE = React.lazy(()=> import('./pages/KSE'))
+const KSEChat = React.lazy(()=> import('./pages/KSEChat'))
 const DocsPlayer = React.lazy(()=> import('./pages/DocsPlayer'))
 const DocsTrainer = React.lazy(()=> import('./pages/DocsTrainer'))
 const DocsDesigner = React.lazy(()=> import('./pages/DocsDesigner'))
@@ -335,6 +336,7 @@ export default function App({ themeMode, onToggleTheme }) {
           </Route>
           <Route element={<ProtectedRoute roles={["designer","admin"]} /> }>
             <Route path="/kse" element={<KSE />} />
+            <Route path="/ksechat" element={<KSEChat />} />
             <Route path="/designer" element={<Designer />} />
             {/* Legacy redirects for old routes */}
             <Route path="/designer/campaigns" element={<Navigate to="/designer" replace />} />

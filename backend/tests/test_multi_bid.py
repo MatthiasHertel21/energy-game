@@ -205,6 +205,38 @@ class TestBuildSupplyFromBids:
         assert bids_meta[0]["price"] == 450.0
         assert bids_meta[0]["quantity"] == 25.0
 
+    def test_zero_bid_count_uses_tiered_variable_cost_as_classic_offer_price(self):
+        """Classic devices with bid_count 0 should offer at tier-derived variable cost, not zero."""
+        config = {
+            "market": {"enable_player_bidding": False},
+            "devices": [{
+                "id": "device_1",
+                "type": "coal",
+                "bid_count": 0,
+                "max_power_mw": 4000,
+                "variable_cost_tiers": [
+                    {"from_pct": 0, "to_pct": 60, "cost_zar_per_mwh": 400},
+                    {"from_pct": 60, "to_pct": 90, "cost_zar_per_mwh": 500},
+                    {"from_pct": 90, "to_pct": 100, "cost_zar_per_mwh": 600},
+                ],
+            }],
+        }
+        synthetic = []
+        forecasts = {
+            1: {
+                "devices": [{"device_id": "device_1", "hours": [3200] * 24}],
+                "bids": {"device_1": {}},
+            }
+        }
+
+        combined, bids_meta = build_supply_from_bids(forecasts, 0, synthetic, config)
+
+        assert combined == [(500.0, 3200.0)]
+        assert len(bids_meta) == 1
+        assert bids_meta[0]["bid_label"] == "CLASSIC"
+        assert bids_meta[0]["price"] == 500.0
+        assert bids_meta[0]["quantity"] == 3200.0
+
 
 class TestBuildDemandFromBids:
     def test_bid_count_one_empty_bids_falls_back_to_forecast_and_configured_price(self):
