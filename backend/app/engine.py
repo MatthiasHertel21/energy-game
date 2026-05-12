@@ -3414,46 +3414,42 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         from .device_types import enrich_device_with_defaults
         devices_cfg_for_clearing = [enrich_device_with_defaults(d) for d in devices_cfg_for_clearing]
         
-        # Build supply and demand curves for this specific hour
+        # Build supply and demand curves for this specific hour.
+        # Classic/non-bid scenarios still submit player forecasts that must enter
+        # market clearing as implicit bids at device marginal cost / WTP.
         supply_fallback_used = False
-        if enable_bidding:
-            supply, supply_bids = build_supply_from_bids(
-                normalized_forecasts,
-                hour_idx,
-                synthetic_supply,
-                config,
-                round_events,
-                battery_market_limits=battery_market_limits,
-            )
-            demand, demand_bids = build_demand_from_bids(
-                normalized_forecasts,
-                hour_idx,
-                synthetic_demand,
-                config,
-                round_events,
-                battery_market_limits=battery_market_limits,
-            )
+        supply, supply_bids = build_supply_from_bids(
+            normalized_forecasts,
+            hour_idx,
+            synthetic_supply,
+            config,
+            round_events,
+            battery_market_limits=battery_market_limits,
+        )
+        demand, demand_bids = build_demand_from_bids(
+            normalized_forecasts,
+            hour_idx,
+            synthetic_demand,
+            config,
+            round_events,
+            battery_market_limits=battery_market_limits,
+        )
 
-            # Fallback for empty supply curves:
-            # - ID rounds: no positive deltas
-            # - DAM/absolute rounds: no producer bids submitted
-            if len(supply) == 0:
-                if id_delta_round:
-                    allow_supply_fallback = config.get("market", {}).get("id_fallback_to_synthetic_supply", True)
-                    fallback_tag = "IDM_FALLBACK"
-                else:
-                    allow_supply_fallback = config.get("market", {}).get("dam_fallback_to_synthetic_supply", True)
-                    fallback_tag = "DAM_FALLBACK"
+        # Fallback for empty supply curves:
+        # - ID rounds: no positive deltas
+        # - DAM/absolute rounds: no producer supply available
+        if len(supply) == 0:
+            if id_delta_round:
+                allow_supply_fallback = config.get("market", {}).get("id_fallback_to_synthetic_supply", True)
+                fallback_tag = "IDM_FALLBACK"
+            else:
+                allow_supply_fallback = config.get("market", {}).get("dam_fallback_to_synthetic_supply", True)
+                fallback_tag = "DAM_FALLBACK"
 
-                if allow_supply_fallback:
-                    supply = synthetic_supply
-                    supply_fallback_used = True
-                    print(f"[{fallback_tag}] Round {round_num}, hour_idx={hour_idx}: Empty player supply curve, using synthetic supply fallback ({len(synthetic_supply)} steps)")
-        else:
-            supply = synthetic_supply
-            supply_bids = []
-            demand = synthetic_demand
-            demand_bids = []
+            if allow_supply_fallback:
+                supply = synthetic_supply
+                supply_fallback_used = True
+                print(f"[{fallback_tag}] Round {round_num}, hour_idx={hour_idx}: Empty player supply curve, using synthetic supply fallback ({len(synthetic_supply)} steps)")
         
         # Market clearing for this hour
         # Build supply metadata for inflexible units filter
