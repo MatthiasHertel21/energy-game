@@ -1035,6 +1035,7 @@ class ForecastAPI(Resource):
             
             devices_cfg = config.get("devices", [])
             devices_cfg = _filter_devices_by_selected_type(session.id, player_id, config, devices_cfg)
+            disable_ramp = bool(config.get("general", {}).get("disable_ramp_validation", True))
             # If payload includes per-device hours, validate each; also compute aggregate
             if isinstance(per_device, list) and per_device:
                 # map config by id
@@ -1049,7 +1050,7 @@ class ForecastAPI(Resource):
                     if not dev:
                         validation_errors.append(f"Unknown device_id: {did}")
                         continue
-                    errs = validate_forecast_constraints(dev, hours)
+                    errs = validate_forecast_constraints(dev, hours, disable_ramp_validation=disable_ramp)
                     validation_errors.extend(errs)
                     # build aggregate for compatibility (sum)
                     agg = _sum_series(agg, hours)
@@ -1061,7 +1062,7 @@ class ForecastAPI(Resource):
             if devices_cfg and not (isinstance(per_device, list) and per_device):
                 validation_errors = []
                 for device in devices_cfg:
-                    errors = validate_forecast_constraints(device, data["hours"])
+                    errors = validate_forecast_constraints(device, data["hours"], disable_ramp_validation=disable_ramp)
                     if errors:
                         validation_errors.extend([f"{device.get('type', 'Device')}: {err}" for err in errors])
                 
@@ -1215,6 +1216,7 @@ class ForecastFull(Resource):
             
             devices_cfg = config.get("devices", [])
             devices_cfg = _filter_devices_by_selected_type(session.id, player_id, config, devices_cfg)
+            disable_ramp = bool(config.get("general", {}).get("disable_ramp_validation", True))
             if isinstance(per_device, list) and per_device:
                 cfg_by_id = {d.get("id"): d for d in devices_cfg if isinstance(d, dict)}
                 agg = None
@@ -1227,7 +1229,7 @@ class ForecastFull(Resource):
                     if not dev:
                         validation_errors.append(f"Unknown device_id: {did}")
                         continue
-                    errs = validate_forecast_constraints(dev, hours)
+                    errs = validate_forecast_constraints(dev, hours, disable_ramp_validation=disable_ramp)
                     validation_errors.extend(errs)
                     agg = _sum_series(agg, hours)
                 if validation_errors:
@@ -1237,7 +1239,7 @@ class ForecastFull(Resource):
             if devices_cfg and not (isinstance(per_device, list) and per_device):
                 validation_errors = []
                 for device in devices_cfg:
-                    errors = validate_forecast_constraints(device, data["hours"])
+                    errors = validate_forecast_constraints(device, data["hours"], disable_ramp_validation=disable_ramp)
                     if errors:
                         validation_errors.extend([f"{device.get('type', 'Device')}: {err}" for err in errors])
                 

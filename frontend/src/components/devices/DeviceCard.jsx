@@ -206,6 +206,9 @@ export default function DeviceCard({
     onChange({
       ...device,
       bid_count: nextBidCount,
+      // When bid_count is set to 0, clear the legacy enable_multi_bid flag so it can
+      // never incorrectly enable bidding mode in the player UI for this device.
+      ...(nextBidCount === 0 && { enable_multi_bid: false }),
       default_bids: buildDefaultBidConfig(device, nextBidCount, device.default_bids),
     })
   }

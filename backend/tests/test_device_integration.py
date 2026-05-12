@@ -215,6 +215,84 @@ class TestEngineRunRoundWithDevices:
         assert kpis["battery_charge_cost_zar"] == pytest.approx(charge_cost_total, abs=1e-2)
         assert kpis["battery_arbitrage_revenue_zar"] == round(discharge_revenue_total - charge_cost_total, 0)
 
+    def test_classic_producer_bid_count_zero_keeps_co2_when_bidding_enabled(self):
+        """A classic producer (bid_count=0) must still produce non-zero CO2 when dispatched."""
+        config = {
+            "general": {
+                "round_span_hours": 2,
+                "horizon_hours": 24,
+                "rounds": 2,
+                "start_time": "00:00",
+                "fake_date": "2025-01-01",
+            },
+            "market": {
+                "enable_player_bidding": False,
+                "base_price": 1000,
+                "base_volume_mwh": 200,
+                "price_floor": -500,
+                "price_cap": 5000,
+            },
+            "grid": {"zones": 1, "atc": [[0]]},
+            "devices": [
+                {
+                    "id": "coal_1",
+                    "type": "coal",
+                    "owner_id": 1,
+                    "bid_count": 0,
+                    "max_power_mw": 200,
+                    "variable_cost_tiers": [
+                        {"from_pct": 0, "to_pct": 60, "cost_zar_per_mwh": 380},
+                        {"from_pct": 60, "to_pct": 90, "cost_zar_per_mwh": 440},
+                        {"from_pct": 90, "to_pct": 100, "cost_zar_per_mwh": 520},
+                    ],
+                },
+                {
+                    # Forces explicit-bids mode globally, while coal_1 still uses classic fallback.
+                    "id": "gas_toggle",
+                    "type": "gas",
+                    "owner_id": 1,
+                    "bid_count": 1,
+                    "max_power_mw": 50,
+                    "variable_cost_zar_per_mwh": 1200,
+                },
+            ],
+            "events": [],
+        }
+
+        forecasts = {
+            1: {
+                "hours": [0.0] * 24,
+                "devices": [
+                    {"device_id": "coal_1", "hours": [80.0] * 24},
+                ],
+                "bids": {
+                    "coal_1": {},
+                },
+            }
+        }
+
+        result = run_round(
+            session_id=1,
+            round_num=1,
+            players=[1],
+            forecasts=forecasts,
+            config=config,
+            mode="isolated_per_player",
+            seed="classic-bidcount-zero-co2",
+        )
+
+        kpis = result["round_kpis"][1]
+        # dispatched and planned must both be non-zero: bid_count=0 reads hours from devices array
+        assert kpis["dispatched_mwh"] > 0.0
+        assert kpis["planned_mwh"] > 0.0, "bid_count=0: planned_mwh must come from devices[].hours"
+        assert kpis["co2_emissions_kg"] > 0.0
+
+        coal_rows = kpis["device_hourly_breakdown"]["coal_1"]
+        assert sum(float(row.get("dispatched_mw", 0.0) or 0.0) for row in coal_rows) > 0.0
+        assert sum(float(row.get("planned_mw", 0.0) or 0.0) for row in coal_rows) > 0.0, \
+            "bid_count=0: per-device planned_mw must be populated from forecast hours"
+        assert sum(float(row.get("co2_kg", 0.0) or 0.0) for row in coal_rows) > 0.0
+
 
 class TestPlayerForecastValidation:
     """Test player forecast validation against device constraints

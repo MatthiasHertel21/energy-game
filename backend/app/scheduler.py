@@ -266,28 +266,48 @@ def run_rounds(session_id: int, app=None):
                             db.session.add(snap)
                     db.session.commit()
                 else:
-                    # apply IDM delta for current window vs DA snapshot
-                    for pid in players:
-                        snap = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=-1).first()
-                        if snap and snap.data and snap.data.get("hours"):
-                            da_hours = snap.data.get("hours")
-                            start = (current-1)*hours_span
-                            end = start + hours_span
-                            cur_entry = forecasts.get(pid)
-                            if not cur_entry:
-                                cur_entry = {'hours': [0.0] * len(da_hours), 'bids': None}
-                            cur_hours = cur_entry.get('hours', [])
-                            window = [
-                                (cur_hours[i] if i < len(cur_hours) else 0.0)
-                                - (da_hours[i] if i < len(da_hours) else 0.0)
-                                for i in range(start, end)
-                            ]
-                            merged = list(cur_hours)
-                            for off, i in enumerate(range(start, end)):
-                                if i < len(merged):
-                                    merged[i] = window[off]
-                            cur_entry['hours'] = merged
-                            forecasts[pid] = cur_entry
+                    # Determine if IDM is active for this round.
+                    # When IDM=off (DAM-only scenario), the player submitted their full-horizon
+                    # forecast (incl. future days) during Round 1 as part of the DAM.  In that
+                    # case we must NOT apply the IDM delta – the engine receives the absolute
+                    # forecast values directly (hours 24-47 from the Round-1 submission).
+                    markets_cfg = cfg.get("markets", {})
+                    idm_data = markets_cfg.get("idm", [])
+                    round_idx = current - 1
+                    if isinstance(idm_data, list):
+                        idm_status = idm_data[round_idx] if round_idx < len(idm_data) else "market_code"
+                    elif isinstance(idm_data, dict):
+                        trading_arr = idm_data.get("trading", [])
+                        idm_status = trading_arr[round_idx] if round_idx < len(trading_arr) else "market_code"
+                    else:
+                        idm_status = "market_code"
+                    use_idm_delta = (idm_status != "off")
+                    print(f"[SCHEDULER] Round {current}: IDM status={idm_status}, use_idm_delta={use_idm_delta}")
+
+                    if use_idm_delta:
+                        # apply IDM delta for current window vs DA snapshot
+                        for pid in players:
+                            snap = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=-1).first()
+                            if snap and snap.data and snap.data.get("hours"):
+                                da_hours = snap.data.get("hours")
+                                start = (current-1)*hours_span
+                                end = start + hours_span
+                                cur_entry = forecasts.get(pid)
+                                if not cur_entry:
+                                    cur_entry = {'hours': [0.0] * len(da_hours), 'bids': None}
+                                cur_hours = cur_entry.get('hours', [])
+                                window = [
+                                    (cur_hours[i] if i < len(cur_hours) else 0.0)
+                                    - (da_hours[i] if i < len(da_hours) else 0.0)
+                                    for i in range(start, end)
+                                ]
+                                merged = list(cur_hours)
+                                for off, i in enumerate(range(start, end)):
+                                    if i < len(merged):
+                                        merged[i] = window[off]
+                                cur_entry['hours'] = merged
+                                forecasts[pid] = cur_entry
+                    # else: IDM=off → absolute forecast values are passed through unchanged.
                 # Determine campaign seed if available (derive from player progress entries for this scenario)
                 camp_seed = None
                 try:

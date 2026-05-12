@@ -462,27 +462,36 @@ def get_curtailment_priority(device: Dict[str, Any]) -> int:
     return 2  # default medium
 
 
-def validate_forecast_constraints(device: Dict[str, Any], forecast_mw: List[float]) -> List[str]:
+def validate_forecast_constraints(
+    device: Dict[str, Any],
+    forecast_mw: List[float],
+    *,
+    disable_ramp_validation: bool = False,
+) -> List[str]:
     """
-    Validate forecast against device constraints (min_load, ramp_rate)
-    Returns list of error messages
-    
+    Validate forecast against device constraints (min_load, ramp_rate).
+    Returns list of error messages.
+
+    Pass ``disable_ramp_validation=True`` to skip the ramp-rate check while
+    still enforcing the min-load constraint.  The scenario-level flag
+    ``general.disable_ramp_validation`` is the canonical way to set this.
+
     Note: Over-capacity bids are allowed (will be capped by engine) to enable
     strategic overbidding. This only returns hard constraint violations.
     """
     errors = []
     dev_type, dnorm = _normalize_device(device)
     device_type = dev_type
-    
+
     if device_type not in [DeviceType.COAL, DeviceType.GAS, DeviceType.HYDRO, DeviceType.NUCLEAR]:
         return errors  # No constraints for renewables/storage/loads
-    
+
     max_power = dnorm.get("max_power_mw", 0)
     min_load_pct = dnorm.get("min_load_pct", 0)
     ramp_rate = dnorm.get("ramp_rate_mw_per_min", float('inf'))
-    
+
     min_power = (min_load_pct / 100.0) * max_power
-    
+
     # Check min load
     for i, power in enumerate(forecast_mw):
         if power > 0 and power < min_power:
@@ -490,16 +499,17 @@ def validate_forecast_constraints(device: Dict[str, Any], forecast_mw: List[floa
                 f"Device {dnorm.get('id', '?')} hour {i+1}: forecast {power:.1f} MW < min_load {min_power:.1f} MW ({min_load_pct}%)"
             )
         # NOTE: Over-capacity is allowed (engine will cap), no error here
-    
+
     # Check ramp rate (assume 60 min between hours)
-    for i in range(1, len(forecast_mw)):
-        delta = abs(forecast_mw[i] - forecast_mw[i-1])
-        max_ramp = ramp_rate * 60  # MW change per hour
-        if delta > max_ramp:
-            errors.append(
-                f"Device {dnorm.get('id', '?')} hours {i}-{i+1}: ramp {delta:.1f} MW/h > max ramp {max_ramp:.1f} MW/h"
-            )
-    
+    if not disable_ramp_validation:
+        for i in range(1, len(forecast_mw)):
+            delta = abs(forecast_mw[i] - forecast_mw[i-1])
+            max_ramp = ramp_rate * 60  # MW change per hour
+            if delta > max_ramp:
+                errors.append(
+                    f"Device {dnorm.get('id', '?')} hours {i}-{i+1}: ramp {delta:.1f} MW/h > max ramp {max_ramp:.1f} MW/h"
+                )
+
     return errors
 
 

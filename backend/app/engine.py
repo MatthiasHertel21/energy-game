@@ -3603,7 +3603,16 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 planned = 0.0
                 for device_id, device_bids in forecast_data['bids'].items():
                     device_cfg = devices_by_id.get(device_id, {})
-                    if _should_use_single_bid_forecast_fallback(device_cfg, device_bids, hour_idx, legacy_global_enabled):
+                    # bid_count=0 (classic) and bid_count=1 (single-bid fallback) both derive
+                    # planned quantity from the device forecast hours array, not from bid hours.
+                    use_forecast_hours = (
+                        _should_use_single_bid_forecast_fallback(device_cfg, device_bids, hour_idx, legacy_global_enabled)
+                        or (
+                            _get_device_bid_count(device_cfg, legacy_global_enabled) == 0
+                            and not _has_explicit_bid_hours(device_bids, device_cfg, hour_idx, legacy_global_enabled)
+                        )
+                    )
+                    if use_forecast_hours:
                         device_hours = _get_device_forecast_hours(devices_data, device_id)
                         if hour_idx < len(device_hours):
                             planned += float(device_hours[hour_idx] or 0.0)
@@ -3683,7 +3692,16 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         device_planned_h = 0.0
                         device_cfg = next((d for d in devices_cfg if d.get('id') == device_id), None)
                         legacy_global_enabled = _normalize_boolean_flag(config.get('market', {}).get('enable_player_bidding', False), False)
-                        if _should_use_single_bid_forecast_fallback(device_cfg, device_bids, hour_idx, legacy_global_enabled):
+                        # bid_count=0 (classic) behaves like bid_count=1 (single-bid fallback):
+                        # planned quantity comes from the device forecast hours, not from bid lots.
+                        use_forecast_hours = (
+                            _should_use_single_bid_forecast_fallback(device_cfg, device_bids, hour_idx, legacy_global_enabled)
+                            or (
+                                _get_device_bid_count(device_cfg, legacy_global_enabled) == 0
+                                and not _has_explicit_bid_hours(device_bids, device_cfg, hour_idx, legacy_global_enabled)
+                            )
+                        )
+                        if use_forecast_hours:
                             device_forecast_hours = _get_device_forecast_hours(device_forecast.get('devices', []), device_id)
                             if hour_idx < len(device_forecast_hours):
                                 device_planned_h = float(device_forecast_hours[hour_idx] or 0.0)
@@ -4777,10 +4795,14 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     offer_price = total_value / total_qty
                 else:
                     offer_price = None
-                    if device_cfg and _should_use_single_bid_forecast_fallback(device_cfg, device_bids, h_idx, legacy_global_enabled):
-                        offer_price = _get_single_bid_fallback_price(device_cfg, device_bids, h_idx, legacy_global_enabled)
-                    elif device_cfg:
-                        offer_price = _get_default_device_market_price(device_cfg, is_consumer='load' in device_cfg.get('type', '').lower())
+                    if device_cfg:
+                        _bc = _get_device_bid_count(device_cfg, legacy_global_enabled)
+                        if _bc == 1 and _should_use_single_bid_forecast_fallback(device_cfg, device_bids, h_idx, legacy_global_enabled):
+                            # bid_count=1: use player-configured price from default_bids / bids
+                            offer_price = _get_single_bid_fallback_price(device_cfg, device_bids, h_idx, legacy_global_enabled)
+                        else:
+                            # bid_count=0 (classic) and all other cases: automatic variable-cost price
+                            offer_price = _get_default_device_market_price(device_cfg, is_consumer='load' in device_cfg.get('type', '').lower())
 
                 # Get DA/ID breakdown from balancing data if available
                 # Must match by hour_idx, not array position!
@@ -5076,6 +5098,17 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         co2_kg = float(co2_entry.get('co2_kg', 0.0) or 0.0)
                     except Exception:
                         co2_kg = 0.0
+                elif not is_load and float(dispatched_h or 0.0) > 0.0 and device_cfg:
+                    # Defensive fallback: if per-device CO2 tracking is absent for this
+                    # hour (e.g. legacy/classic bid payload edge cases), derive CO2 from
+                    # dispatched energy and the device emission intensity.
+                    try:
+                        fallback_rate = float(
+                            device_cfg.get('co2_emissions_kg_per_mwh', device_cfg.get('co2_kg_per_mwh', 0.0)) or 0.0
+                        )
+                    except Exception:
+                        fallback_rate = 0.0
+                    co2_kg = float(dispatched_h or 0.0) * max(0.0, fallback_rate)
 
                 profit_device = revenue_total - device_variable_cost - device_fixed_cost - float(hour_entry.get('imbalance_cost_zar', 0.0) or 0.0) + congestion_alloc - battery_charge_cost
 

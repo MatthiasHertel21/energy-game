@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   Container,
   Paper,
@@ -340,11 +342,11 @@ export default function Briefing() {
         )}
 
         {/* Briefing Text - Formatted */}
-        <Box sx={{ mb: 3 }}>
+        <Box sx={{ mb: 3, '& h1,& h2,& h3,& h4': { marginTop: '0.75em', marginBottom: '0.25em' }, '& ul, & ol': { paddingLeft: '1.5em' }, '& p': { margin: '0 0 0.5em' } }}>
           {data.objectives ? (
-            <Box>
-              {renderFormattedText(data.objectives)}
-            </Box>
+            <Typography variant="body1" color="text.secondary" component="div">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.objectives}</ReactMarkdown>
+            </Typography>
           ) : (
             <Typography variant="body1" color="text.secondary" fontStyle="italic">
               This scenario has no briefing text.

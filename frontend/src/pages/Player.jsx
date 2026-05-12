@@ -101,8 +101,13 @@ const getDeviceBidLabels = (device, deviceBids = null, fallbackEnabled = false) 
   return labels
 }
 
+// A device is considered bidding-enabled only when its effective bid_count > 0.
+// getNormalizedBidCount() already handles the legacy enable_multi_bid fallback
+// (returns 3 when bid_count is absent and enable_multi_bid=true). Checking
+// enable_multi_bid independently here would incorrectly trigger bidding mode
+// for devices that have bid_count=0 but a stale enable_multi_bid=true.
 const hasExplicitBiddingDevices = (devices = []) => (
-  (devices || []).some((device) => getNormalizedBidCount(device) > 0 || device?.enable_multi_bid === true)
+  (devices || []).some((device) => getNormalizedBidCount(device) > 0)
 )
 
 const getBidSplitRatios = (count) => {

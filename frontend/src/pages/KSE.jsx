@@ -457,7 +457,7 @@ const formatInt = (value) => {
 const defaultConfig = {
   version: '1.0.0',
   objectives: '',
-  general: { horizon_hours: 24, forecast_horizon_hours: 48, freeze_hours: 2, day_ahead_gate_hour: 12, id_gate_interval_hours: 4, id_gate_base_hour: 0, day_one_baseline_mode: 'preset', round_span_hours: 6, rounds: 4, round_duration_seconds: 300 },
+  general: { horizon_hours: 24, forecast_horizon_hours: 48, freeze_hours: 2, day_ahead_gate_hour: 12, id_gate_interval_hours: 4, id_gate_base_hour: 0, day_one_baseline_mode: 'preset', round_span_hours: 6, rounds: 4, round_duration_seconds: 300, disable_ramp_validation: true },
     market: {
       base_price: 1000,
       base_volume_mwh: 20000,
@@ -2189,6 +2189,20 @@ export default function KSE(){
                     />
                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
                       When disabled, dragging changes only the selected hour. When enabled, neighboring editable hours are adjusted with falloff.
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <FormControlLabel
+                      control={(
+                        <Switch
+                          checked={Boolean(cfg?.general?.disable_ramp_validation)}
+                          onChange={(e) => update(['general', 'disable_ramp_validation'], e.target.checked)}
+                        />
+                      )}
+                      label="Ramp-Rate-Validierung deaktivieren"
+                    />
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                      Wenn aktiviert, wird die Ramp-Rate-Prüfung bei der Forecast-Eingabe übersprungen. Min-Load-Validierung bleibt aktiv. Sinnvoll für vereinfachte Szenarien ohne Anlaufbeschränkungen.
                     </Typography>
                   </Grid>
                 </Grid>
