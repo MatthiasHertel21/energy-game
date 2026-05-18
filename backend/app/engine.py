@@ -3806,6 +3806,18 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 elif player_devices:
                     per_device_plan = float(planned or 0.0) / float(len(player_devices))
                     device_plans = [(device.get('id'), per_device_plan) for device in player_devices]
+                elif not player_devices and explicit_devices_data:
+                    # Shared scenario: devices have no owner_id/player_id, but the player
+                    # submitted per-device forecast hours.  Use those to track dispatch.
+                    for dev_entry in explicit_devices_data:
+                        dev_id_entry = dev_entry.get('device_id') or dev_entry.get('id')
+                        if not dev_id_entry:
+                            continue
+                        dev_cfg_entry = next((d for d in devices_cfg if d.get('id') == dev_id_entry), None)
+                        if dev_cfg_entry and 'load' not in str(dev_cfg_entry.get('type', '')).lower():
+                            dev_hrs = _get_device_forecast_hours(explicit_devices_data, dev_id_entry)
+                            dev_plan = float(dev_hrs[hour_idx] or 0.0) if hour_idx < len(dev_hrs) else 0.0
+                            device_plans.append((dev_id_entry, dev_plan))
 
                 total_device_plan = sum(device_plan for _, device_plan in device_plans)
                 for device_id, device_plan in device_plans:
@@ -3874,6 +3886,13 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 player_device_ids = {
                     d.get('id') for d in devices_cfg
                     if d.get('id') and (d.get('owner_id') == pid or d.get('player_id') == pid)
+                }
+            # Shared-device fallback: if still empty, use devices tracked in per_device_hourly_dispatched
+            # (populated above from explicit device forecast data for shared-device classic scenarios).
+            if not player_device_ids:
+                player_device_ids = {
+                    dev_id for dev_id in per_device_hourly_dispatched
+                    if abs(float((per_device_hourly_dispatched[dev_id] or [0.0] * display_span)[hour_offset] or 0.0)) > 0.000001
                 }
             
             # Check if any of these devices are consumers (loads)
@@ -4199,7 +4218,22 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         })
                 else:
                     noise = random.uniform(-frac, frac) * max(1.0, actual)
-                    actual = max(0.0, min(actual_constrained, actual + noise))
+                    # Fix: actual_constrained is 0.0 in aggregate mode (no per-device tracking),
+                    # so using it as upper bound incorrectly clamps actual to 0.
+                    actual = max(0.0, actual + noise)
+                    # Propagate aggregate actual to any per-device tracking entries
+                    # (e.g., shared-device classic scenarios populated via explicit forecast data).
+                    _total_dev_disp = sum(
+                        abs(float((per_device_hourly_dispatched.get(_d) or [0.0] * display_span)[hour_offset] or 0.0))
+                        for _d in per_device_hourly_dispatched
+                    )
+                    if _total_dev_disp > 0.0:
+                        for _dev_id in list(per_device_hourly_dispatched.keys()):
+                            _dev_disp = float((per_device_hourly_dispatched[_dev_id] or [0.0] * display_span)[hour_offset] or 0.0)
+                            _dev_actual = actual * (_dev_disp / _total_dev_disp)
+                            if _dev_id not in per_device_hourly_actual:
+                                per_device_hourly_actual[_dev_id] = [0.0] * display_span
+                            per_device_hourly_actual[_dev_id][hour_offset] = _dev_actual
             
             # Settlement mode:
             # - absolute_clearing_round: normal revenue at current price
