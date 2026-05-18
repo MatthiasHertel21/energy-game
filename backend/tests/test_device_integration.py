@@ -215,6 +215,74 @@ class TestEngineRunRoundWithDevices:
         assert kpis["battery_charge_cost_zar"] == pytest.approx(charge_cost_total, abs=1e-2)
         assert kpis["battery_arbitrage_revenue_zar"] == round(discharge_revenue_total - charge_cost_total, 0)
 
+    def test_classic_producer_bid_count_zero_variable_cost_and_co2(self):
+        """Pure classic scenario (all bid_count=0, enable_player_bidding=False) must produce
+        non-zero variable_cost and CO2 — previously both were always 0 due to enable_bidding gate."""
+        config = {
+            "general": {
+                "round_span_hours": 2,
+                "horizon_hours": 24,
+                "rounds": 2,
+                "start_time": "00:00",
+                "fake_date": "2025-01-01",
+            },
+            "market": {
+                "enable_player_bidding": False,
+                "base_price": 1000,
+                "base_volume_mwh": 200,
+                "price_floor": -500,
+                "price_cap": 5000,
+            },
+            "grid": {"zones": 1, "atc": [[0]]},
+            "devices": [
+                {
+                    "id": "coal_classic",
+                    "type": "coal",
+                    "owner_id": 1,
+                    "bid_count": 0,
+                    "max_power_mw": 200,
+                    "variable_cost_tiers": [
+                        {"from_pct": 0, "to_pct": 60, "cost_zar_per_mwh": 380},
+                        {"from_pct": 60, "to_pct": 90, "cost_zar_per_mwh": 440},
+                        {"from_pct": 90, "to_pct": 100, "cost_zar_per_mwh": 520},
+                    ],
+                    "co2_emissions_kg_per_mwh": 820,
+                },
+            ],
+            "events": [],
+        }
+
+        forecasts = {
+            1: {
+                "hours": [100.0] * 24,
+                "devices": [
+                    {"device_id": "coal_classic", "hours": [100.0] * 24},
+                ],
+                "bids": {},
+            }
+        }
+
+        result = run_round(
+            session_id=1,
+            round_num=1,
+            players=[1],
+            forecasts=forecasts,
+            config=config,
+            mode="isolated_per_player",
+            seed="classic-all-zero-bid-count",
+        )
+
+        kpis = result["round_kpis"][1]
+        assert kpis["dispatched_mwh"] > 0.0, "dispatched_mwh must be non-zero"
+        assert kpis["planned_mwh"] > 0.0, "planned_mwh must come from devices[].hours"
+        # Key assertions for the bug fix: variable_cost and CO2 must not be zero
+        assert kpis["variable_cost_zar"] > 0.0, \
+            "variable_cost_zar was 0 for classic scenarios (enable_bidding=False) — bug fix must apply"
+        assert kpis["co2_emissions_kg"] > 0.0, "co2 must be non-zero for dispatched coal"
+        # Profit must be less than revenue (costs are real)
+        assert kpis["profit_zar"] < kpis["revenue_zar"], \
+            "profit must be less than revenue when variable costs are incurred"
+
     def test_classic_producer_bid_count_zero_keeps_co2_when_bidding_enabled(self):
         """A classic producer (bid_count=0) must still produce non-zero CO2 when dispatched."""
         config = {

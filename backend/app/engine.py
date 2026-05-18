@@ -4358,31 +4358,66 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         if hour_offset == 0 and pid == players[0]:
                             print(f"[CO2_DELIVERY] Player {pid}, h={hour_idx}: total_co2={co2_emissions:.1f} kg from DA delivery dispatch")
                 elif dispatched > 0:
-                    # Fallback CO2 calculation when bidding is disabled: estimate from player's device portfolio
-                    # Get player's devices from their player type
-                    try:
-                        from .models import SessionPlayerType
-                        spt = SessionPlayerType.query.filter_by(session_id=session_id, user_id=pid).first()
-                        if spt and spt.type_id:
-                            pt_cfg = next((pt for pt in player_types_cfg if pt.get("id") == spt.type_id), None)
-                            if pt_cfg:
-                                device_ids = pt_cfg.get("devices", [])
-                                player_devices = [d for d in devices_cfg if d.get("id") in device_ids]
-                                # Calculate weighted average CO2 rate based on device capacities
-                                total_capacity = 0.0
-                                weighted_co2 = 0.0
-                                for device in player_devices:
-                                    device_type = device.get('type', '').lower()
-                                    if 'generator' in device_type or 'renewable' in device_type:
-                                        capacity = float(device.get('capacity_mw', device.get('max_mw', 0.0)))
-                                        co2_rate = device.get('co2_emissions_kg_per_mwh', device.get('co2_kg_per_mwh', 0.0))
-                                        total_capacity += capacity
-                                        weighted_co2 += capacity * co2_rate
-                                if total_capacity > 0:
-                                    avg_co2_rate = weighted_co2 / total_capacity
-                                    co2_emissions = dispatched * avg_co2_rate
-                    except Exception as e:
-                        print(f"[CO2_FALLBACK] Failed to estimate CO2 for player {pid}: {e}")
+                    # Classic/bid_count=0 scenario: compute variable costs and CO2 per device.
+                    # If device ownership is known (owner_id / player_id on device), use the
+                    # per-device dispatched amounts already stored in per_device_hourly_dispatched.
+                    # Otherwise fall back to the player-type portfolio estimate.
+                    if player_device_ids:
+                        for _classic_dev_id in player_device_ids:
+                            _classic_cfg = next((d for d in devices_cfg if d.get('id') == _classic_dev_id), None)
+                            if not _classic_cfg or 'load' in str(_classic_cfg.get('type', '')).lower():
+                                continue
+                            try:
+                                _classic_disp = float(per_device_hourly_dispatched.get(_classic_dev_id, [0.0] * display_span)[hour_offset] or 0.0)
+                            except Exception:
+                                _classic_disp = 0.0
+                            if abs(_classic_disp) < 0.000001:
+                                continue
+                            _classic_type = str(_classic_cfg.get('type', '')).lower()
+                            _classic_tiers = _classic_cfg.get('variable_cost_tiers') if _classic_type in ('coal', 'gas') else None
+                            if _classic_tiers:
+                                _classic_base_cap = max(0.0, float(_classic_cfg.get('max_power_mw') or _classic_cfg.get('capacity_mw') or 0.0))
+                                _classic_cost, _ = compute_tiered_variable_cost(_classic_disp, _classic_base_cap, _classic_tiers)
+                                variable_cost += round(_classic_cost, 0)
+                            else:
+                                _classic_vc = float(_classic_cfg.get('variable_cost_zar_per_mwh', 0.0) or 0.0)
+                                variable_cost += round(_classic_disp * _classic_vc, 0)
+                            _classic_co2 = float(_classic_cfg.get('co2_emissions_kg_per_mwh', _classic_cfg.get('co2_kg_per_mwh', 0.0)) or 0.0)
+                            co2_emissions += _classic_disp * _classic_co2
+                    else:
+                        # Fallback: estimate variable cost and CO2 from player-type device portfolio
+                        # (used when devices are shared and have no explicit owner_id / player_id).
+                        try:
+                            from .models import SessionPlayerType
+                            spt = SessionPlayerType.query.filter_by(session_id=session_id, user_id=pid).first()
+                            if spt and spt.type_id:
+                                pt_cfg = next((pt for pt in player_types_cfg if pt.get("id") == spt.type_id), None)
+                                if pt_cfg:
+                                    _portfolio = [
+                                        d for d in devices_cfg
+                                        if d.get("id") in pt_cfg.get("devices", [])
+                                        and 'load' not in d.get('type', '').lower()
+                                    ]
+                                    _total_cap = sum(
+                                        float(d.get('max_power_mw', d.get('capacity_mw', 0.0)) or 0.0)
+                                        for d in _portfolio
+                                    )
+                                    for _p_dev in _portfolio:
+                                        _p_cap = float(_p_dev.get('max_power_mw', _p_dev.get('capacity_mw', 0.0)) or 0.0)
+                                        _p_disp = dispatched * (_p_cap / _total_cap) if _total_cap > 0 else dispatched / max(1, len(_portfolio))
+                                        _p_type = str(_p_dev.get('type', '')).lower()
+                                        _p_tiers = _p_dev.get('variable_cost_tiers') if _p_type in ('coal', 'gas') else None
+                                        if _p_tiers:
+                                            _p_base = max(0.0, float(_p_dev.get('max_power_mw') or _p_dev.get('capacity_mw') or 0.0))
+                                            _p_cost, _ = compute_tiered_variable_cost(_p_disp, _p_base, _p_tiers)
+                                            variable_cost += round(_p_cost, 0)
+                                        else:
+                                            _p_vc = float(_p_dev.get('variable_cost_zar_per_mwh', 0.0) or 0.0)
+                                            variable_cost += round(_p_disp * _p_vc, 0)
+                                        _p_co2 = float(_p_dev.get('co2_emissions_kg_per_mwh', _p_dev.get('co2_kg_per_mwh', 0.0)) or 0.0)
+                                        co2_emissions += _p_disp * _p_co2
+                        except Exception as e:
+                            print(f"[CLASSIC_SETTLEMENT] Variable cost/CO2 estimation failed for player {pid}: {e}")
             
             # BUG FIX N3: Imbalance settlement only if market actually cleared (vol > 0)
             # Exception: Must-run units (nuclear) have imbalance even without market clearing
