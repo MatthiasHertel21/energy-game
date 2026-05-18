@@ -3546,7 +3546,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 vol,
                 synthetic_supply,
                 devices_cfg_for_clearing,
-                da_dispatch_this_hour,
+                # In absolute_clearing_round each round clears independently with fresh capacity.
+                # The DA baseline from round 1 must not constrain the current round's capacity.
+                {} if absolute_clearing_round else da_dispatch_this_hour,
                 round_events,
                 player_type_by_player,
                 use_synthetic_in_dispatch
@@ -3808,13 +3810,14 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     device_plans = [(device.get('id'), per_device_plan) for device in player_devices]
                 elif not player_devices and explicit_devices_data:
                     # Shared scenario: devices have no owner_id/player_id, but the player
-                    # submitted per-device forecast hours.  Use those to track dispatch.
+                    # submitted per-device forecast hours. Use those to track dispatch
+                    # for generators and loads alike so KPI/device rollups reconcile.
                     for dev_entry in explicit_devices_data:
                         dev_id_entry = dev_entry.get('device_id') or dev_entry.get('id')
                         if not dev_id_entry:
                             continue
                         dev_cfg_entry = next((d for d in devices_cfg if d.get('id') == dev_id_entry), None)
-                        if dev_cfg_entry and 'load' not in str(dev_cfg_entry.get('type', '')).lower():
+                        if dev_cfg_entry:
                             dev_hrs = _get_device_forecast_hours(explicit_devices_data, dev_id_entry)
                             dev_plan = float(dev_hrs[hour_idx] or 0.0) if hour_idx < len(dev_hrs) else 0.0
                             device_plans.append((dev_id_entry, dev_plan))
@@ -3978,13 +3981,23 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     if event_mult != 1.0 or event_add != 0.0:
                         print(f"[EVENT_DEMAND] Consumer {pid}: Dispatched={dispatched:.1f}, Event mult={event_mult}, add={event_add} → Actual={actual:.1f} MW")
                 
-                # Track consumer actual per device for hourly breakdown
+                # Track consumer actual per device for hourly breakdown.
+                # In classic/shared scenarios there may be no explicit bid dispatch,
+                # but per-device dispatched volumes were already populated above.
+                device_ids_for_distribution = set()
                 if enable_bidding and pid in hour_bid_dispatch:
+                    device_ids_for_distribution.update(hour_bid_dispatch[pid].keys())
+                else:
+                    device_ids_for_distribution.update(
+                        device_id for device_id in player_device_ids
+                        if device_id in per_device_hourly_dispatched
+                    )
+                if round_num > 1 and id_delta_round and da_committed_by_device:
+                    device_ids_for_distribution.update(da_committed_by_device.keys())
+
+                if device_ids_for_distribution:
                     # Distribute actual proportionally to each consumer device
-                    total_dispatched = dispatched
-                    device_ids_for_distribution = set(hour_bid_dispatch[pid].keys())
-                    if round_num > 1 and id_delta_round and da_committed_by_device:
-                        device_ids_for_distribution.update(da_committed_by_device.keys())
+                    consumer_total_dispatched = dispatched
 
                     for device_id in device_ids_for_distribution:
                         device_dispatched = 0.0
@@ -3993,8 +4006,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                 device_dispatched = float(per_device_hourly_dispatched[device_id][hour_offset] or 0.0)
                             except Exception:
                                 device_dispatched = 0.0
-                        if total_dispatched > 0:
-                            device_actual = actual * (device_dispatched / total_dispatched)
+                        if consumer_total_dispatched > 0:
+                            device_actual = actual * (device_dispatched / consumer_total_dispatched)
                         else:
                             device_actual = 0.0
                         

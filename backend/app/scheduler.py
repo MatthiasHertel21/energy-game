@@ -219,7 +219,18 @@ def run_rounds(session_id: int, app=None):
                 for pid in players:
                     full = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=0).first()
                     # Get bids from current round (not from full forecast)
-                    current_round_forecast = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=current).first()
+                    # Prefer forecast rows with non-null bids (latest ID wins if duplicates exist).
+                    # Use Python-level None check because JSON null is stored as 'null'::jsonb,
+                    # which passes SQL IS NOT NULL but returns None in Python.
+                    _all_round_forecasts = (
+                        Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=current)
+                        .order_by(Forecast.id.desc())
+                        .all()
+                    )
+                    current_round_forecast = next(
+                        (f for f in _all_round_forecasts if f.bids is not None),
+                        _all_round_forecasts[0] if _all_round_forecasts else None
+                    )
                     current_bids = current_round_forecast.bids if current_round_forecast and current_round_forecast.bids else None
                     current_devices = (current_round_forecast.data or {}).get("devices", []) if current_round_forecast else []
                     print(f"[SCHEDULER] Player {pid}: has_full={full is not None}, has_current={current_round_forecast is not None}, has_bids={current_bids is not None}")
