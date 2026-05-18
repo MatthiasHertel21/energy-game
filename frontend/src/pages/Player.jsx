@@ -390,16 +390,7 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
         .text(`SMP: ${smp.toFixed(0)} ZAR/MWh`)
       
       if (xIntersect !== null) {
-        // Vertical line at cleared volume
-        g.append('line')
-          .attr('x1', xIntersect)
-          .attr('x2', xIntersect)
-          .attr('y1', 0)
-          .attr('y2', H)
-          .attr('stroke', smpColor)
-          .attr('stroke-width', 1)
-          .attr('stroke-dasharray', '2,3')
-        // Circle at intersection
+        // Circle at intersection (vertical line removed – demand curve extension now shows clearing volume visually)
         g.append('circle')
           .attr('cx', xIntersect)
           .attr('cy', y(smp))
