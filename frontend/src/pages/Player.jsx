@@ -345,6 +345,12 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
     const sPts = toStep(sCum)
     const dPts = toStep(dCum)
 
+    // Extend supply curve vertically upward at right edge (last step → top of chart)
+    if (sPts.length > 0) sPts.push([sPts[sPts.length - 1][0], 0])
+    // Extend demand curve vertically downward at right edge (last step → bottom of chart)
+    // This creates the visual intersection with the supply curve at the SMP
+    if (dPts.length > 0) dPts.push([dPts[dPts.length - 1][0], H])
+
     g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', supplyColor).attr('stroke-width', 2)
     g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', demandColor).attr('stroke-width', 2)
 
