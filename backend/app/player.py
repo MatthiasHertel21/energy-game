@@ -922,6 +922,7 @@ class MarketStructureAPI(Resource):
         Query parameters:
         - hour: Hour index within the round (0-based)
         """
+        player_id = int(get_jwt_identity())
         session = Session.query.get(session_id)
         if not session:
             return {"error": "Session not found"}, HTTPStatus.NOT_FOUND
