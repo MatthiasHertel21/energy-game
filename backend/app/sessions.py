@@ -1259,7 +1259,8 @@ class FinalResults(Resource):
                 "curtailment_cost": round(float(kpis.get("curtailment_cost_zar", 0)), 2),
                 "dispatched_mwh": round(float(kpis.get("dispatched_mwh", 0)), 2),
                 "planned_mwh": round(float(kpis.get("planned_mwh", 0)), 2),
-                "total_score": round(round_score, 2)
+                "total_score": round(round_score, 2),
+                "smp": round(float(r.data.get("smp", r.data.get("mcp", 0)) or 0), 2),
             })
         
         # Add aggregated bid dispatch to my_cumulative

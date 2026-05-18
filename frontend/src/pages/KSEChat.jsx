@@ -250,7 +250,50 @@ export default function KSEChat() {
         { role: 'assistant', content: `✅ Scenario **"${selectedScenario.name}"** saved successfully.` },
       ])
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to save scenario.')
+      const respData = err.response?.data || {}
+      const validationErrors = Array.isArray(respData.errors) ? respData.errors : null
+      const statusCode = err.response?.status
+
+      if (validationErrors && validationErrors.length > 0) {
+        // Show validation errors inline and trigger auto-healing via LLM
+        const errorList = validationErrors.map((e) => `- ${e}`).join('\n')
+        const healMsg = `The scenario could not be saved because it contains **${validationErrors.length} validation error(s)**:\n\n${errorList}\n\nI will now fix these issues automatically.`
+        setMessages((prev) => [...prev, { role: 'assistant', content: healMsg }])
+
+        // Auto-heal: send the errors back to the LLM with the broken JSON and ask for a fix
+        setLoading(true)
+        setError(null)
+        try {
+          const healPrompt = `The scenario config you provided failed backend validation with these errors:\n${errorList}\n\nPlease fix ALL of these issues and return the corrected complete scenario JSON.`
+          const healPayload = {
+            messages: [
+              ...messages.filter((m) => !(m.role === 'assistant' && messages.indexOf(m) === 0)),
+              { role: 'user', content: healPrompt },
+            ],
+            scenario_id: selectedScenarioId || undefined,
+            scenario_context: scenarioJson,
+          }
+          const { data } = await api.post('/api/ksechat/chat', healPayload)
+          if (data.provider) setProviderInfo({ provider: data.provider, model: data.model })
+          setMessages((prev) => [
+            ...prev,
+            { role: 'assistant', content: data.reply, scenario_json: data.scenario_json || null },
+          ])
+          if (!data.scenario_json) {
+            setError('Auto-healing failed to produce a valid scenario. Please review the errors and try again manually.')
+          }
+        } catch (healErr) {
+          setError('Auto-healing request failed. Please fix the errors manually and try again.')
+        } finally {
+          setLoading(false)
+        }
+      } else if (statusCode === 404) {
+        setError(`Scenario "${selectedScenario.name}" was not found. It may have been deleted.`)
+      } else if (statusCode === 403) {
+        setError('You do not have permission to save this scenario.')
+      } else {
+        setError(respData.message || `Failed to save scenario (HTTP ${statusCode || 'unknown'}).`)
+      }
     }
   }
 

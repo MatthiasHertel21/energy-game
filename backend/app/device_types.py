@@ -467,6 +467,7 @@ def validate_forecast_constraints(
     forecast_mw: List[float],
     *,
     disable_ramp_validation: bool = False,
+    editable_indices: Optional[List[int]] = None,
 ) -> List[str]:
     """
     Validate forecast against device constraints (min_load, ramp_rate).
@@ -491,9 +492,18 @@ def validate_forecast_constraints(
     ramp_rate = dnorm.get("ramp_rate_mw_per_min", float('inf'))
 
     min_power = (min_load_pct / 100.0) * max_power
+    editable_set = None
+    if editable_indices is not None:
+        editable_set = {
+            int(idx)
+            for idx in editable_indices
+            if isinstance(idx, (int, float)) and 0 <= int(idx) < len(forecast_mw)
+        }
 
     # Check min load
     for i, power in enumerate(forecast_mw):
+        if editable_set is not None and i not in editable_set:
+            continue
         if power > 0 and power < min_power:
             errors.append(
                 f"Device {dnorm.get('id', '?')} hour {i+1}: forecast {power:.1f} MW < min_load {min_power:.1f} MW ({min_load_pct}%)"
@@ -503,6 +513,8 @@ def validate_forecast_constraints(
     # Check ramp rate (assume 60 min between hours)
     if not disable_ramp_validation:
         for i in range(1, len(forecast_mw)):
+            if editable_set is not None and (i not in editable_set or (i - 1) not in editable_set):
+                continue
             delta = abs(forecast_mw[i] - forecast_mw[i-1])
             max_ramp = ramp_rate * 60  # MW change per hour
             if delta > max_ramp:

@@ -42,7 +42,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [chartMetric, setChartMetric] = useState('profit');
+  const [selectedMetrics, setSelectedMetrics] = useState(null); // null = not yet initialised
 
   useEffect(() => {
     if (!sessionId) return;
@@ -186,6 +186,15 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
 
   const resolvedIsProducer = myInferredRole !== 'consumer';
   const terms = getRoleTerminology(resolvedIsProducer);
+
+  // Set role-appropriate default metrics once role is known
+  useEffect(() => {
+    if (results && selectedMetrics === null) {
+      setSelectedMetrics(resolvedIsProducer ? ['profit', 'revenue'] : ['costs', 'coverage']);
+    }
+  }, [results, resolvedIsProducer]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const activeSelectedMetrics = selectedMetrics ?? (resolvedIsProducer ? ['profit', 'revenue'] : ['costs', 'coverage']);
   const playerTypeNameById = useMemo(() => {
     const map = {};
     playerTypeOptions.forEach((item) => {
@@ -218,6 +227,8 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
       co2: normalizeNumber(r.co2_emissions_kg),
       dispatched: normalizeNumber(r.dispatched_mwh),
       planned: normalizeNumber(r.planned_mwh),
+      smp: normalizeNumber(r.smp),
+      total_score: normalizeNumber(r.total_score),
       coverage: normalizeNumber(r.planned_mwh) > 0
         ? (normalizeNumber(r.dispatched_mwh) / normalizeNumber(r.planned_mwh)) * 100
         : 0
@@ -255,19 +266,53 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
       ? (normalizeNumber(safeMyCumulative?.total_dispatched_mwh) / normalizeNumber(safeMyCumulative?.total_planned_mwh)) * 100
       : 0);
 
-  const chartMeta = resolvedIsProducer
-    ? {
-        revenue: { label: 'Revenue (ZAR)', color: '#2196f3', formatter: (v) => formatCurrency(v) },
-        profit: { label: 'Profit (ZAR)', color: '#4caf50', formatter: (v) => formatCurrency(v) },
-        co2: { label: 'CO₂ (kg)', color: '#ff9800', formatter: (v) => `${formatInt(v)} kg` },
-        dispatched: { label: 'Dispatched (MWh)', color: '#9c27b0', formatter: (v) => formatMwh(v) }
-      }
-    : {
-        costs: { label: 'Costs (ZAR)', color: '#4caf50', formatter: (v) => formatCurrency(v) },
-        coverage: { label: 'Coverage (%)', color: '#2196f3', formatter: (v) => `${normalizeNumber(v).toFixed(1)}%` },
-        co2: { label: `${terms.co2ColumnLabel} (kg)`, color: '#ff9800', formatter: (v) => `${formatInt(v)} kg` },
-        dispatched: { label: 'Consumed (MWh)', color: '#9c27b0', formatter: (v) => formatMwh(v) }
-      };
+  // All available chart metrics with metadata
+  const ALL_CHART_METRICS = useMemo(() => [
+    { key: 'profit', label: 'Profit (ZAR)', color: '#4caf50', formatter: (v) => formatCurrency(v) },
+    { key: 'revenue', label: 'Revenue (ZAR)', color: '#2196f3', formatter: (v) => formatCurrency(v) },
+    { key: 'costs', label: 'Costs (ZAR)', color: '#f44336', formatter: (v) => formatCurrency(v) },
+    { key: 'smp', label: 'SMP (ZAR/MWh)', color: '#ff9800', formatter: (v) => `${normalizeNumber(v).toFixed(1)} ZAR/MWh` },
+    { key: 'co2', label: `${terms.co2ColumnLabel} (kg)`, color: '#795548', formatter: (v) => `${formatInt(v)} kg` },
+    { key: 'dispatched', label: resolvedIsProducer ? 'Dispatched (MWh)' : 'Consumed (MWh)', color: '#9c27b0', formatter: (v) => formatMwh(v) },
+    { key: 'imbalance_cost', label: 'Imbalance Cost (ZAR)', color: '#e91e63', formatter: (v) => formatCurrency(v) },
+    { key: 'atc_dispatch_cost', label: 'ATC Dispatch Cost (ZAR)', color: '#607d8b', formatter: (v) => formatCurrency(v) },
+    { key: 'coverage', label: 'Coverage (%)', color: '#00bcd4', formatter: (v) => `${normalizeNumber(v).toFixed(1)}%` },
+    { key: 'total_score', label: 'Score', color: '#ffc107', formatter: (v) => normalizeNumber(v).toFixed(1) },
+  ], [resolvedIsProducer, terms]);
+
+  const toggleMetric = (key) => {
+    setSelectedMetrics((prev) => {
+      const current = prev ?? activeSelectedMetrics;
+      return current.includes(key)
+        ? current.length > 1 ? current.filter((k) => k !== key) : current  // keep at least one
+        : [...current, key];
+    });
+  };
+
+  // Normalize each series to [0,1] range for multi-metric display on same axis
+  const multiChartData = useMemo(() => {
+    if (!trendSeries.length || !activeSelectedMetrics.length) return { points: {}, ranges: {} };
+    const ranges = {};
+    activeSelectedMetrics.forEach((key) => {
+      const vals = trendSeries.map((r) => normalizeNumber(r[key]));
+      const min = Math.min(...vals);
+      const max = Math.max(...vals);
+      const span = max - min;
+      ranges[key] = { min, max, span, flat: span < 0.001 };
+    });
+    const points = {};
+    activeSelectedMetrics.forEach((key) => {
+      const { min, span, flat } = ranges[key];
+      points[key] = trendSeries.map((r, idx) => ({
+        round: r.round,
+        rawValue: normalizeNumber(r[key]),
+        // flat metrics render at mid-height (0.5) instead of bottom
+        normValue: flat ? 0.5 : (normalizeNumber(r[key]) - min) / span,
+        idx,
+      }));
+    });
+    return { points, ranges };
+  }, [trendSeries, activeSelectedMetrics]);
 
   const kpiCards = resolvedIsProducer
     ? [
@@ -331,10 +376,6 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
         }
       ];
 
-  const fallbackMetric = resolvedIsProducer ? 'revenue' : 'costs';
-  const activeMetric = chartMeta[chartMetric] ? chartMetric : fallbackMetric;
-  const activeChartMeta = chartMeta[activeMetric];
-
   const inferPlayerRole = (player) => {
     if (!player || typeof player !== 'object') return 'producer';
     return (
@@ -360,33 +401,6 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
     });
     return Array.from(map.values());
   }, [safeRanking, playerTypeNameById]);
-
-  const chartPoints = useMemo(() => {
-    if (!trendSeries.length) return [];
-    const values = trendSeries.map((row) => normalizeNumber(row[activeMetric]));
-    const maxVal = Math.max(...values, 1);
-    const minVal = Math.min(...values, 0);
-    const range = Math.max(maxVal - minVal, 1);
-    const width = 900;
-    const height = 240;
-    const padX = 80;
-    const padY = 24;
-    const stepX = trendSeries.length > 1 ? (900 - padX - 32) / (trendSeries.length - 1) : 0;
-
-    return trendSeries.map((row, idx) => {
-      const value = normalizeNumber(row[activeMetric]);
-      const x = padX + idx * stepX;
-      const y = height - padY - ((value - minVal) / range) * (height - padY * 2);
-      return { ...row, value, x, y };
-    });
-  }, [trendSeries, activeMetric]);
-
-  const chartPath = useMemo(() => {
-    if (!chartPoints.length) return '';
-    return chartPoints
-      .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.y}`)
-      .join(' ');
-  }, [chartPoints]);
 
   if (loading) {
     return (
@@ -463,37 +477,21 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
             Key Performance Indicators
           </Typography>
           <Grid container spacing={3} sx={{ mt: 0.5 }}>
-            {kpiCards.map((card) => {
-              const selected = activeMetric === card.key;
-              return (
-                <Grid key={card.key} item xs={12} sm={6} md={3}>
-                  <Card
-                    variant="outlined"
-                    onClick={() => setChartMetric(card.key)}
-                    sx={{
-                      borderColor: selected ? card.color : 'divider',
-                      borderWidth: selected ? 3 : 2,
-                      bgcolor: selected ? 'action.selected' : 'background.paper',
-                      cursor: 'pointer',
-                      height: '100%'
-                    }}
-                  >
-                    <CardContent>
-                      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
-                        {card.icon}
-                        <Typography variant="subtitle2" color="text.secondary">{card.title}</Typography>
-                      </Stack>
-                      <Typography variant="h5" sx={{ fontWeight: 600, color: card.color }}>
-                        {card.value}
-                      </Typography>
-                      {selected && (
-                        <Chip label="Selected" size="small" color="primary" variant="outlined" sx={{ mt: 1.2 }} />
-                      )}
-                    </CardContent>
-                  </Card>
-                </Grid>
-              );
-            })}
+            {kpiCards.map((card) => (
+              <Grid key={card.key} item xs={12} sm={6} md={3}>
+                <Card variant="outlined" sx={{ borderColor: 'divider', borderWidth: 2, height: '100%' }}>
+                  <CardContent>
+                    <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
+                      {card.icon}
+                      <Typography variant="subtitle2" color="text.secondary">{card.title}</Typography>
+                    </Stack>
+                    <Typography variant="h5" sx={{ fontWeight: 600, color: card.color }}>
+                      {card.value}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            ))}
           </Grid>
         </Box>
 
@@ -503,42 +501,90 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           </Typography>
           <Paper variant="outlined" sx={{ p: 2 }}>
             <Stack spacing={2}>
-              {chartPoints.length > 0 ? (
+              {/* Metric toggle chips */}
+              <Stack direction="row" flexWrap="wrap" gap={1}>
+                {ALL_CHART_METRICS.map((m) => {
+                  const active = activeSelectedMetrics.includes(m.key);
+                  return (
+                    <Chip
+                      key={m.key}
+                      label={m.label}
+                      size="small"
+                      onClick={() => toggleMetric(m.key)}
+                      sx={{
+                        borderColor: m.color,
+                        color: active ? '#fff' : m.color,
+                        bgcolor: active ? m.color : 'transparent',
+                        border: `1.5px solid ${m.color}`,
+                        fontWeight: active ? 600 : 400,
+                        cursor: 'pointer',
+                        '&:hover': { bgcolor: active ? m.color : `${m.color}22` },
+                      }}
+                    />
+                  );
+                })}
+              </Stack>
+              {trendSeries.length > 0 ? (
                 <>
                   <Box sx={{ width: '100%', overflowX: 'auto' }}>
                     {(() => {
-                      const values = chartPoints.map((p) => p.value);
-                      const maxVal = Math.max(...values, 1);
-                      const minVal = Math.min(...values, 0);
-                      const midVal = (maxVal + minVal) / 2;
-                      const height = 240; const padX = 80; const padY = 24;
-                      const toY = (v) => height - padY - ((v - minVal) / Math.max(maxVal - minVal, 1)) * (height - padY * 2);
+                      const W = 820; const H = 200; const padX = 20; const padY = 20;
+                      const chartW = W - padX; const chartH = H - padY * 2;
+                      const n = trendSeries.length;
+                      const stepX = n > 1 ? chartW / (n - 1) : 0;
+                      const toX = (i) => padX + i * stepX;
+                      const toY = (norm) => padY + (1 - norm) * chartH;
                       return (
-                        <svg viewBox="0 0 900 240" width="100%" height="240" role="img" aria-label="KPI trend by round">
-                          <rect x="0" y="0" width="900" height="240" fill="#fafafa" rx="8" />
-                          {/* grid lines */}
-                          {[minVal, midVal, maxVal].map((v, i) => (
-                            <g key={i}>
-                              <line x1={padX} y1={toY(v)} x2="868" y2={toY(v)} stroke="#e0e0e0" strokeWidth="1" strokeDasharray="4 3" />
-                              <text x={padX - 6} y={toY(v) + 4} fontSize="10" textAnchor="end" fill="#888">
-                                {activeChartMeta.formatter(v).replace('ZAR ', '').replace(' MWh', '').replace(' kg', '')}
-                              </text>
-                            </g>
+                        <svg viewBox={`0 0 ${W + 20} ${H + 20}`} width="100%" height={H + 20} role="img" aria-label="Multi-KPI chart">
+                          <rect x="0" y="0" width={W + 20} height={H + 20} fill="transparent" />
+                          {/* horizontal grid lines */}
+                          {[0, 0.25, 0.5, 0.75, 1].map((v) => (
+                            <line key={v} x1={padX} y1={toY(v)} x2={W} y2={toY(v)} stroke="#e0e0e0" strokeWidth="1" strokeDasharray="4 3" />
                           ))}
-                          <path d="M 80 216 L 868 216" stroke="#e0e0e0" strokeWidth="1" />
-                          <path d={chartPath} stroke={activeChartMeta.color} strokeWidth="3" fill="none" />
-                          {chartPoints.map((p) => (
-                            <g key={p.round}>
-                              <circle cx={p.x} cy={p.y} r="5" fill={activeChartMeta.color} opacity="0.9" />
-                              <text x={p.x} y="232" fontSize="11" textAnchor="middle" fill="#666">R{p.round}</text>
-                            </g>
+                          {/* x-axis labels */}
+                          {trendSeries.map((r, i) => (
+                            <text key={r.round} x={toX(i)} y={H + 14} fontSize="11" textAnchor="middle" fill="#888">R{r.round}</text>
                           ))}
+                          {/* lines per metric */}
+                          {activeSelectedMetrics.map((key) => {
+                            const meta = ALL_CHART_METRICS.find((m) => m.key === key);
+                            const pts = multiChartData.points[key] || [];
+                            if (!pts.length || !meta) return null;
+                            const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${toX(i)} ${toY(p.normValue)}`).join(' ');
+                            return (
+                              <g key={key}>
+                                <path d={path} stroke={meta.color} strokeWidth="2.5" fill="none" strokeLinejoin="round" />
+                                {pts.map((p, i) => (
+                                  <g key={i}>
+                                    <title>{meta.label}: {meta.formatter(p.rawValue)}</title>
+                                    <circle cx={toX(i)} cy={toY(p.normValue)} r="4" fill={meta.color} opacity="0.9" />
+                                  </g>
+                                ))}
+                              </g>
+                            );
+                          })}
                         </svg>
                       );
                     })()}
                   </Box>
-                  <Typography variant="body2" color="text.secondary">
-                    Metric: {activeChartMeta.label} • Latest: {activeChartMeta.formatter(chartPoints[chartPoints.length - 1]?.value || 0)}
+                  {/* Legend with latest values */}
+                  <Stack direction="row" flexWrap="wrap" gap={2}>
+                    {activeSelectedMetrics.map((key) => {
+                      const meta = ALL_CHART_METRICS.find((m) => m.key === key);
+                      const last = trendSeries[trendSeries.length - 1];
+                      if (!meta || !last) return null;
+                      return (
+                        <Stack key={key} direction="row" alignItems="center" spacing={0.5}>
+                          <Box sx={{ width: 12, height: 3, bgcolor: meta.color, borderRadius: 1 }} />
+                          <Typography variant="caption" color="text.secondary">
+                            {meta.label}: <strong>{meta.formatter(normalizeNumber(last[key]))}</strong>
+                          </Typography>
+                        </Stack>
+                      );
+                    })}
+                  </Stack>
+                  <Typography variant="caption" color="text.secondary">
+                    Curves are normalized to the same 0–100% scale for comparison. Hover dots for exact values.
                   </Typography>
                 </>
               ) : (

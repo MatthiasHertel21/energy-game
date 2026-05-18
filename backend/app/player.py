@@ -24,7 +24,7 @@ try:
     from .device_types import validate_forecast_constraints, validate_bid_monotonicity
 except ImportError:
     # Fallback if device_types not available
-    def validate_forecast_constraints(device: dict, forecast_mw: list) -> list:
+    def validate_forecast_constraints(device: dict, forecast_mw: list, **kwargs) -> list:
         return []
     def validate_bid_monotonicity(bids: dict, direction: str = "nondecreasing") -> list:
         return []
@@ -221,6 +221,33 @@ def _zero_hidden_device_payload(devices_payload, config: dict, round_num: int | 
             "hours": _zero_hidden_series(entry.get("hours", []), config, round_num)
         })
     return normalized
+
+
+def _get_editable_validation_indices(config: dict, series_length: int, round_num: int | None = None) -> list[int]:
+    try:
+        length = max(0, int(series_length))
+    except Exception:
+        return []
+
+    scope = _normalize_player_input_scope(config)
+    if length == 0:
+        return []
+    if scope["mode"] == "all_hours" and scope["allow_other_rounds_editing"]:
+        return list(range(length))
+
+    if round_num is not None and length <= scope["round_span_hours"]:
+        round_start = (max(1, int(round_num)) - 1) * scope["round_span_hours"]
+        return [
+            idx
+            for idx in range(length)
+            if _is_player_input_hour_allowed(config, round_start + idx, round_num)
+        ]
+
+    return [
+        idx
+        for idx in range(length)
+        if _is_player_input_hour_allowed(config, idx, round_num)
+    ]
 
 
 def _zero_hidden_bids_payload(bids_payload, config: dict, round_num: int | None = None):
@@ -873,6 +900,8 @@ class MarketTimelineAPI(Resource):
         session = Session.query.get(session_id)
         if not session:
             return {"error": "Session not found"}, HTTPStatus.NOT_FOUND
+        player_id = int(get_jwt_identity())
+        player_id = int(get_jwt_identity())
         
         timeline = generate_market_timeline(session, round_num)
         return timeline, HTTPStatus.OK
@@ -904,7 +933,14 @@ class MarketStructureAPI(Resource):
         cfg = scenario.config or {}
         
         # Import engine functions
-        from .engine import generate_curves_from_config, clear_market, extract_hour_of_day, extract_month
+        from .engine import (
+            generate_curves_from_config,
+            clear_market,
+            extract_hour_of_day,
+            extract_month,
+            build_supply_from_bids,
+            build_demand_from_bids,
+        )
         from datetime import date
         
         # Extract hour of day and month from session/scenario
@@ -918,13 +954,44 @@ class MarketStructureAPI(Resource):
         # Get seed from scenario or use session-specific seed
         seed = cfg.get("environment", {}).get("seed") or f"session_{session_id}_round_{round_num}"
         
-        # Generate hourly-specific curves
-        supply, demand = generate_curves_from_config(
+        # Generate hourly-specific synthetic base curves
+        synthetic_supply, synthetic_demand = generate_curves_from_config(
             cfg, 
             seed=seed, 
             hour_of_day=hour_of_day, 
             month_of_year=month_of_year
         )
+
+        # Build a live market snapshot from the latest submitted forecasts.
+        # shared_market: aggregate all players anonymously.
+        # isolated_per_player: include only the current player's submitted market.
+        round_span = max(1, int(cfg.get("general", {}).get("round_span_hours", 6) or 6))
+        round_start = max(0, (int(round_num) - 1) * round_span)
+        local_hour_idx = max(0, int(hour) - round_start)
+        player_forecasts = _get_latest_market_forecasts(
+            session_id,
+            round_num,
+            player_id,
+            session.mode or "isolated_per_player",
+            round_span,
+        )
+
+        used_live_snapshot = bool(player_forecasts)
+        if used_live_snapshot:
+            supply, _supply_meta = build_supply_from_bids(
+                player_forecasts,
+                local_hour_idx,
+                synthetic_supply,
+                cfg,
+            )
+            demand, _demand_meta = build_demand_from_bids(
+                player_forecasts,
+                local_hour_idx,
+                synthetic_demand,
+                cfg,
+            )
+        else:
+            supply, demand = synthetic_supply, synthetic_demand
         
         # Clear market to get SMP
         price_floor = cfg.get("market", {}).get("price_floor", -500)
@@ -939,7 +1006,10 @@ class MarketStructureAPI(Resource):
             "volume": volume,
             "hour": hour,
             "hour_of_day": hour_of_day,
-            "round_num": round_num
+            "round_num": round_num,
+            "market_source": "submitted_market" if used_live_snapshot else "synthetic_preview",
+            "submitted_players": len(player_forecasts),
+            "session_mode": session.mode or "isolated_per_player",
         }, HTTPStatus.OK
 
 
@@ -1050,7 +1120,13 @@ class ForecastAPI(Resource):
                     if not dev:
                         validation_errors.append(f"Unknown device_id: {did}")
                         continue
-                    errs = validate_forecast_constraints(dev, hours, disable_ramp_validation=disable_ramp)
+                    editable_indices = _get_editable_validation_indices(config, len(hours), data.get("round_num"))
+                    errs = validate_forecast_constraints(
+                        dev,
+                        hours,
+                        disable_ramp_validation=disable_ramp,
+                        editable_indices=editable_indices,
+                    )
                     validation_errors.extend(errs)
                     # build aggregate for compatibility (sum)
                     agg = _sum_series(agg, hours)
@@ -1062,7 +1138,13 @@ class ForecastAPI(Resource):
             if devices_cfg and not (isinstance(per_device, list) and per_device):
                 validation_errors = []
                 for device in devices_cfg:
-                    errors = validate_forecast_constraints(device, data["hours"], disable_ramp_validation=disable_ramp)
+                    editable_indices = _get_editable_validation_indices(config, len(data["hours"]), data.get("round_num"))
+                    errors = validate_forecast_constraints(
+                        device,
+                        data["hours"],
+                        disable_ramp_validation=disable_ramp,
+                        editable_indices=editable_indices,
+                    )
                     if errors:
                         validation_errors.extend([f"{device.get('type', 'Device')}: {err}" for err in errors])
                 
@@ -1229,7 +1311,13 @@ class ForecastFull(Resource):
                     if not dev:
                         validation_errors.append(f"Unknown device_id: {did}")
                         continue
-                    errs = validate_forecast_constraints(dev, hours, disable_ramp_validation=disable_ramp)
+                    editable_indices = _get_editable_validation_indices(config, len(hours), session.current_round if session else None)
+                    errs = validate_forecast_constraints(
+                        dev,
+                        hours,
+                        disable_ramp_validation=disable_ramp,
+                        editable_indices=editable_indices,
+                    )
                     validation_errors.extend(errs)
                     agg = _sum_series(agg, hours)
                 if validation_errors:
@@ -1239,7 +1327,13 @@ class ForecastFull(Resource):
             if devices_cfg and not (isinstance(per_device, list) and per_device):
                 validation_errors = []
                 for device in devices_cfg:
-                    errors = validate_forecast_constraints(device, data["hours"], disable_ramp_validation=disable_ramp)
+                    editable_indices = _get_editable_validation_indices(config, len(data["hours"]), session.current_round if session else None)
+                    errors = validate_forecast_constraints(
+                        device,
+                        data["hours"],
+                        disable_ramp_validation=disable_ramp,
+                        editable_indices=editable_indices,
+                    )
                     if errors:
                         validation_errors.extend([f"{device.get('type', 'Device')}: {err}" for err in errors])
                 
@@ -1400,6 +1494,55 @@ def _sum_series(base: list | None, add: list | None) -> list:
     for i in range(n):
         out[i] = (a[i] if i < len(a) else 0.0) + (b[i] if i < len(b) else 0.0)
     return out
+
+
+def _get_latest_market_forecasts(
+    session_id: int,
+    round_num: int,
+    viewer_player_id: int,
+    mode: str,
+    round_span: int,
+) -> dict[int, dict]:
+    rows = (
+        Forecast.query
+        .filter_by(session_id=session_id, round_num=round_num)
+        .order_by(Forecast.player_id.asc(), Forecast.submitted_at.desc(), Forecast.id.desc())
+        .all()
+    )
+
+    round_start = max(0, (max(1, int(round_num)) - 1) * max(1, int(round_span)))
+
+    def _slice_bid_hours(bids_payload):
+        if not isinstance(bids_payload, dict):
+            return bids_payload or {}
+        sliced = {}
+        for device_id, lots in bids_payload.items():
+            if not isinstance(lots, dict):
+                continue
+            sliced[device_id] = {}
+            for lot_name, lot in lots.items():
+                if not isinstance(lot, dict):
+                    continue
+                next_lot = dict(lot)
+                hours = lot.get("hours")
+                if isinstance(hours, list) and len(hours) > round_span:
+                    next_lot["hours"] = hours[round_start:round_start + round_span]
+                sliced[device_id][lot_name] = next_lot
+        return sliced
+
+    latest_by_player = {}
+    for row in rows:
+        if row.player_id in latest_by_player:
+            continue
+        if mode != "shared_market" and row.player_id != viewer_player_id:
+            continue
+        latest_by_player[row.player_id] = {
+            "hours": ((row.data or {}).get("hours") or []),
+            "devices": ((row.data or {}).get("devices") or []),
+            "bids": _slice_bid_hours(row.bids),
+        }
+
+    return latest_by_player
 
 
 solo_in = ns.model(

@@ -316,10 +316,11 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
     const xMax = Math.max(d3.sum(supply, (d) => d.volume), d3.sum(demand, (d) => d.volume)) || 1000
 
     const x = d3.scaleLinear().domain([0, xMax]).range([0, W]).clamp(true)
-    const allPrices = [...supply.map(d => d.price), ...demand.map(d => d.price)]
-    const minP = d3.min(allPrices)
-    const maxP = d3.max(allPrices)
-    const pad = (maxP - minP) * 0.05
+    // Include SMP in price range so the intersection point is always visible
+    const allPrices = [...supply.map(d => d.price), ...demand.map(d => d.price), ...(smp > 0 ? [smp] : [])]
+    const minP = allPrices.length ? d3.min(allPrices) : 0
+    const maxP = allPrices.length ? d3.max(allPrices) : 1000
+    const pad = Math.max((maxP - minP) * 0.1, maxP * 0.05)
     const y = d3.scaleLinear().domain([minP - pad, maxP + pad]).nice().range([H, 0]).clamp(true)
 
     // Axes
@@ -347,10 +348,26 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
     g.append('path').attr('d', d3.line()(sPts)).attr('fill', 'none').attr('stroke', supplyColor).attr('stroke-width', 2)
     g.append('path').attr('d', d3.line()(dPts)).attr('fill', 'none').attr('stroke', demandColor).attr('stroke-width', 2)
 
-    // SMP line
+    // SMP line + intersection marker
     if (smp > 0) {
+      // Find the clearing x-coordinate from the accepted supply frontier.
+      const clearedVol = sCum.length > 0
+        ? (sCum.find(s => s.p >= smp)?.x1 ?? sCum[sCum.length - 1]?.x1 ?? 0)
+        : (dCum.length > 0 ? (dCum.find(d => d.p <= smp)?.x1 ?? 0) : 0)
+      const xIntersect = clearedVol > 0 ? x(clearedVol) : null
+      const marginalStep = sCum.find((segment) => segment.x1 >= clearedVol - 1e-6) || null
+      const smpMatchesSupplyStep = Boolean(
+        xIntersect !== null
+        && marginalStep
+        && Math.abs((marginalStep.p || 0) - smp) < 1e-6
+      )
+
+      // If SMP equals the marginal supply step, start the dashed line at the clearing point
+      // so the solid supply step remains visible and the point reads like a constructed MCP.
+      const smpLineStart = smpMatchesSupplyStep && xIntersect !== null ? xIntersect : 0
+
       g.append('line')
-        .attr('x1', 0)
+        .attr('x1', smpLineStart)
         .attr('x2', W)
         .attr('y1', y(smp))
         .attr('y2', y(smp))
@@ -365,6 +382,36 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
         .attr('fill', smpColor)
         .attr('text-anchor', 'end')
         .text(`SMP: ${smp.toFixed(0)} ZAR/MWh`)
+      
+      if (xIntersect !== null) {
+        // Vertical line at cleared volume
+        g.append('line')
+          .attr('x1', xIntersect)
+          .attr('x2', xIntersect)
+          .attr('y1', 0)
+          .attr('y2', H)
+          .attr('stroke', smpColor)
+          .attr('stroke-width', 1)
+          .attr('stroke-dasharray', '2,3')
+        // Circle at intersection
+        g.append('circle')
+          .attr('cx', xIntersect)
+          .attr('cy', y(smp))
+          .attr('r', 4)
+          .attr('fill', smpColor)
+          .attr('stroke', 'white')
+          .attr('stroke-width', 1.5)
+
+        if (smpMatchesSupplyStep) {
+          g.append('text')
+            .attr('x', Math.max(8, xIntersect - 6))
+            .attr('y', Math.min(H - 6, y(smp) + 14))
+            .attr('font-size', 8)
+            .attr('fill', smpColor)
+            .attr('text-anchor', 'end')
+            .text('Clearing point')
+        }
+      }
     }
 
     // Time display
@@ -376,6 +423,19 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
       .attr('fill', axisColor)
       .style('font-weight', 'bold')
       .text(`Round ${marketData.round_num}, Hour ${String(marketData.hour_of_day).padStart(2, '0')}:00`)
+
+    const sourceLabel = marketData.market_source === 'submitted_market'
+      ? (marketData.session_mode === 'shared_market'
+          ? `Live market (${marketData.submitted_players || 0} submitted)`
+          : 'Your submitted market')
+      : 'Synthetic preview'
+
+    timeDisplay.append('text')
+      .attr('x', 0)
+      .attr('y', 12)
+      .attr('font-size', 9)
+      .attr('fill', smpColor)
+      .text(sourceLabel)
   }, [marketData, containerWidth, theme.palette.mode])
 
   if (loading) {

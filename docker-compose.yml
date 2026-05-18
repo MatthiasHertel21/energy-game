@@ -12,9 +12,13 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
+    mem_reservation: 64m
+    mem_limit: 256m
+    pids_limit: 128
 
   backend:
     build: ./backend
+    init: true
     env_file: .env
     depends_on:
       - postgres
@@ -43,12 +47,17 @@ services:
       - traefik.http.routers.uploads-local.rule=PathPrefix(`/uploads`)
       - traefik.http.routers.uploads-local.entrypoints=web
     restart: unless-stopped
+    mem_reservation: 256m
+    mem_limit: 768m
+    pids_limit: 256
+    stop_grace_period: 30s
 
   frontend:
     build:
       context: ./frontend
       args:
         - VITE_API_BASE=${VITE_API_BASE}
+    init: true
     networks:
       - web
     ports:
@@ -64,6 +73,10 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+    mem_reservation: 64m
+    mem_limit: 256m
+    pids_limit: 128
+    stop_grace_period: 30s
 
   postgres:
     image: postgres:15
@@ -76,12 +89,20 @@ services:
     networks:
       - web
     restart: unless-stopped
+    mem_reservation: 256m
+    mem_limit: 1024m
+    pids_limit: 256
+    stop_grace_period: 60s
 
   redis:
     image: redis:7
     networks:
       - web
     restart: unless-stopped
+    mem_reservation: 64m
+    mem_limit: 256m
+    pids_limit: 128
+    stop_grace_period: 30s
 
   # netdata:
   netdata:
@@ -96,6 +117,10 @@ services:
     networks:
       - web
     restart: unless-stopped
+    mem_reservation: 256m
+    mem_limit: 768m
+    pids_limit: 512
+    stop_grace_period: 30s
 
   # sentry:
   #   image: getsentry/sentry:nightly
