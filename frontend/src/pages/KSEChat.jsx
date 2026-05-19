@@ -240,11 +240,14 @@ export default function KSEChat() {
   const handleSaveToScenario = async (scenarioJson) => {
     if (!selectedScenario) return
     try {
-      await api.put(`/api/kse/scenarios/${selectedScenario.id}`, {
+      const payload = {
         name: selectedScenario.name,
-        campaign_id: selectedScenario.campaign_id ?? null,
         config: scenarioJson,
-      })
+        ...(selectedScenario.campaign_id != null
+          ? { campaign_id: selectedScenario.campaign_id }
+          : {}),
+      }
+      await api.put(`/api/kse/scenarios/${selectedScenario.id}`, payload)
       setMessages((prev) => [
         ...prev,
         { role: 'assistant', content: `✅ Scenario **"${selectedScenario.name}"** saved successfully.` },
