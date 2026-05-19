@@ -585,6 +585,8 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
               <ContextAssistantDialog
                 title="Scenario Results Assistant"
                 buttonLabel="Ask About Results"
+                buttonSize="small"
+                buttonSx={{ whiteSpace: 'nowrap' }}
                 placeholder="Ask about your final KPIs, rank, trends, or challenge outcomes..."
                 intro="Ask questions about the final scenario results. I will answer from your cumulative KPIs, round history, leaderboard, and challenge outcomes."
                 contextLabel="Scenario results page context"

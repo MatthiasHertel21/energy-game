@@ -938,6 +938,8 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                 <ContextAssistantDialog
                   title="Round Results Assistant"
                   buttonLabel="Ask About This Round"
+                  buttonSize="small"
+                  buttonSx={{ whiteSpace: 'nowrap' }}
                   placeholder="Ask about KPIs, balancing, congestion, or what happened this round..."
                   intro="Ask questions about this round. I will answer from your KPIs, notes, network data, and round history."
                   contextLabel="Round results page context"
