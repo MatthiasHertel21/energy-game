@@ -56,6 +56,12 @@ export default function Trainer(){
   const [cohortMembers, setCohortMembers] = useState([])
   const [membersLoading, setMembersLoading] = useState(false)
   const isLastRound = !!(sessionInfo?.general?.rounds && sessionInfo?.current_round >= sessionInfo?.general?.rounds)
+  const availableMarketOverviewRound = useMemo(() => {
+    const currentRound = Number(sessionInfo?.current_round || 0)
+    if (!currentRound) return null
+    if (sessionInfo?.status === 'round_results') return currentRound
+    return currentRound > 1 ? currentRound - 1 : null
+  }, [sessionInfo])
 
   const playerTypeCounts = useMemo(() => {
     const counts = {}
@@ -450,11 +456,24 @@ export default function Trainer(){
   }, [comparisonData, comparisonMetric])
 
   const openMarketOverview = async () => {
-    if (!sessionId || !sessionInfo?.current_round) return
+    if (!sessionId) return
     setMarketOverviewOpen(true)
+
+    if (!availableMarketOverviewRound) {
+      setMarketOverviewLoading(false)
+      setMarketOverviewData({
+        cards: [],
+        sections: [{
+          title: 'No completed round available',
+          items: [{ text: 'Overall market data becomes available after the first round results are available.' }],
+        }],
+      })
+      return
+    }
+
     setMarketOverviewLoading(true)
     try {
-      const { data } = await api.get(`/api/sessions/${sessionId}/round-results/${sessionInfo.current_round}`)
+      const { data } = await api.get(`/api/sessions/${sessionId}/round-results/${availableMarketOverviewRound}`)
       const ranking = Array.isArray(data?.ranking) ? data.ranking : []
       const normalize = (value) => {
         const num = Number(value ?? 0)
@@ -513,7 +532,7 @@ export default function Trainer(){
       console.error('Failed to load market overview:', err)
       setMarketOverviewData({
         cards: [],
-        sections: [{ title: 'Error', items: [{ text: 'Failed to load overall market data for this round.' }] }],
+        sections: [{ title: 'Error', items: [{ text: 'Failed to load overall market data for the latest completed round.' }] }],
       })
     } finally {
       setMarketOverviewLoading(false)
@@ -660,18 +679,6 @@ export default function Trainer(){
             <Tooltip title="Back">
               <IconButton onClick={rewindRound} disabled={!sessionId || sessionInfo?.status !== 'round_results' || (sessionInfo?.current_round || 1) <= 1} color="primary" size="small"><PrevIcon /></IconButton>
             </Tooltip>
-            <Button
-              variant="outlined"
-              color="primary"
-              size="small"
-              startIcon={<MarketOverviewIcon fontSize="small" />}
-              onClick={openMarketOverview}
-              disabled={!sessionId}
-              aria-label="Open overall market overview"
-              sx={{ whiteSpace: 'nowrap' }}
-            >
-              Overall Market Overview
-            </Button>
             <Stack spacing={0} sx={{ minWidth: 130 }} alignItems="center">
               <Typography variant="body2" fontWeight="bold">
                 {sessionInfo.status === 'briefing'
@@ -751,6 +758,24 @@ export default function Trainer(){
                 <IconButton onClick={() => setComparisonOpen(true)} color="primary" size="small">
                   <ComparisonIcon />
                 </IconButton>
+              </Tooltip>
+            )}
+            {sessionId && (
+              <Tooltip title={availableMarketOverviewRound ? `Overall market overview for round ${availableMarketOverviewRound}` : 'Available after the first completed round'}>
+                <span>
+                  <Button
+                    variant="outlined"
+                    color="primary"
+                    size="small"
+                    startIcon={<MarketOverviewIcon fontSize="small" />}
+                    onClick={openMarketOverview}
+                    disabled={!availableMarketOverviewRound}
+                    aria-label="Open overall market overview"
+                    sx={{ whiteSpace: 'nowrap' }}
+                  >
+                    Overall Market Overview
+                  </Button>
+                </span>
               </Tooltip>
             )}
             <span style={{ flex:1 }} />
@@ -918,7 +943,7 @@ export default function Trainer(){
         open={marketOverviewOpen}
         onClose={() => setMarketOverviewOpen(false)}
         title="Overall Market Overview"
-        subtitle={sessionInfo ? `${sessionInfo.scenario_name || 'Scenario'} · Round ${sessionInfo.current_round || 1}` : 'Current session'}
+        subtitle={sessionInfo ? `${sessionInfo.scenario_name || 'Scenario'} · ${availableMarketOverviewRound ? `Round ${availableMarketOverviewRound}` : 'No completed round yet'}` : 'Current session'}
         cards={marketOverviewLoading ? [] : marketOverviewData.cards}
         sections={marketOverviewLoading
           ? [{ title: 'Loading', items: [{ text: 'Loading current market KPIs…' }] }]
