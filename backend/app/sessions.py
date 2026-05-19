@@ -36,6 +36,131 @@ def emit_trainer(event: str, payload: dict):
     socketio.emit(event, payload, namespace="/trainer")
 
 
+def _normalize_market_role(value):
+    role = str(value or "").strip().lower()
+    if not role:
+        return None
+    if "consumer" in role or "buyer" in role:
+        return "consumer"
+    if "producer" in role or "generator" in role or "seller" in role:
+        return "producer"
+    return None
+
+
+def _infer_role_from_player_type(config: dict, player_type_id):
+    type_id = str(player_type_id or "").strip()
+    if not type_id:
+        return None
+
+    try:
+        from .engine import detect_player_role
+    except Exception:
+        return None
+
+    cfg_devices = config.get("devices") or []
+    cfg_player_types = config.get("player_types") or []
+    devices_by_id = {
+        str(device.get("id")): device
+        for device in cfg_devices
+        if isinstance(device, dict) and device.get("id") is not None
+    }
+    player_type_cfg = next(
+        (
+            item for item in cfg_player_types
+            if isinstance(item, dict) and str(item.get("id") or "") == type_id
+        ),
+        None,
+    )
+    if not player_type_cfg:
+        return None
+
+    player_devices = [
+        devices_by_id[str(device_id)]
+        for device_id in (player_type_cfg.get("devices") or [])
+        if str(device_id) in devices_by_id
+    ]
+    if not player_devices:
+        return None
+
+    return _normalize_market_role(detect_player_role(player_devices))
+
+
+def _resolve_market_role(config: dict, player_type_id, raw_role, revenue_hint=0.0):
+    normalized = _normalize_market_role(raw_role)
+    if normalized:
+        return normalized
+
+    normalized = _infer_role_from_player_type(config, player_type_id)
+    if normalized:
+        return normalized
+
+    return "consumer" if float(revenue_hint or 0.0) < 0 else "producer"
+
+
+def _safe_market_number(value):
+    try:
+        num = float(value or 0.0)
+    except Exception:
+        return 0.0
+    if num != num:
+        return 0.0
+    return num
+
+
+def _build_market_summary(total_volume_mwh, player_rows):
+    real_producer_volume = 0.0
+    real_consumer_volume = 0.0
+    producer_ids = set()
+    consumer_ids = set()
+
+    for row in player_rows or []:
+        if not isinstance(row, dict):
+            continue
+        role = _normalize_market_role(row.get("player_role"))
+        dispatched_mwh = max(0.0, _safe_market_number(row.get("dispatched_mwh")))
+        player_id = row.get("player_id")
+
+        if role == "consumer":
+            real_consumer_volume += dispatched_mwh
+            if player_id is not None:
+                consumer_ids.add(player_id)
+        else:
+            real_producer_volume += dispatched_mwh
+            if player_id is not None:
+                producer_ids.add(player_id)
+
+    total_volume_mwh = max(
+        0.0,
+        _safe_market_number(total_volume_mwh),
+        real_producer_volume,
+        real_consumer_volume,
+    )
+    synthetic_producer_volume = max(0.0, total_volume_mwh - real_producer_volume)
+    synthetic_consumer_volume = max(0.0, total_volume_mwh - real_consumer_volume)
+
+    def pct(value):
+        return round((value / total_volume_mwh * 100.0), 1) if total_volume_mwh > 0 else 0.0
+
+    return {
+        "total_volume_mwh": round(total_volume_mwh, 3),
+        "real_players": {
+            "count": len(producer_ids | consumer_ids),
+            "producer_count": len(producer_ids),
+            "consumer_count": len(consumer_ids),
+            "producer_dispatched_mwh": round(real_producer_volume, 3),
+            "consumer_dispatched_mwh": round(real_consumer_volume, 3),
+            "producer_share_pct": pct(real_producer_volume),
+            "consumer_share_pct": pct(real_consumer_volume),
+        },
+        "synthetic_market": {
+            "producer_dispatched_mwh": round(synthetic_producer_volume, 3),
+            "consumer_dispatched_mwh": round(synthetic_consumer_volume, 3),
+            "producer_share_pct": pct(synthetic_producer_volume),
+            "consumer_share_pct": pct(synthetic_consumer_volume),
+        },
+    }
+
+
 @ns.route("")
 class Sessions(Resource):
     @jwt_required()
@@ -831,6 +956,7 @@ class RoundResults(Resource):
                 # Never fail the endpoint due to best-effort backfill
                 pass
             profit = float(kpis.get("profit_zar", 0) or kpis.get("profit", 0))
+            resolved_role = _resolve_market_role(config, player_type, r.data.get("player_role"), kpis.get("revenue_zar", 0))
             # Use MWh quantities for scoring (not costs), with fallback to cost/cost-based values for old sessions
             imbalance = float(kpis.get("imbalance_mwh", 0) or kpis.get("imbalance_cost_zar", 0) / 1000 or kpis.get("imbalance", 0))
             curtailment = float(kpis.get("curtailment_mwh", 0) or kpis.get("curtailment_cost_zar", 0) / 1000 or kpis.get("curtailment", 0))
@@ -884,7 +1010,7 @@ class RoundResults(Resource):
                 "dam_device_hourly_details": r.data.get("dam_device_hourly_details", {}),
                 "idm_device_hourly_details": r.data.get("idm_device_hourly_details", r.data.get("device_hourly_details", {})),
                 "challenge_result": r.data.get("challenge_result"),  # Challenge evaluation for this round
-                "player_role": r.data.get("player_role"),  # Player role (producer/consumer)
+                "player_role": resolved_role,
                 "no_clearing": bool(r.data.get("no_clearing", False)),
                 "no_clearing_reason": r.data.get("reason"),
                 "zone_results": r.data.get("zone_results", []),
@@ -997,13 +1123,28 @@ class RoundResults(Resource):
         # Add rank to each player
         for idx, p in enumerate(ranking):
             p["rank"] = idx + 1
+
+        round_total_volume = max(
+            (_safe_market_number((r.data or {}).get("volume")) for r in results),
+            default=0.0,
+        )
+        market_summary = _build_market_summary(round_total_volume, [
+            {
+                "player_id": row.get("player_id"),
+                "player_role": row.get("player_role"),
+                "dispatched_mwh": (row.get("kpis") or {}).get("dispatched_mwh"),
+            }
+            for row in ranking
+        ])
+        market_summary["active_events_count"] = len(active_events)
         
         return {
             "round": round_num,
             "my_result": my_result,
             "ranking": ranking,
             "active_events": active_events,
-            "weights": weights
+            "weights": weights,
+            "market_summary": market_summary,
         }
 
 
@@ -1051,6 +1192,7 @@ class FinalResults(Resource):
         # Aggregate by player
         player_totals = {}
         player_bid_aggregates = {}  # Aggregate bid dispatch across all rounds
+        round_market_totals = {}
         for r in results:
             pid = r.player_id
             if pid not in player_totals:
@@ -1068,10 +1210,30 @@ class FinalResults(Resource):
                     "imbalance": 0,
                     "curtailment": 0,
                     "dispatched_mwh": 0,
-                    "rounds": 0
+                    "rounds": 0,
+                    "player_role": None,
                 }
+
+            player_type = None
+            if _redis_client:
+                try:
+                    sel_key = f"session:{sid}:selected:{pid}"
+                    sel_raw = _redis_client.get(sel_key)
+                    if sel_raw:
+                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
+                except Exception:
+                    pass
+            if not player_type:
+                try:
+                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=pid).first()
+                    if sel_db:
+                        player_type = sel_db.type_id
+                except Exception:
+                    pass
             
             kpis = canonicalize_kpis(r.data.get("kpis", {}))
+            resolved_role = _resolve_market_role(config, player_type, r.data.get("player_role"), kpis.get("revenue_zar", 0))
+            player_totals[pid]["player_role"] = player_totals[pid]["player_role"] or resolved_role
             player_totals[pid]["profit"] += float(kpis.get("profit_zar", 0))
             player_totals[pid]["revenue"] += float(kpis.get("revenue_zar", 0))
             player_totals[pid]["planned_mwh"] += float(kpis.get("planned_mwh", 0))
@@ -1087,6 +1249,21 @@ class FinalResults(Resource):
             player_totals[pid]["curtailment"] += float(kpis.get("curtailment_mwh", 0) or kpis.get("curtailment_cost_zar", 0) / 1000)
             player_totals[pid]["dispatched_mwh"] += float(kpis.get("dispatched_mwh", 0))
             player_totals[pid]["rounds"] += 1
+
+            round_bucket = round_market_totals.setdefault(r.round_num, {
+                "total_volume_mwh": 0.0,
+                "real_producer_mwh": 0.0,
+                "real_consumer_mwh": 0.0,
+            })
+            round_bucket["total_volume_mwh"] = max(
+                round_bucket["total_volume_mwh"],
+                _safe_market_number((r.data or {}).get("volume")),
+            )
+            dispatched_mwh = max(0.0, _safe_market_number(kpis.get("dispatched_mwh")))
+            if resolved_role == "consumer":
+                round_bucket["real_consumer_mwh"] += dispatched_mwh
+            else:
+                round_bucket["real_producer_mwh"] += dispatched_mwh
             
             # Collect challenge results from each round
             if "challenge_history" not in player_totals[pid]:
@@ -1194,6 +1371,7 @@ class FinalResults(Resource):
                 "player_id": pid,
                 "email": player_email,
                 "type": player_type,
+                "player_role": totals.get("player_role"),
                 "total_profit": round(totals["profit"], 2),
                 "total_revenue": round(totals["revenue"], 2),
                 "total_planned_mwh": round(totals["planned_mwh"], 2),
@@ -1265,6 +1443,23 @@ class FinalResults(Resource):
         
         # Add aggregated bid dispatch to my_cumulative
         my_bid_aggregate = player_bid_aggregates.get(player_id) if player_id in player_bid_aggregates else None
+        scenario_total_volume = 0.0
+        for bucket in round_market_totals.values():
+            scenario_total_volume += max(
+                bucket.get("total_volume_mwh", 0.0),
+                bucket.get("real_producer_mwh", 0.0),
+                bucket.get("real_consumer_mwh", 0.0),
+            )
+
+        market_summary = _build_market_summary(scenario_total_volume, [
+            {
+                "player_id": row.get("player_id"),
+                "player_role": row.get("player_role"),
+                "dispatched_mwh": row.get("total_dispatched_mwh"),
+            }
+            for row in ranking
+        ])
+        market_summary["rounds_count"] = num_rounds
         
         return {
             "my_cumulative": my_cumulative,
@@ -1272,7 +1467,8 @@ class FinalResults(Resource):
             "bid_dispatch_aggregate": my_bid_aggregate,
             "round_history": round_history,
             "weights": weights,
-            "total_rounds": num_rounds
+            "total_rounds": num_rounds,
+            "market_summary": market_summary,
         }
 
 

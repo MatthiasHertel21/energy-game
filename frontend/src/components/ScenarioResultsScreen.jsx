@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  IconButton,
   Box,
   Paper,
   Typography,
@@ -17,9 +18,11 @@ import {
   CardContent,
   Chip,
   CircularProgress,
-  Divider
+  Divider,
+  Tooltip
 } from '@mui/material';
 import {
+  Public as MarketOverviewIcon,
   NavigateNext as NextIcon,
   TrendingUp as RevenueIcon,
   AccountBalanceWallet as ProfitIcon,
@@ -33,7 +36,15 @@ import {
 } from '@mui/icons-material';
 import api from '../services/api';
 import { getRoleTerminology } from '../utils/roleTerminology';
+import {
+  buildCompositionSection,
+  buildParticipantsCard,
+  buildVolumeCard,
+  normalizeMarketSummary,
+  summarizeMarketFromRanking,
+} from '../utils/marketOverview'
 import ContextAssistantDialog from './ContextAssistantDialog';
+import MarketOverviewDialog from './MarketOverviewDialog';
 
 /**
  * ScenarioResultsScreen - Final cumulative results and ranking
@@ -44,6 +55,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedMetrics, setSelectedMetrics] = useState(null); // null = not yet initialised
+  const [marketOverviewOpen, setMarketOverviewOpen] = useState(false);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -98,7 +110,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   };
 
   const safeResults = (results && typeof results === 'object') ? results : {};
-  const { my_cumulative, final_ranking, round_history, total_rounds } = safeResults;
+  const { my_cumulative, final_ranking, round_history, total_rounds, market_summary } = safeResults;
   const safeRanking = Array.isArray(final_ranking)
     ? final_ranking.filter((row) => row && typeof row === 'object')
     : [];
@@ -272,8 +284,71 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
       type_name: resolvePlayerTypeLabel(safeMyCumulative?.player_type || safeMyCumulative?.type || 'Player Type'),
       email: safeMyCumulative?.email || null,
     },
+    leaderboard: safeRanking,
+    trend_series: trendSeries,
     final_results: safeResults,
   };
+
+  const scenarioMarketOverview = useMemo(() => {
+    const scenarioMarketSummary = normalizeMarketSummary(
+      market_summary || summarizeMarketFromRanking({
+        ranking: safeRanking,
+        totalVolumeMwh: safeRanking.reduce((sum, row) => sum + normalizeNumber(row?.total_dispatched_mwh), 0),
+        dispatchedAccessor: (row) => row?.total_dispatched_mwh,
+        roleAccessor: (row) => row?.player_role,
+        revenueAccessor: (row) => row?.total_revenue,
+      })
+    );
+    const totalPlayers = safeRanking.length;
+    const totalRevenue = safeRanking.reduce((sum, row) => sum + normalizeNumber(row?.total_revenue), 0);
+    const totalProfit = safeRanking.reduce((sum, row) => sum + normalizeNumber(row?.total_profit), 0);
+    const totalCosts = safeRanking.reduce((sum, row) => sum + Math.abs(normalizeNumber(row?.total_revenue < 0 ? row?.total_revenue : row?.total_costs_zar)), 0);
+    const totalCo2 = safeRanking.reduce((sum, row) => sum + normalizeNumber(row?.total_co2_emissions), 0);
+    const totalDispatched = safeRanking.reduce((sum, row) => sum + normalizeNumber(row?.total_dispatched_mwh), 0);
+    const avgScore = totalPlayers > 0
+      ? safeRanking.reduce((sum, row) => sum + normalizeNumber(row?.total_score), 0) / totalPlayers
+      : 0;
+
+    return {
+      cards: [
+        buildParticipantsCard(scenarioMarketSummary),
+        buildVolumeCard(scenarioMarketSummary, formatInt),
+        { key: 'profit', title: 'Total Market Profit', value: formatCurrency(totalProfit), caption: `Real players · average score ${avgScore.toFixed(1)}` },
+        { key: 'co2', title: 'Total CO₂', value: `${formatInt(totalCo2)} kg`, caption: `Real players · total settlement revenue ${formatCurrency(totalRevenue)}` },
+      ],
+      sections: [
+        buildCompositionSection(scenarioMarketSummary, formatInt),
+        {
+          title: 'Scenario-wide summary',
+          rows: [
+            { label: 'Total settlement revenue across real players', value: formatCurrency(totalRevenue) },
+            { label: 'Approx. total costs across real players', value: formatCurrency(totalCosts) },
+            { label: 'Challenge rounds captured', value: String(challengeHistory.length) },
+            { label: 'Real player share of producer side', value: `${scenarioMarketSummary.realPlayers.producerSharePct.toFixed(1)}%` },
+            { label: 'Real player share of consumer side', value: `${scenarioMarketSummary.realPlayers.consumerSharePct.toFixed(1)}%` },
+          ],
+        },
+        {
+          title: 'Final leaderboard (top 8)',
+          columns: [
+            { key: 'rank', label: 'Rank' },
+            { key: 'player', label: 'Player' },
+            { key: 'type', label: 'Type' },
+            { key: 'score', label: 'Score', align: 'right' },
+            { key: 'profit', label: resolvedIsProducer ? 'Profit' : 'Net Result', align: 'right' },
+          ],
+          rows: safeRanking.slice(0, 8).map((row, index) => ({
+            key: row?.player_id || index,
+            rank: `#${index + 1}`,
+            player: row?.email || `Player ${row?.player_id || '-'}`,
+            type: resolvePlayerTypeLabel(row?.player_type || row?.type || '-'),
+            score: normalizeNumber(row?.total_score).toFixed(1),
+            profit: formatCurrency(row?.total_profit || 0),
+          })),
+        },
+      ],
+    };
+  }, [safeRanking, totalRoundsDisplay, challengeHistory.length, resolvedIsProducer, market_summary]);
 
   const totalRevenueDisplay = hasHistory ? totalsFromHistory.revenue : normalizeNumber(safeMyCumulative?.total_revenue);
   const totalProfitDisplay = hasHistory ? totalsFromHistory.profit : normalizeNumber(safeMyCumulative?.total_profit);
@@ -505,6 +580,17 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
               context={assistantContext}
               resetKey={`scenario-results:${sessionId}`}
             />
+            <Button
+              variant="outlined"
+              color="primary"
+              size="small"
+              startIcon={<MarketOverviewIcon fontSize="small" />}
+              onClick={() => setMarketOverviewOpen(true)}
+              aria-label="Open market overview"
+              sx={{ whiteSpace: 'nowrap' }}
+            >
+              Overall Market Overview
+            </Button>
           </Stack>
           <Typography variant="body1" color="text.secondary">
             Completed rounds: {totalRoundsDisplay}
@@ -918,6 +1004,14 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           </Button>
         </Stack>
       </Stack>
+      <MarketOverviewDialog
+        open={marketOverviewOpen}
+        onClose={() => setMarketOverviewOpen(false)}
+        title="Overall Market Overview"
+        subtitle={`${scenario?.campaign_name || 'Campaign'} · ${scenario?.name || 'Scenario'}`}
+        cards={scenarioMarketOverview.cards}
+        sections={scenarioMarketOverview.sections}
+      />
       </Paper>
     </Box>
   );

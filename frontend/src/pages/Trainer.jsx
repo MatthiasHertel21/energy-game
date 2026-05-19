@@ -1,13 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Select, MenuItem, Tooltip, Checkbox, FormControlLabel, Chip, Box, IconButton, Dialog, DialogTitle, DialogContent, IconButton as MuiIconButton, Skeleton } from '@mui/material'
-import { Pause as PauseIcon, PlayArrow as PlayIcon, Stop as StopIcon, SkipNext as NextIcon, SkipPrevious as PrevIcon, BarChart as ComparisonIcon, Close as CloseIcon } from '@mui/icons-material'
+import { Pause as PauseIcon, PlayArrow as PlayIcon, Stop as StopIcon, SkipNext as NextIcon, SkipPrevious as PrevIcon, BarChart as ComparisonIcon, Close as CloseIcon, Public as MarketOverviewIcon } from '@mui/icons-material'
 import { useSearchParams } from 'react-router-dom'
 import InfoLabel from '../components/InfoLabel'
 import { io } from 'socket.io-client'
 import api from '../services/api'
 import * as d3 from 'd3'
 import { exportSVG, exportPNG } from '../utils/exportSvg'
+import {
+  buildCompositionSection,
+  buildParticipantsCard,
+  buildVolumeCard,
+  normalizeMarketSummary,
+  summarizeMarketFromRanking,
+} from '../utils/marketOverview'
 import DocsFab from '../components/DocsFab'
+import MarketOverviewDialog from '../components/MarketOverviewDialog'
 
 export default function Trainer(){
   const [searchParams] = useSearchParams()
@@ -42,6 +50,9 @@ export default function Trainer(){
   const [comparisonLoading, setComparisonLoading] = useState(false)
   const [comparisonMetric, setComparisonMetric] = useState('profit_zar')
   const comparisonChartRef = useRef(null)
+  const [marketOverviewOpen, setMarketOverviewOpen] = useState(false)
+  const [marketOverviewLoading, setMarketOverviewLoading] = useState(false)
+  const [marketOverviewData, setMarketOverviewData] = useState({ cards: [], sections: [] })
   const [cohortMembers, setCohortMembers] = useState([])
   const [membersLoading, setMembersLoading] = useState(false)
   const isLastRound = !!(sessionInfo?.general?.rounds && sessionInfo?.current_round >= sessionInfo?.general?.rounds)
@@ -438,6 +449,77 @@ export default function Trainer(){
       .attr('fill', '#1976d2')
   }, [comparisonData, comparisonMetric])
 
+  const openMarketOverview = async () => {
+    if (!sessionId || !sessionInfo?.current_round) return
+    setMarketOverviewOpen(true)
+    setMarketOverviewLoading(true)
+    try {
+      const { data } = await api.get(`/api/sessions/${sessionId}/round-results/${sessionInfo.current_round}`)
+      const ranking = Array.isArray(data?.ranking) ? data.ranking : []
+      const normalize = (value) => {
+        const num = Number(value ?? 0)
+        return Number.isFinite(num) ? num : 0
+      }
+      const formatInt = (value) => normalize(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+      const formatCurrency = (value) => `ZAR ${formatInt(value)}`
+      const marketSummary = normalizeMarketSummary(
+        data?.market_summary || summarizeMarketFromRanking({
+          ranking,
+          totalVolumeMwh: ranking.reduce((maxVolume, row) => Math.max(maxVolume, normalize(row?.volume)), 0),
+          dispatchedAccessor: (row) => row?.kpis?.dispatched_mwh,
+          roleAccessor: (row) => row?.player_role,
+          revenueAccessor: (row) => row?.kpis?.revenue_zar,
+        })
+      )
+      const sumBy = (rows, key) => rows.reduce((sum, row) => sum + normalize(row?.kpis?.[key]), 0)
+      const totalPlayers = ranking.length
+      const totalProfit = sumBy(ranking, 'profit_zar')
+      const totalImbalance = sumBy(ranking, 'imbalance_cost_zar')
+      const totalAtc = ranking.reduce((sum, row) => sum + normalize(row?.kpis?.atc_dispatch_cost_zar ?? row?.kpis?.grid_constraint_cost_zar), 0)
+      const avgScore = totalPlayers > 0
+        ? ranking.reduce((sum, row) => sum + normalize(row?.total_score), 0) / totalPlayers
+        : 0
+
+      setMarketOverviewData({
+        cards: [
+          buildParticipantsCard(marketSummary),
+          buildVolumeCard(marketSummary, formatInt),
+          { key: 'profit', title: 'Total Profit', value: formatCurrency(totalProfit), caption: `Real players · average score ${avgScore.toFixed(1)}` },
+          { key: 'imbalance', title: 'Imbalance / ATC', value: formatCurrency(totalImbalance), caption: `Real players · ATC ${formatCurrency(totalAtc)}` },
+        ],
+        sections: [
+          buildCompositionSection(marketSummary, formatInt),
+          {
+            title: 'Top players this round',
+            columns: [
+              { key: 'rank', label: 'Rank' },
+              { key: 'player', label: 'Player' },
+              { key: 'type', label: 'Type' },
+              { key: 'score', label: 'Score', align: 'right' },
+              { key: 'profit', label: 'Profit', align: 'right' },
+            ],
+            rows: ranking.slice(0, 8).map((row, index) => ({
+              key: row?.player_id || index,
+              rank: `#${row?.rank || index + 1}`,
+              player: row?.email || `Player ${row?.player_id || '-'}`,
+              type: row?.type || '-',
+              score: normalize(row?.total_score).toFixed(1),
+              profit: formatCurrency(row?.kpis?.profit_zar || 0),
+            })),
+          },
+        ],
+      })
+    } catch (err) {
+      console.error('Failed to load market overview:', err)
+      setMarketOverviewData({
+        cards: [],
+        sections: [{ title: 'Error', items: [{ text: 'Failed to load overall market data for this round.' }] }],
+      })
+    } finally {
+      setMarketOverviewLoading(false)
+    }
+  }
+
   return (
     <Paper sx={{ p:2, position: 'relative' }}>
       <Box sx={{ mb: 1 }} />
@@ -578,6 +660,18 @@ export default function Trainer(){
             <Tooltip title="Back">
               <IconButton onClick={rewindRound} disabled={!sessionId || sessionInfo?.status !== 'round_results' || (sessionInfo?.current_round || 1) <= 1} color="primary" size="small"><PrevIcon /></IconButton>
             </Tooltip>
+            <Button
+              variant="outlined"
+              color="primary"
+              size="small"
+              startIcon={<MarketOverviewIcon fontSize="small" />}
+              onClick={openMarketOverview}
+              disabled={!sessionId}
+              aria-label="Open overall market overview"
+              sx={{ whiteSpace: 'nowrap' }}
+            >
+              Overall Market Overview
+            </Button>
             <Stack spacing={0} sx={{ minWidth: 130 }} alignItems="center">
               <Typography variant="body2" fontWeight="bold">
                 {sessionInfo.status === 'briefing'
@@ -819,6 +913,17 @@ export default function Trainer(){
           )}
         </DialogContent>
       </Dialog>
+
+      <MarketOverviewDialog
+        open={marketOverviewOpen}
+        onClose={() => setMarketOverviewOpen(false)}
+        title="Overall Market Overview"
+        subtitle={sessionInfo ? `${sessionInfo.scenario_name || 'Scenario'} · Round ${sessionInfo.current_round || 1}` : 'Current session'}
+        cards={marketOverviewLoading ? [] : marketOverviewData.cards}
+        sections={marketOverviewLoading
+          ? [{ title: 'Loading', items: [{ text: 'Loading current market KPIs…' }] }]
+          : marketOverviewData.sections}
+      />
       
       <DocsFab href="/docs/trainer" label="Open Trainer Handbook" />
     </Paper>

@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Box,
   Paper,
   Alert,
@@ -16,6 +19,7 @@ import {
   IconButton,
   FormControlLabel,
   Switch,
+  Tooltip,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -28,6 +32,8 @@ import {
   TableRow
 } from '@mui/material'
 import {
+  Public as MarketOverviewIcon,
+  ExpandMore as ExpandMoreIcon,
   NavigateNext as NextIcon,
   TrendingUp as RevenueIcon,
   AccountBalanceWallet as ProfitIcon,
@@ -39,7 +45,15 @@ import {
 import api from '../services/api'
 import DeviceDeepDiveTabs from './DeviceDeepDiveTabs'
 import { getRoleTerminology } from '../utils/roleTerminology'
+import {
+  buildCompositionSection,
+  buildParticipantsCard,
+  buildVolumeCard,
+  normalizeMarketSummary,
+  summarizeMarketFromRanking,
+} from '../utils/marketOverview'
 import ContextAssistantDialog from './ContextAssistantDialog'
+import MarketOverviewDialog from './MarketOverviewDialog'
 
 /**
  * RoundResultsScreenSimple - Simplified round results showing basic info only
@@ -52,6 +66,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
   const [showCumulative, setShowCumulative] = useState(false)
   const [cumulativeKpis, setCumulativeKpis] = useState(null)
   const [roundHistoryKpis, setRoundHistoryKpis] = useState([])
+  const [marketOverviewOpen, setMarketOverviewOpen] = useState(false)
 
   const normalizeNumber = (value) => {
     const num = Number(value ?? 0)
@@ -165,6 +180,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
   }
 
   const { my_result } = results
+  const ranking = Array.isArray(results?.ranking) ? results.ranking : []
   const currentKpis = normalizeKpis(my_result?.kpis || {})
   const kpis = showCumulative && cumulativeKpis ? cumulativeKpis : currentKpis
   const playerZoneInfo = my_result?.player_zone_info || {}
@@ -491,11 +507,77 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     current_kpis: currentKpis,
     cumulative_kpis: cumulativeKpis,
     round_history_kpis: roundHistoryKpis,
+    ranking,
+    active_events: Array.isArray(results?.active_events) ? results.active_events : [],
     player_zone_info: playerZoneInfo,
     balancing_settings: balancingSettings,
     round_notes: currentRoundNotes,
     my_result: my_result || null,
   }
+
+  const roundMarketSummary = normalizeMarketSummary(
+    results?.market_summary || summarizeMarketFromRanking({
+      ranking,
+      totalVolumeMwh: ranking.reduce((maxVolume, row) => Math.max(maxVolume, normalizeNumber(row?.volume)), 0),
+      dispatchedAccessor: (row) => row?.kpis?.dispatched_mwh,
+      roleAccessor: (row) => row?.player_role,
+      revenueAccessor: (row) => row?.kpis?.revenue_zar,
+    })
+  )
+
+  const roundMarketOverview = (() => {
+    const sumBy = (rows, key) => rows.reduce((sum, row) => sum + normalizeNumber(row?.kpis?.[key]), 0)
+    const totalPlayers = ranking.length
+    const totalProfit = sumBy(ranking, 'profit_zar')
+    const totalRevenue = sumBy(ranking, 'revenue_zar')
+    const totalImbalance = sumBy(ranking, 'imbalance_cost_zar')
+    const totalAtc = ranking.reduce((sum, row) => sum + normalizeNumber(row?.kpis?.atc_dispatch_cost_zar ?? row?.kpis?.grid_constraint_cost_zar), 0)
+    const totalCo2 = sumBy(ranking, 'co2_emissions_kg')
+    const avgScore = totalPlayers > 0
+      ? ranking.reduce((sum, row) => sum + normalizeNumber(row?.total_score), 0) / totalPlayers
+      : 0
+    const topRows = ranking.slice(0, 5).map((row) => ({
+      key: row?.player_id || row?.email || row?.rank,
+      rank: `#${row?.rank || '-'}`,
+      player: row?.email || `Player ${row?.player_id || '-'}`,
+      type: row?.type || '-',
+      score: normalizeNumber(row?.total_score).toFixed(1),
+      profit: formatCurrency(row?.kpis?.profit_zar || 0),
+    }))
+
+    return {
+      cards: [
+        buildParticipantsCard(roundMarketSummary),
+        buildVolumeCard(roundMarketSummary, formatInt),
+        { key: 'imbalance', title: 'Total Imbalance Cost', value: formatCurrency(totalImbalance), caption: `Real players · ATC / Redispatch ${formatCurrency(totalAtc)}` },
+        { key: 'co2', title: 'Total CO₂', value: `${formatInt(totalCo2)} kg`, caption: `Real players · average score ${avgScore.toFixed(1)}` },
+      ],
+      sections: [
+        buildCompositionSection(roundMarketSummary, formatInt),
+        {
+          title: 'Round-wide market summary',
+          rows: [
+            { label: 'Total profit across real players', value: formatCurrency(totalProfit) },
+            { label: 'Total settlement revenue across real players', value: formatCurrency(totalRevenue) },
+            { label: 'Active events', value: String(results?.market_summary?.active_events_count ?? (Array.isArray(results?.active_events) ? results.active_events.length : 0)) },
+            { label: 'Real player share of producer side', value: `${roundMarketSummary.realPlayers.producerSharePct.toFixed(1)}%` },
+            { label: 'Real player share of consumer side', value: `${roundMarketSummary.realPlayers.consumerSharePct.toFixed(1)}%` },
+          ],
+        },
+        {
+          title: 'Top players this round',
+          columns: [
+            { key: 'rank', label: 'Rank' },
+            { key: 'player', label: 'Player' },
+            { key: 'type', label: 'Type' },
+            { key: 'score', label: 'Score', align: 'right' },
+            { key: 'profit', label: 'Profit', align: 'right' },
+          ],
+          rows: topRows,
+        },
+      ],
+    }
+  })()
 
   const kpiCompositionNotes = (() => {
     const notes = []
@@ -851,6 +933,17 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                 context={assistantContext}
                 resetKey={`round-results:${sessionId}:${round}`}
               />
+              <Button
+                variant="outlined"
+                color="primary"
+                size="small"
+                startIcon={<MarketOverviewIcon fontSize="small" />}
+                onClick={() => setMarketOverviewOpen(true)}
+                aria-label="Open market overview"
+                sx={{ whiteSpace: 'nowrap' }}
+              >
+                Overall Market Overview
+              </Button>
             </Stack>
             {round > 1 && cumulativeKpis && (
               <FormControlLabel
@@ -1233,31 +1326,40 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
             </Grid>
           </Box>
 
-          <Alert severity="info" variant="outlined">
-            <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
-              KPI Interpretation (Current Round)
-            </Typography>
-            <Stack spacing={0.5}>
-              {currentRoundNotes.map((note, idx) => (
-                <Typography key={idx} variant="body2">
-                  • {note}
-                </Typography>
-              ))}
-            </Stack>
-          </Alert>
+          <Accordion variant="outlined" disableGutters>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography variant="subtitle2">Explanations & KPI Interpretation</Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Stack spacing={2}>
+                <Alert severity="info" variant="outlined">
+                  <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
+                    KPI Interpretation (Current Round)
+                  </Typography>
+                  <Stack spacing={0.5}>
+                    {currentRoundNotes.map((note, idx) => (
+                      <Typography key={idx} variant="body2">
+                        • {note}
+                      </Typography>
+                    ))}
+                  </Stack>
+                </Alert>
 
-          <Alert severity="info" variant="outlined">
-            <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
-              How Main KPIs Are Built from Detail Data
-            </Typography>
-            <Stack spacing={0.5}>
-              {kpiCompositionNotes.map((note, idx) => (
-                <Typography key={idx} variant="body2">
-                  • {note}
-                </Typography>
-              ))}
-            </Stack>
-          </Alert>
+                <Alert severity="info" variant="outlined">
+                  <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
+                    How Main KPIs Are Built from Detail Data
+                  </Typography>
+                  <Stack spacing={0.5}>
+                    {kpiCompositionNotes.map((note, idx) => (
+                      <Typography key={idx} variant="body2">
+                        • {note}
+                      </Typography>
+                    ))}
+                  </Stack>
+                </Alert>
+              </Stack>
+            </AccordionDetails>
+          </Accordion>
 
           {/* Device Deep Dive - Hourly Breakdown per Device */}
           <Box>
@@ -1567,6 +1669,15 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
               <Button onClick={closeBreakdown}>Close</Button>
             </DialogActions>
           </Dialog>
+
+          <MarketOverviewDialog
+            open={marketOverviewOpen}
+            onClose={() => setMarketOverviewOpen(false)}
+            title="Overall Market Overview"
+            subtitle={`Round ${round} · ${displayCampaignName} · ${scenarioName}`}
+            cards={roundMarketOverview.cards}
+            sections={roundMarketOverview.sections}
+          />
         </Stack>
       </Paper>
     </Box>
