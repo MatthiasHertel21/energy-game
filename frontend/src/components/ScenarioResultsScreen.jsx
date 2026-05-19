@@ -571,26 +571,38 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                 <Chip label={myFinalRank > 0 ? `Final Rank #${myFinalRank}` : 'Final Rank n/a'} color="success" variant="outlined" />
               </Stack>
             </Box>
-            <ContextAssistantDialog
-              title="Scenario Results Assistant"
-              buttonLabel="Ask About Results"
-              placeholder="Ask about your final KPIs, rank, trends, or challenge outcomes..."
-              intro="Ask questions about the final scenario results. I will answer from your cumulative KPIs, round history, leaderboard, and challenge outcomes."
-              contextLabel="Scenario results page context"
-              context={assistantContext}
-              resetKey={`scenario-results:${sessionId}`}
-            />
-            <Button
-              variant="outlined"
-              color="primary"
-              size="small"
-              startIcon={<MarketOverviewIcon fontSize="small" />}
-              onClick={() => setMarketOverviewOpen(true)}
-              aria-label="Open market overview"
-              sx={{ whiteSpace: 'nowrap' }}
+            <Stack
+              direction="row"
+              spacing={1}
+              alignItems="center"
+              sx={{
+                width: { xs: '100%', md: 'auto' },
+                ml: { md: 'auto' },
+                justifyContent: 'flex-end',
+                flexWrap: 'wrap',
+              }}
             >
-              Overall Market Overview
-            </Button>
+              <ContextAssistantDialog
+                title="Scenario Results Assistant"
+                buttonLabel="Ask About Results"
+                placeholder="Ask about your final KPIs, rank, trends, or challenge outcomes..."
+                intro="Ask questions about the final scenario results. I will answer from your cumulative KPIs, round history, leaderboard, and challenge outcomes."
+                contextLabel="Scenario results page context"
+                context={assistantContext}
+                resetKey={`scenario-results:${sessionId}`}
+              />
+              <Button
+                variant="outlined"
+                color="primary"
+                size="small"
+                startIcon={<MarketOverviewIcon fontSize="small" />}
+                onClick={() => setMarketOverviewOpen(true)}
+                aria-label="Open market overview"
+                sx={{ whiteSpace: 'nowrap' }}
+              >
+                Overall Market Overview
+              </Button>
+            </Stack>
           </Stack>
           <Typography variant="body1" color="text.secondary">
             Completed rounds: {totalRoundsDisplay}

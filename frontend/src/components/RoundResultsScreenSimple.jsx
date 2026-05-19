@@ -924,26 +924,38 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                   />
                 </Stack>
               </Box>
-              <ContextAssistantDialog
-                title="Round Results Assistant"
-                buttonLabel="Ask About This Round"
-                placeholder="Ask about KPIs, balancing, congestion, or what happened this round..."
-                intro="Ask questions about this round. I will answer from your KPIs, notes, network data, and round history."
-                contextLabel="Round results page context"
-                context={assistantContext}
-                resetKey={`round-results:${sessionId}:${round}`}
-              />
-              <Button
-                variant="outlined"
-                color="primary"
-                size="small"
-                startIcon={<MarketOverviewIcon fontSize="small" />}
-                onClick={() => setMarketOverviewOpen(true)}
-                aria-label="Open market overview"
-                sx={{ whiteSpace: 'nowrap' }}
+              <Stack
+                direction="row"
+                spacing={1}
+                alignItems="center"
+                sx={{
+                  width: { xs: '100%', md: 'auto' },
+                  ml: { md: 'auto' },
+                  justifyContent: 'flex-end',
+                  flexWrap: 'wrap',
+                }}
               >
-                Overall Market Overview
-              </Button>
+                <ContextAssistantDialog
+                  title="Round Results Assistant"
+                  buttonLabel="Ask About This Round"
+                  placeholder="Ask about KPIs, balancing, congestion, or what happened this round..."
+                  intro="Ask questions about this round. I will answer from your KPIs, notes, network data, and round history."
+                  contextLabel="Round results page context"
+                  context={assistantContext}
+                  resetKey={`round-results:${sessionId}:${round}`}
+                />
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  size="small"
+                  startIcon={<MarketOverviewIcon fontSize="small" />}
+                  onClick={() => setMarketOverviewOpen(true)}
+                  aria-label="Open market overview"
+                  sx={{ whiteSpace: 'nowrap' }}
+                >
+                  Overall Market Overview
+                </Button>
+              </Stack>
             </Stack>
             {round > 1 && cumulativeKpis && (
               <FormControlLabel
