@@ -27,6 +27,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
 import useAuth from '../store/auth'
+import ContextAssistantDialog from '../components/ContextAssistantDialog'
 
 export default function Home() {
   const [sessions, setSessions] = useState([])
@@ -102,6 +103,23 @@ export default function Home() {
     .filter(s => s.status === 'ended' || s.status === 'scenario_complete')
     .sort((a, b) => b.id - a.id)[0]
 
+  const assistantContext = {
+    page: 'home',
+    user: {
+      email: user?.email || null,
+      role: user?.role || null,
+    },
+    stats,
+    active_session: activeSession || null,
+    live_sessions: liveSessions.slice(0, 3),
+    last_completed_session: lastCompletedSession || null,
+    available_campaigns: campaigns.slice(0, 5).map((campaign) => ({
+      id: campaign.id,
+      name: campaign.name,
+      description: campaign.description || '',
+    })),
+  }
+
   if (loading) {
     return (
       <Container maxWidth="lg" sx={{ mt: 4 }}>
@@ -129,19 +147,47 @@ export default function Home() {
           border: `1px solid ${alpha(theme.palette.common.white, 0.12)}`
         })}
       >
-        <Typography variant="h4" sx={{ fontWeight: 700, lineHeight: 1.15, mb: 1 }}>
-          Welcome back, {user?.email?.split('@')[0] || 'Player'}!
-        </Typography>
-        <Typography
-          variant="subtitle1"
-          sx={(theme) => ({
-            opacity: 0.95,
-            maxWidth: 720,
-            color: alpha(theme.palette.common.white, 0.92)
-          })}
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={2}
+          justifyContent="space-between"
+          alignItems={{ xs: 'flex-start', md: 'center' }}
         >
-          Ready to trade electricity in the South African market?
-        </Typography>
+          <Box>
+            <Typography variant="h4" sx={{ fontWeight: 700, lineHeight: 1.15, mb: 1 }}>
+              Welcome back, {user?.email?.split('@')[0] || 'Player'}!
+            </Typography>
+            <Typography
+              variant="subtitle1"
+              sx={(theme) => ({
+                opacity: 0.95,
+                maxWidth: 720,
+                color: alpha(theme.palette.common.white, 0.92)
+              })}
+            >
+              Ready to trade electricity in the South African market?
+            </Typography>
+          </Box>
+          <ContextAssistantDialog
+            title="Home Assistant"
+            buttonLabel="Ask AI"
+            placeholder="Ask about your sessions, campaigns, or what to do next..."
+            intro="Ask questions about your home dashboard. I can explain what is active, what you can resume, and what to start next based on the current page data."
+            contextLabel="Home dashboard context"
+            context={assistantContext}
+            resetKey={`home:${user?.id || 'anon'}:${sessions.length}:${campaigns.length}`}
+            buttonVariant="outlined"
+            buttonColor="inherit"
+            buttonSx={{
+              color: 'common.white',
+              borderColor: 'rgba(255,255,255,0.45)',
+              '&:hover': {
+                borderColor: 'common.white',
+                bgcolor: 'rgba(255,255,255,0.08)',
+              },
+            }}
+          />
+        </Stack>
         
         {/* Join Live Session CTA */}
         {liveSessions.length > 0 && (

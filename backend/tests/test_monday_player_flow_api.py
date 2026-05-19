@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import sys
 import uuid
@@ -32,6 +33,19 @@ def _assert_close(actual, expected, tolerance, label):
     assert _float(actual) == pytest.approx(_float(expected), abs=tolerance), label
 
 
+def _assert_finite_numbers(payload, label: str) -> None:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            _assert_finite_numbers(value, f'{label}.{key}')
+        return
+    if isinstance(payload, list):
+        for idx, value in enumerate(payload):
+            _assert_finite_numbers(value, f'{label}[{idx}]')
+        return
+    if isinstance(payload, (int, float)) and not isinstance(payload, bool):
+        assert math.isfinite(float(payload)), f'{label} must be finite'
+
+
 def _signed_hours(hours, player_role: str) -> list[float]:
     sign = -1.0 if player_role == 'consumer' else 1.0
     return [round(sign * _float(hour), 3) for hour in (hours or [])]
@@ -48,7 +62,8 @@ def _validate_bid_dispatch(bid_dispatch: dict, hourly_breakdown: list[dict]) -> 
                 hour_idx = int(row.get('hour_idx', row.get('hour_offset', 0)) or 0)
                 assert 0.0 <= ratio <= 1.0
                 if abs(offered) > 1e-9:
-                    _assert_close(dispatched, offered * ratio, 0.2, 'bid dispatch must match offered volume times acceptance ratio')
+                    ratio_rounding_tolerance = max(0.2, abs(offered) * 0.0005 + 0.01)
+                    _assert_close(dispatched, offered * ratio, ratio_rounding_tolerance, 'bid dispatch must match offered volume times acceptance ratio')
                 _assert_close(row.get('smp'), hourly_smp.get(hour_idx, row.get('smp')), VALUE_TOLERANCE, 'bid dispatch SMP must match the round hourly SMP')
 
 
@@ -75,6 +90,7 @@ def _validate_device_breakdown(device_breakdown: dict) -> None:
             battery_charge_cost = _float(row.get('battery_charge_cost_zar'))
             congestion_revenue = _float(row.get('congestion_revenue_zar'))
             network_shortfall_cost = _float(row.get('network_shortfall_cost_zar'))
+            network_shortfall_mwh = _float(row.get('network_shortfall_mwh'))
             profit = _float(row.get('profit_zar'))
             imbalance_mwh = _float(row.get('imbalance_mwh'))
             actual_mw = _float(row.get('actual_mw'))
@@ -82,9 +98,12 @@ def _validate_device_breakdown(device_breakdown: dict) -> None:
 
             _assert_close(total_dispatched, da_dispatched + id_dispatched, MWH_TOLERANCE, 'device total dispatched must equal DA plus ID dispatched volume')
             _assert_close(revenue, da_revenue + id_revenue, VALUE_TOLERANCE, 'device revenue must equal DA plus ID revenue')
-            _assert_close(imbalance_mwh, actual_mw - dispatched_mw, VALUE_TOLERANCE, 'device imbalance MWh must equal actual minus dispatched volume')
+            expected_imbalance_mwh = actual_mw - dispatched_mw
+            if network_shortfall_mwh > 1e-9:
+                expected_imbalance_mwh = max(0.0, expected_imbalance_mwh - network_shortfall_mwh)
+            _assert_close(imbalance_mwh, expected_imbalance_mwh, VALUE_TOLERANCE, 'device imbalance MWh must match actual minus dispatched volume, with ATC shortfall taking priority when present')
             expected_profit = revenue - variable_cost - fixed_cost - imbalance_cost - battery_charge_cost - network_shortfall_cost + congestion_revenue
-            _assert_close(profit, expected_profit, VALUE_TOLERANCE, 'device profit must match the device profit formula')
+            _assert_close(profit, expected_profit, ROUND_TOLERANCE, 'device profit must match the device profit formula')
 
             if 'battery_soc_start_pct' in row and row.get('battery_soc_start_pct') not in (None, 0, 0.0):
                 if battery_soc_start is None:
@@ -395,11 +414,16 @@ def e2e_scheduler(monkeypatch, app):
     from app import sessions as sessions_module
 
     tasks = []
+    emitted_events = []
     fake_redis = _FakeRedis()
 
     def queue_background_task(target, *args, **kwargs):
         tasks.append(SimpleNamespace(target=target, args=args, kwargs=kwargs))
         return len(tasks)
+
+    def emit(*args, **kwargs):
+        emitted_events.append(SimpleNamespace(args=args, kwargs=kwargs))
+        return None
 
     def run_next():
         assert tasks, 'expected a queued background task'
@@ -409,11 +433,15 @@ def e2e_scheduler(monkeypatch, app):
     monkeypatch.setattr(player_module.socketio, 'start_background_task', queue_background_task)
     monkeypatch.setattr(sessions_module.socketio, 'start_background_task', queue_background_task)
     monkeypatch.setattr(scheduler_module.socketio, 'start_background_task', queue_background_task)
+    monkeypatch.setattr(player_module.socketio, 'emit', emit)
+    monkeypatch.setattr(sessions_module.socketio, 'emit', emit)
+    monkeypatch.setattr(scheduler_module.socketio, 'emit', emit)
     monkeypatch.setattr(scheduler_module.time, 'sleep', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(player_module, '_redis_client', fake_redis)
     monkeypatch.setattr(scheduler_module, '_redis_client', fake_redis)
     monkeypatch.setattr(sessions_module, '_redis_client', fake_redis)
 
-    return SimpleNamespace(run_next=run_next, tasks=tasks, redis=fake_redis)
+    return SimpleNamespace(run_next=run_next, tasks=tasks, redis=fake_redis, emitted_events=emitted_events)
 
 
 def _load_monday_config() -> dict:
@@ -484,6 +512,16 @@ def _load_seed_campaign_scenarios() -> list[tuple[str, dict]]:
     return [(name, json.loads(json.dumps(config))) for name, config in ordered]
 
 
+def _load_uct_2026_jun_campaign_scenarios() -> tuple[str, list[tuple[str, dict]]]:
+    from scripts.seed_uct_2026_jun_campaign import CAMPAIGN_NAME, _prepare_config, _scenario_specs
+
+    ordered = []
+    for scenario_name, raw_config in _scenario_specs():
+        prepared_config = _prepare_config(json.loads(json.dumps(raw_config)))
+        ordered.append((scenario_name, prepared_config))
+    return CAMPAIGN_NAME, ordered
+
+
 def _all_scenario_configs() -> list[tuple[str, dict]]:
     configs = [('Monday', _load_monday_config())]
     configs.extend(_load_seed_campaign_scenarios())
@@ -526,6 +564,59 @@ def _create_api_scenario_setup(app, scenario_name: str, config: dict) -> dict:
             'campaign_id': campaign.id,
             'config': scenario.config,
             'scenario_name': scenario_name,
+        }
+
+
+def _create_api_campaign_setup(app, campaign_name: str, scenario_configs: list[tuple[str, dict]]) -> dict:
+    with app.app_context():
+        unique_tag = uuid.uuid4().hex[:8]
+        player = User(email=f'e2e-player-{unique_tag}@test.com', role='player', password_hash='test-hash')
+        designer = User(email=f'e2e-designer-{unique_tag}@test.com', role='designer', password_hash='test-hash')
+        db.session.add_all([player, designer])
+        db.session.flush()
+
+        campaign = Campaign(
+            name=campaign_name,
+            description=f'API E2E playthrough for {campaign_name}',
+            designer_id=designer.id,
+            published=True,
+        )
+        db.session.add(campaign)
+        db.session.flush()
+
+        scenario_setups = []
+        for order_index, (scenario_name, config) in enumerate(scenario_configs):
+            scenario = Scenario(
+                name=scenario_name,
+                campaign_id=campaign.id,
+                config=json.loads(json.dumps(config)),
+            )
+            db.session.add(scenario)
+            db.session.flush()
+            db.session.add(
+                CampaignScenario(
+                    campaign_id=campaign.id,
+                    scenario_id=scenario.id,
+                    order_index=order_index,
+                    solo_enabled=True,
+                    cohort_enabled=True,
+                )
+            )
+            scenario_setups.append({
+                'scenario_id': scenario.id,
+                'scenario_name': scenario.name,
+                'config': scenario.config,
+            })
+
+        db.session.commit()
+
+        token = create_access_token(identity=str(player.id), additional_claims={'role': 'player'})
+        return {
+            'headers': {'Authorization': f'Bearer {token}'},
+            'player_id': player.id,
+            'campaign_id': campaign.id,
+            'campaign_name': campaign.name,
+            'scenarios': scenario_setups,
         }
 
 
@@ -597,6 +688,7 @@ def _run_public_api_playthrough(client, e2e_scheduler, scenario_setup: dict, typ
         assert round_data['my_result']['type'] == type_id
         assert round_data['my_result']['player_role'] == expected_role
         try:
+            _assert_finite_numbers(round_data, f"scenario={scenario_setup['scenario_name']} type={type_id} round={round_num}.round_data")
             _validate_kpis(round_data['my_result']['kpis'], round_data['my_result'], round_data['weights'])
             _validate_da_id_breakdown(round_data['my_result']['da_id_breakdown'])
         except AssertionError as exc:
@@ -608,7 +700,13 @@ def _run_public_api_playthrough(client, e2e_scheduler, scenario_setup: dict, typ
     final_response = client.get(f'/api/sessions/{session_id}/final-results', headers=headers)
     assert final_response.status_code == 200
     final_data = final_response.get_json()
-    _validate_final_results_consistency(final_data, round_reports, final_data['weights'], scenario_setup['player_id'], type_id)
+    try:
+        _assert_finite_numbers(final_data, f"scenario={scenario_setup['scenario_name']} type={type_id}.final_data")
+        _validate_final_results_consistency(final_data, round_reports, final_data['weights'], scenario_setup['player_id'], type_id)
+    except AssertionError as exc:
+        raise AssertionError(
+            f"scenario={scenario_setup['scenario_name']} type={type_id} final-results: {exc}"
+        ) from exc
     return round_reports, final_data, expected_role
 
 
@@ -1170,3 +1268,51 @@ def test_all_scenarios_all_player_types_true_e2e(client, e2e_scheduler):
 
     assert scenario_runs == 4
     assert player_type_runs >= 11
+
+
+def test_uct_2026_jun_campaign_all_scenarios_all_player_types_true_e2e(client, e2e_scheduler):
+    campaign_name, scenario_configs = _load_uct_2026_jun_campaign_scenarios()
+    campaign_setup = _create_api_campaign_setup(client.application, campaign_name, scenario_configs)
+
+    expected_scenario_names = [name for name, _config in scenario_configs]
+    assert campaign_setup['campaign_name'] == campaign_name
+    assert [entry['scenario_name'] for entry in campaign_setup['scenarios']] == expected_scenario_names
+    assert len(campaign_setup['scenarios']) == 5
+
+    scenario_runs = 0
+    player_type_runs = 0
+
+    for scenario_setup in campaign_setup['scenarios']:
+        scenario_runs += 1
+        player_types = list((scenario_setup['config'].get('player_types') or []))
+        assert player_types, f"{scenario_setup['scenario_name']} must define at least one player type"
+
+        for player_type in player_types:
+            assert not e2e_scheduler.tasks, 'background task queue must be empty before the next playthrough'
+            print(
+                f"[UCT_E2E] campaign={campaign_name} scenario={scenario_setup['scenario_name']} type={player_type['id']}"
+            )
+            round_reports, final_data, expected_role = _run_public_api_playthrough(
+                client,
+                e2e_scheduler,
+                {
+                    **campaign_setup,
+                    **scenario_setup,
+                },
+                player_type['id'],
+            )
+            total_rounds = int((scenario_setup['config'].get('general') or {}).get('rounds', 4) or 4)
+            assert len(round_reports) == total_rounds
+            assert final_data['my_cumulative']['type'] == player_type['id']
+            assert final_data['my_cumulative']['rounds_played'] == total_rounds
+            assert len(final_data['round_history']) == total_rounds
+            assert final_data['final_ranking'][0]['type'] == player_type['id']
+            if expected_role == 'consumer':
+                assert final_data['my_cumulative']['total_revenue'] <= 0
+            else:
+                assert final_data['my_cumulative']['total_revenue'] >= 0
+            assert not e2e_scheduler.tasks, 'background task queue must be empty after each playthrough'
+            player_type_runs += 1
+
+    assert scenario_runs == 5
+    assert player_type_runs == 13

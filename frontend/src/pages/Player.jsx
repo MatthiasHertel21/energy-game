@@ -52,6 +52,7 @@ import BriefingScreen from '../components/BriefingScreen'
 import WaitingScreen from '../components/WaitingScreen'
 import RoundResultsScreen from '../components/RoundResultsScreenSimple'
 import ScenarioResultsScreen from '../components/ScenarioResultsScreen'
+import ContextAssistantDialog from '../components/ContextAssistantDialog'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useSnackbar } from '../components/SnackbarProvider'
 import api from '../services/api'
@@ -3526,7 +3527,92 @@ export default function Player() {
       })
     }
     return items
-  }, [openMarkets, deviceText, activeEvents, daSpecialRuleNote, cfg.current_round])
+  }, [openMarkets, activeEvents, cfg.current_round, deviceText, daSpecialRuleNote])
+
+  const playerAssistantContext = useMemo(() => ({
+    page: 'player_round',
+    session: {
+      id: sessionId,
+      status,
+      mode,
+      current_round: currentRoundNumber,
+      time_remaining_seconds: timeRemaining,
+      submitted,
+    },
+    scenario: {
+      campaign_name: campaignDisplayName,
+      scenario_name: cfg.scenario_name || 'Scenario',
+      rounds: Number(cfg.general?.rounds || 0),
+      round_span_hours: Number(cfg.general?.round_span_hours || 6),
+      forecast_horizon_hours: Number(cfg.general?.forecast_horizon_hours || 24),
+      day_ahead_gate_hour: dayAheadGateHour,
+    },
+    markets: {
+      day_ahead_open: openMarkets.daOpen,
+      intraday_open: openMarkets.idOpen,
+      bidding_enabled: biddingEnabled,
+      summary_lines: summaryLines,
+      day_ahead_special_rule_note: daSpecialRuleNote || '',
+    },
+    player_context: {
+      selected_type_id: selectedType || null,
+      selected_type_name: playerTypes.find((pt) => pt.id === selectedType)?.name || selectedType || null,
+      role: playerRole,
+      devices: availableDevices.map((device) => ({
+        id: device.id,
+        name: device.name || device.id,
+        type: device.type || '',
+        capacity_mw: Number(device.capacity_mw ?? device.capacity ?? 0),
+      })),
+    },
+    tasks: taskItems.map((task) => ({
+      id: task.id,
+      title: task.title,
+      status: task.status || '',
+      priority: task.priority || '',
+      description: task.description || [task.descriptionPrefix, task.deviceText, task.descriptionSuffix].filter(Boolean).join(' '),
+      special_note: task.specialNote || '',
+    })),
+    active_events: activeEvents
+      .filter((event) => isEventActive(event, currentRoundNumber))
+      .map((event) => ({
+        id: event.id || event.name || event.type,
+        name: getEventTitle(event),
+        type: event.type || '',
+        description: event.description || '',
+      })),
+    visible_challenges: (visibleChallenges || []).map((challenge) => ({
+      name: challenge.name || 'Challenge',
+      metric: challenge.metric || '',
+      operator: challenge.operator || '',
+      target: challenge.target ?? null,
+      required: Boolean(challenge.required),
+    })),
+  }), [
+    sessionId,
+    status,
+    mode,
+    currentRoundNumber,
+    timeRemaining,
+    submitted,
+    campaignDisplayName,
+    cfg.scenario_name,
+    cfg.general,
+    dayAheadGateHour,
+    openMarkets.daOpen,
+    openMarkets.idOpen,
+    biddingEnabled,
+    summaryLines,
+    daSpecialRuleNote,
+    selectedType,
+    playerTypes,
+    playerRole,
+    availableDevices,
+    taskItems,
+    activeEvents,
+    visibleChallenges,
+  ])
+
   const priorityColor = (priority) => {
     if (priority === 'high') return 'error'
     if (priority === 'medium') return 'warning'
@@ -3928,7 +4014,13 @@ export default function Player() {
         <TimerAndClock timeRemaining={timeRemaining} />
       </Box>
 
-      <Box sx={{ mb: 2 }}>
+      <Stack
+        direction={{ xs: 'column', md: 'row' }}
+        spacing={1.5}
+        alignItems={{ xs: 'flex-start', md: 'center' }}
+        justifyContent="space-between"
+        sx={{ mb: 2 }}
+      >
         <Typography variant="subtitle2" component="div">
           <Box component="span" sx={{ color: 'primary.main', fontWeight: 600 }}>
             {campaignDisplayName}
@@ -3946,7 +4038,18 @@ export default function Player() {
             R{cfg.current_round ?? '—'}
           </Box>
         </Typography>
-      </Box>
+        <ContextAssistantDialog
+          title="Player Round Assistant"
+          buttonLabel="Ask About This Round"
+          placeholder="Ask about open markets, devices, bids, or what to do next..."
+          intro="Ask questions about the current round. I will answer using the visible player context, open markets, devices, events, and your current tasks."
+          contextLabel="Active player round context"
+          context={playerAssistantContext}
+          resetKey={`player-round:${sessionId || 'none'}:${currentRoundNumber}:${status}:${submitted ? 'submitted' : 'editing'}`}
+          buttonVariant="outlined"
+          buttonColor="primary"
+        />
+      </Stack>
 
       <Box sx={{ display: 'flex', gap: 3 }}>
         {/* Left: Tasks */}

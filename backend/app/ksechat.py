@@ -42,6 +42,24 @@ chat_out = ns.model(
     },
 )
 
+qa_in = ns.model(
+    "KSEQAIn",
+    {
+        "messages": fields.List(fields.Raw, required=True, description="Conversation history [{role, content}]"),
+        "context_label": fields.String(required=False, description="Short label for the current page context"),
+        "context": fields.Raw(required=False, description="Optional page/session/results context to ground the answer"),
+    },
+)
+
+qa_out = ns.model(
+    "KSEQAOut",
+    {
+        "reply": fields.String(description="LLM reply text"),
+        "provider": fields.String(description="LLM provider used"),
+        "model": fields.String(description="Model used"),
+    },
+)
+
 # ─── Load source code context at startup ─────────────────────────────────────
 
 def _load_code_context() -> str:
@@ -203,6 +221,21 @@ Device ID format: `device_<type>_<3-digit>` e.g. `device_wind_003`
 - If a scenario context is provided, base your response on it.
 """
 
+QA_SYSTEM_PROMPT = """\
+You are an expert AI assistant for the Electricity Market Simulation Game (EMSG/KSE).
+You answer user questions about the currently visible page context, such as briefing, round results,
+scenario results, or the home dashboard.
+
+## Your behaviour
+
+- Always respond in plain English.
+- This is a question-answer assistant only. Never propose scenario edits and never emit hidden JSON blocks.
+- Base your answer on the provided page context. If the context is missing a needed detail, say that clearly.
+- Do not invent numbers, rankings, events, formulas, or configuration values.
+- When the question asks how calculations work, use the provided source code reference when available.
+- Keep answers concise, practical, and grounded in the current page.
+"""
+
 # ─── Provider logic ───────────────────────────────────────────────────────────
 
 def _call_groq(messages: list, model: str, api_key: str) -> str:
@@ -345,6 +378,22 @@ def _extract_and_strip(text: str) -> tuple[dict | None, str]:
     return scenario_json, text
 
 
+def _render_context_block(label: str, context) -> str:
+    """Render page context into the prompt in a compact JSON block."""
+    if context is None:
+        return ""
+    try:
+        rendered = json.dumps(context, indent=2, ensure_ascii=False)
+    except (TypeError, ValueError):
+        rendered = json.dumps(str(context), ensure_ascii=False)
+    if len(rendered) > 30000:
+        rendered = rendered[:30000] + "\n... [truncated]"
+    return (
+        f"\n\n---\n## {label or 'Current page context'}\n"
+        f"```json\n{rendered}\n```\n"
+    )
+
+
 # ─── Endpoint ─────────────────────────────────────────────────────────────────
 
 @ns.route("/chat")
@@ -400,6 +449,50 @@ class KSEChatResource(Resource):
         return {
             "reply": clean_reply,
             "scenario_json": scenario_json,
+            "provider": provider,
+            "model": model,
+        }
+
+
+@ns.route("/qa")
+class KSEQuestionAnswerResource(Resource):
+    @jwt_required()
+    @role_required("player", "trainer", "designer", "admin")
+    @ns.expect(qa_in)
+    @ns.marshal_with(qa_out)
+    def post(self):
+        """Chat with LLM for question-answer help on contextual app pages."""
+        data = request.json or {}
+        messages = data.get("messages", [])
+        context_label = str(data.get("context_label") or "Current page context").strip()
+        context = data.get("context")
+
+        system_content = QA_SYSTEM_PROMPT
+        if _needs_code_context(messages):
+            system_content += (
+                "\n\n---\n## Source code reference (for answering calculation questions)\n\n"
+                + _load_code_context()
+            )
+        system_content += _render_context_block(context_label, context)
+
+        llm_messages = [{"role": "system", "content": system_content}] + [
+            {"role": m.get("role", "user"), "content": str(m.get("content", ""))}
+            for m in messages
+            if isinstance(m, dict) and m.get("content")
+        ]
+
+        try:
+            reply_text, provider, model = _llm_call(llm_messages)
+        except (RuntimeError, ValueError) as exc:
+            return {"reply": f"⚠️ {exc}", "provider": "", "model": ""}, 200
+        except ImportError as exc:
+            return {"reply": f"⚠️ Missing package: {exc}.", "provider": "", "model": ""}, 200
+        except Exception as exc:
+            return {"reply": f"⚠️ LLM error: {exc}", "provider": "", "model": ""}, 200
+
+        _, clean_reply = _extract_and_strip(reply_text)
+        return {
+            "reply": clean_reply,
             "provider": provider,
             "model": model,
         }

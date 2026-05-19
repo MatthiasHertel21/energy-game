@@ -39,6 +39,7 @@ import {
 import api from '../services/api'
 import DeviceDeepDiveTabs from './DeviceDeepDiveTabs'
 import { getRoleTerminology } from '../utils/roleTerminology'
+import ContextAssistantDialog from './ContextAssistantDialog'
 
 /**
  * RoundResultsScreenSimple - Simplified round results showing basic info only
@@ -464,6 +465,38 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     return notes
   })()
 
+  const assistantContext = {
+    page: 'round_results',
+    session: {
+      id: sessionId,
+      round,
+      mode,
+      campaign_name: displayCampaignName,
+      scenario_name: scenarioName,
+      current_time: currentTime,
+      current_view: showCumulative && cumulativeKpis ? `scenario_kpis_rounds_1_to_${round}` : 'round_kpis',
+    },
+    player: {
+      name: playerName,
+      email: playerEmail,
+      role: resolvedRole || roleLabel.toLowerCase(),
+      type_id: playerTypeId || null,
+      type_name: playerTypeName,
+    },
+    scenario: {
+      general: scenario?.config?.general || {},
+      events: scenario?.config?.events || [],
+      challenges: scenario?.config?.challenges || [],
+    },
+    current_kpis: currentKpis,
+    cumulative_kpis: cumulativeKpis,
+    round_history_kpis: roundHistoryKpis,
+    player_zone_info: playerZoneInfo,
+    balancing_settings: balancingSettings,
+    round_notes: currentRoundNotes,
+    my_result: my_result || null,
+  }
+
   const kpiCompositionNotes = (() => {
     const notes = []
     const breakdown = my_result?.da_id_breakdown || {}
@@ -791,13 +824,32 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
           {/* Header */}
           <Box>
-            <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
-              <Typography variant="h4" fontWeight="bold">
-                Round {round} Results
-              </Typography>
-              <Chip 
-                label={roleLabel} 
-                color={isProducer ? 'primary' : 'secondary'}
+            <Stack
+              direction={{ xs: 'column', md: 'row' }}
+              spacing={2}
+              justifyContent="space-between"
+              alignItems={{ xs: 'flex-start', md: 'center' }}
+              sx={{ mb: 1 }}
+            >
+              <Box>
+                <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: 'wrap' }}>
+                  <Typography variant="h4" fontWeight="bold">
+                    Round {round} Results
+                  </Typography>
+                  <Chip 
+                    label={roleLabel} 
+                    color={isProducer ? 'primary' : 'secondary'}
+                  />
+                </Stack>
+              </Box>
+              <ContextAssistantDialog
+                title="Round Results Assistant"
+                buttonLabel="Ask About This Round"
+                placeholder="Ask about KPIs, balancing, congestion, or what happened this round..."
+                intro="Ask questions about this round. I will answer from your KPIs, notes, network data, and round history."
+                contextLabel="Round results page context"
+                context={assistantContext}
+                resetKey={`round-results:${sessionId}:${round}`}
               />
             </Stack>
             {round > 1 && cumulativeKpis && (

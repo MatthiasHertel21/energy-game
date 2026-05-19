@@ -15,7 +15,7 @@ import re
 import sys
 
 sys.path.insert(0, "/app")
-os.chdir("/app")
+# os.chdir("/app")
 
 from app import create_app
 from app.extensions import db

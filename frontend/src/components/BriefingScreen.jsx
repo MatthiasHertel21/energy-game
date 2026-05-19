@@ -24,6 +24,7 @@ import {
   CalendarToday as CalendarIcon
 } from '@mui/icons-material';
 import api from '../services/api';
+import ContextAssistantDialog from './ContextAssistantDialog';
 
 /**
  * BriefingScreen - Scenario introduction and start screen
@@ -60,15 +61,22 @@ export default function BriefingScreen({ session, scenario, onStart, selectedTyp
     "Welcome to the energy trading simulation. Your goal is to maximize profit while maintaining grid stability.";
 
   const events = scenario?.config?.events || []
+  const selectedPlayerType = useMemo(() => {
+    if (!selectedType || !Array.isArray(playerTypes)) return null
+    return playerTypes.find((type) => type.id === selectedType) || null
+  }, [playerTypes, selectedType])
+
+  const selectedPlayerDevices = useMemo(() => {
+    const deviceIds = selectedPlayerType?.devices || []
+    if (!Array.isArray(deviceIds) || deviceIds.length === 0) return []
+    return (scenarioDevices || []).filter((device) => deviceIds.includes(device.id))
+  }, [scenarioDevices, selectedPlayerType])
+
   const playerRole = useMemo(() => {
-    if (!selectedType || !Array.isArray(playerTypes) || playerTypes.length === 0) return null
-    const type = playerTypes.find(pt => pt.id === selectedType)
-    const devIds = type?.devices || []
-    if (!Array.isArray(devIds) || devIds.length === 0) return null
-    const devs = (scenarioDevices || []).filter(d => devIds.includes(d.id))
+    if (selectedPlayerDevices.length === 0) return null
     let hasLoad = false
     let hasGen = false
-    devs.forEach(d => {
+    selectedPlayerDevices.forEach(d => {
       const t = (d.type || '').toLowerCase()
       if (t.includes('load') || t.endsWith('_load')) hasLoad = true
       else if (t) hasGen = true
@@ -76,7 +84,7 @@ export default function BriefingScreen({ session, scenario, onStart, selectedTyp
     if (hasLoad && !hasGen) return 'consumer'
     if (hasGen && !hasLoad) return 'producer'
     return null
-  }, [playerTypes, scenarioDevices, selectedType])
+  }, [selectedPlayerDevices])
 
   // Extract challenges from scenario config
   const allChallenges = scenario?.config?.challenges || []
@@ -134,6 +142,49 @@ export default function BriefingScreen({ session, scenario, onStart, selectedTyp
   const requiredChallenges = challenges.filter(c => c.required)
   const optionalChallenges = challenges.filter(c => !c.required)
   const currentRound = session?.current_round || 1;
+  const assistantContext = useMemo(() => ({
+    page: 'briefing',
+    session: {
+      id: session?.id || null,
+      mode,
+      current_round: currentRound,
+      view_mode: viewMode,
+      is_solo: isSolo,
+    },
+    scenario: {
+      name: scenario?.name || 'Scenario',
+      description,
+      general: scenario?.config?.general || {},
+      events,
+      challenges,
+    },
+    player_context: {
+      selected_type_id: selectedType || null,
+      selected_type: selectedPlayerType
+        ? {
+            id: selectedPlayerType.id,
+            name: selectedPlayerType.name,
+            description: selectedPlayerType.description || '',
+            role: playerRole,
+          }
+        : null,
+      devices: selectedPlayerDevices,
+    },
+  }), [
+    challenges,
+    currentRound,
+    description,
+    events,
+    isSolo,
+    mode,
+    playerRole,
+    scenario,
+    selectedPlayerDevices,
+    selectedPlayerType,
+    selectedType,
+    session,
+    viewMode,
+  ])
 
   return (
     <Box sx={{ p: 3, maxWidth: 900, mx: 'auto' }}>
@@ -141,17 +192,35 @@ export default function BriefingScreen({ session, scenario, onStart, selectedTyp
         <Stack spacing={4}>
           {/* Compact Header */}
           <Box>
-            <Typography variant="overline" color="text.secondary" fontWeight={600}>
-              Briefing
-            </Typography>
-            <Stack direction="row" spacing={2} alignItems="center" sx={{ mt: 0.5 }}>
-              <Typography variant="h4" fontWeight="bold">
-                {scenario?.name || 'Scenario'}
-              </Typography>
-              <Chip 
-                label={isSolo ? 'Solo Mode' : 'Shared Market'} 
-                color={isSolo ? 'default' : 'primary'}
-                size="small"
+            <Stack
+              direction={{ xs: 'column', md: 'row' }}
+              spacing={2}
+              justifyContent="space-between"
+              alignItems={{ xs: 'flex-start', md: 'center' }}
+            >
+              <Box>
+                <Typography variant="overline" color="text.secondary" fontWeight={600}>
+                  Briefing
+                </Typography>
+                <Stack direction="row" spacing={2} alignItems="center" sx={{ mt: 0.5, flexWrap: 'wrap' }}>
+                  <Typography variant="h4" fontWeight="bold">
+                    {scenario?.name || 'Scenario'}
+                  </Typography>
+                  <Chip 
+                    label={isSolo ? 'Solo Mode' : 'Shared Market'} 
+                    color={isSolo ? 'default' : 'primary'}
+                    size="small"
+                  />
+                </Stack>
+              </Box>
+              <ContextAssistantDialog
+                title="Briefing Assistant"
+                buttonLabel="Ask Briefing AI"
+                placeholder="Ask about the scenario, events, or objectives..."
+                intro="Ask questions about this briefing. I will answer using the current scenario, events, challenges, and your player context."
+                contextLabel="Briefing page context"
+                context={assistantContext}
+                resetKey={`briefing:${session?.id || 'none'}:${scenario?.name || 'scenario'}`}
               />
             </Stack>
           </Box>

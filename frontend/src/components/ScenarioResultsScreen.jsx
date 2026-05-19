@@ -33,6 +33,7 @@ import {
 } from '@mui/icons-material';
 import api from '../services/api';
 import { getRoleTerminology } from '../utils/roleTerminology';
+import ContextAssistantDialog from './ContextAssistantDialog';
 
 /**
  * ScenarioResultsScreen - Final cumulative results and ranking
@@ -252,6 +253,27 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
     challengeHistory.length
   );
   const challengeRoundsDenominator = Math.max(1, totalRoundsDisplay);
+  const assistantContext = {
+    page: 'scenario_results',
+    session: {
+      id: sessionId,
+      total_rounds: totalRoundsDisplay,
+    },
+    scenario: {
+      campaign_name: scenario?.campaign_name || 'Campaign',
+      name: scenario?.name || 'Scenario',
+      general: scenario?.config?.general || {},
+      challenges: scenario?.config?.challenges || [],
+    },
+    player: {
+      role: myInferredRole,
+      final_rank: myFinalRank,
+      type_id: safeMyCumulative?.player_type || safeMyCumulative?.type || null,
+      type_name: resolvePlayerTypeLabel(safeMyCumulative?.player_type || safeMyCumulative?.type || 'Player Type'),
+      email: safeMyCumulative?.email || null,
+    },
+    final_results: safeResults,
+  };
 
   const totalRevenueDisplay = hasHistory ? totalsFromHistory.revenue : normalizeNumber(safeMyCumulative?.total_revenue);
   const totalProfitDisplay = hasHistory ? totalsFromHistory.profit : normalizeNumber(safeMyCumulative?.total_profit);
@@ -458,12 +480,31 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
         </Box>
 
         <Box>
-          <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
-            <Typography variant="h4" fontWeight="bold">
-              Scenario Results
-            </Typography>
-            <Chip label={resolvedIsProducer ? 'Producer' : 'Consumer'} color={resolvedIsProducer ? 'primary' : 'secondary'} />
-            <Chip label={myFinalRank > 0 ? `Final Rank #${myFinalRank}` : 'Final Rank n/a'} color="success" variant="outlined" />
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            spacing={2}
+            justifyContent="space-between"
+            alignItems={{ xs: 'flex-start', md: 'center' }}
+            sx={{ mb: 1 }}
+          >
+            <Box>
+              <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: 'wrap' }}>
+                <Typography variant="h4" fontWeight="bold">
+                  Scenario Results
+                </Typography>
+                <Chip label={resolvedIsProducer ? 'Producer' : 'Consumer'} color={resolvedIsProducer ? 'primary' : 'secondary'} />
+                <Chip label={myFinalRank > 0 ? `Final Rank #${myFinalRank}` : 'Final Rank n/a'} color="success" variant="outlined" />
+              </Stack>
+            </Box>
+            <ContextAssistantDialog
+              title="Scenario Results Assistant"
+              buttonLabel="Ask About Results"
+              placeholder="Ask about your final KPIs, rank, trends, or challenge outcomes..."
+              intro="Ask questions about the final scenario results. I will answer from your cumulative KPIs, round history, leaderboard, and challenge outcomes."
+              contextLabel="Scenario results page context"
+              context={assistantContext}
+              resetKey={`scenario-results:${sessionId}`}
+            />
           </Stack>
           <Typography variant="body1" color="text.secondary">
             Completed rounds: {totalRoundsDisplay}
