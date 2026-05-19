@@ -49,6 +49,7 @@ export default function Trainer(){
   const [comparisonData, setComparisonData] = useState([])
   const [comparisonLoading, setComparisonLoading] = useState(false)
   const [comparisonMetric, setComparisonMetric] = useState('profit_zar')
+  const [selectedComparisonType, setSelectedComparisonType] = useState('')
   const comparisonChartRef = useRef(null)
   const [marketOverviewOpen, setMarketOverviewOpen] = useState(false)
   const [marketOverviewLoading, setMarketOverviewLoading] = useState(false)
@@ -76,6 +77,42 @@ export default function Trainer(){
       count: counts[t.id] || 0
     }))
   }, [status, brief])
+
+  const comparisonTypeOptions = useMemo(() => {
+    const labelsById = new Map((brief?.player_types || []).map((item) => [String(item.id), item.name || item.id]))
+    const seen = new Set()
+    return comparisonData
+      .filter((row) => row?.player_type)
+      .map((row) => String(row.player_type))
+      .filter((typeId) => {
+        if (seen.has(typeId)) return false
+        seen.add(typeId)
+        return true
+      })
+      .map((typeId) => ({ value: typeId, label: labelsById.get(typeId) || typeId }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [brief, comparisonData])
+
+  const filteredComparisonData = useMemo(() => {
+    if (!selectedComparisonType) return comparisonData
+    return comparisonData.filter((row) => String(row?.player_type || '') === selectedComparisonType)
+  }, [comparisonData, selectedComparisonType])
+
+  const selectedComparisonTypeLabel = useMemo(() => {
+    return comparisonTypeOptions.find((item) => item.value === selectedComparisonType)?.label || selectedComparisonType || 'Selected type'
+  }, [comparisonTypeOptions, selectedComparisonType])
+
+  const hasComparisonTypes = comparisonTypeOptions.length > 0
+
+  useEffect(() => {
+    if (comparisonTypeOptions.length === 0) {
+      setSelectedComparisonType('')
+      return
+    }
+    if (!comparisonTypeOptions.some((item) => item.value === selectedComparisonType)) {
+      setSelectedComparisonType(comparisonTypeOptions[0].value)
+    }
+  }, [comparisonTypeOptions, selectedComparisonType])
 
   // Shared market trainer UI enabled
   const isDisabled = false
@@ -427,7 +464,7 @@ export default function Trainer(){
 
   // Draw comparison chart
   useEffect(() => {
-    if (!comparisonChartRef.current || comparisonData.length === 0) return
+    if (!comparisonChartRef.current || filteredComparisonData.length === 0) return
     const svg = d3.select(comparisonChartRef.current)
     svg.selectAll('*').remove()
     const width = 640, height = 240
@@ -435,8 +472,8 @@ export default function Trainer(){
     const innerW = width - margin.left - margin.right
     const innerH = height - margin.top - margin.bottom
     const g = svg.attr('width', width).attr('height', height).append('g').attr('transform', `translate(${margin.left},${margin.top})`)
-    const x = d3.scaleBand().domain(comparisonData.map(d => String(d.player_id))).range([0, innerW]).padding(0.2)
-    const y = d3.scaleLinear().domain([0, d3.max(comparisonData, d => d[comparisonMetric]) || 0]).nice().range([innerH, 0])
+    const x = d3.scaleBand().domain(filteredComparisonData.map(d => String(d.player_id))).range([0, innerW]).padding(0.2)
+    const y = d3.scaleLinear().domain([0, d3.max(filteredComparisonData, d => d[comparisonMetric]) || 0]).nice().range([innerH, 0])
     g.append('g').call(d3.axisLeft(y).ticks(5).tickSize(-innerW).tickFormat('')).selectAll('line').attr('stroke', '#ddd').attr('stroke-opacity', 0.6)
     g.append('g').attr('transform', `translate(0,${innerH})`).call(d3.axisBottom(x))
     g.append('g').call(d3.axisLeft(y).ticks(5))
@@ -447,13 +484,13 @@ export default function Trainer(){
       curtailment_cost_zar: 'Curtailment Cost (ZAR)'
     }
     g.append('text').attr('transform', 'rotate(-90)').attr('x', -innerH / 2).attr('y', -45).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', '10px').text(yLabelMap[comparisonMetric] || 'Value')
-    g.selectAll('rect').data(comparisonData).enter().append('rect')
+    g.selectAll('rect').data(filteredComparisonData).enter().append('rect')
       .attr('x', d => x(String(d.player_id)))
       .attr('y', d => y(d[comparisonMetric]))
       .attr('width', x.bandwidth())
       .attr('height', d => innerH - y(d[comparisonMetric]))
       .attr('fill', '#1976d2')
-  }, [comparisonData, comparisonMetric])
+  }, [filteredComparisonData, comparisonMetric])
 
   const openMarketOverview = async () => {
     if (!sessionId) return
@@ -754,7 +791,7 @@ export default function Trainer(){
             <Typography variant="subtitle1">Cohort Members</Typography>
             <Chip label={`${cohortMembers.length} members`} size="small" />
             {sessionId && (
-              <Tooltip title="Session Comparison">
+              <Tooltip title="Player Type Comparison">
                 <IconButton onClick={() => setComparisonOpen(true)} color="primary" size="small">
                   <ComparisonIcon />
                 </IconButton>
@@ -879,7 +916,7 @@ export default function Trainer(){
       {/* Comparison Modal */}
       <Dialog open={comparisonOpen} onClose={() => setComparisonOpen(false)} maxWidth="md" fullWidth>
         <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Typography variant="h6">Session Comparison</Typography>
+          <Typography variant="h6">Player Type Comparison</Typography>
           <IconButton onClick={() => setComparisonOpen(false)} size="small">
             <CloseIcon />
           </IconButton>
@@ -900,40 +937,72 @@ export default function Trainer(){
             </Typography>
           ) : (
             <Stack spacing={2}>
-              <Stack direction="row" spacing={2} alignItems="center">
-                <Typography variant="body2">Metric:</Typography>
-                <Select size="small" value={comparisonMetric} onChange={e => setComparisonMetric(e.target.value)} sx={{ minWidth: 200 }}>
-                  <MenuItem value="profit_zar">Profit (ZAR)</MenuItem>
-                  <MenuItem value="revenue_zar">Revenue (ZAR)</MenuItem>
-                  <MenuItem value="imbalance_cost_zar">Imbalance Cost (ZAR)</MenuItem>
-                  <MenuItem value="curtailment_cost_zar">Curtailment Cost (ZAR)</MenuItem>
-                </Select>
-              </Stack>
-              <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-                <svg ref={comparisonChartRef} />
-              </Box>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Player ID</TableCell>
-                    <TableCell align="right">Profit (ZAR)</TableCell>
-                    <TableCell align="right">Revenue (ZAR)</TableCell>
-                    <TableCell align="right">Imbalance Cost</TableCell>
-                    <TableCell align="right">Curtailment Cost</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {comparisonData.map(row => (
-                    <TableRow key={row.player_id}>
-                      <TableCell>Player {row.player_id}</TableCell>
-                      <TableCell align="right">{Math.round(row.profit_zar || 0).toLocaleString()}</TableCell>
-                      <TableCell align="right">{Math.round(row.revenue_zar || 0).toLocaleString()}</TableCell>
-                      <TableCell align="right">{Math.round(row.imbalance_cost_zar || 0).toLocaleString()}</TableCell>
-                      <TableCell align="right">{Math.round(row.curtailment_cost_zar || 0).toLocaleString()}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              {hasComparisonTypes ? (
+                <>
+                  <Stack direction="row" spacing={2} alignItems="center">
+                    <Typography variant="body2">Player type:</Typography>
+                    <Select
+                      size="small"
+                      value={selectedComparisonType}
+                      onChange={e => setSelectedComparisonType(e.target.value)}
+                      sx={{ minWidth: 220 }}
+                    >
+                      {comparisonTypeOptions.map((item) => (
+                        <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>
+                      ))}
+                    </Select>
+                    <Typography variant="body2">Metric:</Typography>
+                    <Select size="small" value={comparisonMetric} onChange={e => setComparisonMetric(e.target.value)} sx={{ minWidth: 200 }}>
+                      <MenuItem value="profit_zar">Profit (ZAR)</MenuItem>
+                      <MenuItem value="revenue_zar">Revenue (ZAR)</MenuItem>
+                      <MenuItem value="imbalance_cost_zar">Imbalance Cost (ZAR)</MenuItem>
+                      <MenuItem value="curtailment_cost_zar">Curtailment Cost (ZAR)</MenuItem>
+                    </Select>
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary">
+                    Comparing players within {selectedComparisonTypeLabel}.
+                  </Typography>
+                </>
+              ) : (
+                <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
+                  Player-type assignments are unavailable for this session, so a fair peer comparison cannot be shown.
+                </Typography>
+              )}
+              {hasComparisonTypes && filteredComparisonData.length === 0 ? (
+                <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
+                  No players with results found for this player type yet.
+                </Typography>
+              ) : (
+                hasComparisonTypes && (
+                  <>
+                    <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                      <svg ref={comparisonChartRef} />
+                    </Box>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Player ID</TableCell>
+                          <TableCell align="right">Profit (ZAR)</TableCell>
+                          <TableCell align="right">Revenue (ZAR)</TableCell>
+                          <TableCell align="right">Imbalance Cost</TableCell>
+                          <TableCell align="right">Curtailment Cost</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {filteredComparisonData.map(row => (
+                          <TableRow key={row.player_id}>
+                            <TableCell>Player {row.player_id}</TableCell>
+                            <TableCell align="right">{Math.round(row.profit_zar || 0).toLocaleString()}</TableCell>
+                            <TableCell align="right">{Math.round(row.revenue_zar || 0).toLocaleString()}</TableCell>
+                            <TableCell align="right">{Math.round(row.imbalance_cost_zar || 0).toLocaleString()}</TableCell>
+                            <TableCell align="right">{Math.round(row.curtailment_cost_zar || 0).toLocaleString()}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                )
+              )}
             </Stack>
           )}
         </DialogContent>

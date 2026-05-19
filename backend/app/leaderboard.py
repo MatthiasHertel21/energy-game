@@ -2,7 +2,7 @@ from flask_restx import Namespace, Resource, reqparse
 from flask_jwt_extended import jwt_required
 
 from .extensions import db
-from .models import Result, User, Forecast
+from .models import Result, User, Forecast, SessionPlayerType
 from .kpi_schema import canonicalize_kpis
 
 
@@ -17,6 +17,8 @@ class LeaderboardSession(Resource):
         parser.add_argument('role', type=str, required=False)
         args = parser.parse_args()
         role_filter = args.get('role')
+        player_types = SessionPlayerType.query.filter_by(session_id=sid).all()
+        player_type_by_user = {row.user_id: row.type_id for row in player_types}
         subq = db.session.query(Result.player_id, Result.data).filter(Result.session_id == sid).subquery()
         rows = db.session.query(subq.c.player_id, subq.c.data, User.role, User.email).join(User, User.id == subq.c.player_id).all()
         agg = {}
@@ -29,7 +31,8 @@ class LeaderboardSession(Resource):
                 "revenue_zar": 0, 
                 "rounds": 0, 
                 "role": role.value if hasattr(role, 'value') else str(role),
-                "email": email
+                "email": email,
+                "player_type": player_type_by_user.get(pid),
             })
             entry["profit_zar"] += k.get("profit_zar", 0)
             entry["imbalance_cost_zar"] += k.get("imbalance_cost_zar", 0)
