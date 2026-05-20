@@ -586,6 +586,8 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
   const kpiCompositionNotes = (() => {
     const notes = []
+    const breakdown = my_result?.da_id_breakdown || {}
+    const deviceBreakdown = my_result?.kpis?.device_hourly_breakdown || {}
     const devicesById = (scenario?.config?.devices || []).reduce((acc, device) => {
       acc[device.id] = device
       return acc
