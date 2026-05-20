@@ -161,6 +161,204 @@ def _build_market_summary(total_volume_mwh, player_rows):
     }
 
 
+def _infer_zone_from_player_type(config: dict, player_type_id):
+    zones = max(1, int(((config.get("grid") or {}).get("zones", 1)) or 1)) if isinstance(config, dict) else 1
+    try:
+        legacy_zone = int(((config.get("general") or {}).get("player_zone", 1)) or 1) if isinstance(config, dict) else 1
+    except Exception:
+        legacy_zone = 1
+
+    type_id = str(player_type_id or "").strip()
+    if not type_id or not isinstance(config, dict):
+        return max(1, min(zones, legacy_zone))
+
+    for item in (config.get("player_types") or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "") != type_id:
+            continue
+        try:
+            zone = int(item.get("zone", legacy_zone) or legacy_zone)
+        except Exception:
+            zone = legacy_zone
+        return max(1, min(zones, zone))
+
+    return max(1, min(zones, legacy_zone))
+
+
+def _extract_price_points(result_data):
+    payload = result_data or {}
+    price_points = []
+    hourly_results = payload.get("hourly_results")
+    if isinstance(hourly_results, list):
+        for item in hourly_results:
+            if not isinstance(item, dict):
+                continue
+            if "smp" not in item and "mcp" not in item:
+                continue
+            price_points.append(_safe_market_number(item.get("smp", item.get("mcp"))))
+
+    if not price_points and ("smp" in payload or "mcp" in payload):
+        price_points.append(_safe_market_number(payload.get("smp", payload.get("mcp"))))
+
+    return price_points
+
+
+def _build_price_stats(price_points):
+    cleaned = []
+    for value in price_points or []:
+        try:
+            num = float(value)
+        except Exception:
+            continue
+        if num == num:
+            cleaned.append(num)
+
+    if not cleaned:
+        return {
+            "count": 0,
+            "min_zar_per_mwh": 0.0,
+            "max_zar_per_mwh": 0.0,
+            "avg_zar_per_mwh": 0.0,
+        }
+
+    return {
+        "count": len(cleaned),
+        "min_zar_per_mwh": round(min(cleaned), 2),
+        "max_zar_per_mwh": round(max(cleaned), 2),
+        "avg_zar_per_mwh": round(sum(cleaned) / len(cleaned), 2),
+    }
+
+
+def _build_zone_breakdown(zone_entries, link_entries, player_rows):
+    zone_map = {}
+
+    def ensure_zone(zone_id):
+        return zone_map.setdefault(zone_id, {
+            "local_generation_mwh": 0.0,
+            "local_demand_mwh": 0.0,
+            "imports_mwh": 0.0,
+            "exports_mwh": 0.0,
+            "losses_mwh": 0.0,
+            "unserved_demand_mwh": 0.0,
+            "balancing_cost_zar": 0.0,
+            "balancing_support_mwh": 0.0,
+            "production_cost_zar": 0.0,
+            "profit_zar": 0.0,
+            "atc_dispatch_cost_zar": 0.0,
+            "grid_curtailed_mwh": 0.0,
+            "network_shortfall_mwh": 0.0,
+            "player_ids": set(),
+            "producer_ids": set(),
+            "consumer_ids": set(),
+            "binding_links": set(),
+        })
+
+    for zone_entry in zone_entries or []:
+        if not isinstance(zone_entry, dict):
+            continue
+        try:
+            zone_id = int(zone_entry.get("zone_id", 0) or 0)
+        except Exception:
+            zone_id = 0
+        if zone_id <= 0:
+            continue
+        bucket = ensure_zone(zone_id)
+        bucket["local_generation_mwh"] += _safe_market_number(zone_entry.get("local_generation_mwh"))
+        bucket["local_demand_mwh"] += _safe_market_number(zone_entry.get("local_demand_mwh"))
+        bucket["imports_mwh"] += _safe_market_number(zone_entry.get("imports_mwh"))
+        bucket["exports_mwh"] += _safe_market_number(zone_entry.get("exports_mwh"))
+        bucket["losses_mwh"] += _safe_market_number(zone_entry.get("losses_mwh"))
+        bucket["unserved_demand_mwh"] += _safe_market_number(zone_entry.get("unserved_demand_mwh"))
+        bucket["balancing_cost_zar"] += _safe_market_number(zone_entry.get("extra_cost_total_zar"))
+        bucket["balancing_support_mwh"] += _safe_market_number(zone_entry.get("balancing_support_mwh"))
+
+    for player_row in player_rows or []:
+        if not isinstance(player_row, dict):
+            continue
+        try:
+            zone_id = int(player_row.get("zone_id", 0) or 0)
+        except Exception:
+            zone_id = 0
+        if zone_id <= 0:
+            continue
+
+        bucket = ensure_zone(zone_id)
+        player_id = player_row.get("player_id")
+        role = _normalize_market_role(player_row.get("player_role"))
+        if player_id is not None:
+            bucket["player_ids"].add(player_id)
+            if role == "consumer":
+                bucket["consumer_ids"].add(player_id)
+            else:
+                bucket["producer_ids"].add(player_id)
+
+        if role == "producer":
+            bucket["production_cost_zar"] += _safe_market_number(player_row.get("variable_cost_zar"))
+
+        bucket["profit_zar"] += _safe_market_number(player_row.get("profit_zar"))
+        bucket["atc_dispatch_cost_zar"] += _safe_market_number(
+            player_row.get("atc_dispatch_cost_zar")
+            if player_row.get("atc_dispatch_cost_zar") is not None
+            else player_row.get("grid_constraint_cost_zar")
+        )
+        bucket["grid_curtailed_mwh"] += max(0.0, _safe_market_number(player_row.get("grid_curtailed_mwh")))
+        bucket["network_shortfall_mwh"] += max(0.0, _safe_market_number(player_row.get("network_shortfall_mwh")))
+
+    for link_entry in link_entries or []:
+        if not isinstance(link_entry, dict) or not link_entry.get("binding"):
+            continue
+        try:
+            from_zone = int(link_entry.get("from_zone", 0) or 0)
+            to_zone = int(link_entry.get("to_zone", 0) or 0)
+        except Exception:
+            continue
+        if from_zone <= 0 or to_zone <= 0:
+            continue
+        label = f"{from_zone}->{to_zone}"
+        ensure_zone(from_zone)["binding_links"].add(label)
+        ensure_zone(to_zone)["binding_links"].add(label)
+
+    zone_breakdown = []
+    for zone_id in sorted(zone_map.keys()):
+        bucket = zone_map[zone_id]
+        local_demand_mwh = bucket["local_demand_mwh"]
+        consumer_count = len(bucket["consumer_ids"])
+        balancing_cost_zar = bucket["balancing_cost_zar"]
+        zone_breakdown.append({
+            "zone_id": zone_id,
+            "player_count": len(bucket["player_ids"]),
+            "producer_count": len(bucket["producer_ids"]),
+            "consumer_count": consumer_count,
+            "production_cost_zar": round(bucket["production_cost_zar"], 2),
+            "profit_zar": round(bucket["profit_zar"], 2),
+            "atc_dispatch_cost_zar": round(bucket["atc_dispatch_cost_zar"], 2),
+            "balancing_cost_zar": round(balancing_cost_zar, 2),
+            "balancing_cost_per_kwh_zar": round((balancing_cost_zar / (local_demand_mwh * 1000.0)) if local_demand_mwh > 1e-9 else 0.0, 4),
+            "balancing_cost_per_customer_zar": round((balancing_cost_zar / consumer_count) if consumer_count > 0 else 0.0, 2),
+            "grid_curtailed_mwh": round(bucket["grid_curtailed_mwh"], 3),
+            "unserved_demand_mwh": round(bucket["unserved_demand_mwh"], 3),
+            "network_shortfall_mwh": round(bucket["network_shortfall_mwh"], 3),
+            "balancing_support_mwh": round(bucket["balancing_support_mwh"], 3),
+            "local_generation_mwh": round(bucket["local_generation_mwh"], 3),
+            "local_demand_mwh": round(local_demand_mwh, 3),
+            "imports_mwh": round(bucket["imports_mwh"], 3),
+            "exports_mwh": round(bucket["exports_mwh"], 3),
+            "losses_mwh": round(bucket["losses_mwh"], 3),
+            "binding_link_count": len(bucket["binding_links"]),
+            "binding_links": sorted(bucket["binding_links"]),
+        })
+
+    return zone_breakdown
+
+
+def _enrich_market_summary(summary, price_points=None, zone_entries=None, link_entries=None, player_rows=None):
+    enriched = dict(summary or {})
+    enriched["price_stats"] = _build_price_stats(price_points or [])
+    enriched["zone_breakdown"] = _build_zone_breakdown(zone_entries or [], link_entries or [], player_rows or [])
+    return enriched
+
+
 @ns.route("")
 class Sessions(Resource):
     @jwt_required()
@@ -1124,18 +1322,38 @@ class RoundResults(Resource):
         for idx, p in enumerate(ranking):
             p["rank"] = idx + 1
 
+        reference_result_data = next(
+            ((r.data or {}) for r in results if isinstance(r.data, dict)),
+            {},
+        )
+
         round_total_volume = max(
             (_safe_market_number((r.data or {}).get("volume")) for r in results),
             default=0.0,
         )
-        market_summary = _build_market_summary(round_total_volume, [
+        round_market_rows = [
             {
                 "player_id": row.get("player_id"),
                 "player_role": row.get("player_role"),
                 "dispatched_mwh": (row.get("kpis") or {}).get("dispatched_mwh"),
+                "zone_id": (row.get("player_zone_info") or {}).get("zone_id"),
+                "variable_cost_zar": (row.get("kpis") or {}).get("variable_cost_zar"),
+                "profit_zar": (row.get("kpis") or {}).get("profit_zar"),
+                "atc_dispatch_cost_zar": (row.get("kpis") or {}).get("atc_dispatch_cost_zar"),
+                "grid_constraint_cost_zar": (row.get("kpis") or {}).get("grid_constraint_cost_zar"),
+                "grid_curtailed_mwh": (row.get("kpis") or {}).get("grid_curtailed_mwh"),
+                "network_shortfall_mwh": (row.get("kpis") or {}).get("network_shortfall_mwh"),
             }
             for row in ranking
-        ])
+        ]
+        market_summary = _build_market_summary(round_total_volume, round_market_rows)
+        market_summary = _enrich_market_summary(
+            market_summary,
+            price_points=_extract_price_points(reference_result_data),
+            zone_entries=reference_result_data.get("zone_results", []),
+            link_entries=reference_result_data.get("link_results", []),
+            player_rows=round_market_rows,
+        )
         market_summary["active_events_count"] = len(active_events)
         
         return {
@@ -1210,6 +1428,8 @@ class FinalResults(Resource):
                     "imbalance": 0,
                     "curtailment": 0,
                     "dispatched_mwh": 0,
+                    "grid_curtailed_mwh": 0,
+                    "network_shortfall_mwh": 0,
                     "rounds": 0,
                     "player_role": None,
                 }
@@ -1248,17 +1468,28 @@ class FinalResults(Resource):
             player_totals[pid]["imbalance"] += float(kpis.get("imbalance_mwh", 0) or kpis.get("imbalance_cost_zar", 0) / 1000)
             player_totals[pid]["curtailment"] += float(kpis.get("curtailment_mwh", 0) or kpis.get("curtailment_cost_zar", 0) / 1000)
             player_totals[pid]["dispatched_mwh"] += float(kpis.get("dispatched_mwh", 0))
+            player_totals[pid]["grid_curtailed_mwh"] += float(kpis.get("grid_curtailed_mwh", 0) or 0)
+            player_totals[pid]["network_shortfall_mwh"] += float(kpis.get("network_shortfall_mwh", 0) or 0)
             player_totals[pid]["rounds"] += 1
 
             round_bucket = round_market_totals.setdefault(r.round_num, {
                 "total_volume_mwh": 0.0,
                 "real_producer_mwh": 0.0,
                 "real_consumer_mwh": 0.0,
+                "price_points": [],
+                "zone_entries": [],
+                "link_entries": [],
             })
             round_bucket["total_volume_mwh"] = max(
                 round_bucket["total_volume_mwh"],
                 _safe_market_number((r.data or {}).get("volume")),
             )
+            if not round_bucket["price_points"]:
+                round_bucket["price_points"] = _extract_price_points(r.data or {})
+            if not round_bucket["zone_entries"]:
+                round_bucket["zone_entries"] = list((r.data or {}).get("zone_results") or [])
+            if not round_bucket["link_entries"]:
+                round_bucket["link_entries"] = list((r.data or {}).get("link_results") or [])
             dispatched_mwh = max(0.0, _safe_market_number(kpis.get("dispatched_mwh")))
             if resolved_role == "consumer":
                 round_bucket["real_consumer_mwh"] += dispatched_mwh
@@ -1371,6 +1602,7 @@ class FinalResults(Resource):
                 "player_id": pid,
                 "email": player_email,
                 "type": player_type,
+                "zone_id": _infer_zone_from_player_type(config, player_type),
                 "player_role": totals.get("player_role"),
                 "total_profit": round(totals["profit"], 2),
                 "total_revenue": round(totals["revenue"], 2),
@@ -1385,6 +1617,8 @@ class FinalResults(Resource):
                 "total_imbalance": round(totals["imbalance"], 2),
                 "total_curtailment": round(totals["curtailment"], 2),
                 "total_dispatched_mwh": round(totals["dispatched_mwh"], 2),
+                "total_grid_curtailed_mwh": round(totals["grid_curtailed_mwh"], 3),
+                "total_network_shortfall_mwh": round(totals["network_shortfall_mwh"], 3),
                 "total_score": round(total_score, 2),
                 "rounds_played": totals["rounds"],
                 "challenge_history": totals.get("challenge_history", [])
@@ -1451,14 +1685,36 @@ class FinalResults(Resource):
                 bucket.get("real_consumer_mwh", 0.0),
             )
 
-        market_summary = _build_market_summary(scenario_total_volume, [
+        scenario_price_points = []
+        scenario_zone_entries = []
+        scenario_link_entries = []
+        for bucket in round_market_totals.values():
+            scenario_price_points.extend(bucket.get("price_points", []))
+            scenario_zone_entries.extend(bucket.get("zone_entries", []))
+            scenario_link_entries.extend(bucket.get("link_entries", []))
+
+        scenario_market_rows = [
             {
                 "player_id": row.get("player_id"),
                 "player_role": row.get("player_role"),
                 "dispatched_mwh": row.get("total_dispatched_mwh"),
+                "zone_id": row.get("zone_id"),
+                "variable_cost_zar": row.get("total_variable_cost"),
+                "profit_zar": row.get("total_profit"),
+                "atc_dispatch_cost_zar": row.get("total_atc_dispatch_cost"),
+                "grid_curtailed_mwh": row.get("total_grid_curtailed_mwh"),
+                "network_shortfall_mwh": row.get("total_network_shortfall_mwh"),
             }
             for row in ranking
-        ])
+        ]
+        market_summary = _build_market_summary(scenario_total_volume, scenario_market_rows)
+        market_summary = _enrich_market_summary(
+            market_summary,
+            price_points=scenario_price_points,
+            zone_entries=scenario_zone_entries,
+            link_entries=scenario_link_entries,
+            player_rows=scenario_market_rows,
+        )
         market_summary["rounds_count"] = num_rounds
         
         return {

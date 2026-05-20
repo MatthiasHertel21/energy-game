@@ -10,7 +10,9 @@ import { exportSVG, exportPNG } from '../utils/exportSvg'
 import {
   buildCompositionSection,
   buildParticipantsCard,
+  buildPriceCard,
   buildVolumeCard,
+  buildZoneSection,
   normalizeMarketSummary,
   summarizeMarketFromRanking,
 } from '../utils/marketOverview'
@@ -541,10 +543,12 @@ export default function Trainer(){
           buildParticipantsCard(marketSummary),
           buildVolumeCard(marketSummary, formatInt),
           { key: 'profit', title: 'Total Profit', value: formatCurrency(totalProfit), caption: `Real players · average score ${avgScore.toFixed(1)}` },
+          buildPriceCard(marketSummary),
           { key: 'imbalance', title: 'Imbalance / ATC', value: formatCurrency(totalImbalance), caption: `Real players · ATC ${formatCurrency(totalAtc)}` },
-        ],
+        ].filter(Boolean),
         sections: [
           buildCompositionSection(marketSummary, formatInt),
+          buildZoneSection(marketSummary, formatCurrency, formatInt),
           {
             title: 'Top players this round',
             columns: [
@@ -563,7 +567,7 @@ export default function Trainer(){
               profit: formatCurrency(row?.kpis?.profit_zar || 0),
             })),
           },
-        ],
+        ].filter(Boolean),
       })
     } catch (err) {
       console.error('Failed to load market overview:', err)

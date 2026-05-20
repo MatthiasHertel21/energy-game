@@ -48,7 +48,9 @@ import { getRoleTerminology } from '../utils/roleTerminology'
 import {
   buildCompositionSection,
   buildParticipantsCard,
+  buildPriceCard,
   buildVolumeCard,
+  buildZoneSection,
   normalizeMarketSummary,
   summarizeMarketFromRanking,
 } from '../utils/marketOverview'
@@ -549,11 +551,14 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       cards: [
         buildParticipantsCard(roundMarketSummary),
         buildVolumeCard(roundMarketSummary, formatInt),
+        { key: 'profit', title: 'Total Profit', value: formatCurrency(totalProfit), caption: `Real players · settlement revenue ${formatCurrency(totalRevenue)}` },
+        buildPriceCard(roundMarketSummary),
         { key: 'imbalance', title: 'Total Imbalance Cost', value: formatCurrency(totalImbalance), caption: `Real players · ATC / Redispatch ${formatCurrency(totalAtc)}` },
         { key: 'co2', title: 'Total CO₂', value: `${formatInt(totalCo2)} kg`, caption: `Real players · average score ${avgScore.toFixed(1)}` },
-      ],
+      ].filter(Boolean),
       sections: [
         buildCompositionSection(roundMarketSummary, formatInt),
+        buildZoneSection(roundMarketSummary, formatCurrency, formatInt),
         {
           title: 'Round-wide market summary',
           rows: [
@@ -575,14 +580,12 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
           ],
           rows: topRows,
         },
-      ],
-    }
+      ].filter(Boolean),
+    };
   })()
 
   const kpiCompositionNotes = (() => {
     const notes = []
-    const breakdown = my_result?.da_id_breakdown || {}
-    const deviceBreakdown = my_result?.kpis?.device_hourly_breakdown || {}
     const devicesById = (scenario?.config?.devices || []).reduce((acc, device) => {
       acc[device.id] = device
       return acc

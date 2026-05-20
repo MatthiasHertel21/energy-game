@@ -3,6 +3,11 @@ const normalizeNumber = (value) => {
   return Number.isFinite(num) ? num : 0
 }
 
+const formatSignedNumber = (value, digits = 1) => normalizeNumber(value).toLocaleString('en-US', {
+  minimumFractionDigits: digits,
+  maximumFractionDigits: digits,
+})
+
 const normalizeRole = (value, revenueHint = 0) => {
   const role = String(value || '').trim().toLowerCase()
   if (role.includes('consumer') || role.includes('buyer')) return 'consumer'
@@ -10,7 +15,41 @@ const normalizeRole = (value, revenueHint = 0) => {
   return normalizeNumber(revenueHint) < 0 ? 'consumer' : 'producer'
 }
 
-const finalizeSummary = ({ totalVolumeMwh = 0, realPlayers = {}, syntheticMarket = {} }) => {
+const normalizePriceStats = (stats = {}) => ({
+  count: Math.max(0, Math.round(normalizeNumber(stats.count))),
+  minZarPerMwh: normalizeNumber(stats.minZarPerMwh ?? stats.min_zar_per_mwh),
+  maxZarPerMwh: normalizeNumber(stats.maxZarPerMwh ?? stats.max_zar_per_mwh),
+  avgZarPerMwh: normalizeNumber(stats.avgZarPerMwh ?? stats.avg_zar_per_mwh),
+})
+
+const normalizeZoneBreakdown = (zones = []) => {
+  if (!Array.isArray(zones)) return []
+  return zones.map((zone) => ({
+    zoneId: Math.max(0, Math.round(normalizeNumber(zone?.zoneId ?? zone?.zone_id))),
+    playerCount: Math.max(0, Math.round(normalizeNumber(zone?.playerCount ?? zone?.player_count))),
+    producerCount: Math.max(0, Math.round(normalizeNumber(zone?.producerCount ?? zone?.producer_count))),
+    consumerCount: Math.max(0, Math.round(normalizeNumber(zone?.consumerCount ?? zone?.consumer_count))),
+    productionCostZar: normalizeNumber(zone?.productionCostZar ?? zone?.production_cost_zar),
+    profitZar: normalizeNumber(zone?.profitZar ?? zone?.profit_zar),
+    atcDispatchCostZar: normalizeNumber(zone?.atcDispatchCostZar ?? zone?.atc_dispatch_cost_zar),
+    balancingCostZar: normalizeNumber(zone?.balancingCostZar ?? zone?.balancing_cost_zar),
+    balancingCostPerKwhZar: normalizeNumber(zone?.balancingCostPerKwhZar ?? zone?.balancing_cost_per_kwh_zar),
+    balancingCostPerCustomerZar: normalizeNumber(zone?.balancingCostPerCustomerZar ?? zone?.balancing_cost_per_customer_zar),
+    gridCurtailedMwh: normalizeNumber(zone?.gridCurtailedMwh ?? zone?.grid_curtailed_mwh),
+    unservedDemandMwh: normalizeNumber(zone?.unservedDemandMwh ?? zone?.unserved_demand_mwh),
+    networkShortfallMwh: normalizeNumber(zone?.networkShortfallMwh ?? zone?.network_shortfall_mwh),
+    balancingSupportMwh: normalizeNumber(zone?.balancingSupportMwh ?? zone?.balancing_support_mwh),
+    localGenerationMwh: normalizeNumber(zone?.localGenerationMwh ?? zone?.local_generation_mwh),
+    localDemandMwh: normalizeNumber(zone?.localDemandMwh ?? zone?.local_demand_mwh),
+    importsMwh: normalizeNumber(zone?.importsMwh ?? zone?.imports_mwh),
+    exportsMwh: normalizeNumber(zone?.exportsMwh ?? zone?.exports_mwh),
+    lossesMwh: normalizeNumber(zone?.lossesMwh ?? zone?.losses_mwh),
+    bindingLinkCount: Math.max(0, Math.round(normalizeNumber(zone?.bindingLinkCount ?? zone?.binding_link_count))),
+    bindingLinks: Array.isArray(zone?.bindingLinks ?? zone?.binding_links) ? (zone?.bindingLinks ?? zone?.binding_links) : [],
+  })).filter((zone) => zone.zoneId > 0)
+}
+
+const finalizeSummary = ({ totalVolumeMwh = 0, realPlayers = {}, syntheticMarket = {}, priceStats = {}, zoneBreakdown = [], activeEventsCount = 0, roundsCount = 0 }) => {
   const realProducerVolume = normalizeNumber(realPlayers.producerDispatchedMwh ?? realPlayers.producer_dispatched_mwh)
   const realConsumerVolume = normalizeNumber(realPlayers.consumerDispatchedMwh ?? realPlayers.consumer_dispatched_mwh)
   const normalizedTotalVolume = Math.max(
@@ -48,6 +87,10 @@ const finalizeSummary = ({ totalVolumeMwh = 0, realPlayers = {}, syntheticMarket
       producerSharePct: normalizeNumber(syntheticMarket.producerSharePct ?? syntheticMarket.producer_share_pct) || pct(syntheticProducerVolume),
       consumerSharePct: normalizeNumber(syntheticMarket.consumerSharePct ?? syntheticMarket.consumer_share_pct) || pct(syntheticConsumerVolume),
     },
+    priceStats: normalizePriceStats(priceStats),
+    zoneBreakdown: normalizeZoneBreakdown(zoneBreakdown),
+    activeEventsCount: Math.max(0, Math.round(normalizeNumber(activeEventsCount))),
+    roundsCount: Math.max(0, Math.round(normalizeNumber(roundsCount))),
   }
 }
 
@@ -55,6 +98,10 @@ export const normalizeMarketSummary = (summary) => finalizeSummary({
   totalVolumeMwh: summary?.totalVolumeMwh ?? summary?.total_volume_mwh,
   realPlayers: summary?.realPlayers ?? summary?.real_players ?? {},
   syntheticMarket: summary?.syntheticMarket ?? summary?.synthetic_market ?? {},
+  priceStats: summary?.priceStats ?? summary?.price_stats ?? {},
+  zoneBreakdown: summary?.zoneBreakdown ?? summary?.zone_breakdown ?? [],
+  activeEventsCount: summary?.activeEventsCount ?? summary?.active_events_count,
+  roundsCount: summary?.roundsCount ?? summary?.rounds_count,
 })
 
 export const summarizeMarketFromRanking = ({
@@ -119,6 +166,17 @@ export const buildVolumeCard = (summary, formatInt) => ({
   caption: `Real share: producers ${summary.realPlayers.producerSharePct.toFixed(1)}% · consumers ${summary.realPlayers.consumerSharePct.toFixed(1)}%`,
 })
 
+export const buildPriceCard = (summary) => {
+  if (!summary?.priceStats?.count) return null
+
+  return {
+    key: 'prices',
+    title: 'Prices',
+    value: `Avg ZAR ${formatSignedNumber(summary.priceStats.avgZarPerMwh, 1)}/MWh`,
+    caption: `Min ZAR ${formatSignedNumber(summary.priceStats.minZarPerMwh, 1)} · Max ZAR ${formatSignedNumber(summary.priceStats.maxZarPerMwh, 1)}`,
+  }
+}
+
 export const buildCompositionSection = (summary, formatInt) => ({
   title: 'Real vs synthetic market volume',
   rows: [
@@ -140,3 +198,34 @@ export const buildCompositionSection = (summary, formatInt) => ({
     },
   ],
 })
+
+export const buildZoneSection = (summary, formatCurrency, formatInt) => {
+  if (!Array.isArray(summary?.zoneBreakdown) || summary.zoneBreakdown.length === 0) return null
+
+  return {
+    title: 'Per-zone market and network impacts',
+    columns: [
+      { key: 'zone', label: 'Zone' },
+      { key: 'productionCost', label: 'Production Cost', align: 'right' },
+      { key: 'profit', label: 'Profit', align: 'right' },
+      { key: 'atcRestrictions', label: 'ATC Restrictions' },
+      { key: 'balancingCost', label: 'Balancing / Congestion Cost', align: 'right' },
+      { key: 'balancingAverages', label: 'Avg Cost' },
+      { key: 'notDelivered', label: 'Not Delivered', align: 'right' },
+      { key: 'notReceived', label: 'Not Received', align: 'right' },
+    ],
+    rows: summary.zoneBreakdown.map((zone) => ({
+      key: `zone-${zone.zoneId}`,
+      zone: `Zone ${zone.zoneId}`,
+      productionCost: formatCurrency(zone.productionCostZar),
+      profit: formatCurrency(zone.profitZar),
+      atcRestrictions: zone.bindingLinkCount > 0
+        ? `${zone.bindingLinkCount} binding link${zone.bindingLinkCount === 1 ? '' : 's'}${zone.bindingLinks.length ? ` (${zone.bindingLinks.join(', ')})` : ''} · ATC cost ${formatCurrency(zone.atcDispatchCostZar)}`
+        : `No binding links · ATC cost ${formatCurrency(zone.atcDispatchCostZar)}`,
+      balancingCost: `${formatCurrency(zone.balancingCostZar)}${zone.balancingSupportMwh > 0 ? ` · support ${formatInt(zone.balancingSupportMwh)} MWh` : ''}`,
+      balancingAverages: `${zone.balancingCostPerKwhZar.toFixed(4)} ZAR/kWh · ${zone.consumerCount > 0 ? formatCurrency(zone.balancingCostPerCustomerZar) : '—'} per customer`,
+      notDelivered: `${formatInt(zone.gridCurtailedMwh)} MWh`,
+      notReceived: `${formatInt(zone.unservedDemandMwh)} MWh`,
+    })),
+  }
+}

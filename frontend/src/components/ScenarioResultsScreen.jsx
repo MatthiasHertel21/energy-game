@@ -39,7 +39,9 @@ import { getRoleTerminology } from '../utils/roleTerminology';
 import {
   buildCompositionSection,
   buildParticipantsCard,
+  buildPriceCard,
   buildVolumeCard,
+  buildZoneSection,
   normalizeMarketSummary,
   summarizeMarketFromRanking,
 } from '../utils/marketOverview'
@@ -314,10 +316,12 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
         buildParticipantsCard(scenarioMarketSummary),
         buildVolumeCard(scenarioMarketSummary, formatInt),
         { key: 'profit', title: 'Total Market Profit', value: formatCurrency(totalProfit), caption: `Real players · average score ${avgScore.toFixed(1)}` },
+        buildPriceCard(scenarioMarketSummary),
         { key: 'co2', title: 'Total CO₂', value: `${formatInt(totalCo2)} kg`, caption: `Real players · total settlement revenue ${formatCurrency(totalRevenue)}` },
-      ],
+      ].filter(Boolean),
       sections: [
         buildCompositionSection(scenarioMarketSummary, formatInt),
+        buildZoneSection(scenarioMarketSummary, formatCurrency, formatInt),
         {
           title: 'Scenario-wide summary',
           rows: [
@@ -346,7 +350,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
             profit: formatCurrency(row?.total_profit || 0),
           })),
         },
-      ],
+      ].filter(Boolean),
     };
   }, [safeRanking, totalRoundsDisplay, challengeHistory.length, resolvedIsProducer, market_summary]);
 
