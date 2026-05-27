@@ -1,149 +1,237 @@
 # Calculation Engine Guide
 
-Last updated: 2026-02-25  
+Last updated: 2026-05-27
 Audience: Admins, Designers, Technical Trainers
 
-## 1) Engine purpose
+## 1) What this guide is for
 
-The engine converts player inputs and scenario rules into round outcomes:
-- market prices and cleared volumes,
-- dispatch/consumption per hour and device,
-- KPI summaries used across player/trainer/evaluation UIs.
+The calculation engine turns scenario configuration and player submissions into settled market outcomes. It is the source of truth for:
+- prices,
+- cleared quantities,
+- dispatch or consumption,
+- KPI totals,
+- the result payloads shown in the player and trainer UIs.
 
-It is the canonical source of truth for settlement numbers.
+This guide describes the current implemented behavior at a product level. For deep formulas and older detailed derivations, use the repository document `docs/CALCULATION_ENGINE.md` as the longer reference.
 
 ## 2) Core round pipeline
 
-For each round, the system performs:
-1. Load session, scenario, role assignments, and current submissions.
-2. Determine active hours and market availability (DA/ID rules).
-3. Resolve active events for this round.
-4. Apply technical and event constraints to capacities/demand.
-5. Clear market(s) and derive price signals.
-6. Compute dispatch, imbalance, costs, and KPI components.
-7. Persist result payloads and publish round status.
+For each round, the engine performs this sequence:
+1. Load the session, scenario, player assignments, and current submissions.
+2. Determine the active hours, round-local offsets, and market availability for DAM and IDM.
+3. Resolve all events that are active for the round.
+4. Build effective capacity or demand from device data, profiles, and event effects.
+5. Accept tradable bids according to the round's trading state.
+6. Clear the market and derive price and volume outputs.
+7. Apply physical and grid-related settlement logic.
+8. Compute KPI totals and detailed breakdowns.
+9. Persist results and publish the next session state.
 
-## 3) Input domains that shape outcomes
+## 3) Input blocks that actually shape outcomes
 
-- **General timing** (`general`): round span, horizon, gate/freeze behavior.
-- **Market config** (`market`, `markets`): caps/floors and per-round trading states.
-- **Physical model** (`devices`, `player_types`): who can do what technically.
-- **Scenario dynamics** (`events`, `environment`): temporary shifts and profiles.
-- **Player actions** (bids/forecasts): the primary controllable variable.
+The most important scenario blocks are:
+- `general`: round span, number of rounds, timing, freeze, balancing, and player editing rules,
+- `market` and `markets`: price limits plus DAM and IDM trading state per round,
+- `devices`: technical constraints and cost structure,
+- `player_types`: role mapping, device ownership, and zone location,
+- `events`: trigger logic plus multiplier and additive impacts,
+- `grid`: zones, ATC, losses, curtailment, and shortfall settlement,
+- `player_input`: which hours the player may edit and how the UI behaves.
 
-## 4) Event handling model
+Player submissions are only one part of the result. Scenario structure can materially restrict what those submissions can achieve.
 
-Events are filtered by round activation logic (trigger + duration/probability).  
-For affected scope (`all`, `player`, `device`), event modifiers are applied before clearing.
+## 4) Bidding and market clearing model
+
+### Implicit versus explicit bidding
+
+Devices may operate in:
+- **implicit mode**, where the player edits one hourly quantity profile,
+- **explicit multi-bid mode**, where the player submits price layers.
+
+The current UI supports up to five bid layers per device:
+- `A`
+- `B`
+- `C`
+- `D`
+- `E`
+
+### How lots are cleared
+
+The implemented clearing rule is:
+- bid layers are ordered from lower to higher price,
+- clearing walks up that order until demand is satisfied,
+- all cleared volume receives the System Marginal Price (SMP), not the individual bid price.
+
+This matters for interpretation:
+- a low bid price improves the chance of clearing,
+- profit still depends on SMP, variable cost, imbalance, and grid effects,
+- a bid can clear and still lead to a bad net result if the quantity was not deliverable.
+
+### Market availability per round
+
+For each round, DAM and IDM trading can be:
+- `Gated` (`market_code` behavior),
+- always enabled,
+- disabled.
+
+Important: trading controls whether player bids are accepted for that market phase. Clearing itself still occurs as part of the round settlement pipeline.
+
+## 5) Effective capacity and demand
+
+The engine does not settle against static nameplate values alone. It derives effective capability from:
+- device configuration,
+- hourly profiles,
+- seasonal or monthly profiles,
+- renewable availability,
+- state of charge for batteries,
+- event modifiers.
 
 Conceptually:
-- `available_capacity` is derived from base plus availability/profile factors,
-- `effective_capacity = available_capacity * multiplier + additive`.
 
-This is why outages or demand spikes can drastically alter dispatch and imbalance outcomes.
+```text
+effective_value = available_value * multiplier + additive
+```
 
-## 5) Price and dispatch concepts
+That is why a player can offer a quantity that looked sensible in the editor but still incur imbalance in the live round.
 
-- **SMP** (day-ahead/system price) comes from clearing supply-demand intersection under market bounds.
-- **IDP** is based on intraday trade dynamics with configured constraints.
-- Cleared quantity is distributed across submitted bid structures (including lot logic where enabled).
+## 6) Battery behavior
 
-Interpretation note: price can look stable while cost/profit swings sharply due to quantity mismatch effects.
+Battery settlement includes:
+- power limits,
+- energy limits,
+- state-of-charge tracking,
+- efficiency,
+- optional threshold-based auto-bid behavior.
 
-## 6) KPI composition logic
+When auto-bid is enabled, player-side thresholds drive charge and discharge decisions, but the engine still enforces the battery's physical limits.
 
-Top-level KPIs are composed from hourly and per-device settlements:
-- revenue/cost settlement,
-- variable + fixed costs,
-- imbalance and curtailment components,
-- congestion and additional adjustments where applicable.
+## 7) Grid and zonal settlement
 
-The UI should reconcile with this structure; rounding differences are expected but should be bounded.
+The current grid implementation supports:
+- 1 to 5 zones,
+- symmetric ATC matrices,
+- transmission losses per link,
+- player-type-specific zones,
+- network shortfall pricing,
+- configurable generator curtailment rules.
 
-## 7) Why imbalance can dominate profit
+Important current rule:
+- `player_types[].zone` is the authoritative location for assets,
+- `general.player_zone` is only a legacy fallback for older scenarios.
 
-Large imbalance cost usually indicates a structural mismatch between planned and deliverable/actual volume.  
-Typical causes:
-- event-driven capacity reduction,
-- over-offering despite lower effective capacity,
-- gate-timing mismatch and limited correction options.
+### Network settlement concepts
 
-When imbalance grows, profit can turn negative even with high gross market revenue.
+Relevant configuration blocks include:
+- `extra_cost_mode`,
+- `cost_allocation_target`,
+- `shortfall_price_mode`,
+- `shortfall_price_value`,
+- `generator_curtailment_mode`.
 
-## 8) Result payload layers (conceptual)
+In practice, this means a round can look commercially cleared at the market level while still producing zonal shortfall cost, ATC cost, or curtailment once the network is checked.
 
-A round result generally includes:
-- top-level KPI aggregate,
+## 8) Event model
+
+Events are resolved by:
+- trigger type,
+- trigger value,
+- duration,
+- target scope,
+- multiplier,
+- additive term.
+
+The engine applies multiplier first and additive second. This design is visible in the player results because event-driven drops in effective capacity or shifts in demand appear before dispatch and imbalance are calculated.
+
+## 9) KPI composition
+
+Current KPI sets can include:
+- revenue,
+- profit,
+- variable cost,
+- fixed cost,
+- imbalance cost,
+- curtailment cost,
+- ATC or grid-constraint cost,
+- congestion revenue,
+- CO2 emissions,
+- planned MWh,
+- actual MWh,
+- dispatched MWh,
+- zone shortfall MWh.
+
+Round and cumulative views are built from these layers. Small UI rounding differences can happen, but the data should still reconcile directionally and structurally.
+
+## 10) Result payload layers and where they appear
+
+A complete round result contains more than headline KPIs. The current UI consumes:
+- top-level round KPIs,
 - hourly market outcomes,
-- per-device hourly breakdown,
-- bid/dispatch details,
-- metadata needed for explanation screens.
+- per-device hourly breakdowns,
+- bid or lot detail,
+- player-zone and balancing metadata,
+- ranking and market summary data for trainer and final result screens.
 
-Design goal: explainability from KPI down to hour-level causes.
+This powers several explanation surfaces:
+- player round results,
+- device deep-dive tabs,
+- market overview dialogs,
+- trainer market overview,
+- final scenario summary.
 
-## 9) Shared-mode orchestration
+## 11) Why imbalance often dominates the story
 
-In trainer-led shared sessions:
+Large imbalance cost usually means the plan and the physically feasible outcome diverged. Common causes are:
+- event-driven capacity reduction,
+- aggressive volume despite lower effective capacity,
+- locked hours or gate timing that prevented correction,
+- network-induced constraints.
+
+That is why a player can show strong revenue and still have poor profit.
+
+## 12) Solo mode versus shared mode
+
+The engine serves both orchestration models:
+
+### Solo mode
+
+- the player starts the scenario,
+- the player advances between rounds after results,
+- the flow is self-paced within the scenario rules.
+
+### Shared trainer-led mode
+
 - players submit,
-- waiting state persists,
-- trainer advances the session.
+- the UI stays in a waiting state,
+- the trainer advances the session,
+- engine state updates must stay aligned with that control model.
 
-Engine processing and session status updates must align with this control model to avoid UX inconsistency.
+This difference is operational, not mathematical, but it matters for debugging because some "stuck" reports are really orchestration misunderstandings.
 
-## 10) Debugging methodology
+## 13) Recommended debugging sequence
 
-### Step 1: Scope first
+When numbers look wrong, check in this order:
+1. session ID, round number, player or role, and timestamp,
+2. active events and market availability,
+3. player type, devices, and zone assignment,
+4. base versus effective capacity or demand,
+5. planned versus dispatched or actual quantity,
+6. imbalance, curtailment, and ATC or grid cost,
+7. whether the UI is rendering the current payload or stale expectations.
 
-- session ID,
-- round number,
-- affected role/player,
-- symptom category (missing dispatch, high imbalance, wrong explanation text).
+## 14) Validation checklist for scenario or engine-facing changes
 
-### Step 2: Validate mechanics
+Before release, verify at least:
+- event impacts are visible in effective rows,
+- explicit bid layers clear in the expected order,
+- zonal costs are explainable when the grid is active,
+- round results and final results reconcile with the payload,
+- shared-mode waiting and trainer advancement still behave correctly,
+- handbook wording still matches the shipped mechanics.
 
-- active events for round,
-- market availability state,
-- selected player type and mapped devices,
-- effective vs base capacity rows.
+## 15) Common failure patterns
 
-### Step 3: Reconcile numbers
-
-- KPI totals vs hourly sums,
-- hourly imbalance vs imbalance cost,
-- device-level contributions to outliers.
-
-### Step 4: Confirm UX representation
-
-- detail table matches backend payload,
-- explanation text references relevant causal factors.
-
-## 11) Validation strategy for scenario changes
-
-Minimum safe sequence:
-1. one-round dry run with one role,
-2. multi-round run with known event timing,
-3. shared-mode trainer progression test,
-4. report consistency check (KPI cards vs detail tables).
-
-## 12) Quality criteria for engine-facing changes
-
-Prefer changes that preserve:
-- deterministic reproducibility where expected,
-- explicit event-to-impact traceability,
-- numeric reconciliation across layers,
-- backwards compatibility for historical result payloads.
-
-## 13) Common failure patterns
-
-- wrong round/hour mapping (absolute vs round-local indices),
-- event target mismatch (role/device IDs),
-- stale assumptions in explanation text,
-- incomplete fallback handling in legacy result formats.
-
-## 14) Practical review checklist before release
-
-- event impacts visible in effective capacity/demand rows,
-- imbalance spikes are explainable from detail data,
-- guide text matches actual mechanics,
-- no regression in round progression flow,
-- build/test smoke checks pass.
+- confusing absolute hours with round-local offsets,
+- wrong event target IDs,
+- outdated assumptions about how many bid layers exist,
+- treating static capacity as if it were settled capacity,
+- documenting handbook behavior from old routes instead of current UI.

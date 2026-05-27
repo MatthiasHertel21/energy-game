@@ -1,6 +1,6 @@
 # QA Checks & Testing Guide
 
-**Sprint 20 Status**: 20 Cypress E2E specs passing | Performance baseline established | A11y gaps identified
+**Current snapshot (2026-05-27)**: the repository currently contains 24 Cypress spec files under `frontend/cypress/e2e/`. This guide mixes current execution commands with historical performance and a11y baseline notes that are still useful for comparison.
 
 ---
 
@@ -16,9 +16,9 @@ npm run build
 
 ## 2. Automated Testing
 
-### Cypress E2E Tests (20 specs)
+### Cypress E2E Tests (24 spec files in the repo)
 
-**Current Coverage**: **20 specs** all passing as of Sprint 20
+**Current Coverage Snapshot**: 24 spec files are present in `frontend/cypress/e2e/`. Treat pass/fail status as a live CI concern, not as a fixed historical claim in this document.
 
 ```bash
 cd frontend
@@ -79,12 +79,12 @@ locust -f locustfile.py --host=http://localhost:5001 --users=100 --spawn-rate=10
 # View UI at http://localhost:8089
 ```
 
-**Sprint 20 Baseline** (100 users, 3min test, 8,770 requests):
+**Historical Sprint 20 Baseline** (100 users, 3min test, 8,770 requests):
 - **Response Time**: p50=4ms, p95=8ms, p99=15ms ✅ (excellent)
 - **Throughput**: ~50 req/s
 - **Error Rate**: 93.16% ❌ (86.3% rate limiting 429, 6.8% auth 401)
 
-**Sprint 21 Actions**:
+**Open Follow-Up Items**:
 - Fix JWT authentication in `locustfile.py`
 - Disable/adjust rate limiting for testing environment
 - Run 10min+ tests for realistic throughput measurement
@@ -105,12 +105,12 @@ See `docs/PERFORMANCE_RESULTS.md` for detailed metrics and recommendations.
 
 **Checks**: axe-core serious/critical violations only
 
-**Known Gaps** (Sprint 21):
+**Known Gaps**:
 - KSE Market tab: Accessibility validation missing
 - KSE Preview tab: Accessibility validation missing
 - Player forecast editor: Chart interactions need keyboard support
 
-**Action**: Sprint 21 will add axe checks for KSE tabs and player chart editor.
+**Action**: add axe checks for deeper KSE tabs and the player chart editor once those flows are part of the active regression baseline.
 
 ---
 

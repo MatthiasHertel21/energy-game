@@ -1,5 +1,7 @@
 # Staging Deployment Checklist
 
+> Status-Hinweis (2026-05-27): Diese Checkliste ist weiterhin nutzbar, enthält aber historische Rollout-Annahmen. Vor einer Übergabe oder einem Neuaufbau zusätzlich `docs/HANDOVER_CHECKLIST.md`, `docs/DEPLOYMENT.md` und `docs/RUNBOOK.md` nutzen.
+
 ## Pre-Deployment
 
 ### Server Vorbereitung
@@ -15,7 +17,7 @@
 - [ ] DNS-Propagation überprüft: `dig energy.fastbreak.one`
 
 ### Lokal
-- [ ] Repository auf `feature/catalog-campaigns` Branch
+- [ ] Repository auf `main` oder vereinbartem Release-Tag
 - [ ] Alle Änderungen committed
 - [ ] .gitignore prüfen (keine Secrets committen)
 
@@ -76,7 +78,7 @@
 ### Smoke Tests
 - [ ] Frontend lädt: `https://energy.fastbreak.one`
 - [ ] Backend erreichbar: `https://energy.fastbreak.one/api/health`
-- [ ] API Docs erreichbar: `https://energy.fastbreak.one/api/doc`
+- [ ] API Docs erreichbar: `https://energy.fastbreak.one/api/docs`
 - [ ] Login funktioniert (Admin)
 - [ ] WebSocket verbindet (Trainer Dashboard)
 - [ ] Designer: Scenario erstellen

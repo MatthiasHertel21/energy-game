@@ -2,6 +2,8 @@
 
 Diese Dokumentation enthält alle notwendigen Informationen für das Deployment der EMSG-Anwendung auf einen Staging-Server.
 
+> Status-Hinweis (2026-05-27): Dieses Staging-Bundle enthält noch historische Rollout-Details aus Dezember 2025. Für den aktuellen Übergabestandard zuerst `README.md`, `docs/HANDOVER_READINESS.md`, `docs/HANDOVER_CHECKLIST.md`, `docs/DEPLOYMENT.md` und `docs/RUNBOOK.md` lesen. Verwende `main` oder einen abgestimmten Release-Tag statt des inzwischen abgelösten fruheren Feature-Branches.
+
 ## 📋 Dokumentation Übersicht
 
 ### 1. [STAGING_READINESS.md](STAGING_READINESS.md)
@@ -77,7 +79,7 @@ Diese Dokumentation enthält alle notwendigen Informationen für das Deployment 
 # Repository klonen
 git clone https://github.com/MatthiasHertel21/energy-game.git
 cd energy-game
-git checkout feature/catalog-campaigns
+git checkout main
 
 # Mit Staging-Compose testen (lokal)
 ./deploy-staging.sh
@@ -98,7 +100,7 @@ ssh user@your-staging-server
 # Repository klonen
 git clone https://github.com/MatthiasHertel21/energy-game.git ~/apps/emsg-staging
 cd ~/apps/emsg-staging
-git checkout feature/catalog-campaigns
+git checkout main
 
 # Deployment-Script ausführen
 ./deploy-staging.sh
@@ -250,7 +252,7 @@ tar -xzf uploads-backup.tar.gz
 
 ### Health Endpoints
 - Backend: `https://energy.fastbreak.one/api/health`
-- API Docs: `https://energy.fastbreak.one/api/doc`
+- API Docs: `https://energy.fastbreak.one/api/docs`
 
 ---
 

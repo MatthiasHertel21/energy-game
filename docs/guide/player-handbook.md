@@ -1,191 +1,256 @@
 # Player Guide
 
-Last updated: 2026-04-30  
+Last updated: 2026-05-27
 Audience: Players
 
-## 1) Purpose of this guide
+## 1) What this guide helps you do
 
-This guide helps you make better decisions during a session, not just click through screens.  
-You will learn:
-- what to do before each round,
-- how to read market timing correctly,
-- how to avoid expensive imbalance outcomes,
-- how to interpret your round report and adjust strategy.
+This guide is for players who want to understand both the screen flow and the market logic behind it.
+You should finish it knowing:
+- where to enter and resume sessions,
+- how to work with the active-round screen,
+- how bidding, timing, and editable-hour restrictions affect you,
+- how to read round and scenario results well enough to improve in the next round.
 
-## 2) Round lifecycle (what happens in practice)
+## 2) Your normal player journey
 
-Each round follows the same basic loop:
-1. **Preparation**: read active task/events and check tradable hours.
-2. **Planning**: decide quantities and prices per device/lot.
-3. **Submission**: submit before timer ends.
-4. **Settlement**: backend clears markets and computes KPIs.
-5. **Review**: analyze round results and prepare your next move.
+### Home
 
-### Quick decision checklist before submit
+`/home` is your landing page after login. It shows:
+- active or resumable sessions,
+- live trainer-led shared sessions you can join,
+- quick session statistics,
+- an `Ask AI` helper for page-specific guidance.
 
-- Did you check current round window and gate state (DA/ID)?
-- Are quantities realistic versus effective capacity/demand?
-- Are your lot prices intentional (not accidental leftovers)?
-- Do your key hours match expected market conditions?
+Use Home if you want to resume the most important open session quickly.
 
-## 3) Main pages and statuses
+### Campaign Catalog and Campaign Detail
 
-- `Briefing`: scenario context, your role, devices, objectives, and starting assumptions.
-- `Running / Round Active`: primary workspace for bids, charts, and market view.
-- `Round Closing / Calculating`: no edits, engine is processing outcomes.
-- `Round Results`: KPI cards, detail tables, and interpretation hints.
-- `Scenario Complete`: final summary and debrief screens.
+`/catalog` and `/catalog/:id` are your main entry points for starting work:
+- browse published campaigns,
+- open a campaign to see the scenario sequence,
+- start a fresh solo session,
+- join a currently running trainer-led shared session if one exists for that scenario,
+- re-open one of your recent completed runs for review.
 
-### Layout of the running screen
+Important: the catalog starts a new solo run. It does not continue an old solo session in place.
 
-The player screen has three columns:
+### Briefing
 
-- **Left** – active events, tasks, and scenario challenges.
-- **Middle** – forecast chart editor (hourly bid curves, lot visualization).
-- **Right** – market insights (DAM/IDM price and volume charts) and **My Devices** card.
+Before the first live round, the `Briefing` screen shows:
+- scenario description,
+- Solo Mode or Shared Market mode,
+- number of rounds and round duration,
+- required and optional challenges,
+- your selected player type and assigned devices,
+- an `Ask Briefing AI` helper.
 
-### My Devices card
+In solo sessions you start the scenario yourself. In shared sessions the trainer may control the start.
 
-The right column shows all devices assigned to your player type:
+### Profile and Replay
 
-- **Device name** and type badge.
-- **Capacity**: MW for generators; power/energy/efficiency for batteries; baseline and peak MW for loads.
-- **Variable Cost**: for coal and gas devices the cost tiers are listed by utilization range (e.g., 0–60 % → 380 ZAR/MWh, 60–90 % → 440 ZAR/MWh, 90–100 % → 520 ZAR/MWh). For other device types a single ZAR/MWh value is shown.
-- **Fixed Cost**: ZAR/hour if configured.
+Outside the live round you also have:
+- `Profile` for name, bio, career statistics, and recent session history,
+- `Replay` for SMP and volume over rounds, plus per-round player KPI tables and PNG/SVG exports.
 
-## 4) Shared-market behavior after submit
+## 3) Session lifecycle and control model
 
-In trainer-led shared sessions, once you submit:
-- you see participant submit status,
-- you cannot advance the round yourself,
-- trainer controls progression.
+The most important statuses are:
+1. `Briefing`
+2. `Running` or `Round Active`
+3. `Round Closing` or `Calculating`
+4. `Round Results`
+5. `Scenario Complete`
 
-Expected message: “Please wait: The trainer will advance to the next phase.”
+Shared-mode rule:
+- after you submit, you wait,
+- the trainer advances the session,
+- you do not control the transition into the next round yourself.
+
+If you see a waiting message after submit, that is usually expected behavior in shared mode.
+
+## 4) Active round workspace
+
+The player screen is organized into three working areas:
+
+- **Left column**: active events, tasks, challenges, and round context.
+- **Middle column**: bid entry in chart view or field view.
+- **Right column**: market insight tabs and the `My Devices` card.
+
+Useful helpers on this screen:
+- `Ask About This Round` explains the current situation with the live round context.
+- `Briefing` access lets you revisit the scenario setup.
+- trainer broadcasts appear as in-app notifications during live shared sessions.
+
+### Hour editing behavior
+
+The hour chips and timeline indicators are the source of truth for editability:
+- editable hours can be changed,
+- locked hours are blocked by timing, freeze rules, or scenario input scope,
+- some scenarios enable smooth dragging, where neighboring editable hours move with falloff,
+- other scenarios restrict dragging to the selected hour only.
+
+If a field is disabled, assume scenario timing or hour-scope rules first.
 
 ## 5) Working with devices and bids
 
-### Single-series mode
+### My Devices card
 
-- You edit one hourly quantity profile per device.
-- Best for quick baseline strategies.
+The device card on the right summarizes what you control:
+- device name and type,
+- generator capacity or load baseline/peak,
+- battery power, energy, efficiency, and auto-bid capability where configured,
+- variable cost tiers for coal and gas,
+- fixed cost per hour when configured.
 
-### Multi-bid mode (lots A/B/C)
+Important: charts and max-power reference lines use the **effective** capacity for the current round, not just the static nameplate value. Effective capacity can change because of hourly profiles, seasonal effects, events, and round context.
 
-- You set **price + quantity** per lot.
-- Typical intent:
-  - **Lot A (Base)**: high probability / conservative price.
-  - **Lot B (Mid)**: conditional volume.
-  - **Lot C (Peak)**: opportunistic, price-sensitive part.
+### Implicit mode
 
-### Three practical patterns
+If a device has no explicit bid layers configured, you edit one hourly profile for that device.
+This is the simplest way to play and is common for baseline strategies.
 
-1. **Stability pattern**: large base lot, limited peak lot.  
-2. **Price-seeking pattern**: moderate base, bigger mid/peak spread.  
-3. **Risk-control pattern**: reduced offered quantity in uncertain/event rounds.
+### Explicit multi-bid mode
 
-### Battery auto-mode
+Some devices support explicit bidding with up to five lots:
+- `A` - Baseload
+- `B` - Mid-Merit
+- `C` - Peak
+- `D` - Reserve
+- `E` - Flex
 
-If the scenario enables it, batteries can operate in automatic mode:
+In this mode you set both **price** and **quantity** per lot. The default split used by the UI is `50 / 20 / 15 / 10 / 5` unless the scenario defines custom defaults.
 
-- Set a **charge-below price** (buy threshold in ZAR/MWh): battery charges when SMP is at or below this level.
-- Set a **discharge-above price** (sell threshold in ZAR/MWh): battery discharges when SMP is at or above this level.
+How clearing works in practice:
+- lower-priced lots are considered first,
+- clearing proceeds from cheapest to most expensive bids until demand is met,
+- all cleared lots settle at the System Marginal Price (SMP), not at their own bid price.
 
-While auto-mode is active, manual hourly curves and bid lots for the battery are disabled. The system automatically caps quantities by available power and current state of charge.
+Practical use:
+- keep essential volume in cheaper, high-probability lots,
+- place riskier or opportunity volume in higher lots,
+- reduce total volume when events or low effective capacity increase delivery risk.
 
-Guideline: the discharge threshold should normally be higher than the charge threshold. A reversed order may cause unattractive charge/discharge cycles.
+### Battery auto-bid mode
 
-### Market insight tabs (right panel)
+If a battery allows auto-bidding, you can switch from manual hourly control to thresholds:
+- `Charge below price`: the battery charges when SMP is at or below this value.
+- `Discharge above price`: the battery discharges when SMP is at or above this value.
 
-The market insights card offers two tabs:
-- **DAM** (Day-Ahead Market): shows supply/demand curves, SMP, and cleared volume for the current round.
-- **IDM** (Intra-Day Market): shows IDP and IDM volume if intra-day trading is active in the scenario.
+While auto-bid is active:
+- manual battery curves are disabled,
+- battery actions are capped by power, state of charge, and efficiency,
+- a discharge threshold above the charge threshold is usually the sensible setup.
 
-## 6) Market timing, gate logic, and editable hours
+## 6) Market timing and editable-hour scope
 
-Not every hour is tradable in every round. The timeline and hour status indicators are your source of truth.
+The app can restrict what you may edit in a round. Common patterns are:
+- all hours editable,
+- only the first hour editable,
+- only the first two or three hours editable,
+- custom hour offsets inside the round.
 
-Important implications:
-- locked hours cannot be changed anymore,
-- freeze logic may restrict late edits,
-- DA and ID availability differ by round and scenario rules.
+Additional scenario settings may also apply:
+- hidden non-editable hours are not shown and are submitted as `0`,
+- future or past rounds may be locked if `allow_other_rounds_editing` is disabled,
+- DAM and Intraday participation can differ by round.
 
-If something is disabled, assume timing rule first (not a bug).
+The market insight tabs help you understand what is open:
+- `Day-Ahead` shows supply, demand, SMP, and volume for the round view.
+- `Intraday` shows ID-related price and volume information when intraday trading is active.
 
-## 7) Events: how they should influence your decisions
+## 7) Events and what they mean for you
 
-Events can modify capacity/demand with multiplier/additive logic before clearing.  
-Example: outage event with multiplier `0.2` means available capacity is heavily reduced.
+Events can change capacity or demand before clearing. The most important player consequence is simple:
+- if events lower effective capacity, reduce risky volume immediately,
+- if events increase demand or opportunity, check whether your available volume still fits your technical limits,
+- confirm the event impact in the result tables afterward.
 
-Player rule:
-- if capacity is event-reduced, lower offered quantities immediately,
-- avoid selling/buying volumes you likely cannot physically deliver/consume,
-- verify effective capacity row in detail report after the round.
+The engine applies event effects before settlement. That is why old bids can become dangerous when a new event starts.
 
 ## 8) Reading round results correctly
 
-### KPI cards (top level)
+### KPI cards
 
-- **Revenue / Costs**: settled market value.
-- **Profit / Net result**: revenue minus cost components.
-- **Dispatched/Consumed MWh**: physically settled quantity.
-- **Imbalance Cost**: penalty/cost from mismatch between planned and actual.
+Round Results can show both current-round and cumulative values. Common KPI categories are:
+- revenue,
+- profit,
+- variable cost,
+- fixed cost,
+- imbalance cost,
+- curtailment cost,
+- ATC or grid-constraint cost,
+- CO2 emissions,
+- planned, actual, and dispatched MWh.
 
-### Why high imbalance happens
+### Best order for diagnosis
 
-Common causes:
-- event-driven capacity drop,
-- aggressive quantities despite lower effective capacity,
-- large plan vs actual mismatch across key hours.
+Read the result in this order:
+1. Base vs effective capacity or demand
+2. Planned or offered vs dispatched or consumed volume
+3. Imbalance MWh and imbalance cost
+4. Curtailment and grid-related costs
+5. Final profit or net result
 
-### How to use the detail table
+### Extra result tools you should use
 
-Check these rows in order:
-1. `Base Capacity/Demand` vs `Effective Capacity/Demand`
-2. `Offered/Demanded` vs `Dispatched/Consumed`
-3. `Imbalance (MWh)` and `Imbalance Cost`
-4. `Net Revenue/Cost`
+The results screen includes more than the KPI cards:
+- a `Market Overview` dialog for round-wide price, volume, participant, and zone context,
+- device deep-dive tabs with device-level hourly breakdowns,
+- hour-by-hour matrix tables that show where the mismatch started.
 
-If effective capacity is much lower than base and imbalance is high, your next round should reduce risk exposure.
+If a result looks surprising, open those detail layers before changing strategy.
 
-## 9) Fast strategy adaptation after a bad round
+## 9) Scenario complete screen
 
-If profit drops due to imbalance:
-- cut risky volume in affected hours,
-- keep core volume in safer lot/price range,
-- re-check event scope (your role/device or all players),
-- prioritize deliverability over upside in outage rounds.
+At the end of a scenario you get a final summary with:
+- cumulative KPIs,
+- final ranking,
+- round history,
+- challenge completion,
+- market summary cards.
+
+Use this screen together with `Replay` and `Profile` if you want to compare what happened over several rounds or several sessions.
+
+## 10) Fast adjustment rules after a bad round
+
+If imbalance cost is too high:
+- lower volume in the affected hours,
+- move critical volume into safer lots,
+- re-check event scope and effective capacity,
+- prioritize deliverability over upside.
 
 If dispatch is too low:
-- compare your lot prices with SMP/IDP in the report,
-- adjust price levels where bids were priced out,
-- separate “must clear” and “opportunistic” quantities across lots.
+- compare your bid prices against SMP or intraday prices,
+- lower the price of the volume that must clear,
+- separate must-clear and optional volume more clearly across lots.
 
-## 10) Common mistakes and how to avoid them
+If the screen feels too restrictive:
+- check whether you are looking at hidden or non-editable hours,
+- check gate timing and freeze state,
+- check whether the round has already moved into closing or results.
 
-- **Mistake**: leaving old quantities active after an event starts.  
-  **Fix**: always re-open key devices at round start and check event banner.
+## 11) Common mistakes
 
-- **Mistake**: treating base capacity as guaranteed.  
-  **Fix**: use effective capacity as operational limit.
+- Leaving old bids unchanged after an event starts.
+- Treating static capacity as guaranteed instead of using effective capacity.
+- Looking only at revenue while ignoring imbalance and curtailment.
+- Using too many aggressive lots without reserving a safe base volume.
+- Waiting until the final seconds instead of leaving time for a cross-device sanity check.
 
-- **Mistake**: focusing only on revenue and ignoring imbalance.  
-  **Fix**: track imbalance cost per hour in every result review.
+## 12) Troubleshooting
 
-- **Mistake**: submitting too late without sanity check.  
-  **Fix**: reserve last 60–90 seconds for a cross-device review.
+- Inputs disabled: verify round status, gate timing, and hour-scope restrictions.
+- Waiting after submit: expected in shared mode until the trainer advances.
+- No active session found: return to Home or Campaign Catalog and start or join again.
+- Numbers look wrong: inspect market overview, device deep-dive tabs, and hourly imbalance before escalating.
+- Stale UI state: reload once and re-open the session.
 
-## 11) Troubleshooting
+## 13) Personal improvement routine
 
-- Inputs disabled: verify round status, gate/freeze state, and timer.
-- Waiting screen after submit: expected in shared mode; trainer advances.
-- Values look stale: reload once and re-open session.
-- Unexpected KPI numbers: inspect hourly imbalance and event impact first.
-
-## 12) Personal improvement routine (recommended)
-
-After each round, capture three notes:
+After each round, write down:
 1. one thing that worked,
-2. one source of avoidable cost,
-3. one concrete adjustment for next round.
+2. one avoidable source of cost,
+3. one concrete change for the next round.
 
-This creates a repeatable learning loop and usually improves results after 2–3 rounds.
+That small loop is usually enough to improve within two or three rounds.

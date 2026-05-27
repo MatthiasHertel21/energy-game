@@ -1,0 +1,29 @@
+name: Handbook Sync Check
+
+'on':
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'docs/guide/**'
+      - 'frontend/public/handbooks/**'
+      - 'sync-handbooks.sh'
+      - '.github/workflows/handbook-sync-check.yml'
+  push:
+    branches: [main, develop]
+    paths:
+      - 'docs/guide/**'
+      - 'frontend/public/handbooks/**'
+      - 'sync-handbooks.sh'
+      - '.github/workflows/handbook-sync-check.yml'
+  workflow_dispatch:
+
+jobs:
+  handbook-sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify mirrored handbook files
+        run: bash ./sync-handbooks.sh --check

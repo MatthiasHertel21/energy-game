@@ -2,6 +2,8 @@
 
 Production deployment guide for Energy Market Simulation Game (EMSG).
 
+> Status note (2026-05-27): Treat this as the primary deployment guide. Start environment setup from `.env.example`, and use `docker-compose` in this workspace because the current host exposes the legacy wrapper while still reporting Compose v2. Use `docs/RUNBOOK.md` plus `docs/HANDOVER_CHECKLIST.md` for operating and handover expectations.
+
 ---
 
 ## Prerequisites
@@ -18,14 +20,13 @@ Production deployment guide for Energy Market Simulation Game (EMSG).
 
 ### .env.production
 
-Create `.env.production` in project root:
+Create `.env.production` in project root by starting from `.env.example` and adjusting environment-specific values:
 
 ```bash
 # Flask
 FLASK_ENV=production
-SECRET_KEY=<generate-random-64-chars>
 JWT_SECRET_KEY=<generate-random-64-chars>
-ALLOWED_ORIGINS=https://emsg.example.com
+CORS_ALLOW_ORIGINS=https://emsg.example.com
 
 # Database
 POSTGRES_HOST=postgres

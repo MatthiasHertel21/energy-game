@@ -1,150 +1,226 @@
 # Trainer Guide
 
-Last updated: 2026-04-30  
+Last updated: 2026-05-27
 Audience: Trainers / Facilitators
 
-## 1) Goal of trainer facilitation
+## 1) What the trainer role owns
 
-Your job is to keep the simulation both **didactic** and **operationally stable**:
-- participants should understand why outcomes happen,
-- rounds should progress with minimal idle time,
-- interventions should be transparent and documented.
+Your job is to keep the session educational, fair, and operationally smooth. In practice that means:
+- setting up the right cohort and scenario,
+- starting and pacing the shared session,
+- keeping participants informed without coaching one side unfairly,
+- reading the live KPIs well enough to debrief what happened.
 
-## 2) End-to-end trainer workflow
+## 2) Main trainer surfaces
 
-1. **Pre-session setup**
-	- choose cohort/campaign/scenario,
-	- verify role/type configuration,
-	- communicate learning objectives.
-2. **Session launch**
-	- start briefing,
-	- confirm all participants selected types.
-3. **Round operations**
-	- monitor submit status,
-	- announce timing milestones,
-	- advance or intervene as needed.
-4. **Result debrief per round**
-	- explain major KPI drivers,
-	- connect events/gates to outcomes.
-5. **Final debrief**
-	- compare strategies,
-	- extract transferable lessons.
+### `/trainer` - Cohorts
 
-## 3) Core trainer pages and their use
+This is the normal setup page before a live session. Use it to:
+- manage cohorts,
+- pick the campaign and scenario to run,
+- check membership,
+- launch the live session workflow.
 
-- `/trainer`: **Cohort management** – create and manage cohorts (participant groups), assign campaigns, manage cohort tokens and membership. This is the pre-session setup entry point.
-- `/session-control`: **Live session panel** – active round controls, submit status monitor, participant overview, KPI charts, and leaderboard. Open this during an active session.
-- `/leaderboard`: ranking and performance overview.
-- `/comparison`: cross-player KPI comparison.
-- `/replay`: timeline-like recap of outcomes.
-- `/evaluation`: discussion-ready KPI summaries.
+### `/session-control` - Live session panel
 
-## 4) Session start checklist (must-do)
+This is the core trainer workspace during an active session. It combines:
+- session transport controls,
+- timer and round status,
+- broadcast messaging,
+- cohort-member monitoring,
+- player-type comparison,
+- overall market overview,
+- event log and live KPI context.
 
-Before pressing start:
-- scenario version is correct,
-- allowed player types are intentional,
-- capacity limits per type (if used) are valid,
-- participants know round duration and trainer control model.
+### `/comparison` and `/leaderboard`
 
-Recommended opening message:
-“After submit, you will wait for trainer progression. Please use waiting time to note one risk and one next-round adjustment.”
+These routes expose the same comparison-style dashboard for a selected session. They are useful when you want a separate KPI comparison view with:
+- metric selection,
+- sorting and filtering,
+- bar-chart exports as PNG or SVG.
 
-## 5) Live controls: when to use what
+Important: the current trainer navigation is centered on Cohorts and Session Control. Trainer-specific `Replay` or `Evaluation` pages are not part of the active route set.
 
-- **Pause**: use for clarification, technical issue, or late join alignment.
-- **Resume**: continue after issue is resolved.
-- **Force round end**: emergency only (time overrun, severe blockage).
-- **Advance round**: normal progression once enough submissions are in.
-- **Rewind round**: controlled correction in special facilitation cases.
-- **Extend timer**: if many participants are close to submit.
-- **End session**: only after explicit debrief closure.
+## 3) End-to-end trainer workflow
 
-Rule of thumb: prefer `Extend timer` over `Force end` if learning value would be lost.
+1. **Prepare the cohort**
+	- confirm the right cohort,
+	- verify campaign and scenario,
+	- make sure participants understand the learning goal.
+2. **Configure the shared run**
+	- check allowed player types,
+	- set max players per type if needed,
+	- communicate that the trainer controls progression.
+3. **Run the live round loop**
+	- monitor statuses,
+	- send short broadcasts,
+	- pause, extend, advance, or rewind only when justified.
+4. **Debrief each result phase**
+	- identify the KPI shift,
+	- connect it to events, timing, pricing, or grid effects,
+	- state one adjustment for the next round.
+5. **Close the session cleanly**
+	- finish the scenario,
+	- summarize the main lessons,
+	- record any recurring confusion or technical issues.
 
-## 6) Submit-phase behavior (shared mode)
+## 4) Session start checklist
 
-After participants submit, they see waiting status and cannot self-advance.  
-Trainer implication:
-- monitor pending users,
-- avoid dead air,
-- announce expected advance timing.
+Before you start briefing or the first round, confirm:
+- the correct cohort is active,
+- the intended campaign and scenario are selected,
+- allowed player types and max-player limits are intentional,
+- participants know the round duration,
+- participants know that shared sessions wait for trainer progression after submit.
 
-Suggested pacing:
-- if >80% submitted and no blockers, prepare advance,
-- if repeated blockers, pause and clarify one concrete action.
+Recommended announcement:
+"After you submit, stay on the waiting screen. I will advance the session once we are ready to debrief or continue."
 
-## 7) Communication protocol during rounds
+## 5) Session-control actions and when to use them
 
-Use short, structured broadcasts:
-- **Timing**: “5 minutes left / 2 minutes left.”
-- **Focus**: “Check effective capacity before submit.”
-- **Events**: “Outage active this round for Classic Provider.”
-- **Transition**: “Submitting now; advancing in ~30s.”
+### Transport controls
 
-Avoid long tactical coaching in live rounds; keep guidance neutral across participants.
+The live control panel supports these actions:
+- `Start` from briefing,
+- `Pause` during running or round-active states,
+- `Continue` from paused,
+- `+1min` to extend timing,
+- `Next` or `Finish` from round results,
+- `Back` to rewind one round from results,
+- `Stop` to end the session.
 
-## 8) Debrief framework per round
+Practical guidance:
+- use `+1min` before forcing an early close if the class is still working productively,
+- use `Pause` for explanation or technical issues,
+- use `Back` only when a controlled correction is worth the confusion it creates,
+- use `Stop` only when you are deliberately ending the run.
 
-Use a fixed 4-step structure:
-1. **Outcome snapshot**: top KPI movement (profit/cost/imbalance).
-2. **Causal driver**: event, pricing, gate timing, or bidding behavior.
-3. **Decision quality**: what was controllable vs external.
-4. **Next-round adjustment**: one actionable change per role.
+## 6) What to monitor during live play
 
-Example trainer prompt:
-“Which hours drove imbalance cost, and was that due to event-driven capacity or your bid sizing?”
+### Cohort Members panel
 
-## 9) Interpreting event-driven anomalies
+This table is your main operational view of the class. It shows:
+- email and name,
+- role and current player type,
+- status,
+- current round,
+- last activity timestamp.
 
-If one role suddenly shows large negative profit/imbalance:
-- confirm active event scope (`all`, `player`, `device`),
-- check effective capacity/demand changes in detail tables,
-- compare offered vs deliverable volumes,
-- show how imbalance cost mathematically dominated net result.
+Statuses like `briefing`, `playing`, `paused`, `online`, `recent`, or `inactive` help you distinguish normal delay from real issues.
 
-This turns “unexpected loss” into a clear learning moment.
+### Player-type counts
 
-## 10) Facilitation quality checklist
+The chips above the member table show how many participants are active in each player type. Use this to check balance and missing assignments quickly.
 
-During operation:
-- no unexplained long waits,
-- transitions announced,
-- interventions minimal but timely,
-- every forced action documented.
+### Events log
 
-After session:
-- summarize top 3 learnings,
-- capture recurring confusion points,
-- feed improvements back into scenario design.
+Keep the event log visible during disruptive rounds. It helps you connect outcome shifts to actual scenario triggers instead of participant myths about what happened.
 
-## 11) Incident handling playbook
+## 7) Communication tools
 
-### A) Players stuck in waiting
+### Broadcast messages
 
-- check session status,
-- verify round not already advancing,
-- trigger proper trainer action (`advance`/`resume`).
+The broadcast bar is always visible in Session Control. Use it for short, neutral messages such as:
+- timing reminders,
+- clarification on gate timing,
+- confirmation that an outage or event is active,
+- notice that you will advance shortly.
 
-### B) Missing submissions
+The current button sends to all players. If the global route is unavailable, the UI falls back to the active session broadcast.
 
-- verify player type was selected,
-- confirm user is in current session,
-- ask player to refresh and re-check active round.
+Good examples:
+- "2 minutes left. Check effective capacity before submitting."
+- "Round results in 30 seconds. Note your highest imbalance hour."
+- "Outage event is active for the affected role this round."
+
+Avoid live tactical coaching that favors one strategy or one participant group.
+
+## 8) Market overview and comparison tools
+
+### Overall Market Overview
+
+After at least one round is completed, Session Control offers an `Overall Market Overview` button. Use it to read the round at system level:
+- market composition,
+- participant mix,
+- price card,
+- volume card,
+- zone-related summary when a grid is active.
+
+This is the best screen for explaining why an individual result made sense in the wider market.
+
+### Player Type Comparison
+
+Inside Session Control you can open a comparison modal that compares only peers within the same player type. This is often the fairest debrief view because it avoids comparing fundamentally different roles as if they had the same objective.
+
+### Comparison dashboard
+
+The dedicated comparison route is useful when you want:
+- filterable player IDs,
+- metric switching between profit, revenue, imbalance, and curtailment,
+- chart export as PNG or SVG.
+
+## 9) How to debrief a round
+
+Use a repeatable four-step structure:
+1. **Outcome**: what moved most strongly in profit, revenue, imbalance, curtailment, or grid cost.
+2. **Cause**: event, pricing, gate timing, volume sizing, or network constraint.
+3. **Control**: what players could have changed versus what was purely scenario-driven.
+4. **Adjustment**: one concrete next-round action per role or player type.
+
+Useful trainer prompts:
+- "Which hour created the highest imbalance cost?"
+- "Was the loss caused by pricing out of the market or by overcommitting volume?"
+- "Did the grid or zone setup matter, or was this mainly a bidding issue?"
+
+## 10) Result interpretation shortcuts
+
+When one participant or role looks unexpectedly weak:
+- compare profit with imbalance and curtailment first,
+- open the market overview for system context,
+- inspect the player-type comparison if fairness across roles is an issue,
+- connect the result back to event scope and effective capacity.
+
+If the class debates a single "wrong" price, remind them that poor quantity positioning or technical infeasibility often hurts more than a modest price miss.
+
+## 11) Shared-mode behavior you should make explicit
+
+Participants in shared mode:
+- submit their round,
+- remain on a waiting state,
+- do not self-advance,
+- depend on the trainer for the next transition.
+
+If you do not state this clearly at the start, participants often misread normal waiting behavior as a bug.
+
+## 12) Incident playbook
+
+### A) Someone is stuck on a waiting screen
+
+- confirm the session is still on the expected state,
+- check whether the session is paused or already in results,
+- advance or resume only when the current class state is understood.
+
+### B) Missing or delayed submissions
+
+- check whether the participant has the right player type,
+- check their status and last activity in the member table,
+- extend time if the class still benefits,
+- ask the participant to refresh only after checking trainer-side state.
 
 ### C) Suspicious results
 
-- re-open same session/round,
-- check event list + KPI breakdown,
-- validate with detail rows before escalating.
+- open the overall market overview,
+- compare event timing with the reported KPI shift,
+- inspect imbalance and curtailment before assuming a calculation bug,
+- only escalate after the round data and system context have been reconciled.
 
-## 12) Post-session documentation (recommended)
+## 13) Post-session note template
 
-Capture in a short note:
-- scenario ID and date,
-- number of participants,
-- major outcome pattern,
-- technical issues,
-- suggested scenario or UX improvements.
+Capture at least:
+- scenario and date,
+- participant count,
+- the main outcome pattern,
+- notable technical issues,
+- scenario or UX improvements to feed back to designers.
 
-This builds a reusable facilitation knowledge base over time.
+That note becomes the fastest way to improve the next workshop.

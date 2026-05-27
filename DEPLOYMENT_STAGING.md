@@ -3,6 +3,8 @@
 ## Übersicht
 Diese Anleitung beschreibt das Deployment der EMSG-Anwendung auf einem Staging-Server.
 
+> Status note (2026-05-27): This file still contains rollout-era staging detail from December 2025. Treat it as a staging-specific companion, not as the only current operating source. Start with `README.md`, `docs/HANDOVER_CHECKLIST.md`, `docs/DEPLOYMENT.md`, and `docs/RUNBOOK.md`. Examples below now assume `main` unless a release branch or tag is explicitly agreed.
+
 ## Voraussetzungen
 
 ### Server
@@ -63,8 +65,8 @@ cd ~/apps
 git clone https://github.com/MatthiasHertel21/energy-game.git emsg-staging
 cd emsg-staging
 
-# Auf feature/catalog-campaigns Branch wechseln
-git checkout feature/catalog-campaigns
+# Auf den vereinbarten Deploy-Stand wechseln
+git checkout main
 ```
 
 ### 3. Environment-Konfiguration
@@ -420,7 +422,7 @@ docker compose -f docker-compose.staging.yml restart frontend
 cd ~/apps/emsg-staging
 
 # Code aktualisieren
-git pull origin feature/catalog-campaigns
+git pull origin main
 
 # Rebuild und Neustart
 docker compose -f docker-compose.staging.yml up -d --build

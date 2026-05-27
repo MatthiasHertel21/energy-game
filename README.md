@@ -1,258 +1,237 @@
 # Energy Market Simulation Game (EMSG)
 
-**MVP Version** | Sprint 23 (December 2025)
+Last updated: 2026-05-27
 
-A web-based energy market simulation platform for educational and training purposes. Players manage virtual power plants, forecast market conditions, and compete in realistic energy markets with dynamic pricing.
+EMSG is a web-based electricity market simulation platform for training and teaching. Players trade in configurable electricity markets, trainers run shared sessions, designers build scenarios in the KSE editor, and admins manage users, operational data, and public static content.
 
----
+## Current Product Areas
 
-## Features
+### Players
 
-### 🎮 Core Gameplay
-- **Unified Solo & Shared Flow**: Consistent phase-based experience for individual and cohort play
-- **Briefing Phase**: Scenario introduction with objectives before time pressure begins
-- **Real-time Market Simulation**: Double-auction market clearing with supply/demand dynamics
-- **Device Management**: Solar, Wind, Gas, Battery, Hydro with realistic constraints
-- **Multi-round Scenarios**: Progress through time-based energy market challenges with structured pacing
-- **Round Results & Advancement**: Players control pacing with "Continue" buttons between rounds
-- **Weighted Scoring System**: Configurable KPI weights (profit, imbalance, curtailment)
-- **Leaderboard & Comparisons**: Track performance and learn from strategies
+The current player flow includes:
+- `/home` for resumable sessions, live shared-session join, and dashboard context
+- `/catalog` and `/catalog/:id` for campaign and scenario entry
+- briefing, active round workspace, round results, and final scenario results
+- `/profile` for career stats and recent sessions
+- `/replay` for round-by-round SMP and volume review
 
-### 🛠️ Scenario Designer (KSE)
-- **Visual Editor**: Drag-and-drop device configuration
-- **Market Parameters**: Price floors/caps, volumes, variability
-- **Grid Simulation**: Multi-zone grids with transmission constraints (ATC matrices)
-- **Enhanced Events System**: 8 event types including grid link ATC reduction
-- **Preview & Validation**: Real-time supply/demand curve visualization
-- **Import/Export**: JSON-based scenario sharing
-- **Player Types**: Define role-specific device assignments for shared sessions
+Core player-facing features include:
+- solo and trainer-led shared sessions
+- explicit bid layers `A-E`
+- battery auto-bid thresholds
+- DAM and IDM market views
+- device deep-dive results and market-overview dialogs
+- context-aware AI helpers on home, briefing, and round-result screens
 
-### 👥 Trainer Tools
-- **Campaign Management**: Sequential scenario progressions
-- **Cohort Administration**: Group management, CSV import, player type configuration
-- **Live Monitoring**: Real-time participant tracking with per-type submit status
-- **Session Controls**: Start/pause/freeze rounds, force round end
-- **Shared Market Sessions**: All players trade in unified market with balanced roles
-- **Performance Analytics**: Weighted scoring, final rankings, round history
+### Trainers
 
-### 📊 Analytics
-- **Player Dashboard**: Balance tracking, device portfolios, forecast accuracy
-- **Round-by-Round Results**: Individual KPIs with active event displays
-- **Cumulative Performance**: Final scenario results with round history accordion
-- **Comparison View**: Side-by-side player strategy analysis
-- **Activity Logs**: Comprehensive audit trail
-- **Performance Metrics**: Profit, imbalance penalties, curtailment costs
+The trainer surface currently includes:
+- `/trainer` for cohort setup and session launch
+- `/session-control` for live shared-session operations
+- `/comparison` and `/leaderboard` for KPI comparison views
 
----
+Core trainer tools include:
+- start, pause, continue, rewind, extend, next, and stop controls
+- presence and cohort-member monitoring
+- broadcast messaging to players
+- player-type comparison
+- overall market overview after completed rounds
+
+### Designers
+
+The design surface currently includes:
+- `/designer` for scenario overview
+- `/kse` for scenario configuration
+- `/ksechat` for AI-assisted scenario drafting and editing
+
+The KSE editor currently covers:
+- description
+- general timing and balancing settings
+- supply and demand configuration
+- market availability per round
+- grid and ATC setup
+- events
+- player types and explicit bid configuration
+- challenges
+- validation, preview, import, and export
+
+### Admins
+
+The admin surface currently includes `/admin` with three tabs:
+- `Users`
+- `Activity Dashboard`
+- `Sessions`
+
+Current admin capabilities include:
+- role changes and cohort assignment
+- direct user creation and password reset
+- activity KPIs and recent-activity review
+- filtered session inspection and cleanup
+- editing of public static pages such as `Did You Know` and `Course Materials`
+
+## Architecture
+
+```text
+React (Vite) SPA -> Flask API + Socket.IO -> PostgreSQL
+																	 -> Redis
+```
+
+### Stack
+
+- Frontend: React 18, Material UI, D3, Socket.IO client
+- Backend: Flask, SQLAlchemy, Flask-SocketIO, Gunicorn
+- Data: PostgreSQL 15, Redis 7
+- Testing: Pytest, Cypress
+
+### Important implementation areas
+
+- `backend/app/engine.py` - market clearing, dispatch, KPI logic
+- `backend/app/sessions.py` - session orchestration and result APIs
+- `backend/app/player.py` - player-facing data assembly and submission logic
+- `frontend/src/pages/Player.jsx` - active player workspace
+- `frontend/src/pages/Trainer.jsx` - live trainer control panel
+- `frontend/src/pages/KSE.jsx` - scenario editor
 
 ## Quick Start
 
 ### Prerequisites
-- Docker & Docker Compose
+
+- Docker and Docker Compose
 - Git
 
-### 1. Clone and Setup
+### Clone and configure
+
 ```bash
 git clone https://github.com/MatthiasHertel21/energy-game.git
 cd energy-game
 cp .env.example .env
 ```
 
-### 2. Launch
+### Launch
+
 ```bash
 docker-compose up -d --build
 ```
 
-### 3. Access
-- **Frontend**: http://localhost
-- **API Docs**: http://localhost/api/docs
-- **Health**: http://localhost/api/health
+### Access
 
-### 4. First Login
-- Register at `/register` (first user gets `player` role)
-- Admin can create invites via `/api/docs` → POST `/api/admin/invites`
-- Assign roles: `player`, `trainer`, `designer`, `admin`
+- Frontend: `http://localhost:18080`
+- API docs: `http://localhost:18080/api/docs`
+- Health endpoint: `http://localhost:18080/api/health`
+- Public handbook routes:
+	- `http://localhost/docs/player`
+	- `http://localhost/docs/trainer`
+	- `http://localhost/docs/designer`
+	- `http://localhost/docs/admin`
+	- `http://localhost/docs/engine`
 
----
+### Authentication
 
-## Architecture
+For local or staging-style setups, use the existing auth flow in the app:
+- sign in at `/login`
+- register at `/register` where applicable
+- manage user roles in the admin UI
 
+## Handbook And Documentation Structure
+
+### Role handbooks
+
+Role-handbook source files live here:
+- `docs/guide/player-handbook.md`
+- `docs/guide/trainer-handbook.md`
+- `docs/guide/designer-handbook.md`
+- `docs/guide/admin-handbook.md`
+
+The app serves mirrored copies from:
+- `frontend/public/handbooks/player-handbook.md`
+- `frontend/public/handbooks/trainer-handbook.md`
+- `frontend/public/handbooks/designer-handbook.md`
+- `frontend/public/handbooks/admin-handbook.md`
+
+The public calculation-engine guide currently lives at:
+- `frontend/public/handbooks/calculation-engine.md`
+
+### Other product-near docs
+
+- `docs/CALCULATION_ENGINE.md` - long-form engine reference
+- `docs/concept.md` - architecture and scope background
+- `docs/usecases.md` - functional requirements
+- `docs/HANDOVER_READINESS.md` - current handover status and open gaps
+- `docs/HANDOVER_CHECKLIST.md` - repository transfer checklist
+- `docs/RUNBOOK.md` - day-2 operations baseline
+- `docs/DEPLOYMENT.md` - deployment guidance
+- `docs/QA_CHECKS.md` - release and QA checklist
+
+### Static pages versus handbooks
+
+Public static pages such as `Did You Know` and `Course Materials` are not loaded from the handbook markdown files. They are stored separately through `/api/static-pages/*` and edited through the admin static-page editor.
+
+## Handbook Sync Workflow
+
+After editing any role handbook source, run:
+
+```bash
+bash ./sync-handbooks.sh
 ```
-┌─────────────┐      ┌──────────────┐      ┌──────────────┐
-│   React     │─────▶│ Flask API    │─────▶│  PostgreSQL  │
-│   (Vite)    │      │ (REST+WS)    │      │   (State)    │
-└─────────────┘      └──────────────┘      └──────────────┘
-                            │
-                            ├─────▶ Redis (Sessions)
-                            └─────▶ Traefik (Routing)
+
+To verify that source and public copies are still aligned without modifying files, run:
+
+```bash
+bash ./sync-handbooks.sh --check
 ```
 
-### Stack
-- **Frontend**: React 18, Material-UI, D3.js, Socket.io-client
-- **Backend**: Flask, SQLAlchemy, Flask-SocketIO, Gunicorn
-- **Database**: PostgreSQL 15 (state), Redis 7 (sessions/cache)
-- **Proxy**: Traefik v2 with Let's Encrypt
-- **Testing**: Pytest (backend), Cypress (E2E)
-
-### Key Components
-- **Engine** (`backend/app/engine.py`): Market clearing algorithm (double-auction)
-- **Device Types** (`backend/app/device_types.py`): Power plant models
-- **Sessions** (`backend/app/sessions.py`): Game state management
-- **KSE** (`frontend/src/pages/KSE.jsx`): Scenario editor
-- **Player** (`frontend/src/pages/Player.jsx`): Forecast interface
-
----
-
-## Performance
-
-**Baseline Metrics** (Sprint 20, 100 concurrent users, Locust load test):
-- **Response Time**: p50=4ms, p95=8ms, p99=15ms (excellent)
-- **Throughput**: ~50 req/s sustained
-- **Known Issue**: 93% error rate due to rate limiting (429) and missing auth in test setup
-- **Action**: Sprint 21 will fix Locust auth and adjust rate limits for testing
-
-See `docs/PERFORMANCE_RESULTS.md` for detailed metrics.
-
----
+The repository also includes a small GitHub Actions check at `.github/workflows/handbook-sync-check.yml` that fails when the mirrored handbook files drift out of sync.
 
 ## Testing
 
-### Backend Unit Tests
+### Backend
+
 ```bash
-# In Docker
 docker-compose exec backend python -m pytest tests/ -v
-
-# Specific tests
 docker-compose exec backend python -m pytest tests/test_engine.py -v
+docker-compose exec backend python -m pytest tests/test_device_types.py -v
 ```
 
-**Coverage**:
-- Market clearing algorithm
-- Device models and validation
-- Curtailment priority logic
-- Use case scenarios
+### Frontend build
 
-### Frontend E2E Tests (Cypress)
 ```bash
 cd frontend
-npm run cy:open  # Interactive
-npm run cy:run   # Headless
+npm ci
+npm run build
 ```
 
-**Test Coverage** (Sprint 20): **20 E2E specs** including:
-- `smoke.cy.js` - Core user flows
-- `trainer.cy.js` - Session management
-- `player.cy.js` - Forecast submission
-- `kse-devices.cy.js` - Device editor
-- `a11y.cy.js` - Accessibility audits
-- `campaign-timeline.cy.js` - Campaign navigation
-- `cohorts-import.cy.js` - CSV import
-- `comparison.cy.js` - Leaderboard comparison
+### Cypress E2E
 
-All 20 specs passing as of Sprint 20.
-
----
-
-## Database & Deployment
-
-See `docs/DEPLOYMENT.md` for details on:
-- Database migrations (`flask db upgrade`)
-- Backup procedures (`backend/scripts/backup.sh`)
-- Production deployment
-- Docker Compose stability
-
----
-
-## Known Issues
-
-**Sprint 21 Focus** (14 KSE UI/UX Issues):
-- KSE-1 (P0): Market/Preview tabs broken in KSE editor
-- KSE-2 (P0): Device constraint validation missing
-- KSE-3 through KSE-14: UI/UX refinements for MVP quality
-
-See `docs/backlog.md` (Sprint 21 section) and `docs/open-issues.md` for full details.
-
-**DevOps**:
-- Docker Compose stability: Use `deploy.sh` with retry logic (see `docs/DEPLOYMENT.md`)
-
----
-
-## Documentation
-
-- `docs/concept.md` - Architecture & MVP scope
-- `docs/usecases.md` - Functional requirements
-- `docs/SPRINT_*_PLAN.md` - Development roadmap (23 sprints: 1-20 complete, 21 active, 22-23 planned)
-- `docs/SPRINT_*_SUMMARY.md` - Sprint retrospectives
-- `docs/QA_CHECKS.md` - Pre-launch checklist
-- `docs/PERFORMANCE_RESULTS.md` - Load test baseline
-- `docs/PLANUNGSSTAND_ANALYSE.md` - Planning analysis (Sprint 20)
-
-Role Handbooks
-- `docs/guide/player-handbook.md` - Player Guide
-- `docs/guide/trainer-handbook.md` - Trainer Guide
-- `docs/guide/designer-handbook.md` - Designer/KSE Guide
-- `docs/guide/admin-handbook.md` - Admin Guide
-
----
-
-**Last Updated**: Sprint 21 (2025-11-20)
-	- flask db migrate -m "init"
-	- flask db upgrade
-- Weitere Änderungen:
-	- flask db migrate -m "change"
-	- flask db upgrade
-
-Hinweis: `create_all()` wurde entfernt. Bitte Migrationen nutzen.
-
-Docker/CI Tipp:
-- Inside backend container: `docker compose exec backend flask db upgrade`
-- Helper Script: `backend/scripts/migrate.sh` führt init (falls nötig), migrate und upgrade aus.
-
-## Backups
-- Script: `backend/scripts/backup.sh` (schreibt `/backup/emsg_YYYYmmdd_HHMMSS.dump`)
-- Beispiel‑Cron (Host):
-	- `0 2 * * * docker compose exec -T backend bash -lc "/app/scripts/backup.sh"`
-- Log‑Rotation: Backend läuft unter Gunicorn; ergänze systemweite logrotate oder Docker‑Logging‑Driver nach Bedarf.
-
-## Tests
-
-### Backend Unit Tests
-```bash
-# In Docker
-docker compose exec backend python -m pytest tests/ -v
-
-# Spezifische Tests
-docker compose exec backend python -m pytest tests/test_engine.py -v
-docker compose exec backend python -m pytest tests/test_device_types.py -v
-```
-
-### Frontend E2E Tests (Cypress)
 ```bash
 cd frontend
-
-# Interaktive UI
 npm run cy:open
-
-# Headless
 npm run cy:run
-
-# Spezifische Tests
-npm run cy:run -- --spec "cypress/e2e/kse-devices.cy.js"
 ```
 
-Tests verfügbar:
-- `smoke.cy.js` - Login, KSE Preview, Trainer Start, Player Forecast
-- `trainer.cy.js` - Session Management, Shared Market
-- `player.cy.js` - Full Forecast, Submit
-- `comparison.cy.js` - Leaderboard, Comparison Dashboard
-- `kse-import.cy.js` - KSE JSON Import/Export
-- `cohorts-import.cy.js` - Cohort CSV Import
-- `kse-devices.cy.js` - Device Model (Coal, Nuclear, Solar, Battery, Loads)
-- `replay.cy.js` - Replay Mode (derzeit instabil/geskippt)
+Representative current specs include:
+- `cypress/e2e/smoke.cy.js`
+- `cypress/e2e/404.cy.js`
+- `cypress/e2e/a11y.cy.js`
+- `cypress/e2e/campaign-timeline.cy.js`
+- `cypress/e2e/admin-sessions.cy.js`
+- `cypress/e2e/player-chart-editor.cy.js`
+- `cypress/e2e/kse-tabs-hash.cy.js`
+- `cypress/e2e/kse-grid-atc-inline.cy.js`
 
-### Performance Tests (Locust)
-```bash
-cd backend/tests/perf
-locust -f locustfile.py --host=http://localhost
-```
+## Deployment And Operations
+
+See these docs for operational details:
+- `docs/DEPLOYMENT.md` - primary deployment guide
+- `docs/RUNBOOK.md` - operations, health checks, and first response
+- `docs/HANDOVER_CHECKLIST.md` - transition checklist
+- `docs/HANDOVER_READINESS.md` - remaining handover gaps
+- `DEPLOYMENT_README.md`, `STAGING_CHECKLIST.md`, and `STAGING_READINESS.md` - historical staging rollout bundle with status notes
+
+Backups and migration helpers include:
+- `backend/scripts/backup.sh`
+- `backend/scripts/migrate.sh`
+
+## Notes
+
+This README is intentionally product-facing and current-codebase-focused. Historical sprint plans, older performance notes, and retrospective material remain in `docs/SPRINT_*`, `docs/PERFORMANCE_*`, and related analysis documents.
 

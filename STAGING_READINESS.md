@@ -1,7 +1,9 @@
 # EMSG - Staging Readiness Report
-**Datum:** 10. Dezember 2025  
-**Branch:** feature/catalog-campaigns  
+**Datum:** 10. Dezember 2025
+**Historischer Branch bei Erstellung:** damaliger Catalog-Campaigns-Feature-Branch
 **Version:** 1.0.0-staging
+
+> Status-Hinweis (2026-05-27): Dieses Dokument ist ein historischer Staging-Snapshot aus Dezember 2025. Es bleibt als Kontext erhalten, ist aber nicht mehr die primäre Übergabequelle. Für den aktuellen Stand zuerst `README.md`, `docs/HANDOVER_READINESS.md`, `docs/HANDOVER_CHECKLIST.md`, `docs/DEPLOYMENT.md` und `docs/RUNBOOK.md` nutzen.
 
 ## Executive Summary
 Das Energy Market Simulation Game (EMSG) ist bereit für das Deployment auf einen Staging-Server. Die Anwendung ist funktionsfähig und wurde erfolgreich in einer Entwicklungsumgebung getestet.
@@ -199,7 +201,7 @@ Aktuell: Automatische Migration bei Start via Flask-Migrate
 
 ## Support & Dokumentation
 - **Developer Docs:** `/docs` Verzeichnis
-- **API Docs:** `/api/doc` (Swagger UI)
+- **API Docs:** `/api/docs` (Swagger UI)
 - **User Guides:** `/public/handbooks`
 
 ---
