@@ -98,15 +98,32 @@ describe('Player Market Overview', () => {
     cy.contains('Generator 1').should('be.visible')
   }
 
+  const openAllDevicesRoundTwoOverview = () => {
+    cy.get('[aria-label="Market availability timeline"]').then(($timeline) => {
+      const width = $timeline.width() || 0
+      const height = $timeline.height() || 0
+      cy.wrap($timeline).click(Math.floor(width * 0.75), Math.floor(height / 2))
+    })
+  }
+
   it('hides gate events when DAM and IDM are disabled in the current round', () => {
     visitPlayer({
       dam: { trading: ['off', 'off'] },
       idm: { trading: ['off', 'off'] }
     })
 
-    cy.get('[aria-label="Market availability timeline"]').click('center')
+    openAllDevicesRoundTwoOverview()
 
     cy.contains('Market Overview — Scope: All devices').should('be.visible')
+    cy.window().its('__marketOverviewDebug.markets').should('deep.equal', {
+      dam: { trading: ['off', 'off'] },
+      idm: { trading: ['off', 'off'] }
+    })
+    cy.window().its('__marketOverviewDebug').should('deep.include', {
+      selectedRound: 2,
+      selectedDamTradingStatus: 'off',
+      selectedIdmTradingStatus: 'off'
+    })
     cy.contains('Gate events in this round').should('not.exist')
   })
 
@@ -116,7 +133,7 @@ describe('Player Market Overview', () => {
       idm: { trading: ['market_code', 'market_code'] }
     })
 
-    cy.get('[aria-label="Market availability timeline"]').click('center')
+    openAllDevicesRoundTwoOverview()
 
     cy.contains('Market Overview — Scope: All devices').should('be.visible')
     cy.contains('Gate events in this round').should('be.visible')

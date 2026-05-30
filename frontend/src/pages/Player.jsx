@@ -1332,7 +1332,10 @@ export default function Player() {
     try {
       const gen = cfg.general || {}
       const rounds = Number(gen.rounds || 1)
-      const markets = cfg.markets || {}
+      const scenarioMarkets = scenario?.config?.markets || scenario?.markets || {}
+      const markets = (cfg.markets && Object.keys(cfg.markets).length > 0)
+        ? cfg.markets
+        : scenarioMarkets
       const dam = (markets.dam || {})
       const idm = (markets.idm || {})
       const toTrading = (m) => (Array.isArray(m) ? m : (Array.isArray(m?.trading) ? m.trading : []))
@@ -2494,7 +2497,7 @@ export default function Player() {
       const toTrading = (m) => (Array.isArray(m) ? m : (Array.isArray(m?.trading) ? m.trading : []))
       const damTrading = toTrading(dam)
       const idmTrading = toTrading(idm)
-      const roundsSummary = Array.from({length: rounds}, (_,i)=>({
+      const derivedRoundsSummary = Array.from({length: rounds}, (_,i)=>({
         round: i+1,
         dam: { 
           trading: damTrading[i] || 'market_code',
@@ -2505,7 +2508,10 @@ export default function Player() {
           clearing: 'always'
         }
       }))
-      const selectedRoundSummary = roundsSummary.find((roundItem) => roundItem.round === selectedRound)
+      const effectiveRoundsSummary = Array.isArray(roundsSummary) && roundsSummary.length > 0
+        ? roundsSummary
+        : derivedRoundsSummary
+      const selectedRoundSummary = effectiveRoundsSummary.find((roundItem) => roundItem.round === selectedRound)
       const selectedDamTradingStatus = normalizeMarketStatusValue(selectedRoundSummary?.dam?.trading)
       const selectedIdmTradingStatus = normalizeMarketStatusValue(selectedRoundSummary?.idm?.trading)
       const currentSimHour = (Number(cfg.current_round || 1) - 1) * roundSpan
@@ -2574,7 +2580,7 @@ export default function Player() {
 
       const currentTimelineStatus = Array.isArray(effectiveHourStatus) ? effectiveHourStatus : []
 
-      const roundColumns = roundsSummary.map((roundItem) => {
+      const roundColumns = effectiveRoundsSummary.map((roundItem) => {
         const startIdx = (roundItem.round - 1) * roundSpan
         const endIdx = startIdx + roundSpan
         const hoursInRound = Math.max(1, endIdx - startIdx)
@@ -2625,6 +2631,16 @@ export default function Player() {
         }
       })
 
+      if (typeof window !== 'undefined') {
+        window.__marketOverviewDebug = {
+          selectedRound,
+          selectedDamTradingStatus,
+          selectedIdmTradingStatus,
+          markets,
+          roundsSummary: effectiveRoundsSummary
+        }
+      }
+
       setMarketDialogData({
         now: fmt(now),
         round: selectedRound,
@@ -2639,7 +2655,7 @@ export default function Player() {
           { key: 'forecast', label: 'Forecast total (MWh)', values: roundColumns.map((col) => col.forecastTotal) }
         ]
       })
-      setRoundsSummary(roundsSummary)
+      setRoundsSummary(effectiveRoundsSummary)
     } catch(err) { 
       console.error('[Market Overview] Error:', err)
       const fallbackRounds = Number(cfg?.general?.rounds || 1)
