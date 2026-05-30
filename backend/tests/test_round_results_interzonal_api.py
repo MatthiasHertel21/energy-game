@@ -150,6 +150,138 @@ def _build_session_with_result(player_id, trainer_id):
     return session.id
 
 
+def _build_legacy_delta_session_with_inconsistent_top_level_result(player_id, trainer_id):
+    scenario = Scenario(
+        name='Legacy Delta Repair Scenario',
+        config={
+            'scoring': {'weights': {'profit': 0.6, 'imbalance': 0.3, 'curtailment': 0.1}},
+            'player_types': [
+                {'id': 'producer_type', 'name': 'Producer Type', 'devices': ['gen-1'], 'zone': 1},
+            ],
+            'devices': [
+                {'id': 'gen-1', 'type': 'coal', 'capacity_mw': 600, 'variable_cost_zar_per_mwh': 600},
+            ],
+            'events': [],
+        },
+    )
+    cohort = Cohort(name='Legacy Delta Cohort', trainer_id=trainer_id)
+    db.session.add_all([scenario, cohort])
+    db.session.commit()
+
+    db.session.add(CohortMember(cohort_id=cohort.id, user_id=player_id))
+
+    session = Session(cohort_id=cohort.id, scenario_id=scenario.id, status='round_results', current_round=2, mode='shared_market')
+    db.session.add(session)
+    db.session.commit()
+
+    db.session.add(SessionPlayerType(session_id=session.id, user_id=player_id, type_id='producer_type'))
+
+    result = Result(
+        session_id=session.id,
+        player_id=player_id,
+        round_num=2,
+        data={
+            'smp': 600,
+            'idp': 600,
+            'volume': 900,
+            'player_role': 'producer',
+            'da_baseline_metadata': {
+                'da_smp': 440,
+                'players': {
+                    str(player_id): {
+                        'da_volume_mwh': 361.6,
+                        'id_delta_mwh': 0.0,
+                        'total_volume_mwh': 361.6,
+                        'da_revenue_zar': 216960.0,
+                        'id_revenue_zar': 0.0,
+                        'total_revenue_zar': 216960.0,
+                    }
+                },
+            },
+            'hourly_results': [
+                {
+                    'hour_idx': 2,
+                    'round_num': 2,
+                    'scenario_hour_idx': 2,
+                    'display_label': 'H2 (10:00)',
+                    'hour_of_day': 10,
+                    'round_hour_offset': 0,
+                    'hour_offset': 0,
+                    'smp': 600,
+                    'idp': 600,
+                    'volume': 900,
+                    'id_trade_count': 0,
+                    'id_volume_mwh': 0.0,
+                    'is_clearing_hour': True,
+                }
+            ],
+            'kpis': {
+                'revenue_zar': 216960.0,
+                'profit_zar': 0.0,
+                'variable_cost_zar': 216960.0,
+                'fixed_cost_zar': 0.0,
+                'imbalance_cost_zar': 0.0,
+                'battery_charge_cost_zar': 0.0,
+                'atc_dispatch_cost_zar': 0.0,
+                'grid_constraint_cost_zar': 0.0,
+                'congestion_revenue_zar': 0.0,
+                'dispatched_mwh': 361.6,
+                'planned_mwh': 523.8,
+                'actual_mwh': 0.0,
+                'hourly_breakdown': [
+                    {
+                        'hour': 2,
+                        'planned_mw': 523.8,
+                        'dispatched_mw': 361.6,
+                        'actual_mw': 0.0,
+                        'imbalance_mwh': 0.0,
+                        'revenue_zar': 216960.0,
+                        'variable_cost_zar': 216960.0,
+                        'fixed_cost_zar': 0.0,
+                        'imbalance_cost_zar': 0.0,
+                        'battery_charge_cost_zar': 0.0,
+                        'atc_dispatch_cost_zar': 0.0,
+                        'grid_constraint_cost_zar': 0.0,
+                        'congestion_revenue_zar': 0.0,
+                        'profit_zar': 0.0,
+                    }
+                ],
+                'device_hourly_breakdown': {
+                    'gen-1': [
+                        {
+                            'hour': 2,
+                            'planned_mw': 523.8,
+                            'dispatched_mw': 361.6,
+                            'total_dispatched_mwh': 361.6,
+                            'actual_mw': 0.0,
+                            'imbalance_mwh': 0.0,
+                            'da_dispatched_mwh': 361.6,
+                            'id_dispatched_mwh': 0.0,
+                            'da_price_zar': 440.0,
+                            'id_price_zar': 600.0,
+                            'da_revenue_zar': 159104.0,
+                            'id_revenue_zar': 0.0,
+                            'revenue_zar': 159104.0,
+                            'variable_cost_zar': 216960.0,
+                            'fixed_cost_zar': 0.0,
+                            'imbalance_cost_zar': 0.0,
+                            'battery_charge_cost_zar': 0.0,
+                            'congestion_revenue_zar': 0.0,
+                            'profit_zar': -57856.0,
+                        }
+                    ]
+                },
+            },
+            'zone_results': [],
+            'link_results': [],
+            'player_zone_info_by_player': {str(player_id): {'zone_id': 1}},
+        },
+    )
+    db.session.add(result)
+    db.session.commit()
+    return session.id
+
+
 def test_round_results_endpoint_exposes_interzonal_payloads(app, client, player_auth_headers):
     headers, player_id, trainer_id = player_auth_headers
 
@@ -186,3 +318,29 @@ def test_latest_round_results_endpoint_preserves_interzonal_payloads(app, client
     assert data['my_result']['player_zone_info']['zone_extra_cost_total_zar'] == 50000
     assert data['my_result']['zone_results'][0]['extra_cost_total_zar'] == 50000
     assert data['my_result']['link_results'][0]['utilization_pct'] == 99.0
+
+
+def test_round_results_endpoint_repairs_legacy_delta_settlement_mismatch(app, client, player_auth_headers):
+    headers, player_id, trainer_id = player_auth_headers
+
+    with app.app_context():
+        session_id = _build_legacy_delta_session_with_inconsistent_top_level_result(player_id, trainer_id)
+
+    response = client.get(f'/api/sessions/{session_id}/round-results/2', headers=headers)
+
+    assert response.status_code == 200
+    data = response.get_json()
+    my_result = data['my_result']
+    kpis = my_result['kpis']
+    da_id_breakdown = my_result['da_id_breakdown']
+
+    assert kpis['revenue_zar'] == 159104.0
+    assert kpis['profit_zar'] == -57856.0
+    assert kpis['variable_cost_zar'] == 216960.0
+    assert kpis['hourly_breakdown'][0]['revenue_zar'] == 159104.0
+    assert kpis['hourly_breakdown'][0]['profit_zar'] == -57856.0
+    assert my_result['profit'] == -57856.0
+    assert da_id_breakdown['da_price_zar'] == 440.0
+    assert da_id_breakdown['da_revenue_zar'] == 159104.0
+    assert da_id_breakdown['id_revenue_zar'] == 0.0
+    assert da_id_breakdown['total_revenue_zar'] == 159104.0

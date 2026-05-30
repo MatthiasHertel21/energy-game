@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { TextField, Button, Paper, Typography, Stack, Divider, Box } from '@mui/material'
+import { TextField, Button, Paper, Typography, Stack, Divider, Box, Link } from '@mui/material'
 import api from '../services/api'
 import useAuth from '../store/auth'
 import { useNavigate } from 'react-router-dom'
@@ -32,6 +32,9 @@ export default function Login() {
           <TextField label="Password" type="password" value={password} onChange={(e)=>setPassword(e.target.value)} required />
           {error && <Typography color="error">{error}</Typography>}
           <Button type="submit" variant="contained">Sign in</Button>
+          <Link href="/reset-password" variant="body2" underline="hover" sx={{ textAlign: 'center' }}>
+            Forgot password?
+          </Link>
         </Stack>
       </form>
       <Divider sx={{ my: 3 }} />

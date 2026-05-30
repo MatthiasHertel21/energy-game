@@ -41,7 +41,7 @@ export default function Home() {
     try {
       const [sessionsRes, campaignsRes] = await Promise.all([
         api.get('/api/me/sessions'),
-        api.get('/api/catalog/campaigns').catch(() => ({ data: [] })) // Fix: correct API endpoint
+        api.get('/api/catalog/campaigns?for_me=1').catch(() => ({ data: [] }))
       ])
       
       setSessions(sessionsRes.data || [])

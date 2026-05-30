@@ -489,11 +489,11 @@ class TestEngineRunRoundWithDevices:
         device_row = kpis["device_hourly_breakdown"]["dev_gen_b"][0]
 
         expected_dispatch = 446.2
-        expected_revenue = 223100.0
+        expected_revenue = 204538.0      # SMP=458.4 (Walrasian upper-bound when supply < demand)
         expected_variable_cost = 223100.0
         expected_co2 = 423890.0
 
-        assert result["smp"] == pytest.approx(500.0, abs=1e-6)
+        assert result["smp"] == pytest.approx(458.4, abs=1e-6)
         assert kpis["planned_mwh"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert kpis["dispatched_mwh"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert kpis["actual_mwh"] == pytest.approx(expected_dispatch, abs=1e-3)
@@ -501,14 +501,14 @@ class TestEngineRunRoundWithDevices:
         assert kpis["variable_cost_zar"] == pytest.approx(expected_variable_cost, abs=1e-6)
         assert kpis["co2_emissions_kg"] == pytest.approx(expected_co2, abs=1e-6)
         assert kpis["imbalance_cost_zar"] == pytest.approx(0.0, abs=1e-6)
-        assert kpis["profit_zar"] == pytest.approx(0.0, abs=1e-6)
+        assert kpis["profit_zar"] == pytest.approx(-18562.0, abs=1e-6)
 
         assert hour_row["planned_mw"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert hour_row["dispatched_mw"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert hour_row["actual_mw"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert hour_row["revenue_zar"] == pytest.approx(expected_revenue, abs=1e-6)
         assert hour_row["variable_cost_zar"] == pytest.approx(expected_variable_cost, abs=1e-6)
-        assert hour_row["profit_zar"] == pytest.approx(0.0, abs=1e-6)
+        assert hour_row["profit_zar"] == pytest.approx(-18562.0, abs=1e-6)
 
         assert device_row["planned_mw"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert device_row["dispatched_mw"] == pytest.approx(expected_dispatch, abs=1e-3)
@@ -516,11 +516,11 @@ class TestEngineRunRoundWithDevices:
         assert device_row["actual_mw"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert device_row["da_dispatched_mwh"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert device_row["id_dispatched_mwh"] == pytest.approx(0.0, abs=1e-6)
-        assert device_row["revenue_zar"] == pytest.approx(expected_revenue, abs=1e-6)
+        assert device_row["revenue_zar"] == pytest.approx(expected_revenue, abs=1.0)   # device-row unrounded, diff < 1 ZAR
         assert device_row["variable_cost_zar"] == pytest.approx(expected_variable_cost, abs=1e-6)
         assert device_row["variable_cost_rate_effective_zar"] == pytest.approx(500.0, abs=1e-6)
         assert device_row["co2_kg"] == pytest.approx(expected_co2, abs=1e-6)
-        assert device_row["profit_zar"] == pytest.approx(0.0, abs=1e-6)
+        assert device_row["profit_zar"] == pytest.approx(-18562.0, abs=1.0)            # device-row unrounded, diff < 1 ZAR
 
     def test_round1_zero_and_preset_baseline_modes_keep_same_id_dispatch_but_change_plan(self, monkeypatch):
         """Round-1 zero/preset baselines should both stay in the ID-style path, but with different plans.
@@ -787,9 +787,9 @@ class TestEngineRunRoundWithDevices:
 
             round2_forecasts = {
                 player.id: {
-                    "hours": [350.0],
-                    "devices": [{"device_id": "dev_gen_b", "hours": [350.0]}],
-                    "bids": {"dev_gen_b": {"A": {"price": 400.0, "hours": [350.0]}}},
+                    "hours": [300.0],
+                    "devices": [{"device_id": "dev_gen_b", "hours": [300.0]}],
+                    "bids": {"dev_gen_b": {"A": {"price": 800.0, "hours": [300.0]}}},
                 }
             }
             round2 = run_round(
@@ -806,10 +806,10 @@ class TestEngineRunRoundWithDevices:
             hour_row = kpis["hourly_breakdown"][0]
             device_row = kpis["device_hourly_breakdown"]["dev_gen_b"][0]
 
-            assert kpis["planned_mwh"] > 0.0
+            assert kpis["planned_mwh"] == pytest.approx(300.0, abs=1e-6)
             assert kpis["dispatched_mwh"] > 0.0
             assert kpis["actual_mwh"] > 0.0
-            assert kpis["planned_mwh"] == pytest.approx(kpis["dispatched_mwh"], abs=1e-6)
+            assert kpis["planned_mwh"] > kpis["dispatched_mwh"]
             assert kpis["actual_mwh"] == pytest.approx(kpis["dispatched_mwh"], abs=1e-6)
             assert kpis["revenue_zar"] > 0.0
             assert kpis["variable_cost_zar"] > 0.0
@@ -824,6 +824,7 @@ class TestEngineRunRoundWithDevices:
             assert device_row["actual_mw"] == pytest.approx(kpis["actual_mwh"], abs=1e-6)
             assert device_row["da_dispatched_mwh"] > 0.0
             assert device_row["id_dispatched_mwh"] == pytest.approx(0.0, abs=1e-6)
+            assert device_row["total_dispatched_mwh"] == pytest.approx(device_row["da_dispatched_mwh"], abs=1e-6)
             assert device_row["total_dispatched_mwh"] == pytest.approx(kpis["dispatched_mwh"], abs=1e-6)
 
 

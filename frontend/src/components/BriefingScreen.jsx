@@ -57,7 +57,7 @@ export default function BriefingScreen({ session, scenario, onStart, selectedTyp
   const isSolo = mode === 'isolated_per_player';
 
   // Extract scenario description from config or use default
-  const description = scenario?.description || 
+  const description = scenario?.config?.objectives || scenario?.description || 
     "Welcome to the energy trading simulation. Your goal is to maximize profit while maintaining grid stability.";
 
   const events = scenario?.config?.events || []
@@ -89,15 +89,20 @@ export default function BriefingScreen({ session, scenario, onStart, selectedTyp
   // Extract challenges from scenario config
   const allChallenges = scenario?.config?.challenges || []
   const challenges = useMemo(() => {
-    if (!playerRole) return allChallenges
+    const selectedTypeId = String(selectedType || '').trim().toLowerCase()
+    const normalizedRole = String(playerRole || '').trim().toLowerCase()
     return allChallenges.filter(ch => {
       const app = ch?.applicable_to
       if (!app) return true
-      if (typeof app === 'string') return app === 'all' || app === playerRole
-      if (Array.isArray(app)) return app.includes('all') || app.includes(playerRole)
-      return true
+      const scopes = (typeof app === 'string' ? [app] : Array.isArray(app) ? app : [])
+        .map((item) => String(item || '').trim().toLowerCase())
+        .filter(Boolean)
+      if (!scopes.length || scopes.includes('all')) return true
+      if (selectedTypeId && scopes.includes(selectedTypeId)) return true
+      if (normalizedRole && scopes.includes(normalizedRole)) return true
+      return false
     })
-  }, [allChallenges, playerRole])
+  }, [allChallenges, playerRole, selectedType])
   
   // Metric display names
   const metricNames = {

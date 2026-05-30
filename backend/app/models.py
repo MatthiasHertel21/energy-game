@@ -41,6 +41,28 @@ class User(db.Model):
         }
 
 
+class PasswordResetToken(db.Model):
+    __tablename__ = "password_reset_tokens"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    token = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    @staticmethod
+    def generate(user_id: int, hours_valid: int = 1) -> "PasswordResetToken":
+        import secrets
+        token = secrets.token_urlsafe(32)
+        expires = datetime.utcnow() + timedelta(hours=hours_valid)
+        return PasswordResetToken(user_id=user_id, token=token, expires_at=expires)
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.used and datetime.utcnow() < self.expires_at
+
+
 class Invite(db.Model):
     __tablename__ = "invites"
 

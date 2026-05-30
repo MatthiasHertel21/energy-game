@@ -84,6 +84,7 @@ def create_app() -> Flask:
             CohortCampaign,
             Scenario,
             CampaignScenario,
+            PasswordResetToken,
         )
         from .static_pages import StaticPage
         
@@ -101,6 +102,8 @@ def create_app() -> Flask:
                 CampaignScenario.__table__.create(bind=db.engine, checkfirst=True)
             if not insp.has_table(StaticPage.__tablename__):
                 StaticPage.__table__.create(bind=db.engine, checkfirst=True)
+            if not insp.has_table(PasswordResetToken.__tablename__):
+                PasswordResetToken.__table__.create(bind=db.engine, checkfirst=True)
 
             # Lightweight column backfill for campaigns to avoid 500s when migrations weren't run
             try:

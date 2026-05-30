@@ -71,21 +71,21 @@ SCENARIO_1 = {
     "player_types": [
         {
             "id": "ptype_s1_producer",
-            "name": "Erzeuger",
+            "name": "Producer",
             "zone": 1,
             "description": (
-                "Betreiber eines Kohlekraftwerks. Biete im Day-Ahead-Markt. "
-                "Dein Ziel: Gewinn maximieren, indem du Preis und Menge richtig setzt."
+                "Operator of a coal-fired power plant. Submit offers in the day-ahead market. "
+                "Your goal is to maximize profit by choosing the right price and volume."
             ),
             "devices": ["dev_s1_coal"],
         },
         {
             "id": "ptype_s1_consumer",
-            "name": "Verbraucher",
+            "name": "Consumer",
             "zone": 1,
             "description": (
-                "Stadtwerke als Großabnehmer. Sichere deine Versorgung im Day-Ahead-Markt. "
-                "Dein Ziel: Versorgung zu möglichst geringen Kosten garantieren."
+                "Municipal utility acting as a large buyer. Secure your supply in the day-ahead market. "
+                "Your goal is to guarantee supply at the lowest possible cost."
             ),
             "devices": ["dev_s1_load"],
         },
@@ -233,34 +233,34 @@ SCENARIO_2 = {
     "player_types": [
         {
             "id": "ptype_s2_producer",
-            "name": "Konventioneller Erzeuger",
+            "name": "Conventional Producer",
             "zone": 1,
             "description": (
-                "Betreiber von Kohle- und Gaskraftwerk. Setze Kohle als Grundlast, "
-                "Gas für Spitzen. Nutze den IDM um Abweichungen zu korrigieren. "
-                "In Runde 2 steigt die Nachfrage – passe deine Angebote rechtzeitig an."
+                "Operator of coal and gas generation assets. Use coal as baseload and gas for peak demand. "
+                "Use the intraday market to correct deviations. "
+                "Demand increases in round 2, so adjust your offers in time."
             ),
             "devices": ["dev_s2_coal", "dev_s2_gas"],
         },
         {
             "id": "ptype_s2_solar",
-            "name": "Solarpark-Betreiber",
+            "name": "Solar Park Operator",
             "zone": 1,
             "description": (
-                "Volatiler Erzeuger: Deine Erzeugung schwankt mit der Sonneneinstrahlung. "
-                "Biete im DAM mit Prognose, nutze den IDM um Über- oder Untereinspeisung "
-                "auszugleichen und Imbalance-Kosten zu minimieren."
+                "Variable renewable producer: your generation fluctuates with solar irradiance. "
+                "Offer in the day-ahead market based on your forecast, and use the intraday market to balance "
+                "over- or under-delivery and minimize imbalance costs."
             ),
             "devices": ["dev_s2_pv"],
         },
         {
             "id": "ptype_s2_consumer",
-            "name": "Industrieverbraucher",
+            "name": "Industrial Consumer",
             "zone": 1,
             "description": (
-                "Großabnehmer mit Demand Response. In Runde 2 steigt dein Bedarf unerwartet. "
-                "Nutze den IDM zur Nachbeschaffung. Aktiviere DRM in teuren Stunden "
-                "um Spitzenkosten zu senken."
+                "Large industrial buyer with demand response capability. Your demand rises unexpectedly in round 2. "
+                "Use the intraday market for additional procurement. Activate demand response in expensive hours "
+                "to reduce peak costs."
             ),
             "devices": ["dev_s2_load"],
         },
@@ -456,36 +456,35 @@ SCENARIO_3 = {
     "player_types": [
         {
             "id": "ptype_s3_producer",
-            "name": "Konventioneller Erzeuger",
+            "name": "Conventional Producer",
             "zone": 1,
             "description": (
-                "Zone 1: Betreiber von Kohle- und Gaskraftwerk. Kohle als Grundlast, "
-                "Gas als Spitzenlast. In Runde 3 tritt eine technische Störung an der "
-                "Kohleanlage auf – reagiere schnell mit dem Gaskraftwerk. "
-                "Nutze DAM und IDM strategisch."
+                "Zone 1: operator of coal and gas generation assets. Use coal as baseload "
+                "and gas as peaking capacity. In round 3 a technical failure affects the coal plant, "
+                "so react quickly with the gas unit. Use the day-ahead and intraday markets strategically."
             ),
             "devices": ["dev_s3_coal", "dev_s3_gas"],
         },
         {
             "id": "ptype_s3_pvbat",
-            "name": "Erneuerbare + Speicher",
+            "name": "Renewables + Storage",
             "zone": 1,
             "description": (
-                "Zone 1: Solarpark und Netzbatterie. Lade die Batterie in Schwachlaststunden, "
-                "entlade bei Preisspitzen. In Runde 3 maximiere Solar-Output (Ausfall des Kohlewerks). "
-                "In Runde 4 ist Solar durch Bewölkung stark eingeschränkt – Batterie wird kritisch."
+                "Zone 1: solar park and grid battery. Charge the battery during low-load hours "
+                "and discharge during price spikes. In round 3 maximize solar output after the coal outage. "
+                "In round 4 cloud cover heavily limits solar generation, making battery management critical."
             ),
             "devices": ["dev_s3_pv", "dev_s3_bat"],
         },
         {
             "id": "ptype_s3_consumer",
-            "name": "Großverbraucher Zone 2",
+            "name": "Large Consumer Zone 2",
             "zone": 2,
             "description": (
-                "Zone 2: Die Kuppelkapazität zu Zone 1 ist auf 160 MW begrenzt. "
-                "Dein Bedarf übersteigt diese Grenze – Versorgungslücken sind real möglich. "
-                "Aktiviere DRM in teuren Stunden. In Runde 4 steigt dein Bedarf durch "
-                "Kälte um 40% – plane jetzt schon vor."
+                "Zone 2: interconnection capacity to Zone 1 is limited to 160 MW. "
+                "Your demand exceeds that limit, so supply shortfalls are a real risk. "
+                "Activate demand response in expensive hours. In round 4 cold weather raises your demand by 40%, "
+                "so plan ahead early."
             ),
             "devices": ["dev_s3_load"],
         },

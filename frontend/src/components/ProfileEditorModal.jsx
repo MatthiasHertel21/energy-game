@@ -85,9 +85,12 @@ const SEASONAL_PRESETS = {
  * @param {Array<number>} hourlyProfile - Current 24-hour profile [0-1] values
  * @param {Array<number>} seasonalProfile - Current 12-month profile values
  * @param {Array<number>} zonalDistribution - Current zonal distribution in percent
+ * @param {{min?: number, max?: number}} priceRange - Current explicit price range
+ * @param {{min?: number, max?: number}} defaultPriceRange - Default fallback price range
  * @param {number} zoneCount - Number of configured zones
- * @param {function} onSave - Save callback ({hourly, seasonal, zonal}) => void
+ * @param {function} onSave - Save callback ({hourly, seasonal, zonal, priceMin, priceMax}) => void
  * @param {string} type - Device type for preset suggestions (solar, wind, residential, etc.)
+ * @param {string} kind - Mix kind (generator or consumer)
  */
 export default function ProfileEditorModal({ 
   open, 
@@ -96,14 +99,19 @@ export default function ProfileEditorModal({
   hourlyProfile, 
   seasonalProfile, 
   zonalDistribution,
+  priceRange,
+  defaultPriceRange,
   zoneCount = 1,
   onSave, 
-  type = 'baseload' 
+  type = 'baseload',
+  kind = 'generator',
 }) {
   const [activeTab, setActiveTab] = useState(0);
   const [localHourly, setLocalHourly] = useState(Array(24).fill(1.0));
   const [localSeasonal, setLocalSeasonal] = useState(Array(12).fill(1.0));
   const [localZonal, setLocalZonal] = useState([100]);
+  const [localPriceMin, setLocalPriceMin] = useState(0);
+  const [localPriceMax, setLocalPriceMax] = useState(0);
 
   const buildEqualDistribution = (count) => {
     const safeCount = Math.max(1, Number(count) || 1);
@@ -125,8 +133,18 @@ export default function ProfileEditorModal({
     return buildEqualDistribution(safeCount);
   };
 
+  const getNumericOrFallback = (value, fallback) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+  };
+
   useEffect(() => {
     if (open) {
+      const fallbackMin = getNumericOrFallback(defaultPriceRange?.min, 0);
+      const fallbackMax = getNumericOrFallback(defaultPriceRange?.max, fallbackMin);
+      const resolvedMin = getNumericOrFallback(priceRange?.min, fallbackMin);
+      const resolvedMax = getNumericOrFallback(priceRange?.max, fallbackMax);
+
       // Initialize hourly
       if (hourlyProfile && hourlyProfile.length === 24) {
         setLocalHourly([...hourlyProfile]);
@@ -141,9 +159,11 @@ export default function ProfileEditorModal({
         setLocalSeasonal(Array(12).fill(1.0));
       }
       setLocalZonal(normalizeDistribution(zonalDistribution, zoneCount));
+      setLocalPriceMin(resolvedMin);
+      setLocalPriceMax(Math.max(resolvedMin, resolvedMax));
       setActiveTab(0);
     }
-  }, [open, hourlyProfile, seasonalProfile, zonalDistribution, zoneCount, type]);
+  }, [open, hourlyProfile, seasonalProfile, zonalDistribution, priceRange, defaultPriceRange, zoneCount, type]);
 
   const handleHourlySliderChange = (index, value) => {
     const updated = [...localHourly];
@@ -206,11 +226,20 @@ export default function ProfileEditorModal({
     setLocalZonal(rounded);
   };
 
+  const handleResetPriceRange = () => {
+    const fallbackMin = getNumericOrFallback(defaultPriceRange?.min, 0);
+    const fallbackMax = getNumericOrFallback(defaultPriceRange?.max, fallbackMin);
+    setLocalPriceMin(fallbackMin);
+    setLocalPriceMax(Math.max(fallbackMin, fallbackMax));
+  };
+
   const handleSave = () => {
     onSave({
       hourly: localHourly,
       seasonal: localSeasonal,
       zonal: localZonal,
+      priceMin: Number(localPriceMin),
+      priceMax: Number(localPriceMax),
     });
     onClose();
   };
@@ -230,6 +259,7 @@ export default function ProfileEditorModal({
   const isHourly = activeTab === 0;
   const isSeasonal = activeTab === 1;
   const isZonal = activeTab === 2;
+  const isPriceRange = activeTab === 3;
   const currentProfile = isHourly ? localHourly : localSeasonal;
   const currentLabels = isHourly ? HOUR_LABELS : MONTH_LABELS;
   const currentPresets = isHourly ? PRESETS : SEASONAL_PRESETS;
@@ -237,6 +267,10 @@ export default function ProfileEditorModal({
   const zonalSum = localZonal.reduce((sum, value) => sum + Number(value || 0), 0);
   const zonalSumRounded = Math.round(zonalSum * 1000) / 1000;
   const zonalValid = Math.abs(zonalSumRounded - 100) <= 0.001;
+  const priceRangeValid = Number.isFinite(Number(localPriceMin)) && Number.isFinite(Number(localPriceMax)) && Number(localPriceMin) <= Number(localPriceMax);
+  const priceRangeLabel = kind === 'consumer' ? 'Willingness to pay' : 'Offer price';
+  const defaultPriceMin = getNumericOrFallback(defaultPriceRange?.min, 0);
+  const defaultPriceMax = getNumericOrFallback(defaultPriceRange?.max, defaultPriceMin);
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
@@ -248,9 +282,10 @@ export default function ProfileEditorModal({
             <Tab label="Hourly (24h)" />
             <Tab label="Seasonal (12m)" />
             <Tab label="Zonal Distribution" />
+            <Tab label="Price Range" />
           </Tabs>
 
-          {!isZonal && (
+          {!isZonal && !isPriceRange && (
             <Box>
               <Typography variant="subtitle2" gutterBottom>Quick Presets:</Typography>
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -292,7 +327,57 @@ export default function ProfileEditorModal({
             </Box>
           )}
 
-          {!isZonal && (
+          {isPriceRange && (
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>{priceRangeLabel} Range:</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                Synthetic {kind === 'consumer' ? 'consumers' : 'producers'} draw random prices from this range. If no explicit values were stored before, this dialog starts from the legacy defaults.
+              </Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+                <Chip
+                  label={`Default: ${defaultPriceMin.toFixed(0)} to ${defaultPriceMax.toFixed(0)}`}
+                  size="small"
+                  color="primary"
+                  variant="outlined"
+                  onClick={handleResetPriceRange}
+                />
+                <Chip
+                  label={priceRangeValid ? 'Range valid' : 'Min must be <= max'}
+                  size="small"
+                  color={priceRangeValid ? 'success' : 'warning'}
+                  variant="filled"
+                />
+              </Stack>
+              <Grid container spacing={2}>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="number"
+                    label={`Minimum ${priceRangeLabel}`}
+                    value={localPriceMin}
+                    onChange={(e) => setLocalPriceMin(e.target.value)}
+                    error={!priceRangeValid}
+                    helperText={kind === 'consumer' ? 'Lower WTP bound for synthetic consumers' : 'Lower offer-price bound for synthetic producers'}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="number"
+                    label={`Maximum ${priceRangeLabel}`}
+                    value={localPriceMax}
+                    onChange={(e) => setLocalPriceMax(e.target.value)}
+                    error={!priceRangeValid}
+                    helperText={kind === 'consumer' ? 'Upper WTP bound for synthetic consumers' : 'Upper offer-price bound for synthetic producers'}
+                  />
+                </Grid>
+              </Grid>
+            </Box>
+          )}
+
+          {!isZonal && !isPriceRange && (
             <Box>
               <Typography variant="subtitle2" gutterBottom>Profile Visualization:</Typography>
               <Box sx={{ display: 'flex', alignItems: 'flex-end', height: 100, gap: 0.5 }}>
@@ -331,7 +416,7 @@ export default function ProfileEditorModal({
             </Box>
           )}
 
-          {!isZonal && (
+          {!isZonal && !isPriceRange && (
             <Box>
               <Typography variant="subtitle2" gutterBottom>
                 {isHourly ? 'Hourly Values (0.0 - 1.0):' : 'Monthly Values (Scaling Factors):'}
@@ -388,12 +473,19 @@ export default function ProfileEditorModal({
               multiline
               minRows={2}
               size="small"
-              value={JSON.stringify(isZonal ? localZonal : currentProfile)}
+              value={JSON.stringify(isPriceRange ? { min: Number(localPriceMin), max: Number(localPriceMax) } : isZonal ? localZonal : currentProfile)}
               onChange={(e) => {
                 try {
                   const parsed = JSON.parse(e.target.value);
                   const expectedLength = isHourly ? 24 : isSeasonal ? 12 : Math.max(1, Number(zoneCount) || 1);
-                  if (Array.isArray(parsed) && parsed.length === expectedLength) {
+                  if (isPriceRange && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    const parsedMin = Number(parsed.min);
+                    const parsedMax = Number(parsed.max);
+                    if (Number.isFinite(parsedMin) && Number.isFinite(parsedMax)) {
+                      setLocalPriceMin(parsedMin);
+                      setLocalPriceMax(parsedMax);
+                    }
+                  } else if (Array.isArray(parsed) && parsed.length === expectedLength) {
                     if (isHourly) {
                       const validated = parsed.map(v => Math.max(0, Math.min(1, Number(v) || 0)));
                       setLocalHourly(validated);
@@ -414,11 +506,11 @@ export default function ProfileEditorModal({
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={isHourly ? handleResetHourly : isSeasonal ? handleResetSeasonal : handleResetZonal} color="warning">
-          {isZonal ? 'Reset To Equal Split' : 'Reset to 1.0'}
+        <Button onClick={isHourly ? handleResetHourly : isSeasonal ? handleResetSeasonal : isZonal ? handleResetZonal : handleResetPriceRange} color="warning">
+          {isZonal ? 'Reset To Equal Split' : isPriceRange ? 'Reset to defaults' : 'Reset to 1.0'}
         </Button>
         <Button onClick={onClose}>Cancel</Button>
-        <Button onClick={handleSave} variant="contained" disabled={isZonal && !zonalValid}>Save</Button>
+        <Button onClick={handleSave} variant="contained" disabled={(isZonal && !zonalValid) || (isPriceRange && !priceRangeValid)}>Save</Button>
       </DialogActions>
     </Dialog>
   );

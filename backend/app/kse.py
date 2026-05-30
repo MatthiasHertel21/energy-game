@@ -6,6 +6,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from .extensions import db
 from .models import Campaign, Scenario, Role, ReferenceRun
 from .models import CampaignScenario, Session, SessionStatus, PlayerProgress, Forecast, Result
+from .models import SessionAllowedType, SessionPlayerType
 from .utils import role_required
 from .device_types import DEVICE_SPECS, DeviceType, validate_device
 from .config import Config
@@ -99,6 +100,32 @@ def _validate_zone_distribution(label: str, dist, zones: int, errors: list[str])
         errors.append(f"{label}.zone_distribution_pct must sum to 100")
 
 
+def _validate_price_range(label: str, entry, errors: list[str]) -> None:
+    if not isinstance(entry, dict):
+        return
+
+    has_min = entry.get("price_min") not in (None, "")
+    has_max = entry.get("price_max") not in (None, "")
+    if not has_min and not has_max:
+        return
+
+    min_price = None
+    max_price = None
+    if has_min:
+        try:
+            min_price = float(entry.get("price_min"))
+        except Exception:
+            errors.append(f"{label}.price_min must be numeric")
+    if has_max:
+        try:
+            max_price = float(entry.get("price_max"))
+        except Exception:
+            errors.append(f"{label}.price_max must be numeric")
+
+    if min_price is not None and max_price is not None and min_price > max_price:
+        errors.append(f"{label}.price_min must be <= {label}.price_max")
+
+
 def _validate_mix_with_zone_distribution(container_label: str, mix, zones: int, errors: list[str]) -> None:
     if mix is None:
         return
@@ -108,6 +135,7 @@ def _validate_mix_with_zone_distribution(container_label: str, mix, zones: int, 
     for key, entry in mix.items():
         if isinstance(entry, dict):
             _validate_zone_distribution(f"{container_label}.{key}", entry.get("zone_distribution_pct"), zones, errors)
+            _validate_price_range(f"{container_label}.{key}", entry, errors)
             profile = entry.get("profile")
             if profile is not None:
                 if not isinstance(profile, list) or len(profile) != 24:
@@ -200,6 +228,7 @@ def validate_config(cfg: dict) -> list[str]:
         errors.append("grid.generator_curtailment_mode invalid")
 
     _validate_mix_with_zone_distribution("environment.groups", cfg.get("environment", {}).get("groups"), int(zones), errors)
+    _validate_mix_with_zone_distribution("market.generator_mix", cfg.get("market", {}).get("generator_mix"), int(zones), errors)
     _validate_mix_with_zone_distribution("market.consumer_mix", cfg.get("market", {}).get("consumer_mix"), int(zones), errors)
     balancing = cfg.get("balancing") or {}
     if not isinstance(balancing, dict):
@@ -466,6 +495,20 @@ def sanitize_markets_config(cfg: dict) -> dict:
     return out
 
 
+def _delete_session_dependents(session_ids: list[int]) -> None:
+    if not session_ids:
+        return
+
+    SessionAllowedType.query.filter(
+        SessionAllowedType.session_id.in_(session_ids)
+    ).delete(synchronize_session=False)
+    SessionPlayerType.query.filter(
+        SessionPlayerType.session_id.in_(session_ids)
+    ).delete(synchronize_session=False)
+    Forecast.query.filter(Forecast.session_id.in_(session_ids)).delete(synchronize_session=False)
+    Result.query.filter(Result.session_id.in_(session_ids)).delete(synchronize_session=False)
+
+
 @ns.route("/campaigns")
 class Campaigns(Resource):
     @jwt_required()
@@ -534,11 +577,9 @@ class CampaignItem(Resource):
             # Delete player progress entries for these scenarios
             PlayerProgress.query.filter(PlayerProgress.scenario_id.in_(scenario_ids)).delete(synchronize_session=False)
             
-            # Delete forecasts and results from sessions using these scenarios
+            # Delete session-scoped records from sessions using these scenarios
             session_ids = [s.id for s in Session.query.filter(Session.scenario_id.in_(scenario_ids)).all()]
-            if session_ids:
-                Forecast.query.filter(Forecast.session_id.in_(session_ids)).delete(synchronize_session=False)
-                Result.query.filter(Result.session_id.in_(session_ids)).delete(synchronize_session=False)
+            _delete_session_dependents(session_ids)
             
             # Delete sessions using these scenarios
             Session.query.filter(Session.scenario_id.in_(scenario_ids)).delete(synchronize_session=False)
@@ -863,22 +904,20 @@ class ScenarioItem(Resource):
         
         # Delete dependent records first to avoid foreign key constraint violations
         # Delete player progress entries
-        PlayerProgress.query.filter_by(scenario_id=sid).delete()
+        PlayerProgress.query.filter_by(scenario_id=sid).delete(synchronize_session=False)
         
-        # Delete forecasts from sessions using this scenario
+        # Delete session-scoped records from sessions using this scenario
         session_ids = [session.id for session in Session.query.filter_by(scenario_id=sid).all()]
-        if session_ids:
-            Forecast.query.filter(Forecast.session_id.in_(session_ids)).delete(synchronize_session=False)
-            Result.query.filter(Result.session_id.in_(session_ids)).delete(synchronize_session=False)
+        _delete_session_dependents(session_ids)
         
         # Delete sessions using this scenario
-        Session.query.filter_by(scenario_id=sid).delete()
+        Session.query.filter_by(scenario_id=sid).delete(synchronize_session=False)
         
         # Delete campaign-scenario assignments
-        CampaignScenario.query.filter_by(scenario_id=sid).delete()
+        CampaignScenario.query.filter_by(scenario_id=sid).delete(synchronize_session=False)
         
         # Delete reference runs
-        ReferenceRun.query.filter_by(scenario_id=sid).delete()
+        ReferenceRun.query.filter_by(scenario_id=sid).delete(synchronize_session=False)
         
         # Finally delete the scenario itself
         db.session.delete(s)

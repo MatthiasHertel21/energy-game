@@ -155,6 +155,35 @@ class TestInflexibleUnitsFilter:
         assert price == 80
 
 
+class TestEquilibriumPriceEdge:
+    """Test price selection at the correct edge of the equilibrium interval"""
+
+    def test_demand_long_uses_upper_price_bound(self):
+        """When demand is rationed, SMP should move to the demand-side bound"""
+        supply = [
+            (400.0, 380.2),
+            (500.0, 446.2),
+        ]
+        demand = [
+            (2300.0, 120.0),
+            (2290.1234567901233, 120.0),
+            (2260.4938271604938, 120.0),
+            (2211.1111111111113, 120.0),
+            (2141.975308641975, 120.0),
+            (2053.0864197530864, 120.0),
+            (1944.4444444444443, 120.0),
+            (1816.0493827160494, 120.0),
+            (1667.9012345679012, 120.0),
+            (1500.0, 120.0),
+            (1500.0, 1205.13),
+        ]
+
+        price, volume = clear_market(supply, demand)
+
+        assert volume == 826.4
+        assert price == 1944.4
+
+
 class TestMonotonicityValidation:
     """Test bid price monotonicity validation (SAWEM requirement)"""
     

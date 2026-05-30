@@ -75,11 +75,6 @@ class Cohorts(Resource):
     @role_required("trainer", "admin")
     @ns.expect(cohort_in, validate=True)
     def post(self):
-        # Check system limit for max cohorts
-        cohort_count = Cohort.query.count()
-        if cohort_count >= Config.MAX_COHORTS:
-            ns.abort(HTTPStatus.FORBIDDEN, f"System limit reached: maximum {Config.MAX_COHORTS} cohorts allowed")
-        
         trainer_id = int(get_jwt_identity())
         c = Cohort(name=request.json["name"], trainer_id=trainer_id)
         db.session.add(c)

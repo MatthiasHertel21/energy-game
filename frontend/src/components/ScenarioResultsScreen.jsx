@@ -38,6 +38,7 @@ import api from '../services/api';
 import { getRoleTerminology } from '../utils/roleTerminology';
 import {
   buildCompositionSection,
+  buildGroupedRankingSections,
   buildParticipantsCard,
   buildPriceCard,
   buildVolumeCard,
@@ -47,6 +48,8 @@ import {
 } from '../utils/marketOverview'
 import ContextAssistantDialog from './ContextAssistantDialog';
 import MarketOverviewDialog from './MarketOverviewDialog';
+import MarketOverviewTrendPanel from './MarketOverviewTrendPanel';
+import MarketStructureChartPanel from './MarketStructureChartPanel';
 
 /**
  * ScenarioResultsScreen - Final cumulative results and ranking
@@ -58,6 +61,9 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   const [error, setError] = useState(null);
   const [selectedMetrics, setSelectedMetrics] = useState(null); // null = not yet initialised
   const [marketOverviewOpen, setMarketOverviewOpen] = useState(false);
+  const [marketOverviewTrendRounds, setMarketOverviewTrendRounds] = useState([]);
+  const [marketOverviewTrendLoading, setMarketOverviewTrendLoading] = useState(false);
+  const [marketOverviewTrendLoaded, setMarketOverviewTrendLoaded] = useState(false);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -77,6 +83,46 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
 
     fetchResults();
   }, [sessionId]);
+
+  useEffect(() => {
+    setMarketOverviewTrendRounds([]);
+    setMarketOverviewTrendLoading(false);
+    setMarketOverviewTrendLoaded(false);
+  }, [sessionId]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (!marketOverviewOpen || !sessionId || marketOverviewTrendLoading || marketOverviewTrendLoaded) {
+      return () => {};
+    }
+
+    const fetchTrend = async () => {
+      setMarketOverviewTrendLoading(true);
+      try {
+        const { data } = await api.get(`/api/sessions/${sessionId}/replay`);
+        if (!isCancelled) {
+          setMarketOverviewTrendRounds(Array.isArray(data?.rounds) ? data.rounds : []);
+        }
+      } catch (err) {
+        console.error('Failed to load market overview trend:', err);
+        if (!isCancelled) {
+          setMarketOverviewTrendRounds([]);
+        }
+      } finally {
+        if (!isCancelled) {
+          setMarketOverviewTrendLoading(false);
+          setMarketOverviewTrendLoaded(true);
+        }
+      }
+    };
+
+    fetchTrend();
+    return () => {
+      isCancelled = true;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketOverviewOpen, marketOverviewTrendLoaded, sessionId]);
 
   const handleRetry = async () => {
     setLoading(true);
@@ -129,9 +175,10 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
   const latestChallengeResults = Array.isArray(latestChallengeEntry?.result?.results)
     ? latestChallengeEntry.result.results
     : [];
-  const totalChallengePoints = Number(latestChallengeEntry?.result?.total_points || 0);
-  const maxChallengePoints = Number(latestChallengeEntry?.result?.max_points || 0);
-  const challengesPassed = latestChallengeResults.filter((item) => item?.passed).length;
+  const scenarioChallengeResults = latestChallengeResults.filter((item) => !item?.per_round);
+  const totalChallengePoints = scenarioChallengeResults.reduce((sum, item) => sum + Number(item?.points || 0), 0);
+  const maxChallengePoints = scenarioChallengeResults.reduce((sum, item) => sum + Number(item?.max_points || 0), 0);
+  const challengesPassed = scenarioChallengeResults.filter((item) => item?.passed).length;
 
   const playerTypeOptions = Array.isArray(scenario?.config?.player_types)
     ? scenario.config.player_types
@@ -274,10 +321,39 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
       total_rounds: totalRoundsDisplay,
     },
     scenario: {
+      description: scenario?.description || scenario?.config?.description || '',
       campaign_name: scenario?.campaign_name || 'Campaign',
       name: scenario?.name || 'Scenario',
       general: scenario?.config?.general || {},
+      market: scenario?.config?.market || {},
+      events: scenario?.config?.events || [],
       challenges: scenario?.config?.challenges || [],
+      scoring: scenario?.config?.scoring || {},
+      grid: scenario?.config?.grid || {},
+      player_types: (scenario?.config?.player_types || []).map(pt => ({
+        id: pt.id,
+        name: pt.name,
+        description: pt.description || '',
+        devices: pt.devices || [],
+      })),
+      devices: (scenario?.config?.devices || []).map(d => ({
+        id: d.id,
+        name: d.name || d.id,
+        type: d.type,
+        zone: d.zone ?? null,
+        capacity_mw: d.capacity_mw ?? d.max_power_mw ?? null,
+        baseline_load_mw: d.baseline_load_mw ?? null,
+        peak_load_mw: d.peak_load_mw ?? null,
+        variable_cost_tiers: d.variable_cost_tiers ?? null,
+        cost_per_mwh_zar: d.cost_per_mwh_zar ?? d.marginal_cost ?? null,
+        min_load_pct: d.min_load_pct ?? null,
+        ramp_rate_mw_per_h: d.ramp_rate_mw_per_h ?? null,
+        efficiency_pct: d.efficiency_pct ?? null,
+        capacity_factor_pct: d.capacity_factor_pct ?? null,
+        bid_count: d.bid_count ?? null,
+        enable_multi_bid: d.enable_multi_bid ?? null,
+        drm_capable: d.drm_capable ?? null,
+      })),
     },
     player: {
       role: myInferredRole,
@@ -310,49 +386,112 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
     const avgScore = totalPlayers > 0
       ? safeRanking.reduce((sum, row) => sum + normalizeNumber(row?.total_score), 0) / totalPlayers
       : 0;
+    const compositionSection = buildCompositionSection(scenarioMarketSummary, formatInt);
+    const zoneSection = buildZoneSection(scenarioMarketSummary, formatCurrency, formatInt);
+    const summarySection = {
+      title: 'Scenario-wide summary',
+      rows: [
+        { label: 'Total settlement revenue across real players', value: formatCurrency(totalRevenue) },
+        { label: 'Approx. total costs across real players', value: formatCurrency(totalCosts) },
+        { label: 'Challenge rounds captured', value: String(challengeHistory.length) },
+        { label: 'Real player share of producer side', value: `${scenarioMarketSummary.realPlayers.producerSharePct.toFixed(1)}%` },
+        { label: 'Real player share of consumer side', value: `${scenarioMarketSummary.realPlayers.consumerSharePct.toFixed(1)}%` },
+      ],
+    };
+    const leaderboardSection = {
+      title: 'Final leaderboard (top 8)',
+      columns: [
+        { key: 'rank', label: 'Rank' },
+        { key: 'player', label: 'Player' },
+        { key: 'type', label: 'Type' },
+        { key: 'score', label: 'Score', align: 'right' },
+        { key: 'profit', label: resolvedIsProducer ? 'Profit' : 'Net Result', align: 'right' },
+      ],
+      rows: safeRanking.slice(0, 8).map((row, index) => ({
+        key: row?.player_id || index,
+        rank: `#${index + 1}`,
+        player: row?.email || `Player ${row?.player_id || '-'}`,
+        type: resolvePlayerTypeLabel(row?.player_type || row?.type || '-'),
+        score: normalizeNumber(row?.total_score).toFixed(1),
+        profit: formatCurrency(row?.total_profit || 0),
+      })),
+    };
+    const rankingEntries = safeRanking.map((row, index) => ({
+      key: row?.player_id || row?.email || index,
+      rank: `#${row?.rank || index + 1}`,
+      player: row?.email || `Player ${row?.player_id || '-'}`,
+      type: resolvePlayerTypeLabel(row?.player_type || row?.type || '-'),
+      score: normalizeNumber(row?.total_score).toFixed(1),
+      primaryValue: formatCurrency(row?.total_profit || 0),
+    }));
 
     return {
       cards: [
-        buildParticipantsCard(scenarioMarketSummary),
         buildVolumeCard(scenarioMarketSummary, formatInt),
         { key: 'profit', title: 'Total Market Profit', value: formatCurrency(totalProfit), caption: `Real players · average score ${avgScore.toFixed(1)}` },
         buildPriceCard(scenarioMarketSummary),
         { key: 'co2', title: 'Total CO₂', value: `${formatInt(totalCo2)} kg`, caption: `Real players · total settlement revenue ${formatCurrency(totalRevenue)}` },
       ].filter(Boolean),
-      sections: [
-        buildCompositionSection(scenarioMarketSummary, formatInt),
-        buildZoneSection(scenarioMarketSummary, formatCurrency, formatInt),
-        {
-          title: 'Scenario-wide summary',
-          rows: [
-            { label: 'Total settlement revenue across real players', value: formatCurrency(totalRevenue) },
-            { label: 'Approx. total costs across real players', value: formatCurrency(totalCosts) },
-            { label: 'Challenge rounds captured', value: String(challengeHistory.length) },
-            { label: 'Real player share of producer side', value: `${scenarioMarketSummary.realPlayers.producerSharePct.toFixed(1)}%` },
-            { label: 'Real player share of consumer side', value: `${scenarioMarketSummary.realPlayers.consumerSharePct.toFixed(1)}%` },
-          ],
-        },
-        {
-          title: 'Final leaderboard (top 8)',
-          columns: [
-            { key: 'rank', label: 'Rank' },
-            { key: 'player', label: 'Player' },
-            { key: 'type', label: 'Type' },
-            { key: 'score', label: 'Score', align: 'right' },
-            { key: 'profit', label: resolvedIsProducer ? 'Profit' : 'Net Result', align: 'right' },
-          ],
-          rows: safeRanking.slice(0, 8).map((row, index) => ({
-            key: row?.player_id || index,
-            rank: `#${index + 1}`,
-            player: row?.email || `Player ${row?.player_id || '-'}`,
-            type: resolvePlayerTypeLabel(row?.player_type || row?.type || '-'),
-            score: normalizeNumber(row?.total_score).toFixed(1),
-            profit: formatCurrency(row?.total_profit || 0),
-          })),
-        },
-      ].filter(Boolean),
+      sections: [compositionSection, zoneSection, summarySection, leaderboardSection].filter(Boolean),
+      overviewSections: [summarySection, leaderboardSection].filter(Boolean),
+      marketMixSections: [compositionSection, zoneSection].filter(Boolean),
+      rankingEntries,
     };
   }, [safeRanking, totalRoundsDisplay, challengeHistory.length, resolvedIsProducer, market_summary]);
+
+  const scenarioMarketOverviewTabs = [
+    {
+      id: 'overview',
+      label: 'Overview',
+      cards: scenarioMarketOverview.cards,
+      sections: scenarioMarketOverview.overviewSections,
+    },
+    {
+      id: 'market-mix',
+      label: 'Market Mix',
+      sections: scenarioMarketOverview.marketMixSections.length > 0
+        ? scenarioMarketOverview.marketMixSections
+        : [{ title: 'Market mix', items: [{ text: 'No market composition data available for this scenario.' }] }],
+    },
+    {
+      id: 'ranking',
+      label: 'Ranking',
+      sections: buildGroupedRankingSections({
+        entries: scenarioMarketOverview.rankingEntries,
+        title: 'Final ranking',
+        scoreLabel: 'Score',
+        valueLabel: resolvedIsProducer ? 'Profit' : 'Net Result',
+      }),
+    },
+    {
+      id: 'session-trend',
+      label: 'Session Trend',
+      content: marketOverviewTrendLoading ? (
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+          <CircularProgress size={24} />
+        </Box>
+      ) : (
+        <MarketOverviewTrendPanel
+          rounds={marketOverviewTrendRounds}
+          selectedRound={Number(totalRoundsDisplay) || null}
+          formatPrice={(value) => `${normalizeNumber(value).toFixed(1)} ZAR/MWh`}
+          formatVolume={formatMwh}
+        />
+      ),
+    },
+    {
+      id: 'merit-order',
+      label: 'Merit Order',
+      content: (
+        <MarketStructureChartPanel
+          sessionId={sessionId}
+          roundNum={totalRoundsDisplay || null}
+          roundSpan={Number(scenario?.config?.general?.round_span_hours || 6)}
+          startTime={scenario?.config?.general?.start_time || '00:00'}
+        />
+      ),
+    },
+  ];
 
   const totalRevenueDisplay = hasHistory ? totalsFromHistory.revenue : normalizeNumber(safeMyCumulative?.total_revenue);
   const totalProfitDisplay = hasHistory ? totalsFromHistory.profit : normalizeNumber(safeMyCumulative?.total_profit);
@@ -739,20 +878,20 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           </Paper>
         </Box>
 
-        {latestChallengeResults.length > 0 ? (
+        {scenarioChallengeResults.length > 0 ? (
           <Box>
             <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <ChallengeIcon color="warning" />
-              Challenges
+              Scenario Challenges
             </Typography>
             <Stack spacing={2}>
               <Paper sx={{ p: 2, bgcolor: 'rgba(255, 152, 0, 0.05)' }}>
                 <Typography variant="body2" color="text.secondary">
-                  Final evaluation (Round {latestChallengeEntry?.round || '-'}) • Points: {totalChallengePoints}/{maxChallengePoints} • Passed: {challengesPassed}/{latestChallengeResults.length}
+                  Final scenario-wide evaluation (Round {latestChallengeEntry?.round || '-'}) • Points: {totalChallengePoints}/{maxChallengePoints} • Passed: {challengesPassed}/{scenarioChallengeResults.length}
                 </Typography>
               </Paper>
               <Grid container spacing={2}>
-                {latestChallengeResults.map((challenge, idx) => {
+                {scenarioChallengeResults.map((challenge, idx) => {
                   const passed = Boolean(challenge?.passed);
                   return (
                     <Grid key={`${challenge?.challenge_id || challenge?.name || 'challenge'}-${idx}`} item xs={12} sm={6} md={4}>
@@ -801,11 +940,11 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           <Box>
             <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <ChallengeIcon color="warning" />
-              Challenge Summary
+              Scenario Challenges
             </Typography>
             <Paper sx={{ p: 3 }}>
               <Typography variant="body2" color="text.secondary">
-                No challenges in this scenario.
+                No scenario-wide challenges in this scenario.
               </Typography>
             </Paper>
           </Box>
@@ -1027,8 +1166,8 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
         onClose={() => setMarketOverviewOpen(false)}
         title="Overall Market Overview"
         subtitle={`${scenario?.campaign_name || 'Campaign'} · ${scenario?.name || 'Scenario'}`}
-        cards={scenarioMarketOverview.cards}
-        sections={scenarioMarketOverview.sections}
+        tabs={scenarioMarketOverviewTabs}
+        defaultTabId="overview"
       />
       </Paper>
     </Box>

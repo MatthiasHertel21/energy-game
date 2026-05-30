@@ -477,7 +477,7 @@ def validate_forecast_constraints(
     still enforcing the min-load constraint.  The scenario-level flag
     ``general.disable_ramp_validation`` is the canonical way to set this.
 
-    Note: Over-capacity bids are allowed (will be capped by engine) to enable
+    Note: Over-capacity bids are allowed (by default capped by engine) to enable
     strategic overbidding. This only returns hard constraint violations.
     """
     errors = []
@@ -508,7 +508,7 @@ def validate_forecast_constraints(
             errors.append(
                 f"Device {dnorm.get('id', '?')} hour {i+1}: forecast {power:.1f} MW < min_load {min_power:.1f} MW ({min_load_pct}%)"
             )
-        # NOTE: Over-capacity is allowed (engine will cap), no error here
+        # NOTE: Over-capacity is allowed (engine caps by default), no error here
 
     # Check ramp rate (assume 60 min between hours)
     if not disable_ramp_validation:

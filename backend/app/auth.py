@@ -11,9 +11,10 @@ from flask_jwt_extended import (
 )
 
 from .extensions import db, bcrypt, jwt
-from .models import User, Invite, Role
+from .models import User, Invite, Role, PasswordResetToken
 from .utils import log_activity
 from .config import Config
+from . import mailer
 
 
 ns = Namespace("auth", description="Authentication & Invite")
@@ -179,3 +180,63 @@ class InviteInfo(Resource):
             "valid": inv.is_valid(),
             "expires_at": inv.expires_at.isoformat() + "Z",
         }
+
+
+password_reset_request_model = ns.model(
+    "PasswordResetRequest",
+    {"email": fields.String(required=True)},
+)
+
+password_reset_confirm_model = ns.model(
+    "PasswordResetConfirm",
+    {
+        "token": fields.String(required=True),
+        "new_password": fields.String(required=True),
+    },
+)
+
+
+@ns.route("/password-reset/request")
+class PasswordResetRequest(Resource):
+    @ns.expect(password_reset_request_model, validate=True)
+    def post(self):
+        """Request a password reset link. Always returns 200 to avoid email enumeration."""
+        email = (request.json.get("email") or "").strip().lower()
+        user = User.query.filter_by(email=email).first()
+        if user:
+            # Invalidate any existing unused tokens for this user
+            PasswordResetToken.query.filter_by(user_id=user.id, used=False).update({"used": True})
+            db.session.flush()
+            prt = PasswordResetToken.generate(user.id)
+            db.session.add(prt)
+            db.session.commit()
+            try:
+                mailer.send_password_reset_link_email(user.email, prt.token)
+            except Exception:
+                pass  # Silent — don't leak SMTP errors to caller
+        return {"message": "If that email is registered, a reset link has been sent."}, HTTPStatus.OK
+
+
+@ns.route("/password-reset/confirm")
+class PasswordResetConfirm(Resource):
+    @ns.expect(password_reset_confirm_model, validate=True)
+    def post(self):
+        """Confirm a password reset using a token."""
+        token_str = (request.json.get("token") or "").strip()
+        new_password = request.json.get("new_password") or ""
+
+        if len(new_password) < 8:
+            ns.abort(HTTPStatus.BAD_REQUEST, "Password too short (min 8 characters)")
+
+        prt = PasswordResetToken.query.filter_by(token=token_str).first()
+        if not prt or not prt.is_valid:
+            ns.abort(HTTPStatus.BAD_REQUEST, "Invalid or expired reset token")
+
+        user = User.query.get(prt.user_id)
+        if not user:
+            ns.abort(HTTPStatus.BAD_REQUEST, "Invalid or expired reset token")
+
+        user.set_password(new_password)
+        prt.used = True
+        db.session.commit()
+        return {"message": "Password updated successfully."}, HTTPStatus.OK

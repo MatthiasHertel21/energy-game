@@ -10,20 +10,30 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}=== EMSG Staging Deployment ===${NC}"
 echo ""
 
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+
 # Server Details
-SERVER="energy.fastbreak.one"
+SERVER="emsg.2b6.de"
 USER="root"
 APP_DIR="/root/apps/emsg-staging"
+REMOTE="${USER}@${SERVER}"
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=8"
 
 echo -e "${YELLOW}📋 Deployment Plan:${NC}"
 echo "  Server: $SERVER"
 echo "  User: $USER"
 echo "  App Dir: $APP_DIR"
+echo "  Branch: $DEPLOY_BRANCH"
 echo ""
+
+if ! ssh ${SSH_OPTS} ${REMOTE} 'true'; then
+    echo -e "${RED}SSH key login to ${REMOTE} is not configured. Run: ssh ${REMOTE}${NC}"
+    exit 1
+fi
 
 # Schritt 1: Server Setup
 echo -e "${GREEN}[1/8] Server vorbereiten...${NC}"
-sshpass -p 'jGMy2BorotNqJJZ' ssh -o StrictHostKeyChecking=no ${USER}@${SERVER} << 'ENDSSH'
+ssh ${SSH_OPTS} ${REMOTE} << 'ENDSSH'
     set -e
     echo "✓ System aktualisieren..."
     apt update -qq && apt upgrade -y -qq
@@ -48,7 +58,7 @@ sshpass -p 'jGMy2BorotNqJJZ' ssh -o StrictHostKeyChecking=no ${USER}@${SERVER} <
 ENDSSH
 
 echo -e "${GREEN}[2/8] Repository klonen...${NC}"
-sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
+ssh ${SSH_OPTS} ${REMOTE} << 'ENDSSH'
     set -e
     mkdir -p /root/apps
     cd /root/apps
@@ -56,14 +66,14 @@ sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
     if [ -d "emsg-staging" ]; then
         echo "✓ Repository existiert bereits, update..."
         cd emsg-staging
-        git fetch
-        git checkout feature/catalog-campaigns
-        git pull
+        git fetch origin ${DEPLOY_BRANCH}
+        git checkout ${DEPLOY_BRANCH}
+        git pull --ff-only origin ${DEPLOY_BRANCH}
     else
         echo "✓ Repository klonen..."
         git clone https://github.com/MatthiasHertel21/energy-game.git emsg-staging
         cd emsg-staging
-        git checkout feature/catalog-campaigns
+        git checkout ${DEPLOY_BRANCH}
     fi
     
     echo "✓ Aktueller Branch: $(git branch --show-current)"
@@ -74,7 +84,7 @@ echo -e "${GREEN}[3/8] Environment-Konfiguration erstellen...${NC}"
 POSTGRES_PASSWORD=$(openssl rand -base64 32)
 JWT_SECRET=$(openssl rand -hex 32)
 
-sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << ENDSSH
+ssh ${SSH_OPTS} ${REMOTE} << ENDSSH
     set -e
     cd /root/apps/emsg-staging
     
@@ -104,24 +114,24 @@ SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=
 SMTP_PASSWORD=
-SMTP_FROM=noreply@energy.fastbreak.one
+SMTP_FROM=noreply@emsg.2b6.de
 
 # CORS
-CORS_ORIGINS=https://energy.fastbreak.one
+CORS_ORIGINS=https://emsg.2b6.de
 EOF
     
     echo "✓ .env Datei erstellt"
 ENDSSH
 
 echo -e "${GREEN}[4/8] Docker Images bauen...${NC}"
-sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
+ssh ${SSH_OPTS} ${REMOTE} << 'ENDSSH'
     set -e
     cd /root/apps/emsg-staging
     docker compose -f docker-compose.staging.yml build
 ENDSSH
 
 echo -e "${GREEN}[5/8] Container starten...${NC}"
-sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
+ssh ${SSH_OPTS} ${REMOTE} << 'ENDSSH'
     set -e
     cd /root/apps/emsg-staging
     docker compose -f docker-compose.staging.yml up -d
@@ -134,7 +144,7 @@ sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
 ENDSSH
 
 echo -e "${GREEN}[6/8] Health Check...${NC}"
-sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
+ssh ${SSH_OPTS} ${REMOTE} << 'ENDSSH'
     set -e
     echo "✓ Warte auf Backend..."
     for i in {1..30}; do
@@ -150,7 +160,7 @@ sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
 ENDSSH
 
 echo -e "${GREEN}[7/8] Nginx installieren und konfigurieren...${NC}"
-sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
+ssh ${SSH_OPTS} ${REMOTE} << 'ENDSSH'
     set -e
     echo "✓ Nginx & Certbot installieren..."
     apt install -y nginx certbot python3-certbot-nginx
@@ -159,7 +169,7 @@ sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
     cat > /etc/nginx/sites-available/emsg-staging << 'EOF'
 server {
     listen 80;
-    server_name energy.fastbreak.one;
+    server_name emsg.2b6.de;
 
     location /.well-known/acme-challenge/ {
         root /var/www/html;
@@ -172,10 +182,10 @@ server {
 
 server {
     listen 443 ssl http2;
-    server_name energy.fastbreak.one;
+    server_name emsg.2b6.de;
 
-    ssl_certificate /etc/letsencrypt/live/energy.fastbreak.one/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/energy.fastbreak.one/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/emsg.2b6.de/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/emsg.2b6.de/privkey.pem;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
@@ -229,7 +239,7 @@ EOF
 ENDSSH
 
 echo -e "${GREEN}[8/8] Firewall konfigurieren...${NC}"
-sshpass -p 'jGMy2BorotNqJJZ' ssh ${USER}@${SERVER} << 'ENDSSH'
+ssh ${SSH_OPTS} ${REMOTE} << 'ENDSSH'
     set -e
     echo "✓ UFW konfigurieren..."
     ufw --force enable
@@ -245,14 +255,14 @@ echo ""
 echo -e "${YELLOW}📝 Nächste Schritte für dich:${NC}"
 echo ""
 echo "1. DNS konfigurieren:"
-echo -e "   ${GREEN}→${NC} Stelle sicher, dass energy.fastbreak.one auf die Server-IP zeigt"
+echo -e "   ${GREEN}→${NC} Stelle sicher, dass emsg.2b6.de auf die Server-IP zeigt"
 echo ""
 echo "2. SSL-Zertifikat einrichten:"
-echo -e "   ${GREEN}ssh root@energy.fastbreak.one${NC}"
-echo -e "   ${GREEN}sudo certbot --nginx -d energy.fastbreak.one${NC}"
+echo -e "   ${GREEN}ssh ${REMOTE}${NC}"
+echo -e "   ${GREEN}certbot --nginx -d emsg.2b6.de${NC}"
 echo ""
 echo "3. Admin-User erstellen:"
-echo -e "   ${GREEN}ssh root@energy.fastbreak.one${NC}"
+echo -e "   ${GREEN}ssh ${REMOTE}${NC}"
 echo -e "   ${GREEN}cd /root/apps/emsg-staging${NC}"
 echo -e "   ${GREEN}docker compose -f docker-compose.staging.yml exec backend python${NC}"
 echo ""
@@ -269,8 +279,8 @@ echo -e "   ${GREEN}    print('Admin created!')${NC}"
 echo -e "   ${GREEN}exit()${NC}"
 echo ""
 echo "4. Testen:"
-echo -e "   ${GREEN}→${NC} http://energy.fastbreak.one (wird zu HTTPS redirecten nach SSL-Setup)"
-echo -e "   ${GREEN}→${NC} https://energy.fastbreak.one/api/health"
+echo -e "   ${GREEN}→${NC} http://emsg.2b6.de (wird zu HTTPS redirecten nach SSL-Setup)"
+echo -e "   ${GREEN}→${NC} https://emsg.2b6.de/api/health"
 echo ""
 echo -e "${YELLOW}Gespeicherte Credentials:${NC}"
 echo "  DB Password: ${POSTGRES_PASSWORD}"

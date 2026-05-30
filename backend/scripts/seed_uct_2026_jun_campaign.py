@@ -422,6 +422,12 @@ def _add_retail_player(config: dict, device_id: str, device_name: str, baseline:
 
 def _build_level1() -> dict:
     config = _base_generator_only_config(SCENARIO_NAME_LEVEL1, "2026-06-08", multi_bid=False)
+    config["general"]["allow_dispatch_above_capacity"] = True
+    config["balancing"] = {
+        "price_mode": "smp_multiplier",
+        "up_price_smp_pct": 120.0,
+        "down_price_smp_pct": 80.0,
+    }
     config["devices"][0]["name"] = "Coal Unit A (Low Cost)"
     config["devices"][1]["name"] = "Coal Unit B (Mid Cost)"
     config["devices"][2]["name"] = "Coal Unit C (High Cost)"

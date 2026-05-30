@@ -6,7 +6,7 @@ import { Container, Paper, Typography } from '@mui/material'
 export default function DocsEngine(){
   const [content, setContent] = useState('# Calculation Engine Documentation\n\nLoading...')
   useEffect(()=>{
-    fetch('/handbooks/calculation-engine.md')
+    fetch('/handbooks/calculation-engine.md?v=20260527')
       .then(r=> r.text())
       .then(setContent)
       .catch(()=> setContent('# Calculation Engine Documentation\n\nFailed to load.'))

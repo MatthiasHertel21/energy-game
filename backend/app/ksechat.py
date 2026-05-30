@@ -60,33 +60,109 @@ qa_out = ns.model(
     },
 )
 
-# ─── Load source code context at startup ─────────────────────────────────────
+# ─── Load source code context ────────────────────────────────────────────────
 
-def _load_code_context() -> str:
-    """Read key source files so the LLM can explain calculations."""
-    app_dir = pathlib.Path(__file__).parent
-    files = [
-        ("engine.py", app_dir / "engine.py"),
-        ("device_types.py", app_dir / "device_types.py"),
-        ("models.py", app_dir / "models.py"),
-    ]
+def _extract_functions_from_source(source: str, func_names: list, max_per_func: int = 10000) -> str:
+    """Extract named top-level function bodies from Python source."""
+    top_def = re.compile(r'^(?:def |class )', re.MULTILINE)
     parts = []
-    for label, path in files:
-        try:
-            parts.append(f"### {label}\n```python\n{path.read_text(encoding='utf-8')}\n```")
-        except OSError:
-            pass
+    for name in func_names:
+        m = re.search(r'^def ' + re.escape(name) + r'\b', source, re.MULTILINE)
+        if not m:
+            continue
+        start = m.start()
+        next_m = top_def.search(source, start + len(name) + 4)
+        end = next_m.start() if next_m else len(source)
+        body = source[start:end]
+        if len(body) > max_per_func:
+            body = body[:max_per_func] + "\n    ... [truncated]"
+        parts.append(body)
     return "\n\n".join(parts)
 
+
+def _load_code_context() -> str:
+    """Load calculation rules summary + key engine functions for LLM context.
+
+    Strategy: human-readable review doc first, then small focused source extracts.
+    Avoids loading the full 322 KB engine.py which would exceed LLM context limits.
+    """
+    app_dir = pathlib.Path(__file__).parent
+    parts = []
+
+    # 1. Calculation rules summary (human-readable, compact)
+    review_path = app_dir / "CALCULATION_REVIEW.md"
+    try:
+        parts.append("### Calculation Rules Summary (CALCULATION_REVIEW.md)\n"
+                     + review_path.read_text(encoding="utf-8"))
+    except OSError:
+        pass
+
+    # 2. Device type definitions (28 KB — load in full)
+    try:
+        parts.append("### device_types.py\n```python\n"
+                     + (app_dir / "device_types.py").read_text(encoding="utf-8")
+                     + "\n```")
+    except OSError:
+        pass
+
+    # 3. Key calculation functions from engine.py
+    try:
+        engine_src = (app_dir / "engine.py").read_text(encoding="utf-8")
+        key_functions = [
+            "_get_tiered_device_market_price",
+            "_get_default_device_market_price",
+            "calculate_idp",
+            "clear_market",
+            "build_supply_from_bids",
+            "build_demand_from_bids",
+            "track_bid_dispatch",
+            "track_demand_dispatch",
+            "settle_balancing",
+            "apply_grid",
+            "generate_device_baseline",
+        ]
+        extracted = _extract_functions_from_source(engine_src, key_functions)
+        if extracted:
+            parts.append("### engine.py — key calculation functions\n```python\n"
+                         + extracted + "\n```")
+    except OSError:
+        pass
+
+    # 4. Key bid-processing functions from player.py
+    try:
+        player_src = (app_dir / "player.py").read_text(encoding="utf-8")
+        player_functions = [
+            "_validate_bids_structure",
+            "_normalize_submitted_bids_payload",
+            "_get_bid_labels",
+            "_config_uses_explicit_bids",
+        ]
+        extracted = _extract_functions_from_source(player_src, player_functions)
+        if extracted:
+            parts.append("### player.py — bid processing functions\n```python\n"
+                         + extracted + "\n```")
+    except OSError:
+        pass
+
+    return "\n\n".join(parts)
+
+
 _CODE_KEYWORDS = re.compile(
+    # English calculation/mechanics terms
     r"\b(how|why|explain|calculate|formula|algorithm|code|engine|function|dispatch|"
     r"clearing|balancing|kpi|profit|imbalance|curtailment|settlement|merit.?order|"
-    r"bid|offer|smp|mcp|ramp|tier|variable.cost|capacity.factor|battery|soc)\b",
+    r"bid|offer|smp|mcp|ramp|tier|variable.cost|capacity.factor|battery|soc|"
+    # German question words and calculation terms
+    r"wie|warum|wieso|weshalb|erkl[äa]r|berechne|berechnung|formel|gewinn|erlös|"
+    r"verlust|kosten|ausgleich|abrechnung|clearing|gebot|gebote|dispatch|markt|preis|"
+    r"kapazit[äa]t|abschaltung|bilanzierung|ungleichgewicht|energie|"
+    r"Merit.?Order|Grenzkosten|Lastgang|Ertrag|Vergütung)\b",
     re.IGNORECASE,
 )
 
+
 def _needs_code_context(messages: list) -> bool:
-    """Return True only when the latest user message asks about calculations/code."""
+    """Return True when the latest user message asks about calculations/code."""
     for m in reversed(messages):
         if isinstance(m, dict) and m.get("role") == "user":
             return bool(_CODE_KEYWORDS.search(str(m.get("content", ""))))

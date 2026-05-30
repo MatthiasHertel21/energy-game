@@ -40,7 +40,6 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     getVisibleHourIndices(scenario?.config || {}, forecastHorizon, roundSpan)
       .filter((hourIdx) => hourIdx >= roundStartHour && hourIdx < roundEndHour)
   )
-  const isIdmRound = currentRound > 1
   const isConsumer = roleType === 'consumer'
   const roundLevelIdp = Number(my_result?.idp)
   const roundLevelDaPrice = Number(
@@ -66,6 +65,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
 
   const damStatus = getTradingStatusForRound('dam')
   const idmStatus = getTradingStatusForRound('idm')
+  const isIdmRound = currentRound > 1 && idmStatus !== 'off'
   const isCurrentRoundDamOnly = currentRound > 1 && damStatus !== 'off' && idmStatus === 'off'
   
   // Debug logging
@@ -79,9 +79,31 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   const hourlyResults = my_result.hourly_results || my_result.hourly_breakdown || []
   const damHourlyResults = my_result.dam_hourly_results || []
 
-  const hasHistoricalDam = Boolean(my_result.dam_bid_dispatch)
-    || Boolean(my_result.dam_device_hourly_details)
+  const hasBidDispatchRows = (bidDispatch) => (
+    Boolean(bidDispatch)
+    && typeof bidDispatch === 'object'
+    && Object.keys(bidDispatch).length > 0
+  )
+
+  const hasDeviceHourlyDetailRows = (details) => {
+    if (!details || typeof details !== 'object') return false
+    return ['co2', 'balancing'].some((sectionKey) => {
+      const section = details[sectionKey]
+      return section && typeof section === 'object' && Object.keys(section).length > 0
+    })
+  }
+
+  const hasHistoricalDam = hasBidDispatchRows(my_result.dam_bid_dispatch)
+    || hasDeviceHourlyDetailRows(my_result.dam_device_hourly_details)
     || Boolean(damHourlyResults.length)
+
+  const preferredDamBidDispatch = hasBidDispatchRows(my_result?.dam_bid_dispatch)
+    ? (my_result.dam_bid_dispatch || {})
+    : (my_result.bid_dispatch || {})
+
+  const preferredDamDeviceHourlyDetails = hasDeviceHourlyDetailRows(my_result?.dam_device_hourly_details)
+    ? (my_result.dam_device_hourly_details || {})
+    : (my_result.device_hourly_details || {})
 
   const damHasCoverageForWindow = (bidDispatch) => {
     if (!bidDispatch || typeof bidDispatch !== 'object') return false
@@ -125,16 +147,16 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   }
 
   // Separate DAM and IDM data
-  const hasDam = isCurrentRoundDamOnly || (hasHistoricalDam && damHasCoverageForWindow(my_result?.dam_bid_dispatch))
+  const hasDam = isCurrentRoundDamOnly || (hasHistoricalDam && damHasCoverageForWindow(preferredDamBidDispatch))
   const damBidDispatch = isCurrentRoundDamOnly
-    ? (my_result.bid_dispatch || {})
+    ? preferredDamBidDispatch
     : (hasDam ? (my_result.dam_bid_dispatch || {}) : {})
   const idmBidDispatch = isCurrentRoundDamOnly
     ? {}
     : (hasHistoricalDam ? (my_result.bid_dispatch || {}) : {})
   
   const damDeviceHourlyDetails = isCurrentRoundDamOnly
-    ? (my_result.device_hourly_details || {})
+    ? preferredDamDeviceHourlyDetails
     : (hasDam ? (my_result.dam_device_hourly_details || {}) : {})
   const idmDeviceHourlyDetails = isCurrentRoundDamOnly
     ? {}
@@ -197,6 +219,17 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   console.log('[DeviceDeepDive] deviceIds DAM:', Object.keys(damBidDispatch))
   console.log('[DeviceDeepDive] deviceIds IDM:', Object.keys(idmBidDispatch))
 
+  const hasIdmActivity = hasBidDispatchRows(idmBidDispatch)
+    || effectiveHourlyResults.some((entry) => {
+      const smp = Number(entry?.smp ?? 0)
+      const volume = Number(entry?.volume ?? 0)
+      const idVolume = Number(entry?.id_volume_mwh ?? 0)
+      return (Number.isFinite(smp) && smp > 0)
+        || (Number.isFinite(volume) && volume > 0)
+        || (Number.isFinite(idVolume) && idVolume > 0)
+    })
+  const showDamBaselineNotice = isIdmRound && hasDam && !hasIdmActivity
+
   // Get device list from all available sources
   const deviceIdSet = new Set()
   Object.keys(damBidDispatch || {}).forEach((id) => deviceIdSet.add(id))
@@ -237,6 +270,12 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     || 0
   )
   const deviceEnergyMwh = Number(deviceConfig.capacity_mwh || 0)
+  const batteryLegEfficiency = (() => {
+    if (!isBatteryDevice) return 0
+    const rtePct = Number(deviceConfig.efficiency_pct ?? 85)
+    const rte = Number.isFinite(rtePct) ? Math.max(0.01, Math.min(1, rtePct / 100)) : 0.85
+    return Math.sqrt(rte)
+  })()
   const deviceCapacity = isBatteryDevice ? devicePowerMw : Number(deviceConfig.capacity_mw || deviceConfig.max_power_mw || 0)
 
   const parseStartHour = (startTime) => {
@@ -424,6 +463,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     const totalDispatched_IDM = backendIdDispatched !== null
       ? backendIdDispatched
       : ((lotA_IDM.mw_dispatched || 0) + (lotB_IDM.mw_dispatched || 0) + (lotC_IDM.mw_dispatched || 0))
+    const marketAwardedMwh = totalDispatched_DAM + totalDispatched_IDM
 
     const fallbackDemandBase = Math.max(
       Number(totalOfferedFromBreakdown || 0),
@@ -459,19 +499,17 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     const capacityViolation = Boolean(deviceBreakdown.capacity_violation) || overbidMw > 0.001
     
     const smp = hour.smp || 0
-    const hourlyIdTradeCount = Number(hour.id_trade_count ?? 0)
     const backendDaPrice = parseOptionalNumber(deviceBreakdown.da_price_zar)
     const backendIdPrice = parseOptionalNumber(deviceBreakdown.id_price_zar)
     const damPrice = backendDaPrice !== null
       ? backendDaPrice
       : (Number.isFinite(roundLevelDaPrice) ? roundLevelDaPrice : smp)
-    const idp = hourlyIdTradeCount > 0
-      ? ((backendIdPrice !== null && backendIdPrice > 0)
-        ? backendIdPrice
-        : ((hour.idp !== undefined && hour.idp !== null)
-          ? Number(hour.idp)
-          : (Number.isFinite(roundLevelIdp) ? roundLevelIdp : smp)))
-      : null
+    const fallbackIdPrice = (hour.idp !== undefined && hour.idp !== null)
+      ? Number(hour.idp)
+      : (Number.isFinite(roundLevelIdp) ? roundLevelIdp : smp)
+    const idp = (backendIdPrice !== null && backendIdPrice > 0)
+      ? backendIdPrice
+      : (Number.isFinite(fallbackIdPrice) && fallbackIdPrice > 0 ? fallbackIdPrice : null)
     // Revenue: always prefer backend canonical settlement values (DA+ID), otherwise fallback.
     const backendDaRevenue = parseOptionalNumber(deviceBreakdown.da_revenue_zar)
     const backendIdRevenue = parseOptionalNumber(deviceBreakdown.id_revenue_zar)
@@ -496,6 +534,20 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       ? imbalanceCostBackend
       : Number(balancingData.balancing_cost_zar || 0)
 
+    const chargedMwh = Number(deviceBreakdown.battery_charged_mwh ?? 0)
+    const explicitDischargedMwh = parseOptionalNumber(deviceBreakdown.battery_discharged_mwh)
+    let dischargedMwh = explicitDischargedMwh !== null ? explicitDischargedMwh : 0
+    if (explicitDischargedMwh === null && isBatteryDevice && deviceEnergyMwh > 0 && batteryLegEfficiency > 0) {
+      const socStartPct = parseOptionalNumber(deviceBreakdown.battery_soc_start_pct)
+      const socEndPct = parseOptionalNumber(deviceBreakdown.battery_soc_end_pct)
+      if (socStartPct !== null && socEndPct !== null) {
+        const socStartMwh = deviceEnergyMwh * socStartPct / 100
+        const socEndMwh = deviceEnergyMwh * socEndPct / 100
+        dischargedMwh = Math.max(0, (socStartMwh + chargedMwh * batteryLegEfficiency - socEndMwh) * batteryLegEfficiency)
+      }
+    }
+    const awardPhysicalGapMwh = Math.max(0, marketAwardedMwh - dischargedMwh)
+
     const balancingPriceBackend = (Math.abs(imbalanceMwhDisplay) > 0.0001)
       ? Math.abs(imbalanceCostDisplay / imbalanceMwhDisplay)
       : 0
@@ -512,7 +564,9 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       scenarioHourIdx,
       isClearingHour: Boolean(hour?.is_clearing_hour ?? true),
       // Capacity
+      hasBaseCapacityValue: baseCapacityRaw !== null || baseCapacity > 0,
       baseCapacity,
+      hasEffectiveCapacityValue: effectiveCapacityRaw !== null || effectiveCapacity > 0,
       effectiveCapacity,
       overbidMw,
       capacityViolation,
@@ -553,8 +607,11 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       // Battery SoC fields (non-zero only for battery devices)
       socStartPct: Number(deviceBreakdown.battery_soc_start_pct ?? 0),
       socEndPct: Number(deviceBreakdown.battery_soc_end_pct ?? 0),
-      chargedMwh: Number(deviceBreakdown.battery_charged_mwh ?? 0),
+      chargedMwh,
+      dischargedMwh,
       chargeCostZar: Number(deviceBreakdown.battery_charge_cost_zar ?? 0),
+      marketAwardedMwh,
+      awardPhysicalGapMwh,
       networkShortfallMwh: Number(deviceBreakdown.network_shortfall_mwh ?? 0),
       networkShortfallCostZar: Number(deviceBreakdown.network_shortfall_cost_zar ?? 0),
       // Effective average cost rate for this hour (tiered or flat, from backend)
@@ -636,10 +693,20 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     totalNetworkShortfallCostZar: hourlyData.reduce((sum, h) => sum + (h.networkShortfallCostZar || 0), 0),
     // Battery
     totalChargedMwh: hourlyData.reduce((sum, h) => sum + (h.chargedMwh || 0), 0),
+    totalDischargedMwh: hourlyData.reduce((sum, h) => sum + (h.dischargedMwh || 0), 0),
     totalChargeCostZar: hourlyData.reduce((sum, h) => sum + (h.chargeCostZar || 0), 0),
+    totalMarketAwardedMwh: hourlyData.reduce((sum, h) => sum + (h.marketAwardedMwh || 0), 0),
     battSocStart: hourlyData.length > 0 ? hourlyData[0].socStartPct : 0,
     battSocEnd: hourlyData.length > 0 ? hourlyData[hourlyData.length - 1].socEndPct : 0,
   }
+  const showIdmSection = hourlyData.some((h) => (
+    h.totalOffered_IDM !== 0
+    || h.totalDispatched_IDM > 0
+    || displayMoney(h.revenue_IDM) !== 0
+    || h.idp > 0
+    || h.smp > 0
+  ))
+  const batteryAwardPhysicalGapMwh = Math.max(0, roundTotals.totalMarketAwardedMwh - roundTotals.totalDischargedMwh)
 
   const selectedDeviceVariableRate = Math.max(0, Number(deviceConfig.variable_cost_zar_per_mwh ?? deviceConfig.cost_per_mwh_zar ?? 0))
   const selectedDeviceFixedPerHour = Math.max(0, Number(deviceConfig.fixed_cost_zar_per_hour ?? 0))
@@ -805,8 +872,10 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       dam_lot_a: `This is the day-ahead Base bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. The colored cell background indicates clearing outcome: green high acceptance, yellow/orange partial acceptance, red rejection or capacity-violation context.\n\n${rowVisibilityReason('dam_lot_a')}`,
       dam_lot_b: `This is the day-ahead Mid bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. The colored cell background indicates clearing outcome: green high acceptance, yellow/orange partial acceptance, red rejection or capacity-violation context.\n\n${rowVisibilityReason('dam_lot_b')}`,
       dam_lot_c: `This is the day-ahead Peak bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. The colored cell background indicates clearing outcome: green high acceptance, yellow/orange partial acceptance, red rejection or capacity-violation context.\n\n${rowVisibilityReason('dam_lot_c')}`,
-      dam_price: `This row shows the day-ahead settlement price used for the DA portion of settlement in each hour. In round 1 this is effectively the SMP. In later rounds it stays the DA baseline price for previously cleared DA volume.\n\n${rowVisibilityReason('dam_price')}`,
-      dam_dispatched: `This row shows the day-ahead dispatched or consumed volume for the device. It is the awarded DA volume, preferably taken from backend-settled DA dispatch fields so the detail table stays consistent with the KPI computation.\n\n${rowVisibilityReason('dam_dispatched')}`,
+      dam_price: isIdmRound
+        ? `This row shows the day-ahead settlement price used for the DA portion of settlement in each hour. In later rounds with active IDM it stays the DA baseline price for previously cleared DA volume.\n\n${rowVisibilityReason('dam_price')}`
+        : `This row shows the market clearing price (SMP) used to settle the shown DAM-only hour.\n\n${rowVisibilityReason('dam_price')}`,
+      dam_dispatched: `${isBatteryDevice ? 'This row shows the day-ahead awarded market volume for the battery.' : 'This row shows the day-ahead dispatched or consumed volume for the device.'} It is the awarded DA volume, preferably taken from backend-settled DA dispatch fields so the detail table stays consistent with the KPI computation.${isBatteryDevice ? ' For batteries this is a market commitment and can exceed the physically executable discharge shown in the Battery Storage section.' : ''}\n\n${rowVisibilityReason('dam_dispatched')}`,
       grid_curtailed: `Grid curtailed energy is commercially cleared producer output that could not be physically transported because of network constraints. It is shown separately so delivery and profit interpretation can distinguish market clearing from feasible physical transport.\n\n${rowVisibilityReason('grid_curtailed')}`,
       dam_revenue: `This row shows day-ahead ${revenueLabel} for the device. It is based on backend-settled DA revenue when available, otherwise approximated as DA dispatched volume × DA price.\n\n${rowVisibilityReason('dam_revenue')}`,
       overbid: `${isConsumer ? 'Over-demand' : 'Overbid'} is the part of offered/requested volume that exceeds effective ${roleDemand}. It highlights hours where the market request was above what the device could effectively provide or absorb.\n\n${rowVisibilityReason('overbid')}`,
@@ -814,12 +883,13 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       idm_lot_a: `This is the intraday Base bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. For intraday rows the offered quantity is signed, so negative values can represent charging or buying behavior.\n\n${rowVisibilityReason('idm_lot_a')}`,
       idm_lot_b: `This is the intraday Mid bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. For intraday rows the offered quantity is signed, so negative values can represent charging or buying behavior.\n\n${rowVisibilityReason('idm_lot_b')}`,
       idm_lot_c: `This is the intraday Peak bid lot. The number in brackets is the average bid price across shown hours where the lot has a price. For intraday rows the offered quantity is signed, so negative values can represent charging or buying behavior.\n\n${rowVisibilityReason('idm_lot_c')}`,
-      id_price: `This row shows the intraday settlement price used for the IDM portion of the device settlement in each hour. It is taken from the backend IDM price when available, otherwise from the hourly/round ID price fallback.\n\n${rowVisibilityReason('id_price')}`,
-      idm_dispatched: `This row shows the incremental intraday dispatched or consumed volume for the device. It is the awarded IDM delta, preferably from backend-settled ID dispatch fields so the detail table matches KPI settlement logic.\n\n${rowVisibilityReason('idm_dispatched')}`,
+      id_price: `This row shows the current intraday market price used for the IDM portion of device settlement in each hour. If the backend does not provide a dedicated ID price, the UI falls back to the current hourly IDP/SMP so the current round price remains visible even without a cleared player-side intraday trade.\n\n${rowVisibilityReason('id_price')}`,
+      idm_dispatched: `${isBatteryDevice ? 'This row shows the incremental intraday awarded market volume for the battery.' : 'This row shows the incremental intraday dispatched or consumed volume for the device.'} It is the awarded IDM delta, preferably from backend-settled ID dispatch fields so the detail table matches KPI settlement logic.${isBatteryDevice ? ' For batteries this is a market commitment and can differ from physical charge/discharge.' : ''}\n\n${rowVisibilityReason('idm_dispatched')}`,
       idm_revenue: `This row shows intraday ${revenueLabel} for the device. It is based on backend-settled IDM revenue when available, otherwise approximated as IDM dispatched volume × IDM price.\n\n${rowVisibilityReason('idm_revenue')}`,
       battery_soc_start: 'SoC Start is the battery state of charge at the start of the hour, after the previous hour has been settled and before the current hour charging/discharging is applied.\n\n' + rowVisibilityReason('battery_soc_start'),
       battery_soc_end: 'SoC End is the battery state of charge after the current hour charging/discharging has been applied in the backend battery state logic.\n\n' + rowVisibilityReason('battery_soc_end'),
       battery_charged: 'Charged energy is the grid-side charging volume stored for the battery in the hour. It is a physical charging flow and does not itself mean positive market revenue; it usually creates a charge cost.\n\n' + rowVisibilityReason('battery_charged'),
+      battery_discharged: 'Executed discharge is the physical battery energy actually delivered in the hour. Source priority: explicit backend battery_discharged_mwh; otherwise the UI derives it from battery SoC start/end, charge volume, and battery efficiency.\n\n' + rowVisibilityReason('battery_discharged'),
       battery_charge_cost: 'Charge Cost is the settlement cost caused by charging the battery in the hour. It is shown as a negative contribution because charging consumes market energy rather than selling it.\n\n' + rowVisibilityReason('battery_charge_cost'),
       imbalance: 'Imbalance is the difference between dispatched position and actual realized device outcome in the hour, based on backend balancing detail when available. A non-zero value leads to balancing settlement.\n\n' + rowVisibilityReason('imbalance'),
       imbalance_cost: 'Imbalance Cost is the monetary settlement of the imbalance using configured balancing prices rather than the market clearing price. Non-zero imbalance cost directly worsens profit or net result.\n\n' + rowVisibilityReason('imbalance_cost'),
@@ -870,6 +940,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         lines.push(`Displayed value: ${tt(hourData.totalDispatched_DAM)} MWh.`)
         lines.push(`Source priority: backend da_dispatched_mwh, otherwise sum of DAM lot dispatches.`)
         lines.push(`Fallback formula: ${tt(hourData.lotA_DAM.mw_dispatched || 0)} + ${tt(hourData.lotB_DAM.mw_dispatched || 0)} + ${tt(hourData.lotC_DAM.mw_dispatched || 0)} MWh.`)
+        if (isBatteryDevice) lines.push(`For batteries this is the awarded DA market position, not necessarily the physically executable discharge. Compare with Executed Discharge = ${tt(hourData.dischargedMwh)} MWh.`)
         break
       case 'grid_curtailed':
         lines.push(`Displayed value: ${tt(hourData.gridCurtailedMw)} MWh.`)
@@ -898,11 +969,12 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       }
       case 'id_price':
         lines.push(`Displayed value: ${tt(hourData.idp)} ZAR/MWh.`)
-        lines.push('Source priority: backend id_price_zar when positive, otherwise hourly ID price, otherwise round-level ID price, otherwise SMP fallback.')
+        lines.push('Source priority: backend id_price_zar when positive, otherwise hourly ID price, otherwise round-level ID price, otherwise current SMP fallback.')
         break
       case 'idm_dispatched':
         lines.push(`Displayed value: ${tt(hourData.totalDispatched_IDM)} MWh.`)
         lines.push('Source priority: backend id_dispatched_mwh, otherwise sum of IDM lot dispatches.')
+        if (isBatteryDevice) lines.push(`For batteries this is the awarded IDM market delta, not necessarily the physical battery movement. Compare with Executed Discharge = ${tt(hourData.dischargedMwh)} MWh and Charged = ${tt(hourData.chargedMwh)} MWh.`)
         break
       case 'idm_revenue':
         lines.push(`Displayed value: ${tti(displayMoney(hourData.revenue_IDM))} ${isConsumer ? 'ZAR cost' : 'ZAR revenue'}.`)
@@ -919,6 +991,11 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       case 'battery_charged':
         lines.push(`Displayed value: ${tt(hourData.chargedMwh)} MWh.`)
         lines.push('Source: battery_charged_mwh from backend device-hour breakdown.')
+        break
+      case 'battery_discharged':
+        lines.push(`Displayed value: ${tt(hourData.dischargedMwh)} MWh.`)
+        lines.push('Source priority: backend battery_discharged_mwh; fallback derives physical discharge from battery SoC start/end, charge volume, and efficiency.')
+        lines.push(`This is the physical battery output. Market-awarded volume for the same hour is ${tt(hourData.marketAwardedMwh)} MWh.`)
         break
       case 'battery_charge_cost':
         lines.push(`Displayed value: -${formatTooltipMoney(hourData.chargeCostZar)}.`)
@@ -998,7 +1075,9 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         break
       case 'dam_dispatched':
         lines.push(`Formula: sum of hourly DA dispatched values = ${tt(roundTotals.totalDispatched_DAM)} MWh.`)
-        lines.push('This contributes to dispatched_mwh KPI and, together with prices, to revenue/cost KPIs.')
+        lines.push(isBatteryDevice
+          ? 'For batteries this is the awarded DA market position. Physical battery output is shown separately in Executed Discharge.'
+          : 'This contributes to dispatched_mwh KPI and, together with prices, to revenue/cost KPIs.')
         break
       case 'grid_curtailed':
         lines.push(`Formula: sum of hourly grid-curtailed values = ${tt(roundTotals.totalGridCurtailed)} MWh.`)
@@ -1023,12 +1102,14 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         lines.push('This is explanatory input data, not a KPI by itself.')
         break
       case 'id_price':
-        lines.push(`Formula: arithmetic average of shown hourly IDM prices = ${tt(roundTotals.avgIdPrice)} ZAR/MWh.`)
+        lines.push(`Formula: arithmetic average of shown hourly current intraday prices = ${tt(roundTotals.avgIdPrice)} ZAR/MWh.`)
         lines.push('This is explanatory only. KPI revenue/cost uses hour-by-hour settlement, not the displayed average.')
         break
       case 'idm_dispatched':
         lines.push(`Formula: sum of hourly IDM dispatched values = ${tt(roundTotals.totalDispatched_IDM)} MWh.`)
-        lines.push('This contributes to dispatched_mwh KPI and to the IDM share of revenue/cost settlement.')
+        lines.push(isBatteryDevice
+          ? 'For batteries this is the awarded IDM market delta. Physical battery movement is shown separately in Charged / Executed Discharge.'
+          : 'This contributes to dispatched_mwh KPI and to the IDM share of revenue/cost settlement.')
         break
       case 'idm_revenue':
         lines.push(`Formula: sum of hourly IDM ${isConsumer ? 'cost' : 'revenue'} values = ${tti(roundTotals.revenue_IDM)} ZAR.`)
@@ -1045,6 +1126,10 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       case 'battery_charged':
         lines.push(`Formula: sum of hourly battery charge volumes = ${tt(roundTotals.totalChargedMwh)} MWh.`)
         lines.push('This contributes to battery activity interpretation; the associated monetary effect flows into battery charge cost and then into profit/net result.')
+        break
+      case 'battery_discharged':
+        lines.push(`Formula: sum of hourly physical battery discharge values = ${tt(roundTotals.totalDischargedMwh)} MWh.`)
+        lines.push('This is the physical battery output. It is intentionally separated from awarded DA/ID market volume when the market commitment exceeds executable battery energy.')
         break
       case 'battery_charge_cost':
         lines.push(`Formula: sum of hourly battery charge costs = ${tti(roundTotals.totalChargeCostZar)} ZAR.`)
@@ -1178,12 +1263,20 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   ↑ {formatNumber(roundTotals.totalChargedMwh, 1)} MWh charged
                 </Typography>
               )}
-              {roundTotals.totalDispatched_DAM + roundTotals.totalDispatched_IDM > 0 && (
+              {roundTotals.totalMarketAwardedMwh > 0 && (
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                  Awarded: {formatNumber(roundTotals.totalMarketAwardedMwh, 1)} MWh
+                </Typography>
+              )}
+              {roundTotals.totalDischargedMwh > 0 && (
                 <Typography variant="caption" sx={{ color: 'success.dark' }}>
-                  ↓ {formatNumber(roundTotals.totalDispatched_DAM + roundTotals.totalDispatched_IDM, 1)} MWh discharged
+                  ↓ {formatNumber(roundTotals.totalDischargedMwh, 1)} MWh executed discharge
                 </Typography>
               )}
             </Box>
+            <Typography variant="caption" color="text.secondary">
+              Submitted market positions appear in the DAM/IDM Offered rows. Awarded market volume appears in the DAM/IDM Awarded rows. Physical battery movement appears only in Charged, Executed Discharge, and SoC.
+            </Typography>
           </Box>
         )}
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
@@ -1203,6 +1296,20 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
             <Typography variant="body2">
               Active systemic event(s) for your scope: {relevantSystemicEvents.map((evt) => evt?.name || 'Event').join(' · ')}.
               No explicit event modifier row is present for this device in the stored round details.
+            </Typography>
+          </Alert>
+        )}
+        {showDamBaselineNotice && (
+          <Alert severity="info" variant="outlined" sx={{ mt: 1.5 }}>
+            <Typography variant="body2">
+              No new intraday trade cleared in this round. The day-ahead rows below show the carried-over Round 1 baseline for context. Current-round IDM offered volume, awarded volume, and SMP stay at 0.
+            </Typography>
+          </Alert>
+        )}
+        {isBatteryDevice && batteryAwardPhysicalGapMwh > 0.05 && (
+          <Alert severity="warning" variant="outlined" sx={{ mt: 1.5 }}>
+            <Typography variant="body2">
+              Awarded market volume exceeds executable battery discharge by {formatNumber(batteryAwardPhysicalGapMwh, 1)} MWh in this round. The DAM/IDM Awarded rows show market commitments; the Battery Storage rows show the physical battery flow constrained by SoC and efficiency.
             </Typography>
           </Alert>
         )}
@@ -1229,7 +1336,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               <TableCell><RowLabel title={getRowTooltip('base_capacity')}>{isConsumer ? 'Base Demand (MW)' : 'Base Capacity (MW)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right">
-                  <HourTip title={getHourTooltip('base_capacity', h)}>{h.baseCapacity > 0 ? formatNumber(h.baseCapacity, 1) : '-'}</HourTip>
+                  <HourTip title={getHourTooltip('base_capacity', h)}>{h.hasBaseCapacityValue ? formatNumber(h.baseCapacity, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', fontStyle: 'italic', color: 'text.secondary' }}>
@@ -1248,7 +1355,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                     bgcolor: h.effectiveCapacity < h.baseCapacity ? 'warning.50' : 'inherit'
                   }}
                 >
-                  <HourTip title={getHourTooltip('effective_capacity', h)}>{h.effectiveCapacity > 0 ? formatNumber(h.effectiveCapacity, 1) : '-'}</HourTip>
+                  <HourTip title={getHourTooltip('effective_capacity', h)}>{h.hasEffectiveCapacityValue ? formatNumber(h.effectiveCapacity, 1) : '-'}</HourTip>
                 </TableCell>
               ))}
               <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
@@ -1259,11 +1366,11 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
             {/* DAM Section */}
             <TableRow sx={{ bgcolor: 'primary.50' }}>
               <TableCell colSpan={hourlyData.length + 2} sx={{ fontWeight: 'bold' }}>
-                Day-Ahead Market (DAM)
+                {isIdmRound ? 'Day-Ahead Baseline (from Round 1)' : 'Day-Ahead Market (DAM)'}
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell><RowLabel title={getRowTooltip('dam_offered')}>{isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)'}</RowLabel></TableCell>
+              <TableCell><RowLabel title={getRowTooltip('dam_offered')}>{isBatteryDevice ? 'DA Submitted (MWh)' : (isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)')}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
                   <HourTip title={getHourTooltip('dam_offered', h)}>{h.totalOffered_DAM > 0 ? formatNumber(h.totalOffered_DAM, 1) : '-'}</HourTip>
@@ -1336,7 +1443,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell><RowLabel title={getRowTooltip('dam_dispatched')}>{isConsumer ? 'Consumed (MWh)' : 'Dispatched (MWh)'}</RowLabel></TableCell>
+              <TableCell><RowLabel title={getRowTooltip('dam_dispatched')}>{isBatteryDevice ? 'DA Awarded (MWh)' : (isConsumer ? 'Consumed (MWh)' : 'Dispatched (MWh)')}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
                   <HourTip title={getHourTooltip('dam_dispatched', h)}>{h.totalDispatched_DAM > 0 ? formatNumber(h.totalDispatched_DAM, 1) : '-'}</HourTip>
@@ -1405,8 +1512,8 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               </TableCell>
             </TableRow>
 
-            {/* IDM Section - only show if any IDM data exists */}
-            {hourlyData.some(h => h.totalOffered_IDM > 0) && (
+            {/* IDM Section - show whenever current-round intraday price or any IDM settlement data exists */}
+            {showIdmSection && (
               <>
                 <TableRow sx={{ bgcolor: 'info.50' }}>
                   <TableCell colSpan={hourlyData.length + 2} sx={{ fontWeight: 'bold' }}>
@@ -1414,7 +1521,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell><RowLabel title={getRowTooltip('idm_offered')}>{isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)'}</RowLabel></TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('idm_offered')}>{isBatteryDevice ? 'ID Submitted (MWh)' : (isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)')}</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
                       <HourTip title={getHourTooltip('idm_offered', h)}>{h.totalOffered_IDM !== 0 ? formatNumber(h.totalOffered_IDM, 1) : '-'}</HourTip>
@@ -1476,7 +1583,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell><RowLabel title={getRowTooltip('id_price')}>ID Price (ZAR/MWh)</RowLabel></TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('id_price')}>Current Price / SMP (ZAR/MWh)</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right">
                       <HourTip title={getHourTooltip('id_price', h)}>{h.idp > 0 ? formatNumber(h.idp, 1) : '-'}</HourTip>
@@ -1487,7 +1594,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell><RowLabel title={getRowTooltip('idm_dispatched')}>{isConsumer ? 'Consumed (MWh)' : 'Dispatched (MWh)'}</RowLabel></TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('idm_dispatched')}>{isBatteryDevice ? 'ID Awarded (MWh)' : (isConsumer ? 'Consumed (MWh)' : 'Dispatched (MWh)')}</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
                       <HourTip title={getHourTooltip('idm_dispatched', h)}>{h.totalDispatched_IDM > 0 ? formatNumber(h.totalDispatched_IDM, 1) : '-'}</HourTip>
@@ -1572,6 +1679,17 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: roundTotals.totalChargedMwh > 0 ? 'primary.main' : 'inherit' }}>
                     <TotalTip title={getTotalTooltip('battery_charged')}>{roundTotals.totalChargedMwh > 0 ? formatNumber(roundTotals.totalChargedMwh, 1) : '-'}</TotalTip>
+                  </TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell><RowLabel title={getRowTooltip('battery_discharged')}>Executed Discharge (MWh)</RowLabel></TableCell>
+                  {hourlyData.map((h) => (
+                    <TableCell key={h.hourKey} align="right" sx={{ color: h.dischargedMwh > 0 ? 'success.dark' : 'inherit' }}>
+                      <HourTip title={getHourTooltip('battery_discharged', h)}>{h.dischargedMwh > 0 ? formatNumber(h.dischargedMwh, 1) : '-'}</HourTip>
+                    </TableCell>
+                  ))}
+                  <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50', color: roundTotals.totalDischargedMwh > 0 ? 'success.dark' : 'inherit' }}>
+                    <TotalTip title={getTotalTooltip('battery_discharged')}>{roundTotals.totalDischargedMwh > 0 ? formatNumber(roundTotals.totalDischargedMwh, 1) : '-'}</TotalTip>
                   </TableCell>
                 </TableRow>
                 <TableRow hover>

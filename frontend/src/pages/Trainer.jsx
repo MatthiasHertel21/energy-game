@@ -8,7 +8,9 @@ import api from '../services/api'
 import * as d3 from 'd3'
 import { exportSVG, exportPNG } from '../utils/exportSvg'
 import {
+  buildActiveEventsSection,
   buildCompositionSection,
+  buildGroupedRankingSections,
   buildParticipantsCard,
   buildPriceCard,
   buildVolumeCard,
@@ -18,6 +20,8 @@ import {
 } from '../utils/marketOverview'
 import DocsFab from '../components/DocsFab'
 import MarketOverviewDialog from '../components/MarketOverviewDialog'
+import MarketOverviewTrendPanel from '../components/MarketOverviewTrendPanel'
+import MarketStructureChartPanel from '../components/MarketStructureChartPanel'
 
 export default function Trainer(){
   const [searchParams] = useSearchParams()
@@ -47,6 +51,7 @@ export default function Trainer(){
   const [campaigns, setCampaigns] = useState([])
   const [campScenarios, setCampScenarios] = useState([])
   const [sessionInfo, setSessionInfo] = useState(null)
+  const [submitStatus, setSubmitStatus] = useState({ players: [] })
   const [comparisonOpen, setComparisonOpen] = useState(false)
   const [comparisonData, setComparisonData] = useState([])
   const [comparisonLoading, setComparisonLoading] = useState(false)
@@ -55,7 +60,11 @@ export default function Trainer(){
   const comparisonChartRef = useRef(null)
   const [marketOverviewOpen, setMarketOverviewOpen] = useState(false)
   const [marketOverviewLoading, setMarketOverviewLoading] = useState(false)
-  const [marketOverviewData, setMarketOverviewData] = useState({ cards: [], sections: [] })
+  const [marketOverviewByRound, setMarketOverviewByRound] = useState({})
+  const [marketOverviewSelectedRound, setMarketOverviewSelectedRound] = useState(null)
+  const [marketOverviewReplayRounds, setMarketOverviewReplayRounds] = useState([])
+  const [marketOverviewReplayLoading, setMarketOverviewReplayLoading] = useState(false)
+  const [marketOverviewReplayLoaded, setMarketOverviewReplayLoaded] = useState(false)
   const [cohortMembers, setCohortMembers] = useState([])
   const [membersLoading, setMembersLoading] = useState(false)
   const isLastRound = !!(sessionInfo?.general?.rounds && sessionInfo?.current_round >= sessionInfo?.general?.rounds)
@@ -65,6 +74,11 @@ export default function Trainer(){
     if (sessionInfo?.status === 'round_results') return currentRound
     return currentRound > 1 ? currentRound - 1 : null
   }, [sessionInfo])
+
+  const availableMarketOverviewRounds = useMemo(() => {
+    const maxRound = Number(availableMarketOverviewRound || 0)
+    return maxRound > 0 ? Array.from({ length: maxRound }, (_, index) => index + 1) : []
+  }, [availableMarketOverviewRound])
 
   const playerTypeCounts = useMemo(() => {
     const counts = {}
@@ -79,6 +93,21 @@ export default function Trainer(){
       count: counts[t.id] || 0
     }))
   }, [status, brief])
+
+  const playerTypeLabels = useMemo(() => {
+    return new Map((brief?.player_types || []).map((item) => [String(item.id), item.name || item.id]))
+  }, [brief])
+
+  const resolvePlayerTypeLabel = (value) => {
+    const key = String(value || '').trim()
+    if (!key) return '-'
+    return playerTypeLabels.get(key) || key
+  }
+
+  const submitStatusByPlayer = useMemo(() => {
+    const entries = Array.isArray(submitStatus?.players) ? submitStatus.players : []
+    return new Map(entries.map((player) => [Number(player.player_id), Boolean(player.submitted)]))
+  }, [submitStatus])
 
   const comparisonTypeOptions = useMemo(() => {
     const labelsById = new Map((brief?.player_types || []).map((item) => [String(item.id), item.name || item.id]))
@@ -366,6 +395,10 @@ export default function Trainer(){
       const res = await api.get(`/api/sessions/${sessionId}/participants`)
       setParticipants(res.data)
     }catch(_){ setParticipants({ participants: [], summary: { total:0, joined:0, pending:0, by_type:{} } }) }
+    try{
+      const res = await api.get(`/api/sessions/${sessionId}/submit-status`)
+      setSubmitStatus(res.data || { players: [] })
+    }catch(_){ setSubmitStatus({ players: [] }) }
     // load session info (status, round, etc.)
     try{
       const info = await api.get(`/api/sessions/${sessionId}`)
@@ -464,6 +497,14 @@ export default function Trainer(){
     }
   }, [comparisonOpen, sessionId])
 
+  useEffect(() => {
+    setMarketOverviewByRound({})
+    setMarketOverviewSelectedRound(null)
+    setMarketOverviewReplayRounds([])
+    setMarketOverviewReplayLoading(false)
+    setMarketOverviewReplayLoaded(false)
+  }, [sessionId])
+
   // Draw comparison chart
   useEffect(() => {
     if (!comparisonChartRef.current || filteredComparisonData.length === 0) return
@@ -494,90 +535,242 @@ export default function Trainer(){
       .attr('fill', '#1976d2')
   }, [filteredComparisonData, comparisonMetric])
 
+  const buildMarketOverviewRoundData = (data, roundNumber) => {
+    const ranking = Array.isArray(data?.ranking) ? data.ranking : []
+    const normalize = (value) => {
+      const num = Number(value ?? 0)
+      return Number.isFinite(num) ? num : 0
+    }
+    const formatInt = (value) => normalize(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+    const formatCurrency = (value) => `ZAR ${formatInt(value)}`
+    const marketSummary = normalizeMarketSummary(
+      data?.market_summary || summarizeMarketFromRanking({
+        ranking,
+        totalVolumeMwh: ranking.reduce((maxVolume, row) => Math.max(maxVolume, normalize(row?.volume)), 0),
+        dispatchedAccessor: (row) => row?.kpis?.dispatched_mwh,
+        roleAccessor: (row) => row?.player_role,
+        revenueAccessor: (row) => row?.kpis?.revenue_zar,
+      })
+    )
+    const sumBy = (rows, key) => rows.reduce((sum, row) => sum + normalize(row?.kpis?.[key]), 0)
+    const totalPlayers = ranking.length
+    const totalProfit = sumBy(ranking, 'profit_zar')
+    const totalImbalance = sumBy(ranking, 'imbalance_cost_zar')
+    const totalAtc = ranking.reduce((sum, row) => sum + normalize(row?.kpis?.atc_dispatch_cost_zar ?? row?.kpis?.grid_constraint_cost_zar), 0)
+    const avgScore = totalPlayers > 0
+      ? ranking.reduce((sum, row) => sum + normalize(row?.total_score), 0) / totalPlayers
+      : 0
+    const compositionSection = buildCompositionSection(marketSummary, formatInt)
+    const zoneSection = buildZoneSection(marketSummary, formatCurrency, formatInt)
+    const summarySection = {
+      title: 'Round-wide market summary',
+      rows: [
+        { label: 'Round', value: String(roundNumber) },
+        { label: 'Total profit across real players', value: formatCurrency(totalProfit) },
+        { label: 'Active events', value: String(data?.market_summary?.active_events_count ?? (Array.isArray(data?.active_events) ? data.active_events.length : 0)) },
+        { label: 'Real player share of producer side', value: `${marketSummary.realPlayers.producerSharePct.toFixed(1)}%` },
+        { label: 'Real player share of consumer side', value: `${marketSummary.realPlayers.consumerSharePct.toFixed(1)}%` },
+      ],
+    }
+    const activeEventsSection = buildActiveEventsSection(data?.active_events)
+    const topPlayersSection = {
+      title: 'Top players this round',
+      columns: [
+        { key: 'rank', label: 'Rank' },
+        { key: 'player', label: 'Player' },
+        { key: 'type', label: 'Type' },
+        { key: 'score', label: 'Score', align: 'right' },
+        { key: 'profit', label: 'Profit', align: 'right' },
+      ],
+      rows: ranking.slice(0, 8).map((row, index) => ({
+        key: row?.player_id || index,
+        rank: `#${row?.rank || index + 1}`,
+        player: row?.email || `Player ${row?.player_id || '-'}`,
+        type: resolvePlayerTypeLabel(row?.type),
+        score: normalize(row?.total_score).toFixed(1),
+        profit: formatCurrency(row?.kpis?.profit_zar || 0),
+      })),
+    }
+    const rankingEntries = ranking.map((row, index) => ({
+      key: row?.player_id || row?.email || index,
+      rank: `#${row?.rank || index + 1}`,
+      player: row?.email || `Player ${row?.player_id || '-'}`,
+      type: resolvePlayerTypeLabel(row?.type),
+      score: normalize(row?.total_score).toFixed(1),
+      primaryValue: formatCurrency(row?.kpis?.profit_zar || 0),
+    }))
+
+    return {
+      cards: [
+        buildVolumeCard(marketSummary, formatInt),
+        { key: 'profit', title: 'Total Profit', value: formatCurrency(totalProfit), caption: `Real players · average score ${avgScore.toFixed(1)}` },
+        buildPriceCard(marketSummary),
+        { key: 'imbalance', title: 'Imbalance / ATC', value: formatCurrency(totalImbalance), caption: `Real players · ATC ${formatCurrency(totalAtc)}` },
+      ].filter(Boolean),
+      overviewSections: [summarySection, activeEventsSection].filter(Boolean),
+      marketMixSections: [compositionSection, zoneSection].filter(Boolean),
+      rankingEntries,
+      formatInt,
+    }
+  }
+
+  useEffect(() => {
+    let isCancelled = false
+
+    if (!marketOverviewOpen || !sessionId || !marketOverviewSelectedRound || marketOverviewLoading || marketOverviewByRound[marketOverviewSelectedRound]) {
+      return () => {}
+    }
+
+    const loadRound = async () => {
+      setMarketOverviewLoading(true)
+      try {
+        const { data } = await api.get(`/api/sessions/${sessionId}/round-results/${marketOverviewSelectedRound}`)
+        if (!isCancelled) {
+          setMarketOverviewByRound((prev) => ({
+            ...prev,
+            [marketOverviewSelectedRound]: buildMarketOverviewRoundData(data, marketOverviewSelectedRound),
+          }))
+        }
+      } catch (err) {
+        console.error('Failed to load market overview round:', err)
+        if (!isCancelled) {
+          setMarketOverviewByRound((prev) => ({
+            ...prev,
+            [marketOverviewSelectedRound]: {
+              cards: [],
+              overviewSections: [{ title: 'Error', items: [{ text: `Failed to load data for round ${marketOverviewSelectedRound}.` }] }],
+              marketMixSections: [],
+              rankingEntries: [],
+              formatInt: (value) => `${value}`,
+            },
+          }))
+        }
+      } finally {
+        if (!isCancelled) {
+          setMarketOverviewLoading(false)
+        }
+      }
+    }
+
+    loadRound()
+    return () => {
+      isCancelled = true
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketOverviewByRound, marketOverviewOpen, marketOverviewSelectedRound, sessionId])
+
+  useEffect(() => {
+    let isCancelled = false
+
+    if (!marketOverviewOpen || !sessionId || marketOverviewReplayLoading || marketOverviewReplayLoaded) {
+      return () => {}
+    }
+
+    const loadReplay = async () => {
+      setMarketOverviewReplayLoading(true)
+      try {
+        const { data } = await api.get(`/api/sessions/${sessionId}/replay`)
+        if (!isCancelled) {
+          setMarketOverviewReplayRounds(Array.isArray(data?.rounds) ? data.rounds : [])
+        }
+      } catch (err) {
+        console.error('Failed to load market overview replay:', err)
+        if (!isCancelled) {
+          setMarketOverviewReplayRounds([])
+        }
+      } finally {
+        if (!isCancelled) {
+          setMarketOverviewReplayLoading(false)
+          setMarketOverviewReplayLoaded(true)
+        }
+      }
+    }
+
+    loadReplay()
+    return () => {
+      isCancelled = true
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketOverviewOpen, marketOverviewReplayLoaded, sessionId])
+
+  const selectedMarketOverview = marketOverviewSelectedRound ? marketOverviewByRound[marketOverviewSelectedRound] : null
+
+  const marketOverviewHeaderControls = availableMarketOverviewRounds.length > 0 ? (
+    <Stack direction="row" spacing={1} alignItems="center">
+      <Typography variant="caption" color="text.secondary">Round</Typography>
+      <Select
+        size="small"
+        value={marketOverviewSelectedRound || ''}
+        onChange={(event) => setMarketOverviewSelectedRound(Number(event.target.value) || null)}
+        sx={{ minWidth: 120 }}
+      >
+        {availableMarketOverviewRounds.map((roundValue) => (
+          <MenuItem key={roundValue} value={roundValue}>{`Round ${roundValue}`}</MenuItem>
+        ))}
+      </Select>
+    </Stack>
+  ) : null
+
+  const marketOverviewTabs = [
+    {
+      id: 'overview',
+      label: 'Overview',
+      cards: marketOverviewLoading && !selectedMarketOverview ? [] : (selectedMarketOverview?.cards || []),
+      sections: selectedMarketOverview?.overviewSections || (marketOverviewLoading
+        ? [{ title: 'Loading', items: [{ text: 'Loading current market KPIs…' }] }]
+        : [{ title: 'No completed round available', items: [{ text: 'Overall market data becomes available after the first round results are available.' }] }]),
+    },
+    {
+      id: 'market-mix',
+      label: 'Market Mix',
+      sections: selectedMarketOverview?.marketMixSections?.length > 0
+        ? selectedMarketOverview.marketMixSections
+        : [{ title: 'Market mix', items: [{ text: marketOverviewLoading ? 'Loading market composition…' : 'No market composition data available for the selected round.' }] }],
+    },
+    {
+      id: 'ranking',
+      label: 'Ranking',
+      sections: buildGroupedRankingSections({
+        entries: selectedMarketOverview?.rankingEntries || [],
+        title: 'Round ranking',
+        scoreLabel: 'Score',
+        valueLabel: 'Profit',
+      }),
+    },
+    {
+      id: 'session-trend',
+      label: 'Session Trend',
+      content: marketOverviewReplayLoading ? (
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+          <Skeleton variant="rectangular" width="100%" height={320} />
+        </Box>
+      ) : (
+        <MarketOverviewTrendPanel
+          rounds={marketOverviewReplayRounds}
+          selectedRound={marketOverviewSelectedRound}
+          formatPrice={(value) => `${Number(value || 0).toFixed(1)} ZAR/MWh`}
+          formatVolume={(value) => `${selectedMarketOverview?.formatInt ? selectedMarketOverview.formatInt(value) : Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} MWh`}
+        />
+      ),
+    },
+    {
+      id: 'merit-order',
+      label: 'Merit Order',
+      content: (
+        <MarketStructureChartPanel
+          sessionId={sessionId}
+          roundNum={marketOverviewSelectedRound}
+          roundSpan={Number(sessionInfo?.general?.round_span_hours || 6)}
+          startTime={sessionInfo?.general?.start_time || '00:00'}
+        />
+      ),
+    },
+  ]
+
   const openMarketOverview = async () => {
     if (!sessionId) return
     setMarketOverviewOpen(true)
-
-    if (!availableMarketOverviewRound) {
-      setMarketOverviewLoading(false)
-      setMarketOverviewData({
-        cards: [],
-        sections: [{
-          title: 'No completed round available',
-          items: [{ text: 'Overall market data becomes available after the first round results are available.' }],
-        }],
-      })
-      return
-    }
-
-    setMarketOverviewLoading(true)
-    try {
-      const { data } = await api.get(`/api/sessions/${sessionId}/round-results/${availableMarketOverviewRound}`)
-      const ranking = Array.isArray(data?.ranking) ? data.ranking : []
-      const normalize = (value) => {
-        const num = Number(value ?? 0)
-        return Number.isFinite(num) ? num : 0
-      }
-      const formatInt = (value) => normalize(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
-      const formatCurrency = (value) => `ZAR ${formatInt(value)}`
-      const marketSummary = normalizeMarketSummary(
-        data?.market_summary || summarizeMarketFromRanking({
-          ranking,
-          totalVolumeMwh: ranking.reduce((maxVolume, row) => Math.max(maxVolume, normalize(row?.volume)), 0),
-          dispatchedAccessor: (row) => row?.kpis?.dispatched_mwh,
-          roleAccessor: (row) => row?.player_role,
-          revenueAccessor: (row) => row?.kpis?.revenue_zar,
-        })
-      )
-      const sumBy = (rows, key) => rows.reduce((sum, row) => sum + normalize(row?.kpis?.[key]), 0)
-      const totalPlayers = ranking.length
-      const totalProfit = sumBy(ranking, 'profit_zar')
-      const totalImbalance = sumBy(ranking, 'imbalance_cost_zar')
-      const totalAtc = ranking.reduce((sum, row) => sum + normalize(row?.kpis?.atc_dispatch_cost_zar ?? row?.kpis?.grid_constraint_cost_zar), 0)
-      const avgScore = totalPlayers > 0
-        ? ranking.reduce((sum, row) => sum + normalize(row?.total_score), 0) / totalPlayers
-        : 0
-
-      setMarketOverviewData({
-        cards: [
-          buildParticipantsCard(marketSummary),
-          buildVolumeCard(marketSummary, formatInt),
-          { key: 'profit', title: 'Total Profit', value: formatCurrency(totalProfit), caption: `Real players · average score ${avgScore.toFixed(1)}` },
-          buildPriceCard(marketSummary),
-          { key: 'imbalance', title: 'Imbalance / ATC', value: formatCurrency(totalImbalance), caption: `Real players · ATC ${formatCurrency(totalAtc)}` },
-        ].filter(Boolean),
-        sections: [
-          buildCompositionSection(marketSummary, formatInt),
-          buildZoneSection(marketSummary, formatCurrency, formatInt),
-          {
-            title: 'Top players this round',
-            columns: [
-              { key: 'rank', label: 'Rank' },
-              { key: 'player', label: 'Player' },
-              { key: 'type', label: 'Type' },
-              { key: 'score', label: 'Score', align: 'right' },
-              { key: 'profit', label: 'Profit', align: 'right' },
-            ],
-            rows: ranking.slice(0, 8).map((row, index) => ({
-              key: row?.player_id || index,
-              rank: `#${row?.rank || index + 1}`,
-              player: row?.email || `Player ${row?.player_id || '-'}`,
-              type: row?.type || '-',
-              score: normalize(row?.total_score).toFixed(1),
-              profit: formatCurrency(row?.kpis?.profit_zar || 0),
-            })),
-          },
-        ].filter(Boolean),
-      })
-    } catch (err) {
-      console.error('Failed to load market overview:', err)
-      setMarketOverviewData({
-        cards: [],
-        sections: [{ title: 'Error', items: [{ text: 'Failed to load overall market data for the latest completed round.' }] }],
-      })
-    } finally {
-      setMarketOverviewLoading(false)
-    }
+    setMarketOverviewSelectedRound(availableMarketOverviewRound || null)
   }
 
   return (
@@ -858,6 +1051,7 @@ export default function Trainer(){
               </TableHead>
               <TableBody>
                 {cohortMembers.map(member => {
+                  const hasSubmittedCurrentRound = submitStatusByPlayer.get(Number(member.user_id))
                   const statusColors = {
                     playing: 'success',
                     briefing: 'info',
@@ -888,11 +1082,21 @@ export default function Trainer(){
                       </TableCell>
                       <TableCell>{(brief?.player_types || []).find(t => t.id === (member.player_type || member.active_session?.player_type))?.name || member.player_type || member.active_session?.player_type || '—'}</TableCell>
                       <TableCell>
-                        <Chip 
-                          label={member.status} 
-                          size="small" 
-                          color={statusColors[member.status] || 'default'}
-                        />
+                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                          <Chip 
+                            label={member.status} 
+                            size="small" 
+                            color={statusColors[member.status] || 'default'}
+                          />
+                          {sessionId && member.role === 'player' && member.active_session && (
+                            <Chip
+                              label={hasSubmittedCurrentRound ? 'Submitted' : 'Pending submit'}
+                              size="small"
+                              color={hasSubmittedCurrentRound ? 'success' : 'warning'}
+                              variant={hasSubmittedCurrentRound ? 'filled' : 'outlined'}
+                            />
+                          )}
+                        </Stack>
                       </TableCell>
                       <TableCell align="center">
                         {member.active_session ? `R${member.active_session.current_round}` : (sessionInfo?.current_round ? `R${sessionInfo.current_round}` : '—')}
@@ -1016,11 +1220,10 @@ export default function Trainer(){
         open={marketOverviewOpen}
         onClose={() => setMarketOverviewOpen(false)}
         title="Overall Market Overview"
-        subtitle={sessionInfo ? `${sessionInfo.scenario_name || 'Scenario'} · ${availableMarketOverviewRound ? `Round ${availableMarketOverviewRound}` : 'No completed round yet'}` : 'Current session'}
-        cards={marketOverviewLoading ? [] : marketOverviewData.cards}
-        sections={marketOverviewLoading
-          ? [{ title: 'Loading', items: [{ text: 'Loading current market KPIs…' }] }]
-          : marketOverviewData.sections}
+        subtitle={sessionInfo ? `${sessionInfo.scenario_name || 'Scenario'} · ${marketOverviewSelectedRound ? `Round ${marketOverviewSelectedRound}` : 'No completed round yet'}` : 'Current session'}
+        tabs={marketOverviewTabs}
+        defaultTabId="overview"
+        headerControls={marketOverviewHeaderControls}
       />
       
       <DocsFab href="/docs/trainer" label="Open Trainer Handbook" />

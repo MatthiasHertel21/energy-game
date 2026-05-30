@@ -427,11 +427,14 @@ def run_rounds(session_id: int, app=None):
                 for pid, kp in (res.get("round_kpis") or {}).items():
                     # Determine player role based on their player type devices
                     player_role = 'unknown'
+                    player_type_id = None
+                    player_devices = []
                     try:
                         # Find player's selected type
                         from .models import SessionPlayerType
                         spt = SessionPlayerType.query.filter_by(session_id=s.id, user_id=pid).first()
                         if spt and spt.type_id:
+                            player_type_id = spt.type_id
                             # Find player type config
                             pt_cfg = next((pt for pt in player_types_cfg if pt.get("id") == spt.type_id), None)
                             if pt_cfg:
@@ -475,7 +478,8 @@ def run_rounds(session_id: int, app=None):
                             role=player_role,
                             round_num=current,
                             all_round_kpis=all_round_kpis,
-                            capacity_scale=capacity_scale
+                            capacity_scale=capacity_scale,
+                            player_type_id=player_type_id,
                         )
                     
                     data = {

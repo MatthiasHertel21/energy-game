@@ -126,6 +126,27 @@ class TestBuildSupplyFromBids:
         combined, _ = build_supply_from_bids(forecasts, 2, synthetic, config)
         assert combined[0][1] == 30
 
+    def test_round_local_hour_offset_selects_matching_price(self):
+        """Round-local IDM supply bids must use the same local index for quantity and price."""
+        config = {"market": {"enable_player_bidding": True}}
+        synthetic = []
+        forecasts = {
+            1: {
+                'bids': {
+                    'device_1': {
+                        'A': {'prices': [450, 650], 'hours': [10, 20]}
+                    }
+                }
+            }
+        }
+
+        combined, bids_meta = build_supply_from_bids(forecasts, 5, synthetic, config, hour_offset=1)
+
+        assert combined == [(650.0, 20.0)]
+        assert len(bids_meta) == 1
+        assert bids_meta[0]['price'] == 650.0
+        assert bids_meta[0]['quantity'] == 20.0
+
     def test_bid_count_five_supports_extended_labels(self):
         """Devices with bid_count 5 may submit A-E bids without relying on global switch."""
         config = {
@@ -268,6 +289,30 @@ class TestBuildDemandFromBids:
         assert bids_meta[0]["bid_label"] == "A"
         assert bids_meta[0]["price"] == 1200.0
         assert bids_meta[0]["quantity"] == 40.0
+
+    def test_round_local_hour_offset_selects_matching_price(self):
+        """Round-local IDM demand bids must use the same local index for quantity and price."""
+        config = {
+            "market": {"enable_player_bidding": True},
+            "devices": [{"id": "device_1", "type": "industrial_load", "bid_count": 1}],
+        }
+        synthetic = []
+        forecasts = {
+            1: {
+                'bids': {
+                    'device_1': {
+                        'A': {'prices': [900, 1100], 'hours': [15, 25]}
+                    }
+                }
+            }
+        }
+
+        combined, bids_meta = build_demand_from_bids(forecasts, 4, synthetic, config, hour_offset=1)
+
+        assert combined == [(1100.0, 25.0)]
+        assert len(bids_meta) == 1
+        assert bids_meta[0]['price'] == 1100.0
+        assert bids_meta[0]['quantity'] == 25.0
 
 
 class TestTrackBidDispatch:

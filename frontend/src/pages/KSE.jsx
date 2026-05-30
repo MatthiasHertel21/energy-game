@@ -78,6 +78,62 @@ const getMixBlocks = (entry, fallbackBlocks = 0) => {
   return Number(entry ?? fallbackBlocks) || 0
 }
 
+const LEGACY_GENERATOR_PRICE_RANGES = {
+  pv: { min: 0, max: 50 },
+  wind: { min: 50, max: 150 },
+  hydro: { min: 50, max: 200 },
+  nuclear: { min: 200, max: 400 },
+  coal: { min: 400, max: 700 },
+  gas: { min: 700, max: 1200 },
+}
+
+const getLegacyConsumerPriceRange = (type, basePrice) => {
+  const normalizedBasePrice = Number(basePrice) || 1000
+  const normalizedType = String(type || '').toLowerCase()
+
+  if (normalizedType === 'industrial') {
+    return { min: normalizedBasePrice - 300, max: normalizedBasePrice + 500 }
+  }
+  if (normalizedType === 'agriculture') {
+    return { min: normalizedBasePrice - 500, max: normalizedBasePrice + 300 }
+  }
+  return { min: normalizedBasePrice - 400, max: normalizedBasePrice + 400 }
+}
+
+const getDefaultMixPriceRange = (type, kind, basePrice) => {
+  if (kind === 'consumer') {
+    return getLegacyConsumerPriceRange(type, basePrice)
+  }
+  return LEGACY_GENERATOR_PRICE_RANGES[type] || { min: (Number(basePrice) || 1000) - 500, max: (Number(basePrice) || 1000) + 500 }
+}
+
+const resolveMixPriceRange = (entry, defaultRange) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return { ...defaultRange }
+  }
+
+  const priceMin = Number(entry.price_min)
+  const priceMax = Number(entry.price_max)
+  const resolvedMin = Number.isFinite(priceMin) ? priceMin : defaultRange.min
+  const resolvedMax = Number.isFinite(priceMax) ? priceMax : defaultRange.max
+
+  if (!Number.isFinite(resolvedMin) || !Number.isFinite(resolvedMax) || resolvedMax < resolvedMin) {
+    return { ...defaultRange }
+  }
+
+  return { min: resolvedMin, max: resolvedMax }
+}
+
+const samplePriceWithinRange = ({ rng, min, max, jitterPct = 0, floor = -Infinity, cap = Infinity }) => {
+  const low = Math.min(Number(min), Number(max))
+  const high = Math.max(Number(min), Number(max))
+  const base = high > low ? low + rng() * (high - low) : low
+  const jitterSpan = Math.max(0, high - low) * Math.max(0, Number(jitterPct) || 0)
+  const jittered = base + (rng() - 0.5) * 2 * jitterSpan
+  const bounded = Math.max(low, Math.min(high, jittered))
+  return Math.min(cap, Math.max(floor, bounded))
+}
+
 const DEFAULT_RAMP_RATE_MW_PER_MIN = { coal: 5, gas: 15, hydro: 30, nuclear: 1 }
 const DEFAULT_CO2_KG_PER_MWH = { coal: 950, gas: 550, hydro: 0, nuclear: 0, solar: 0, wind: 0, pv: 0 }
 const DEFAULT_CAPACITY_FACTOR_PCT = { solar: 25, wind: 35 }
@@ -563,7 +619,9 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
           .filter((step) => Number.isFinite(step.q) && step.q > 0 && Number.isFinite(step.p))
       : []
     const hasBackendCurves = previewSupplyCurve.length > 0 && previewDemandCurve.length > 0
-    const mix = cfg?.environment?.groups || cfg?.market?.generator_mix || groups || { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150 }
+    const floor = Number(cfg.market.price_floor ?? -Infinity)
+    const cap = Number(cfg.market.price_cap ?? Infinity)
+    const mix = cfg?.market?.generator_mix || cfg?.environment?.groups || groups || { pv: 250, wind: 200, hydro: 100, coal: 300, gas: 150 }
     const distArr = Object.entries(mix).map(([type, entry]) => [type, getMixBlocks(entry, 0)])
     // Interpret generator_mix values as non-negative block counts per group
     const totalBlocksSupply = distArr.reduce((s, [, v]) => s + Math.max(0, Number(v) || 0), 0) || 1
@@ -577,16 +635,6 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
     const capJitter = Math.max(0, Math.min(0.5, Number(cfg?.market?.random_capacity_pct || 0) / 100))
     const priceJitter = Math.max(0, Math.min(0.5, Number(cfg?.market?.random_price_pct || 0) / 100))
 
-    // Type-specific marginal cost ranges (ZAR/MWh)
-    const COST = {
-      pv: [0, 50],
-      wind: [50, 150],
-      hydro: [50, 200],
-      nuclear: [200, 400],
-      coal: [400, 700],
-      gas: [700, 1200],
-    }
-
     // Build SUPPLY blocks per type based on per-type block counts
     let sBlocks = []
     distArr.forEach(([type, pct]) => {
@@ -594,18 +642,23 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
       if (!n) return
       const vol = baseV * (Number(pct || 0) / totalBlocksSupply)
       const avg = vol / n
-      const [pMin, pMax] = COST[type] || [baseP - 500, baseP + 500]
+      const entry = mix?.[type]
+      const priceRange = resolveMixPriceRange(entry, getDefaultMixPriceRange(type, 'generator', baseP))
       for (let i = 0; i < n; i++) {
         const qJ = 1 + (rng() - 0.5) * 2 * capJitter
-        const basePrice = pMin + rng() * (pMax - pMin)
-        const pJ = 1 + (rng() - 0.5) * 2 * priceJitter
-        sBlocks.push({ q: Math.max(0, avg * qJ), p: basePrice * pJ })
+        const price = samplePriceWithinRange({
+          rng,
+          min: priceRange.min,
+          max: priceRange.max,
+          jitterPct: priceJitter,
+          floor,
+          cap,
+        })
+        sBlocks.push({ q: Math.max(0, avg * qJ), p: price })
       }
     })
     // normalize volumes to baseV and clamp prices to floor/cap
     const sSum = sBlocks.reduce((s, b) => s + b.q, 0) || 1
-    const floor = Number(cfg.market.price_floor ?? -Infinity)
-    const cap = Number(cfg.market.price_cap ?? Infinity)
     sBlocks.forEach(b => { b.q = (b.q / sSum) * baseV; b.p = Math.min(cap, Math.max(floor, b.p)) })
 
     // Sort supply ascending by price
@@ -613,7 +666,7 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
       ? [...previewSupplyCurve].sort((a, b) => a.p - b.p)
       : sBlocks.sort((a, b) => a.p - b.p)
 
-    // Build DEMAND blocks by consumer mix with non-linear decreasing schedule and jitter
+    // Build DEMAND blocks by consumer mix using configured or legacy WTP ranges
     const cmix = (cfg?.market?.consumer_mix) || { industrial: 400, household: 500, agriculture: 100 }
     const cArr = Object.entries(cmix).map(([type, entry]) => [type, getMixBlocks(entry, 0)])
     // Interpret consumer_mix values as non-negative block counts per group
@@ -623,13 +676,17 @@ function Curves({ cfg, preview, groups, showSupply=true, showDemand=true, showSm
       const n = Math.max(0, Math.round(Number(pct || 0)))
       if (!n) return
       const vol = baseV * (Number(pct || 0) / totalBlocksDemand)
+      const entry = cmix?.[ctype]
+      const priceRange = resolveMixPriceRange(entry, getDefaultMixPriceRange(ctype, 'consumer', baseP))
       for (let i = 0; i < n; i++) {
-        const t = n > 1 ? i / (n - 1) : 0
-        // WTP base by segment, then apply non-linear shape and jitter
-        let wtpBase = baseP + 400 - 800 * Math.pow(t, 2)
-        if (ctype === 'industrial') wtpBase += 100
-        if (ctype === 'agriculture') wtpBase -= 100
-        const p = Math.min(cap, Math.max(floor, wtpBase * (1 + (rng() - 0.5) * 2 * priceJitter * 0.5)))
+        const p = samplePriceWithinRange({
+          rng,
+          min: priceRange.min,
+          max: priceRange.max,
+          jitterPct: priceJitter * 0.5,
+          floor,
+          cap,
+        })
         const q = Math.max(0, (vol / n) * (1 + (rng() - 0.5) * 2 * capJitter))
         dBlocks.push({ q, p })
       }
@@ -821,6 +878,8 @@ export default function KSE(){
   const [profileEditorCurrent, setProfileEditorCurrent] = useState(null)
   const [profileEditorPath, setProfileEditorPath] = useState([]) // path in config object
   const [profileEditorKind, setProfileEditorKind] = useState('generator')
+  const [profileEditorPriceRange, setProfileEditorPriceRange] = useState(null)
+  const [profileEditorDefaultPriceRange, setProfileEditorDefaultPriceRange] = useState(null)
   // Modals (IO + Description)
   const [ioOpen, setIoOpen] = useState(false)
   const [ioTab, setIoTab] = useState(0)
@@ -935,17 +994,19 @@ export default function KSE(){
     })
   }
 
-  const openProfileEditor = (type, title, currentHourlyProfile, currentSeasonalProfile, currentZonalDistribution, savePath, kind = 'generator') => {
+  const openProfileEditor = (type, title, currentHourlyProfile, currentSeasonalProfile, currentZonalDistribution, currentPriceRange, defaultPriceRange, savePath, kind = 'generator') => {
     setProfileEditorType(type)
     setProfileEditorTitle(title)
     setProfileEditorCurrent({ hourly: currentHourlyProfile, seasonal: currentSeasonalProfile, zonal: currentZonalDistribution })
     setProfileEditorPath(savePath)
     setProfileEditorKind(kind)
+    setProfileEditorPriceRange(currentPriceRange)
+    setProfileEditorDefaultPriceRange(defaultPriceRange)
     setProfileEditorOpen(true)
   }
 
   const handleProfileSave = (profiles) => {
-    // Save both hourly and seasonal profiles to generator_mix or consumer_mix
+    // Save hourly, seasonal, zonal, and price range to generator_mix or consumer_mix
     const current = profileEditorPath.reduce((obj, key) => obj?.[key], cfg)
     const baseValue = (typeof current === 'object' && current !== null && !Array.isArray(current))
       ? current
@@ -955,6 +1016,8 @@ export default function KSE(){
       profile: profiles.hourly,
       seasonal_profile: profiles.seasonal,
       zone_distribution_pct: profiles.zonal,
+      price_min: Number(profiles.priceMin),
+      price_max: Number(profiles.priceMax),
     }
 
     if (profileEditorKind === 'generator') {
@@ -967,6 +1030,8 @@ export default function KSE(){
         profile: profiles.hourly,
         seasonal_profile: profiles.seasonal,
         zone_distribution_pct: profiles.zonal,
+        price_min: updatedValue.price_min,
+        price_max: updatedValue.price_max,
       })
     } else {
       update(profileEditorPath, updatedValue)
@@ -1002,6 +1067,12 @@ export default function KSE(){
   const getGeneratorZoneDistribution = (type) => {
     const val = cfg.environment.groups?.[type] || cfg.market.generator_mix?.[type]
     return normalizeMixEntry(val, cfg.grid.zones).zone_distribution_pct
+  }
+
+  const getGeneratorPriceRange = (type) => {
+    const basePrice = Number(cfg?.market?.base_price ?? 1000) || 1000
+    const entry = cfg.market.generator_mix?.[type] || cfg.environment.groups?.[type]
+    return resolveMixPriceRange(entry, getDefaultMixPriceRange(type, 'generator', basePrice))
   }
 
   const setGeneratorZoneDistribution = (type, distribution) => {
@@ -1043,6 +1114,11 @@ export default function KSE(){
     return normalizeMixEntry(val, cfg.grid.zones).zone_distribution_pct
   }
 
+  const getConsumerPriceRange = (type) => {
+    const basePrice = Number(cfg?.market?.base_price ?? 1000) || 1000
+    return resolveMixPriceRange(cfg.market.consumer_mix?.[type], getDefaultMixPriceRange(type, 'consumer', basePrice))
+  }
+
   const setConsumerZoneDistribution = (type, distribution) => {
     const current = normalizeMixEntry(cfg.market.consumer_mix?.[type], cfg.grid.zones)
     update(['market', 'consumer_mix', type], { ...current, zone_distribution_pct: distribution })
@@ -1051,6 +1127,7 @@ export default function KSE(){
   const validate = ()=>{
     const errs = []
     const zones = cfg.grid.zones
+    const basePrice = Number(cfg?.market?.base_price ?? 1000) || 1000
     if(zones<1 || zones>5) errs.push('Zones must be 1–5')
     const validateDistribution = (label, distribution) => {
       if (!Array.isArray(distribution) || distribution.length !== Number(zones)) {
@@ -1064,8 +1141,24 @@ export default function KSE(){
       const sum = values.reduce((acc, value) => acc + value, 0)
       if (Math.abs(sum - 100) > 1e-6) errs.push(`${label} must sum to 100`)
     }
+    const validatePriceRange = (label, entry, defaultRange) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return
+      const hasMin = entry.price_min !== undefined && entry.price_min !== null && entry.price_min !== ''
+      const hasMax = entry.price_max !== undefined && entry.price_max !== null && entry.price_max !== ''
+      if (!hasMin && !hasMax) return
+
+      const priceMin = hasMin ? Number(entry.price_min) : defaultRange.min
+      const priceMax = hasMax ? Number(entry.price_max) : defaultRange.max
+      if (hasMin && !Number.isFinite(priceMin)) errs.push(`${label}.price_min must be numeric`)
+      if (hasMax && !Number.isFinite(priceMax)) errs.push(`${label}.price_max must be numeric`)
+      if (Number.isFinite(priceMin) && Number.isFinite(priceMax) && priceMin > priceMax) {
+        errs.push(`${label}.price_min must be <= ${label}.price_max`)
+      }
+    }
     ;['pv','wind','hydro','coal','gas','nuclear'].forEach((type) => validateDistribution(`environment.groups.${type}.zone_distribution_pct`, getGeneratorZoneDistribution(type)))
     ;['industrial','household','agriculture'].forEach((type) => validateDistribution(`market.consumer_mix.${type}.zone_distribution_pct`, getConsumerZoneDistribution(type)))
+    ;['pv','wind','hydro','coal','gas','nuclear'].forEach((type) => validatePriceRange(`market.generator_mix.${type}`, cfg?.market?.generator_mix?.[type], getDefaultMixPriceRange(type, 'generator', basePrice)))
+    ;['industrial','household','agriculture'].forEach((type) => validatePriceRange(`market.consumer_mix.${type}`, cfg?.market?.consumer_mix?.[type], getDefaultMixPriceRange(type, 'consumer', basePrice)))
     const settlement = cfg?.grid?.network_settlement || {}
     if (!['zonal_only'].includes(String(settlement.extra_cost_mode || 'zonal_only'))) {
       errs.push('grid.network_settlement.extra_cost_mode invalid')
@@ -1823,42 +1916,42 @@ export default function KSE(){
                     <InfoLabel title="PV blocks" tooltip="Number of PV supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="PV (#)" value={getGeneratorMixValue('pv')} onChange={(val)=>setGeneratorMixBlocks('pv', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('solar', 'PV Profile', getGeneratorMixProfile('pv'), getGeneratorMixSeasonalProfile('pv'), getGeneratorZoneDistribution('pv'), ['market','generator_mix','pv'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('solar', 'PV Profile', getGeneratorMixProfile('pv'), getGeneratorMixSeasonalProfile('pv'), getGeneratorZoneDistribution('pv'), getGeneratorPriceRange('pv'), getDefaultMixPriceRange('pv', 'generator', Number(cfg?.market?.base_price ?? 1000) || 1000), ['market','generator_mix','pv'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Wind blocks" tooltip="Number of wind supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Wind (#)" value={getGeneratorMixValue('wind')} onChange={(val)=>setGeneratorMixBlocks('wind', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('wind', 'Wind Profile', getGeneratorMixProfile('wind'), getGeneratorMixSeasonalProfile('wind'), getGeneratorZoneDistribution('wind'), ['market','generator_mix','wind'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('wind', 'Wind Profile', getGeneratorMixProfile('wind'), getGeneratorMixSeasonalProfile('wind'), getGeneratorZoneDistribution('wind'), getGeneratorPriceRange('wind'), getDefaultMixPriceRange('wind', 'generator', Number(cfg?.market?.base_price ?? 1000) || 1000), ['market','generator_mix','wind'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Hydro blocks" tooltip="Number of hydro supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Hydro (#)" value={getGeneratorMixValue('hydro')} onChange={(val)=>setGeneratorMixBlocks('hydro', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('hydro', 'Hydro Profile', getGeneratorMixProfile('hydro'), getGeneratorMixSeasonalProfile('hydro'), getGeneratorZoneDistribution('hydro'), ['market','generator_mix','hydro'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('hydro', 'Hydro Profile', getGeneratorMixProfile('hydro'), getGeneratorMixSeasonalProfile('hydro'), getGeneratorZoneDistribution('hydro'), getGeneratorPriceRange('hydro'), getDefaultMixPriceRange('hydro', 'generator', Number(cfg?.market?.base_price ?? 1000) || 1000), ['market','generator_mix','hydro'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Coal blocks" tooltip="Number of coal supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Coal (#)" value={getGeneratorMixValue('coal')} onChange={(val)=>setGeneratorMixBlocks('coal', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Coal Profile', getGeneratorMixProfile('coal'), getGeneratorMixSeasonalProfile('coal'), getGeneratorZoneDistribution('coal'), ['market','generator_mix','coal'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Coal Profile', getGeneratorMixProfile('coal'), getGeneratorMixSeasonalProfile('coal'), getGeneratorZoneDistribution('coal'), getGeneratorPriceRange('coal'), getDefaultMixPriceRange('coal', 'generator', Number(cfg?.market?.base_price ?? 1000) || 1000), ['market','generator_mix','coal'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Gas blocks" tooltip="Number of gas supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Gas (#)" value={getGeneratorMixValue('gas')} onChange={(val)=>setGeneratorMixBlocks('gas', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('peaking', 'Gas Profile', getGeneratorMixProfile('gas'), getGeneratorMixSeasonalProfile('gas'), getGeneratorZoneDistribution('gas'), ['market','generator_mix','gas'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('peaking', 'Gas Profile', getGeneratorMixProfile('gas'), getGeneratorMixSeasonalProfile('gas'), getGeneratorZoneDistribution('gas'), getGeneratorPriceRange('gas'), getDefaultMixPriceRange('gas', 'generator', Number(cfg?.market?.base_price ?? 1000) || 1000), ['market','generator_mix','gas'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Nuclear blocks" tooltip="Number of nuclear supply blocks in preview mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Nuclear (#)" value={getGeneratorMixValue('nuclear')} onChange={(val)=>setGeneratorMixBlocks('nuclear', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Nuclear Profile', getGeneratorMixProfile('nuclear'), getGeneratorMixSeasonalProfile('nuclear'), getGeneratorZoneDistribution('nuclear'), ['market','generator_mix','nuclear'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('baseload', 'Nuclear Profile', getGeneratorMixProfile('nuclear'), getGeneratorMixSeasonalProfile('nuclear'), getGeneratorZoneDistribution('nuclear'), getGeneratorPriceRange('nuclear'), getDefaultMixPriceRange('nuclear', 'generator', Number(cfg?.market?.base_price ?? 1000) || 1000), ['market','generator_mix','nuclear'], 'generator')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                 </Stack>
@@ -1877,21 +1970,21 @@ export default function KSE(){
                     <InfoLabel title="Industrial blocks" tooltip="Number of industrial consumer blocks in preview demand mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Industrial (#)" value={getConsumerMixValue('industrial')} onChange={(val)=>setConsumerMixBlocks('industrial', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Industrial Load Profile', getConsumerMixProfile('industrial'), getConsumerMixSeasonalProfile('industrial'), getConsumerZoneDistribution('industrial'), ['market','consumer_mix','industrial'], 'consumer')} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Industrial Load Profile', getConsumerMixProfile('industrial'), getConsumerMixSeasonalProfile('industrial'), getConsumerZoneDistribution('industrial'), getConsumerPriceRange('industrial'), getDefaultMixPriceRange('industrial', 'consumer', Number(cfg?.market?.base_price ?? 1000) || 1000), ['market','consumer_mix','industrial'], 'consumer')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Household blocks" tooltip="Number of household consumer blocks in preview demand mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Household (#)" value={getConsumerMixValue('household')} onChange={(val)=>setConsumerMixBlocks('household', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('residential', 'Household Load Profile', getConsumerMixProfile('household'), getConsumerMixSeasonalProfile('household'), getConsumerZoneDistribution('household'), ['market','consumer_mix','household'], 'consumer')} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('residential', 'Household Load Profile', getConsumerMixProfile('household'), getConsumerMixSeasonalProfile('household'), getConsumerZoneDistribution('household'), getConsumerPriceRange('household'), getDefaultMixPriceRange('household', 'consumer', Number(cfg?.market?.base_price ?? 1000) || 1000), ['market','consumer_mix','household'], 'consumer')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 200 }}>
                     <InfoLabel title="Agriculture blocks" tooltip="Number of agriculture consumer blocks in preview demand mix (0–1000)." showTitle={false} />
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <NumberInput label="Agriculture (#)" value={getConsumerMixValue('agriculture')} onChange={(val)=>setConsumerMixBlocks('agriculture', Number(val)||0)} min={0} max={1000} step={1} />
-                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Agriculture Load Profile', getConsumerMixProfile('agriculture'), getConsumerMixSeasonalProfile('agriculture'), getConsumerZoneDistribution('agriculture'), ['market','consumer_mix','agriculture'], 'consumer')} sx={{ minWidth: 40 }}>Edit</Button>
+                      <Button size="small" variant="text" onClick={()=> openProfileEditor('industrial', 'Agriculture Load Profile', getConsumerMixProfile('agriculture'), getConsumerMixSeasonalProfile('agriculture'), getConsumerZoneDistribution('agriculture'), getConsumerPriceRange('agriculture'), getDefaultMixPriceRange('agriculture', 'consumer', Number(cfg?.market?.base_price ?? 1000) || 1000), ['market','consumer_mix','agriculture'], 'consumer')} sx={{ minWidth: 40 }}>Edit</Button>
                     </Stack>
                   </Stack>
                 </Stack>
@@ -3099,9 +3192,12 @@ export default function KSE(){
         hourlyProfile={profileEditorCurrent?.hourly}
         seasonalProfile={profileEditorCurrent?.seasonal}
         zonalDistribution={profileEditorCurrent?.zonal}
+        priceRange={profileEditorPriceRange}
+        defaultPriceRange={profileEditorDefaultPriceRange}
         zoneCount={cfg.grid?.zones || 1}
         onSave={handleProfileSave}
         type={profileEditorType}
+        kind={profileEditorKind}
       />
       
       {/* Bottom padding to prevent content being hidden by sticky bar */}

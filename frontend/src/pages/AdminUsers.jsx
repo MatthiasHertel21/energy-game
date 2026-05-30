@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Paper, Typography, Table, TableHead, TableBody, TableRow, TableCell, Select, MenuItem, TextField, Button, Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, Box, Skeleton, Tabs, Tab, Grid, Card, CardContent, Chip, IconButton, Tooltip, InputAdornment } from '@mui/material'
-import { PersonAdd as PersonAddIcon, LockReset as LockResetIcon, Delete as DeleteIcon, GroupAdd as GroupAddIcon, CalendarMonth as CalendarIcon } from '@mui/icons-material'
+import { PersonAdd as PersonAddIcon, LockReset as LockResetIcon, Delete as DeleteIcon, GroupAdd as GroupAddIcon, CalendarMonth as CalendarIcon, StopCircle as StopCircleIcon } from '@mui/icons-material'
 import api from '../services/api'
 import DocsFab from '../components/DocsFab'
 import EmptyState from '../components/EmptyState'
 
 const roles = ['player','trainer','designer','admin']
+const LIVE_SESSION_STATUSES = ['created', 'briefing', 'running', 'round_active', 'round_closing', 'calculating', 'round_results', 'paused']
 
 function NativeDateField({ label, value, onChange, sx }) {
   const inputRef = React.useRef(null)
@@ -120,6 +121,9 @@ export default function AdminUsers(){
   const [sessPage, setSessPage] = useState(0)
   const [sessRows, setSessRows] = useState(25)
   const [sessFilters, setSessFilters] = useState({ status: '', scenario_id: '', date_from: '', date_to: '' })
+  const [liveSessLoading, setLiveSessLoading] = useState(false)
+  const [liveSessList, setLiveSessList] = useState([])
+  const [stoppingAllLive, setStoppingAllLive] = useState(false)
   // Cohort assignment
   const [cohortModalOpen, setCohortModalOpen] = useState(false)
   const [selectedUser, setSelectedUser] = useState(null)
@@ -161,6 +165,7 @@ export default function AdminUsers(){
   useEffect(()=>{
     if (tab === 1) loadActivity(period)
     if (tab === 2) loadSessions()
+    if (tab === 3) loadLiveSessions()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, period])
 
@@ -205,6 +210,63 @@ export default function AdminUsers(){
       setSessTotal(0)
     } finally {
       setSessLoading(false)
+    }
+  }
+
+  const loadLiveSessions = async () => {
+    setLiveSessLoading(true)
+    try {
+      const { data } = await api.get('/api/admin/sessions', {
+        params: {
+          limit: 1000,
+          offset: 0,
+        }
+      })
+      const sessions = Array.isArray(data?.sessions) ? data.sessions : []
+      setLiveSessList(sessions.filter((session) => LIVE_SESSION_STATUSES.includes(session.status)))
+    } catch (e) {
+      setLiveSessList([])
+    } finally {
+      setLiveSessLoading(false)
+    }
+  }
+
+  const stopSession = async (session) => {
+    if (!session?.id) return
+    if (!window.confirm(`Stop live session #${session.id}?`)) return
+    try {
+      await api.patch(`/api/sessions/${session.id}/end`)
+      setSnack(`Session #${session.id} stopped`)
+      loadLiveSessions()
+      loadSessions()
+    } catch (e) {
+      setSnack(e?.response?.data?.message || e?.response?.data?.error || 'Failed to stop session')
+    }
+  }
+
+  const stopAllLiveSessions = async () => {
+    if (liveSessList.length === 0) return
+    if (!window.confirm(`Stop all ${liveSessList.length} live sessions?`)) return
+
+    setStoppingAllLive(true)
+    try {
+      const results = await Promise.allSettled(
+        liveSessList.map((session) => api.patch(`/api/sessions/${session.id}/end`))
+      )
+      const stoppedCount = results.filter((result) => result.status === 'fulfilled').length
+      const failedCount = results.length - stoppedCount
+
+      if (failedCount > 0) {
+        setSnack(`${stoppedCount} live sessions stopped, ${failedCount} failed`)
+      } else {
+        setSnack(`${stoppedCount} live sessions stopped`)
+      }
+
+      await Promise.all([loadLiveSessions(), loadSessions()])
+    } catch (e) {
+      setSnack(e?.response?.data?.message || e?.response?.data?.error || 'Failed to stop live sessions')
+    } finally {
+      setStoppingAllLive(false)
     }
   }
 
@@ -290,6 +352,7 @@ export default function AdminUsers(){
         <Tab label="Users" />
         <Tab label="Activity Dashboard" />
         <Tab label="Sessions" />
+        <Tab label="Live Sessions" />
       </Tabs>
 
       {tab === 0 && (
@@ -699,6 +762,75 @@ export default function AdminUsers(){
               <Button size="small" disabled={(sessPage+1)*sessRows >= sessList.length} onClick={()=> setSessPage(p=>p+1)}>Next</Button>
             </Box>
           </Box>
+        </Box>
+      )}
+
+      {tab === 3 && (
+        <Box sx={{ mt: 2 }}>
+          <Box sx={{ display:'flex', alignItems:'center', gap:1, mb:2 }}>
+            <Typography variant="h6">Live Sessions</Typography>
+            <Button variant="outlined" onClick={loadLiveSessions} disabled={liveSessLoading}>Refresh</Button>
+            <Button
+              variant="contained"
+              color="error"
+              startIcon={<StopCircleIcon />}
+              onClick={stopAllLiveSessions}
+              disabled={liveSessLoading || stoppingAllLive || liveSessList.length === 0}
+            >
+              Stop all
+            </Button>
+            <Box sx={{ flexGrow: 1 }} />
+            <Chip label={`${liveSessList.length} live`} color={liveSessList.length > 0 ? 'success' : 'default'} size="small" />
+          </Box>
+
+          {liveSessLoading ? (
+            [...Array(5)].map((_,i)=> <Skeleton key={i} variant="rectangular" height={40} sx={{ mb:1 }} />)
+          ) : liveSessList.length === 0 ? (
+            <EmptyState title="No live sessions" message="There are currently no active sessions to stop." />
+          ) : (
+            <Table size="small" aria-label="live sessions table">
+              <TableHead>
+                <TableRow>
+                  <TableCell>ID</TableCell>
+                  <TableCell>Scenario</TableCell>
+                  <TableCell>Cohort</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Mode</TableCell>
+                  <TableCell>Round</TableCell>
+                  <TableCell>Players</TableCell>
+                  <TableCell>Started</TableCell>
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {liveSessList.map((session) => (
+                  <TableRow key={session.id}>
+                    <TableCell>{session.id}</TableCell>
+                    <TableCell>{session.scenario_name} ({session.scenario_id || '-'})</TableCell>
+                    <TableCell>{session.cohort_name || '-'}</TableCell>
+                    <TableCell>
+                      <Chip label={session.status} size="small" color={session.status === 'paused' ? 'warning' : 'success'} />
+                    </TableCell>
+                    <TableCell>{session.mode}</TableCell>
+                    <TableCell>{session.round}</TableCell>
+                    <TableCell>{session.player_count}</TableCell>
+                    <TableCell>{session.created_at ? new Date(session.created_at).toLocaleString() : '-'}</TableCell>
+                    <TableCell align="right">
+                      <Button
+                        size="small"
+                        color="error"
+                        variant="contained"
+                        startIcon={<StopCircleIcon fontSize="small" />}
+                        onClick={() => stopSession(session)}
+                      >
+                        Stop
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </Box>
       )}
 

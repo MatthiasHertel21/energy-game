@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const base = import.meta.env.VITE_API_BASE || ''
+const base = import.meta.env?.VITE_API_BASE || ''
 const instance = axios.create({ baseURL: base })
 
 // Flag to prevent multiple refresh attempts

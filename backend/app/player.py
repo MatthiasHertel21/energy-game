@@ -1625,20 +1625,6 @@ class SoloSessions(Resource):
             )
             pass  # Continue even if allowed_types setup fails
 
-        # Progress → in_progress
-        try:
-            pp = PlayerProgress.query.filter_by(user_id=uid, campaign_id=camp.id, scenario_id=scenario_id).first()
-            if not pp:
-                from datetime import datetime
-                pp = PlayerProgress(user_id=uid, campaign_id=camp.id, scenario_id=scenario_id, status=PlayerProgressStatus.in_progress, started_at=datetime.utcnow())
-            else:
-                from datetime import datetime
-                pp.status = PlayerProgressStatus.in_progress
-                pp.started_at = pp.started_at or datetime.utcnow()
-            db.session.add(pp)
-        except Exception:
-            pass
-
         db.session.commit()
         # Start scheduler in background (will wait in briefing phase until player starts)
         from .scheduler import run_rounds
@@ -2147,7 +2133,57 @@ class DABaseline(Resource):
             if aggregate_data:
                 for h in range(min(len(aggregate_data), horizon_hours)):
                     current_position_aggregate[h] = aggregate_data[h]
-        
+
+        # ============================================================
+        # GET PREV ROUND DISPATCHED (per device/lot, for chart reference line)
+        # ============================================================
+        prev_dispatched = {}  # {device_id: {lot: [mw_dispatched per hour]}}
+        prev_round = current_round - 1
+
+        def _normalize_player_dispatch_payload(dispatch_payload):
+            if not isinstance(dispatch_payload, dict) or not dispatch_payload:
+                return {}
+
+            player_key = player_id if player_id in dispatch_payload else str(player_id) if str(player_id) in dispatch_payload else None
+            if player_key is not None and isinstance(dispatch_payload.get(player_key), dict):
+                return dispatch_payload.get(player_key) or {}
+
+            return dispatch_payload
+
+        if prev_round >= 1:
+            prev_result = Result.query.filter_by(
+                session_id=session_id,
+                player_id=player_id,
+                round_num=prev_round
+            ).first()
+            if prev_result and prev_result.data:
+                dispatch_payload = prev_result.data.get("dam_bid_dispatch", prev_result.data.get("bid_dispatch", {}))
+                player_dispatch = _normalize_player_dispatch_payload(dispatch_payload)
+                for device_id, lots in player_dispatch.items():
+                    prev_dispatched[str(device_id)] = {}
+                    for lot_name, hourly_rows in lots.items():
+                        if isinstance(hourly_rows, list):
+                            dispatched_hours = [0.0] * horizon_hours
+                            prev_round_start = max(0, (prev_round - 1) * round_span)
+                            for row in hourly_rows:
+                                if not isinstance(row, dict):
+                                    continue
+                                row_hour_idx = row.get("scenario_hour_idx", row.get("hour_idx"))
+                                if row_hour_idx is None:
+                                    row_offset = row.get("round_hour_offset", row.get("hour_offset", row.get("hour")))
+                                    if row_offset is None:
+                                        continue
+                                    row_hour_idx = prev_round_start + int(row_offset)
+                                try:
+                                    row_hour_idx = int(row_hour_idx)
+                                except (TypeError, ValueError):
+                                    continue
+
+                                if 0 <= row_hour_idx < horizon_hours:
+                                    dispatched_hours[row_hour_idx] = float(row.get("mw_dispatched", 0.0) or 0.0)
+
+                            prev_dispatched[str(device_id)][lot_name] = dispatched_hours
+
         return {
             "devices": devices_by_id,
             "bids": bids_data,
@@ -2164,7 +2200,9 @@ class DABaseline(Resource):
                 "devices": current_position_devices,
                 "bids": current_position_bids,
                 "aggregate": current_position_aggregate
-            }
+            },
+            # Previous round dispatched values per device/lot (for chart reference line)
+            "prev_dispatched": prev_dispatched
         }, HTTPStatus.OK
 
 

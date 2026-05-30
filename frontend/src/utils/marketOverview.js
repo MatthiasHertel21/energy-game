@@ -229,3 +229,88 @@ export const buildZoneSection = (summary, formatCurrency, formatInt) => {
     })),
   }
 }
+
+export const buildActiveEventsSection = (activeEvents = []) => {
+  if (!Array.isArray(activeEvents) || activeEvents.length === 0) return null
+
+  return {
+    title: 'Active events',
+    items: activeEvents.map((event, index) => {
+      const name = String(event?.name || `Event ${index + 1}`)
+      const description = String(event?.description || '').trim()
+      const target = String(event?.target || '').trim()
+      const detail = [description, target && target !== 'all' ? `Target: ${target}` : ''].filter(Boolean).join(' · ')
+      return {
+        key: `${name}-${index}`,
+        text: detail ? `${name}: ${detail}` : name,
+      }
+    }),
+  }
+}
+
+export const buildGroupedRankingSections = ({
+  entries = [],
+  title = 'Ranking',
+  scoreLabel = 'Score',
+  valueLabel = 'Profit',
+}) => {
+  const rows = Array.isArray(entries)
+    ? entries.filter((entry) => entry && typeof entry === 'object')
+    : []
+
+  if (rows.length === 0) {
+    return [{
+      title,
+      items: [{ text: 'No ranking data available yet.' }],
+    }]
+  }
+
+  const columns = [
+    { key: 'rank', label: 'Rank' },
+    { key: 'player', label: 'Player' },
+    { key: 'type', label: 'Type' },
+    { key: 'score', label: scoreLabel, align: 'right' },
+    { key: 'primaryValue', label: valueLabel, align: 'right' },
+  ]
+
+  const overallRows = rows.map((entry, index) => ({
+    key: entry.key || `${entry.player}-${index}`,
+    rank: entry.rank || `#${index + 1}`,
+    player: entry.player || `Player ${index + 1}`,
+    type: entry.type || '-',
+    score: entry.score ?? '-',
+    primaryValue: entry.primaryValue ?? '-',
+  }))
+
+  const sections = [{
+    title,
+    columns,
+    rows: overallRows,
+  }]
+
+  const grouped = overallRows.reduce((acc, row) => {
+    const type = String(row.type || '-').trim() || '-'
+    if (!acc[type]) acc[type] = []
+    acc[type].push(row)
+    return acc
+  }, {})
+
+  const meaningfulTypes = Object.keys(grouped).filter((type) => type !== '-')
+  if (meaningfulTypes.length === 0) return sections
+
+  meaningfulTypes
+    .sort((a, b) => a.localeCompare(b))
+    .forEach((type) => {
+      sections.push({
+        title: `${type} ranking`,
+        columns,
+        rows: grouped[type].map((row, index) => ({
+          ...row,
+          key: `${row.key}-${type}`,
+          rank: `#${index + 1}`,
+        })),
+      })
+    })
+
+  return sections
+}

@@ -640,7 +640,7 @@ class AdminSessions(Resource):
                 "mode": session.mode,
                 "created_at": session.started_at.isoformat() + "Z" if session.started_at else None,
                 "updated_at": session.updated_at.isoformat() + "Z" if session.updated_at else None,
-                "round": session.round,
+                "round": session.current_round,
                 "player_count": player_count
             })
         

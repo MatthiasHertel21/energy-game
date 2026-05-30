@@ -69,3 +69,19 @@ def send_password_reset_email(to: str, email: str, new_password: str):
     <p>Login: <a href=\"https://{os.getenv('TRAEFIK_DOMAIN', 'localhost')}/login\">https://{os.getenv('TRAEFIK_DOMAIN', 'localhost')}/login</a></p>
     """
     return send_mail(to, subject, html)
+
+
+def send_password_reset_link_email(to: str, token: str):
+    domain = os.getenv('TRAEFIK_DOMAIN', 'localhost')
+    link = f"https://{domain}/reset-password?token={token}"
+    subject = "EMSG – Password reset"
+    html = f"""
+    <p>Hello,</p>
+    <p>We received a request to reset your EMSG password.</p>
+    <p><a href="{link}">Click here to set a new password</a></p>
+    <p>If the link does not work, copy and paste this URL:<br/>
+    <code>{link}</code></p>
+    <p>This link is valid for <b>1 hour</b> and can only be used once.<br/>
+    If you did not request a password reset, you can ignore this email.</p>
+    """
+    return send_mail(to, subject, html)

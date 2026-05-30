@@ -40,18 +40,20 @@ def canonicalize_kpis(kpis: dict | None):
         "imbalance_cost_zar": to_float(raw.get("imbalance_cost_zar", 0.0)),
         "imbalance_mwh": to_float(raw.get("imbalance_mwh", 0.0)),
         "atc_dispatch_cost_zar": to_float(raw.get("atc_dispatch_cost_zar", raw.get("grid_constraint_cost_zar", 0.0))),
+        "grid_constraint_cost_zar": to_float(raw.get("grid_constraint_cost_zar", raw.get("atc_dispatch_cost_zar", 0.0))),
         "curtailment_cost_zar": to_float(raw.get("curtailment_cost_zar", 0.0)),
         "curtailment_mwh": to_float(raw.get("curtailment_mwh", 0.0)),
         "congestion_revenue_zar": to_float(raw.get("congestion_revenue_zar", 0.0)),
+        "battery_charge_cost_zar": to_float(raw.get("battery_charge_cost_zar", 0.0)),
         "co2_emissions_kg": to_float(raw.get("co2_emissions_kg", 0.0)),
+        "network_shortfall_mwh": to_float(raw.get("network_shortfall_mwh", 0.0)),
+        "zone_shortfall_mwh": to_float(raw.get("zone_shortfall_mwh", 0.0)),
         "planned_mwh": to_float(raw.get("planned_mwh", planned_from_breakdown)),
         "dispatched_mwh": to_float(raw.get("dispatched_mwh", dispatched_from_breakdown)),
         "actual_mwh": to_float(raw.get("actual_mwh", actual_from_breakdown)),
         "_kpi_schema": "canonical_v3",
     }
 
-    # Backfill top-level totals from device-hour settlement fields when present.
-    # This fixes historical results where device-level revenue exists but round-level aggregates were not populated.
     if device_hourly_breakdown:
         revenue_from_devices = 0.0
         variable_cost_from_devices = 0.0
@@ -60,7 +62,9 @@ def canonicalize_kpis(kpis: dict | None):
         congestion_from_devices = 0.0
         imbalance_mwh_from_devices = 0.0
         co2_from_devices = 0.0
-        for _dev_id, rows in device_hourly_breakdown.items():
+        battery_charge_cost_from_devices = 0.0
+        eps = 1e-9
+        for rows in device_hourly_breakdown.values():
             if not isinstance(rows, list):
                 continue
             for row in rows:
@@ -76,8 +80,8 @@ def canonicalize_kpis(kpis: dict | None):
                 congestion_from_devices += to_float(row.get("congestion_revenue_zar", 0.0))
                 imbalance_mwh_from_devices += to_float(row.get("imbalance_mwh", 0.0))
                 co2_from_devices += to_float(row.get("co2_kg", row.get("co2_emissions_kg", 0.0)))
+                battery_charge_cost_from_devices += to_float(row.get("battery_charge_cost_zar", 0.0))
 
-        eps = 1e-9
         if abs(canonical["revenue_zar"]) < eps and abs(revenue_from_devices) >= eps:
             canonical["revenue_zar"] = revenue_from_devices
         if abs(canonical["variable_cost_zar"]) < eps and abs(variable_cost_from_devices) >= eps:
@@ -92,8 +96,9 @@ def canonicalize_kpis(kpis: dict | None):
             canonical["imbalance_mwh"] = imbalance_mwh_from_devices
         if abs(canonical["co2_emissions_kg"]) < eps and abs(co2_from_devices) >= eps:
             canonical["co2_emissions_kg"] = co2_from_devices
+        if abs(canonical["battery_charge_cost_zar"]) < eps and abs(battery_charge_cost_from_devices) >= eps:
+            canonical["battery_charge_cost_zar"] = battery_charge_cost_from_devices
 
-        # Profit should be consistent with components.
         if abs(canonical["profit_zar"]) < eps and (
             abs(canonical["revenue_zar"]) >= eps
             or abs(canonical["variable_cost_zar"]) >= eps
@@ -107,6 +112,7 @@ def canonicalize_kpis(kpis: dict | None):
                 - canonical["variable_cost_zar"]
                 - canonical["fixed_cost_zar"]
                 - canonical["imbalance_cost_zar"]
+                - canonical["battery_charge_cost_zar"]
                 - canonical["atc_dispatch_cost_zar"]
                 + canonical["congestion_revenue_zar"]
             )

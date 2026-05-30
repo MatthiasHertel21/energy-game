@@ -825,7 +825,7 @@ function TimerAndClock({ timeRemaining }) {
   )
 }
 
-function StackedLotsChart({ bidSeries = {}, maxValue, effectiveLimitMw = null, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate = '', hourStatus = [] }) {
+function StackedLotsChart({ bidSeries = {}, hourIndices = null, maxValue, effectiveLimitMw = null, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate = '', hourStatus = [] }) {
   const theme = useTheme()
   const isDark = theme.palette.mode === 'dark'
   const svgRef = useRef(null)
@@ -864,9 +864,12 @@ function StackedLotsChart({ bidSeries = {}, maxValue, effectiveLimitMw = null, c
     const g = svg.attr('width', width).attr('height', H).append('g').attr('transform', `translate(${M.left},${M.top})`)
     const gridColor = theme.palette.divider
     const axisColor = theme.palette.text.secondary
-    const activeLotColor = theme.palette.primary.main
     const lotLabels = BID_LABELS.filter((label) => Array.isArray(bidSeries[label]))
-    const inactiveColors = lotLabels.map((_, index) => alpha(theme.palette.text.secondary, Math.min(0.8, (isDark ? 0.35 : 0.2) + index * 0.1)))
+    const inactiveGrays = isDark
+      ? ['#9e9e9e', '#757575', '#616161', '#424242', '#303030']
+      : ['#bdbdbd', '#9e9e9e', '#757575', '#616161', '#424242']
+    const getLotColor = (index, label) =>
+      label === activeLot ? theme.palette.primary.main : inactiveGrays[index % inactiveGrays.length]
     const referenceMaxColor = theme.palette.error.main
     const referenceWarnColor = theme.palette.warning.main
     const referenceExpectedColor = theme.palette.success.main
@@ -892,18 +895,24 @@ function StackedLotsChart({ bidSeries = {}, maxValue, effectiveLimitMw = null, c
     g.append('g')
       .attr('class', 'grid')
       .attr('transform', `translate(0,${ih})`)
-      .call(d3.axisBottom(x).ticks(n).tickSize(-ih).tickFormat(''))
+      .call(d3.axisBottom(x).tickValues(d3.range(1, n + 1)).tickSize(-ih).tickFormat(''))
       .selectAll('line')
       .attr('stroke', gridColor)
       .attr('stroke-dasharray', '2,2')
     
     // Axes
     const startHour = startTime ? parseInt(startTime.split(':')[0]) : 0
+    const displayIndices = Array.isArray(hourIndices) && hourIndices.length === n ? hourIndices : null
+    const tickStep = n > 24 ? Math.ceil(n / 12) : 1
+    const tickPositions = d3.range(n).filter(i => i % tickStep === 0 || i === n - 1).map(i => i + 1)
     const bottomAxis = g.append('g')
       .attr('transform', `translate(0,${ih})`)
-      .call(d3.axisBottom(x).ticks(n > 24 ? 12 : n).tickFormat(d => {
-        const hour = (startHour + Math.round(d - 1)) % 24
-        return `${String(hour).padStart(2, '0')}:00`
+      .call(d3.axisBottom(x).tickValues(tickPositions).tickFormat(d => {
+        const idx = d - 1
+        const absHour = displayIndices
+          ? startHour + (displayIndices[idx] ?? displayIndices[displayIndices.length - 1])
+          : startHour + idx
+        return `${String(absHour % 24).padStart(2, '0')}:00`
       }))
     bottomAxis.selectAll('text').style('font-size', '10px').attr('fill', axisColor)
     bottomAxis.selectAll('path,line').attr('stroke', gridColor)
@@ -975,6 +984,15 @@ function StackedLotsChart({ bidSeries = {}, maxValue, effectiveLimitMw = null, c
       return entry
     })
 
+    if (stackedData.length > 0) {
+      const lastEntry = stackedData[stackedData.length - 1]
+      const terminalEntry = { hour: n + 1 }
+      lotLabels.forEach((label) => {
+        terminalEntry[label] = lastEntry[label] || 0
+      })
+      stackedData.push(terminalEntry)
+    }
+
     const stack = d3.stack()
       .keys(lotLabels)
       .order(d3.stackOrderNone)
@@ -993,8 +1011,8 @@ function StackedLotsChart({ bidSeries = {}, maxValue, effectiveLimitMw = null, c
       .enter()
       .append('path')
       .attr('class', 'area')
-      .attr('fill', (d, i) => lotLabels[i] === activeLot ? activeLotColor : inactiveColors[i])
-      .attr('opacity', (d, i) => lotLabels[i] === activeLot ? 0.95 : 0.65)
+      .attr('fill', (d, i) => getLotColor(i, lotLabels[i]))
+      .attr('opacity', (d, i) => lotLabels[i] === activeLot ? 0.85 : 0.70)
       .attr('d', area)
       .style('cursor', 'pointer')
       .on('click', (event, d) => {
@@ -1167,7 +1185,7 @@ function StackedLotsChart({ bidSeries = {}, maxValue, effectiveLimitMw = null, c
       }
     }
     
-  }, [bidSeries, maxValue, effectiveLimitMw, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate, hourStatus, containerWidth, theme.palette.mode])
+  }, [bidSeries, hourIndices, maxValue, effectiveLimitMw, currentRound, roundSpan, lockedUntil, activeLot, onLotChange, deviceParams, deviceType, startTime, fakeDate, hourStatus, containerWidth, theme.palette.mode])
   
   return (
     <Box>
@@ -1268,7 +1286,8 @@ export default function Player() {
     da_committed_start: -1,
     da_committed_end: -1,
     market_timeline: null,
-    current_position: { devices: {}, bids: {}, aggregate: [] }
+    current_position: { devices: {}, bids: {}, aggregate: [] },
+    prev_dispatched: {}
   })
 
   const isDeviceMultiBidEnabled = useCallback((deviceDef, globalBidding = biddingEnabled) => {
@@ -1333,7 +1352,7 @@ export default function Player() {
   
   useEffect(() => {
     forecastSeedKeyRef.current = null
-    setDaBaseline({ devices: {}, bids: {}, hour_status: [], locked_until_hour: 0, da_until_hour: 24, id_until_hour: 24 }) // Reset DA baseline when session changes
+    setDaBaseline({ devices: {}, bids: {}, hour_status: [], locked_until_hour: 0, da_until_hour: 24, id_until_hour: 24, prev_dispatched: {} }) // Reset DA baseline when session changes
     setHourlySeries([])
     setDamHourlySeries([])
     setIdmHourlySeries([])
@@ -1719,7 +1738,8 @@ export default function Player() {
               da_committed_start: baselineRes.data.da_committed_start ?? -1,
               da_committed_end: baselineRes.data.da_committed_end ?? -1,
               market_timeline: baselineRes.data.market_timeline || null,
-              current_position: baselineRes.data.current_position || { devices: {}, bids: {}, aggregate: [] }
+              current_position: baselineRes.data.current_position || { devices: {}, bids: {}, aggregate: [] },
+              prev_dispatched: baselineRes.data.prev_dispatched || {}
             })
             console.log('[Player] Loaded DA baseline with gate closure:', baselineRes.data)
             console.log('[Player] DA baseline hour_status length:', baselineRes.data.hour_status?.length, 'expected:', cfgObj.general.forecast_horizon_hours)
@@ -1853,7 +1873,8 @@ export default function Player() {
                 locked_until_hour: baselineRes.data.locked_until_hour || 0,
                 da_until_hour: baselineRes.data.da_until_hour || 24,
                 id_until_hour: baselineRes.data.id_until_hour || 24,
-                market_timeline: baselineRes.data.market_timeline || null
+                market_timeline: baselineRes.data.market_timeline || null,
+                prev_dispatched: baselineRes.data.prev_dispatched || {}
               })
               console.log('[Player] Loaded DA baseline on round_start:', baselineRes.data)
             }
@@ -2484,6 +2505,9 @@ export default function Player() {
           clearing: 'always'
         }
       }))
+      const selectedRoundSummary = roundsSummary.find((roundItem) => roundItem.round === selectedRound)
+      const selectedDamTradingStatus = normalizeMarketStatusValue(selectedRoundSummary?.dam?.trading)
+      const selectedIdmTradingStatus = normalizeMarketStatusValue(selectedRoundSummary?.idm?.trading)
       const currentSimHour = (Number(cfg.current_round || 1) - 1) * roundSpan
       const idGateInterval = Math.max(1, Number(gen.id_gate_interval_hours || 4))
       const idGateBase = Number(gen.id_gate_base_hour || 0)
@@ -2517,29 +2541,33 @@ export default function Player() {
       const gateEvents = []
 
       const dayAheadGateHour = Number.isFinite(Number(gen.day_ahead_gate_hour)) ? Number(gen.day_ahead_gate_hour) : 12
-      for (let absHour = roundStartAbsHour; absHour <= roundEndAbsHour; absHour += 1) {
-        const hourOfDay = ((startHourOfDay + absHour) % 24 + 24) % 24
-        if (hourOfDay === dayAheadGateHour) {
+      if (selectedDamTradingStatus === 'market_code') {
+        for (let absHour = roundStartAbsHour; absHour <= roundEndAbsHour; absHour += 1) {
+          const hourOfDay = ((startHourOfDay + absHour) % 24 + 24) % 24
+          if (hourOfDay === dayAheadGateHour) {
+            gateEvents.push({
+              key: `da-${absHour}`,
+              type: 'DAM gate',
+              action: 'close',
+              at: formatAbsHour(absHour),
+              absHour
+            })
+          }
+        }
+      }
+
+      if (selectedIdmTradingStatus === 'market_code') {
+        let firstIdGate = idGateBase
+        while (firstIdGate < roundStartAbsHour) firstIdGate += idGateInterval
+        for (let absHour = firstIdGate; absHour <= roundEndAbsHour; absHour += idGateInterval) {
           gateEvents.push({
-            key: `da-${absHour}`,
-            type: 'DAM gate',
-            action: 'close',
+            key: `id-${absHour}`,
+            type: 'IDM gate',
+            action: 'close/open',
             at: formatAbsHour(absHour),
             absHour
           })
         }
-      }
-
-      let firstIdGate = idGateBase
-      while (firstIdGate < roundStartAbsHour) firstIdGate += idGateInterval
-      for (let absHour = firstIdGate; absHour <= roundEndAbsHour; absHour += idGateInterval) {
-        gateEvents.push({
-          key: `id-${absHour}`,
-          type: 'IDM gate',
-          action: 'close/open',
-          at: formatAbsHour(absHour),
-          absHour
-        })
       }
 
       gateEvents.sort((a, b) => Number(a.absHour || 0) - Number(b.absHour || 0))
@@ -2551,14 +2579,16 @@ export default function Player() {
         const endIdx = startIdx + roundSpan
         const hoursInRound = Math.max(1, endIdx - startIdx)
         const statusSlice = currentTimelineStatus.slice(startIdx, endIdx)
-        const damOpenCount = statusSlice.filter((status) => status === 'da' || status === 'da_r1').length
+        const damTradingStatus = normalizeMarketStatusValue(roundItem?.dam?.trading)
+        const damOpenFromTimeline = statusSlice.filter((status) => status === 'da' || status === 'da_r1').length
+        const damOpenCount = damTradingStatus === 'off' ? 0 : damOpenFromTimeline
         const damSpecialCount = statusSlice.filter((status) => status === 'da_r1').length
         const idmOpenFromTimeline = statusSlice.filter((status) => status === 'id').length
         const idmTradingStatus = normalizeMarketStatusValue(roundItem?.idm?.trading)
         const isIdmDisabled = idmTradingStatus === 'off'
         let idmOpenCount = isIdmDisabled ? 0 : idmOpenFromTimeline
 
-        if (!isIdmDisabled && roundItem.round === selectedRound) {
+        if (idmTradingStatus === 'market_code' && roundItem.round === selectedRound) {
           let gateBasedOpenCount = 0
           for (let hourIdx = startIdx; hourIdx < endIdx; hourIdx += 1) {
             if (hourIdx >= idGateWindowStart && hourIdx < idGateWindowEnd) {
@@ -3390,6 +3420,7 @@ export default function Player() {
     if (hasGen && !hasLoad) return 'producer'
     return null
   }, [playerTypes, scenarioDevices, selectedType])
+  const isConsumerPlayer = playerRole === 'consumer'
   const visibleChallenges = useMemo(() => {
     const challenges = scenario?.challenges || []
     if (!playerRole) return challenges
@@ -3540,12 +3571,47 @@ export default function Player() {
       submitted,
     },
     scenario: {
+      description: scenario?.description || '',
       campaign_name: campaignDisplayName,
       scenario_name: cfg.scenario_name || 'Scenario',
-      rounds: Number(cfg.general?.rounds || 0),
-      round_span_hours: Number(cfg.general?.round_span_hours || 6),
-      forecast_horizon_hours: Number(cfg.general?.forecast_horizon_hours || 24),
-      day_ahead_gate_hour: dayAheadGateHour,
+      general: cfg.general || {},
+      market: cfg.market || {},
+      events: (cfg.events || scenario?.config?.events || []).map(e => ({
+        id: e.id || e.name,
+        name: e.name || e.type,
+        type: e.type,
+        trigger: e.trigger,
+        multiplier: e.multiplier ?? null,
+        description: e.description || '',
+      })),
+      challenges: cfg.challenges || scenario?.config?.challenges || [],
+      scoring: cfg.scoring || scenario?.config?.scoring || {},
+      balancing: cfg.balancing || scenario?.config?.balancing || {},
+      grid: cfg.grid || scenario?.config?.grid || {},
+      player_types: playerTypes.map(pt => ({
+        id: pt.id,
+        name: pt.name,
+        description: pt.description || '',
+        devices: pt.devices || [],
+      })),
+      devices: scenarioDevices.map(d => ({
+        id: d.id,
+        name: d.name || d.id,
+        type: d.type,
+        zone: d.zone ?? null,
+        capacity_mw: d.capacity_mw ?? d.max_power_mw ?? null,
+        baseline_load_mw: d.baseline_load_mw ?? null,
+        peak_load_mw: d.peak_load_mw ?? null,
+        variable_cost_tiers: d.variable_cost_tiers ?? null,
+        cost_per_mwh_zar: d.cost_per_mwh_zar ?? d.marginal_cost ?? null,
+        min_load_pct: d.min_load_pct ?? null,
+        ramp_rate_mw_per_h: d.ramp_rate_mw_per_h ?? null,
+        efficiency_pct: d.efficiency_pct ?? null,
+        capacity_factor_pct: d.capacity_factor_pct ?? null,
+        bid_count: d.bid_count ?? null,
+        enable_multi_bid: d.enable_multi_bid ?? null,
+        drm_capable: d.drm_capable ?? null,
+      })),
     },
     markets: {
       day_ahead_open: openMarkets.daOpen,
@@ -3563,6 +3629,12 @@ export default function Player() {
         name: device.name || device.id,
         type: device.type || '',
         capacity_mw: Number(device.capacity_mw ?? device.capacity ?? 0),
+        cost_per_mwh_zar: device.cost_per_mwh_zar ?? device.marginal_cost ?? null,
+        variable_cost_tiers: device.variable_cost_tiers ?? null,
+        bid_count: device.bid_count ?? null,
+        enable_multi_bid: device.enable_multi_bid ?? null,
+        baseline_load_mw: device.baseline_load_mw ?? null,
+        peak_load_mw: device.peak_load_mw ?? null,
       })),
     },
     tasks: taskItems.map((task) => ({
@@ -3595,9 +3667,9 @@ export default function Player() {
     currentRoundNumber,
     timeRemaining,
     submitted,
+    scenario,
     campaignDisplayName,
-    cfg.scenario_name,
-    cfg.general,
+    cfg,
     dayAheadGateHour,
     openMarkets.daOpen,
     openMarkets.idOpen,
@@ -3606,6 +3678,7 @@ export default function Player() {
     daSpecialRuleNote,
     selectedType,
     playerTypes,
+    scenarioDevices,
     playerRole,
     availableDevices,
     taskItems,
@@ -4537,6 +4610,7 @@ export default function Player() {
                                     deviceParams={deviceParams}
                                     daBaseline={toChartSeries(daBaseline.bids?.[did]?.[activeLot]?.hours || daBaseline.devices?.[did] || [])}
                                     committedPosition={toChartSeries(daBaseline.current_position?.bids?.[did]?.[activeLot]?.hours || daBaseline.current_position?.devices?.[did] || [])}
+                                    prevDispatch={toChartSeries(daBaseline.prev_dispatched?.[did]?.[activeLot] || [])}
                                     hourStatus={toChartStatuses(effectiveHourStatus || [])}
                                     totalRounds={Number(cfg.general.rounds)}
                                     daCommittedStart={daBaseline.da_committed_start}
@@ -4550,9 +4624,10 @@ export default function Player() {
                                       bidSeries={Object.fromEntries(
                                         getDeviceBidLabelsForUi(deviceDef, deviceBids[did]).map((label) => [
                                           label,
-                                          toVisibleSeries(deviceBids[did][label]?.hours || [])
+                                          toChartSeries(deviceBids[did][label]?.hours || [])
                                         ])
                                       )}
+                                      hourIndices={chartHourIndices}
                                       maxValue={deviceMax}
                                       effectiveLimitMw={deviceMax}
                                       currentRound={Number(cfg.current_round || 1)}
@@ -4564,7 +4639,7 @@ export default function Player() {
                                       deviceType={deviceType}
                                       startTime={cfg.general.start_time || '00:00'}
                                       fakeDate={cfg.general.fake_date || ''}
-                                      hourStatus={toVisibleStatuses(effectiveHourStatus || [])}
+                                      hourStatus={toChartStatuses(effectiveHourStatus || [])}
                                     />
                                   </Box>
                                 )}
@@ -4603,6 +4678,11 @@ export default function Player() {
                                   deviceParams={deviceParams}
                                   daBaseline={toChartSeries(daBaseline.devices?.[did] || [])}
                                   committedPosition={toChartSeries(daBaseline.current_position?.devices?.[did] || [])}
+                                  prevDispatch={toChartSeries(
+                                    Object.values(daBaseline.prev_dispatched?.[did] || {}).reduce(
+                                      (acc, lotHours) => lotHours.map((v, i) => (acc[i] || 0) + v), []
+                                    )
+                                  )}
                                   hourStatus={toChartStatuses(effectiveHourStatus || [])}
                                   totalRounds={Number(cfg.general.rounds)}
                                   daCommittedStart={daBaseline.da_committed_start}
@@ -4641,9 +4721,10 @@ export default function Player() {
                                         bidSeries={Object.fromEntries(
                                           uiBidLabels.map((label) => [
                                             label,
-                                            toVisibleSeries(deviceBids[did][label]?.hours || [])
+                                            toChartSeries(deviceBids[did][label]?.hours || [])
                                           ])
                                         )}
+                                        hourIndices={chartHourIndices}
                                         maxValue={deviceMax}
                                         effectiveLimitMw={deviceMax}
                                         currentRound={Number(cfg.current_round || 1)}
@@ -4655,7 +4736,7 @@ export default function Player() {
                                         deviceType={deviceType}
                                         startTime={cfg.general.start_time || '00:00'}
                                         fakeDate={cfg.general.fake_date || ''}
-                                        hourStatus={toVisibleStatuses(effectiveHourStatus || [])}
+                                        hourStatus={toChartStatuses(effectiveHourStatus || [])}
                                       />
                                     </Box>
                                   )}
@@ -4806,6 +4887,10 @@ export default function Player() {
                       fakeDate={cfg.general.fake_date || ''}
                       daBaseline={toChartSeries(daBaseline.aggregate || [])}
                       committedPosition={toChartSeries(daBaseline.current_position?.aggregate || [])}
+                      prevDispatch={toChartSeries(
+                        Object.values(daBaseline.prev_dispatched || {}).flatMap(lots => Object.values(lots))
+                          .reduce((acc, lotHours) => lotHours.map((v, i) => (acc[i] || 0) + v), [])
+                      )}
                       hourStatus={toChartStatuses(effectiveHourStatus || [])}
                       totalRounds={Number(cfg.general.rounds)}
                       daCommittedStart={daBaseline.da_committed_start}
@@ -5047,21 +5132,22 @@ export default function Player() {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>⚠️ Overcapacity Bid Detected</DialogTitle>
+        <DialogTitle>{`⚠️ ${isConsumerPlayer ? 'Overcapacity Demand Detected' : 'Overcapacity Bid Detected'}`}</DialogTitle>
         <DialogContent>
           <Alert severity="warning" sx={{ mb: 2 }}>
-            You are bidding more than your device capacity. The system will automatically cap your bid to the maximum capacity, 
-            and you may incur imbalance costs if the actual output differs from what was accepted.
+            {isConsumerPlayer
+              ? 'You are requesting more than your device capacity. The system will automatically cap the accepted demand to the maximum capacity, and you may incur imbalance costs if actual consumption differs from what was accepted.'
+              : 'You are bidding more than your device capacity. The system will automatically cap your bid to the maximum capacity, and you may incur imbalance costs if the actual output differs from what was accepted.'}
           </Alert>
           
           <Typography variant="body2" sx={{ mb: 2 }}>
-            <strong>Overcapacity bids detected:</strong>
+            <strong>{isConsumerPlayer ? 'Overcapacity demand detected:' : 'Overcapacity bids detected:'}</strong>
           </Typography>
           
           <Box sx={{ maxHeight: 200, overflow: 'auto', mb: 2 }}>
             {overcapacityWarnings.map((w, idx) => (
               <Alert severity="info" key={idx} sx={{ mb: 1 }}>
-                <strong>{w.device}</strong> Hour {w.hour}: Offered {w.offered} MW exceeds max capacity {w.maxPower} MW
+                <strong>{w.device}</strong> Hour {w.hour}: {isConsumerPlayer ? 'Requested' : 'Offered'} {w.offered} MW exceeds max capacity {w.maxPower} MW
               </Alert>
             ))}
           </Box>

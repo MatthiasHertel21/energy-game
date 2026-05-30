@@ -47,6 +47,8 @@ import DeviceDeepDiveTabs from './DeviceDeepDiveTabs'
 import { getRoleTerminology } from '../utils/roleTerminology'
 import {
   buildCompositionSection,
+  buildActiveEventsSection,
+  buildGroupedRankingSections,
   buildParticipantsCard,
   buildPriceCard,
   buildVolumeCard,
@@ -56,19 +58,24 @@ import {
 } from '../utils/marketOverview'
 import ContextAssistantDialog from './ContextAssistantDialog'
 import MarketOverviewDialog from './MarketOverviewDialog'
+import MarketOverviewTrendPanel from './MarketOverviewTrendPanel'
+import MarketStructureChartPanel from './MarketStructureChartPanel'
 
 /**
  * RoundResultsScreenSimple - Simplified round results showing basic info only
  */
-export default function RoundResultsScreenSimple({ sessionId, round, mode = 'shared_market', scenario, campaignName, onAdvance }) {
+export default function RoundResultsScreenSimple({ sessionId, round, mode = 'shared_market', scenario, campaignName, onAdvance, initialBreakdownKey = null }) {
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(true)
   const [advancing, setAdvancing] = useState(false)
-  const [breakdownKey, setBreakdownKey] = useState(null)
+  const [breakdownKey, setBreakdownKey] = useState(initialBreakdownKey)
   const [showCumulative, setShowCumulative] = useState(false)
   const [cumulativeKpis, setCumulativeKpis] = useState(null)
   const [roundHistoryKpis, setRoundHistoryKpis] = useState([])
   const [marketOverviewOpen, setMarketOverviewOpen] = useState(false)
+  const [marketOverviewTrendRounds, setMarketOverviewTrendRounds] = useState([])
+  const [marketOverviewTrendLoading, setMarketOverviewTrendLoading] = useState(false)
+  const [marketOverviewTrendLoaded, setMarketOverviewTrendLoaded] = useState(false)
 
   const normalizeNumber = (value) => {
     const num = Number(value ?? 0)
@@ -82,6 +89,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     variable_cost_zar: normalizeNumber(kpis.variable_cost_zar),
     fixed_cost_zar: normalizeNumber(kpis.fixed_cost_zar),
     imbalance_cost_zar: normalizeNumber(kpis.imbalance_cost_zar),
+    battery_charge_cost_zar: normalizeNumber(kpis.battery_charge_cost_zar),
     atc_dispatch_cost_zar: normalizeNumber(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar),
     grid_constraint_cost_zar: normalizeNumber(kpis.grid_constraint_cost_zar),
     grid_constraint_cost_per_mwh_zar: normalizeNumber(kpis.grid_constraint_cost_per_mwh_zar),
@@ -130,6 +138,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
             variable_cost_zar: allRounds.reduce((sum, k) => sum + k.variable_cost_zar, 0),
             fixed_cost_zar: allRounds.reduce((sum, k) => sum + k.fixed_cost_zar, 0),
             imbalance_cost_zar: allRounds.reduce((sum, k) => sum + k.imbalance_cost_zar, 0),
+            battery_charge_cost_zar: allRounds.reduce((sum, k) => sum + k.battery_charge_cost_zar, 0),
             atc_dispatch_cost_zar: allRounds.reduce((sum, k) => sum + k.atc_dispatch_cost_zar, 0),
             grid_constraint_cost_zar: allRounds.reduce((sum, k) => sum + k.grid_constraint_cost_zar, 0),
             curtailment_cost_zar: allRounds.reduce((sum, k) => sum + k.curtailment_cost_zar, 0),
@@ -151,6 +160,46 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
     fetchData()
   }, [sessionId, round])
+
+  useEffect(() => {
+    setMarketOverviewTrendRounds([])
+    setMarketOverviewTrendLoading(false)
+    setMarketOverviewTrendLoaded(false)
+  }, [sessionId])
+
+  useEffect(() => {
+    let isCancelled = false
+
+    if (!marketOverviewOpen || !sessionId || marketOverviewTrendLoading || marketOverviewTrendLoaded) {
+      return () => {}
+    }
+
+    const fetchTrend = async () => {
+      setMarketOverviewTrendLoading(true)
+      try {
+        const { data } = await api.get(`/api/sessions/${sessionId}/replay`)
+        if (!isCancelled) {
+          setMarketOverviewTrendRounds(Array.isArray(data?.rounds) ? data.rounds : [])
+        }
+      } catch (error) {
+        console.error('Failed to load market overview trend:', error)
+        if (!isCancelled) {
+          setMarketOverviewTrendRounds([])
+        }
+      } finally {
+        if (!isCancelled) {
+          setMarketOverviewTrendLoading(false)
+          setMarketOverviewTrendLoaded(true)
+        }
+      }
+    }
+
+    fetchTrend()
+    return () => {
+      isCancelled = true
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketOverviewOpen, marketOverviewTrendLoaded, sessionId])
   
   const handleAdvance = async () => {
     if (!onAdvance) return
@@ -163,25 +212,8 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     }
   }
 
-  if (loading) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '400px' }}>
-        <CircularProgress />
-      </Box>
-    )
-  }
-
-  if (!results) {
-    return (
-      <Paper sx={{ p: 4, textAlign: 'center' }}>
-        <Typography variant="body2" color="text.secondary">
-          No results available
-        </Typography>
-      </Paper>
-    )
-  }
-
-  const { my_result } = results
+  const hasResults = Boolean(results)
+  const my_result = results?.my_result || {}
   const ranking = Array.isArray(results?.ranking) ? results.ranking : []
   const currentKpis = normalizeKpis(my_result?.kpis || {})
   const kpis = showCumulative && cumulativeKpis ? cumulativeKpis : currentKpis
@@ -205,8 +237,53 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
   // Look up player type name from scenario config
   const playerTypeId = my_result?.type
   const playerTypes = scenario?.config?.player_types || []
-  const playerType = playerTypes.find(pt => pt.id === playerTypeId)
-  const playerTypeName = playerType?.name || playerTypeId || 'Player Type'
+  const playerTypeNameById = {}
+  playerTypes.forEach((playerTypeOption) => {
+    if (!playerTypeOption || typeof playerTypeOption !== 'object' || !playerTypeOption.id) return
+    playerTypeNameById[String(playerTypeOption.id)] = playerTypeOption.name || String(playerTypeOption.id)
+  })
+  const resolvePlayerTypeLabel = (value) => {
+    const key = String(value || '')
+    if (!key) return '-'
+    return playerTypeNameById[key] || key
+  }
+  const playerTypeName = resolvePlayerTypeLabel(playerTypeId || 'Player Type')
+  const challengeResult = my_result?.challenge_result || {}
+  const challengeItems = Array.isArray(challengeResult?.results) ? challengeResult.results : []
+  const perRoundChallengeItems = challengeItems.filter((item) => Boolean(item?.per_round))
+  const passedPerRoundChallengeCount = perRoundChallengeItems.filter((item) => item?.passed).length
+  const totalPerRoundChallengePoints = perRoundChallengeItems.reduce((sum, item) => sum + Number(item?.points || 0), 0)
+  const maxPerRoundChallengePoints = perRoundChallengeItems.reduce((sum, item) => sum + Number(item?.max_points || 0), 0)
+  const hasDamHistory = Boolean(my_result?.dam_bid_dispatch && Object.keys(my_result.dam_bid_dispatch || {}).length > 0)
+  const hasCurrentRoundIdmDispatch = Boolean(my_result?.idm_bid_dispatch && Object.keys(my_result.idm_bid_dispatch || {}).length > 0)
+  const currentRoundHourlyResults = Array.isArray(my_result?.hourly_results) ? my_result.hourly_results : []
+  const hasCurrentRoundClearing = currentRoundHourlyResults.some((entry) => (
+    normalizeNumber(entry?.volume) > 0
+    || normalizeNumber(entry?.smp) > 0
+    || normalizeNumber(entry?.id_volume_mwh) > 0
+  ))
+  const showBaselineOnlyNotice = Number(round) > 1 && hasDamHistory && !hasCurrentRoundIdmDispatch && !hasCurrentRoundClearing
+
+  const challengeSummaryText = `Round ${round}: ${passedPerRoundChallengeCount}/${perRoundChallengeItems.length} round goals achieved. Points: ${totalPerRoundChallengePoints}/${maxPerRoundChallengePoints}.`
+
+  const getTradingStatusForRound = (marketKey) => {
+    const marketsCfg = scenario?.config?.markets || {}
+    const roundIdx = Math.max(0, Number(round || 1) - 1)
+    const marketData = marketsCfg?.[marketKey]
+
+    if (Array.isArray(marketData)) {
+      return marketData[roundIdx] ?? 'market_code'
+    }
+    if (marketData && typeof marketData === 'object') {
+      const tradingArray = marketData.trading
+      if (Array.isArray(tradingArray)) {
+        return tradingArray[roundIdx] ?? 'market_code'
+      }
+    }
+    return 'market_code'
+  }
+
+  const hasIdmTradingThisRound = Number(round) > 1 && getTradingStatusForRound('idm') !== 'off'
   
   // Get player name from email
   const playerEmail = my_result?.email || 'Player'
@@ -226,11 +303,33 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     if (Math.abs(num) < 0.5) return '± ZAR 0'
     return `${num >= 0 ? '+' : '-'} ${formatCurrency(Math.abs(num))}`
   }
+  const formatDecimal = (value, digits = 1) => {
+    const num = Number(value ?? 0)
+    if (!Number.isFinite(num)) return '0'
+    return num.toLocaleString('en-US', {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    })
+  }
 
   const formatPct = (value) => {
     const num = Number(value)
     if (!Number.isFinite(num)) return '—'
     return `${Math.round(num)}%`
+  }
+
+  const formatChallengeValue = (metric, value) => {
+    const metricKey = String(metric || '')
+    if (metricKey.includes('profit') || metricKey.includes('revenue') || metricKey.includes('cost')) {
+      return formatCurrency(value || 0)
+    }
+    if (metricKey.includes('co2')) {
+      return `${formatInt(value || 0)} kg`
+    }
+    if (metricKey.includes('dispatched') || metricKey.includes('curtailment') || metricKey.includes('coverage') || metricKey.includes('imbalance')) {
+      return `${formatInt(value || 0)} MWh`
+    }
+    return formatInt(value || 0)
   }
 
   // NOTE: Do not add hooks below early returns (loading / no results).
@@ -311,6 +410,25 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const byOffset = rows.find((entry) => {
       if (!entry || typeof entry !== 'object') return false
       const offset = entry.hour_offset ?? entry.round_hour_offset ?? entry.hour
+      return Number(offset) === Number(hourOffset)
+    })
+    if (byOffset) return byOffset
+
+    return rows[hourOffset] || null
+  }
+
+  const findHourlyBreakdownEntry = (rows, hourValue, hourOffset) => {
+    if (!Array.isArray(rows) || rows.length === 0) return null
+    const byHour = rows.find((entry) => {
+      if (!entry || typeof entry !== 'object') return false
+      const explicitHour = entry.hour ?? entry.hour_idx ?? entry.scenario_hour_idx
+      return Number(explicitHour) === Number(hourValue)
+    })
+    if (byHour) return byHour
+
+    const byOffset = rows.find((entry) => {
+      if (!entry || typeof entry !== 'object') return false
+      const offset = entry.hour_offset ?? entry.round_hour_offset
       return Number(offset) === Number(hourOffset)
     })
     if (byOffset) return byOffset
@@ -502,9 +620,37 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       type_name: playerTypeName,
     },
     scenario: {
+      description: scenario?.description || scenario?.config?.description || '',
       general: scenario?.config?.general || {},
+      market: scenario?.config?.market || {},
       events: scenario?.config?.events || [],
       challenges: scenario?.config?.challenges || [],
+      scoring: scenario?.config?.scoring || {},
+      grid: scenario?.config?.grid || {},
+      player_types: (scenario?.config?.player_types || []).map(pt => ({
+        id: pt.id,
+        name: pt.name,
+        description: pt.description || '',
+        devices: pt.devices || [],
+      })),
+      devices: (scenario?.config?.devices || []).map(d => ({
+        id: d.id,
+        name: d.name || d.id,
+        type: d.type,
+        zone: d.zone ?? null,
+        capacity_mw: d.capacity_mw ?? d.max_power_mw ?? null,
+        baseline_load_mw: d.baseline_load_mw ?? null,
+        peak_load_mw: d.peak_load_mw ?? null,
+        variable_cost_tiers: d.variable_cost_tiers ?? null,
+        cost_per_mwh_zar: d.cost_per_mwh_zar ?? d.marginal_cost ?? null,
+        min_load_pct: d.min_load_pct ?? null,
+        ramp_rate_mw_per_h: d.ramp_rate_mw_per_h ?? null,
+        efficiency_pct: d.efficiency_pct ?? null,
+        capacity_factor_pct: d.capacity_factor_pct ?? null,
+        bid_count: d.bid_count ?? null,
+        enable_multi_bid: d.enable_multi_bid ?? null,
+        drm_capable: d.drm_capable ?? null,
+      })),
     },
     current_kpis: currentKpis,
     cumulative_kpis: cumulativeKpis,
@@ -542,47 +688,111 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       key: row?.player_id || row?.email || row?.rank,
       rank: `#${row?.rank || '-'}`,
       player: row?.email || `Player ${row?.player_id || '-'}`,
-      type: row?.type || '-',
+      type: resolvePlayerTypeLabel(row?.player_type || row?.type || '-'),
       score: normalizeNumber(row?.total_score).toFixed(1),
       profit: formatCurrency(row?.kpis?.profit_zar || 0),
+    }))
+    const compositionSection = buildCompositionSection(roundMarketSummary, formatInt)
+    const zoneSection = buildZoneSection(roundMarketSummary, formatCurrency, formatInt)
+    const summarySection = {
+      title: 'Round-wide market summary',
+      rows: [
+        { label: 'Total profit across real players', value: formatCurrency(totalProfit) },
+        { label: 'Total settlement revenue across real players', value: formatCurrency(totalRevenue) },
+        { label: 'Active events', value: String(results?.market_summary?.active_events_count ?? (Array.isArray(results?.active_events) ? results.active_events.length : 0)) },
+        { label: 'Real player share of producer side', value: `${roundMarketSummary.realPlayers.producerSharePct.toFixed(1)}%` },
+        { label: 'Real player share of consumer side', value: `${roundMarketSummary.realPlayers.consumerSharePct.toFixed(1)}%` },
+      ],
+    }
+    const activeEventsSection = buildActiveEventsSection(results?.active_events)
+    const topPlayersSection = {
+      title: 'Top players this round',
+      columns: [
+        { key: 'rank', label: 'Rank' },
+        { key: 'player', label: 'Player' },
+        { key: 'type', label: 'Type' },
+        { key: 'score', label: 'Score', align: 'right' },
+        { key: 'profit', label: 'Profit', align: 'right' },
+      ],
+      rows: topRows,
+    }
+    const rankingEntries = ranking.map((row, index) => ({
+      key: row?.player_id || row?.email || index,
+      rank: `#${row?.rank || index + 1}`,
+      player: row?.email || `Player ${row?.player_id || '-'}`,
+      type: resolvePlayerTypeLabel(row?.player_type || row?.type || '-'),
+      score: normalizeNumber(row?.total_score).toFixed(1),
+      primaryValue: formatCurrency(row?.kpis?.profit_zar || 0),
     }))
 
     return {
       cards: [
-        buildParticipantsCard(roundMarketSummary),
         buildVolumeCard(roundMarketSummary, formatInt),
         { key: 'profit', title: 'Total Profit', value: formatCurrency(totalProfit), caption: `Real players · settlement revenue ${formatCurrency(totalRevenue)}` },
         buildPriceCard(roundMarketSummary),
         { key: 'imbalance', title: 'Total Imbalance Cost', value: formatCurrency(totalImbalance), caption: `Real players · ATC / Redispatch ${formatCurrency(totalAtc)}` },
         { key: 'co2', title: 'Total CO₂', value: `${formatInt(totalCo2)} kg`, caption: `Real players · average score ${avgScore.toFixed(1)}` },
       ].filter(Boolean),
-      sections: [
-        buildCompositionSection(roundMarketSummary, formatInt),
-        buildZoneSection(roundMarketSummary, formatCurrency, formatInt),
-        {
-          title: 'Round-wide market summary',
-          rows: [
-            { label: 'Total profit across real players', value: formatCurrency(totalProfit) },
-            { label: 'Total settlement revenue across real players', value: formatCurrency(totalRevenue) },
-            { label: 'Active events', value: String(results?.market_summary?.active_events_count ?? (Array.isArray(results?.active_events) ? results.active_events.length : 0)) },
-            { label: 'Real player share of producer side', value: `${roundMarketSummary.realPlayers.producerSharePct.toFixed(1)}%` },
-            { label: 'Real player share of consumer side', value: `${roundMarketSummary.realPlayers.consumerSharePct.toFixed(1)}%` },
-          ],
-        },
-        {
-          title: 'Top players this round',
-          columns: [
-            { key: 'rank', label: 'Rank' },
-            { key: 'player', label: 'Player' },
-            { key: 'type', label: 'Type' },
-            { key: 'score', label: 'Score', align: 'right' },
-            { key: 'profit', label: 'Profit', align: 'right' },
-          ],
-          rows: topRows,
-        },
-      ].filter(Boolean),
+      sections: [compositionSection, zoneSection, summarySection, activeEventsSection].filter(Boolean),
+      overviewSections: [summarySection, activeEventsSection].filter(Boolean),
+      marketMixSections: [compositionSection, zoneSection].filter(Boolean),
+      rankingEntries,
     };
   })()
+
+  const roundMarketOverviewTabs = [
+    {
+      id: 'overview',
+      label: 'Overview',
+      cards: roundMarketOverview.cards,
+      sections: roundMarketOverview.overviewSections,
+    },
+    {
+      id: 'market-mix',
+      label: 'Market Mix',
+      sections: roundMarketOverview.marketMixSections.length > 0
+        ? roundMarketOverview.marketMixSections
+        : [{ title: 'Market mix', items: [{ text: 'No market composition data available for this round.' }] }],
+    },
+    {
+      id: 'ranking',
+      label: 'Ranking',
+      sections: buildGroupedRankingSections({
+        entries: roundMarketOverview.rankingEntries,
+        title: 'Round ranking',
+        scoreLabel: 'Score',
+        valueLabel: 'Profit',
+      }),
+    },
+    {
+      id: 'session-trend',
+      label: 'Session Trend',
+      content: marketOverviewTrendLoading ? (
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+          <CircularProgress size={24} />
+        </Box>
+      ) : (
+        <MarketOverviewTrendPanel
+          rounds={marketOverviewTrendRounds}
+          selectedRound={Number(round) || null}
+          formatPrice={(value) => `${normalizeNumber(value).toFixed(1)} ZAR/MWh`}
+          formatVolume={(value) => `${formatInt(value)} MWh`}
+        />
+      ),
+    },
+    {
+      id: 'merit-order',
+      label: 'Merit Order',
+      content: (
+        <MarketStructureChartPanel
+          sessionId={sessionId}
+          roundNum={Number(round) || 1}
+          roundSpan={Number(scenario?.config?.general?.round_span_hours || 6)}
+          startTime={scenario?.config?.general?.start_time || '00:00'}
+        />
+      ),
+    },
+  ]
 
   const kpiCompositionNotes = (() => {
     const notes = []
@@ -886,6 +1096,23 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
     return notes
   })()
+
+  const loadingContent = (
+    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '400px' }}>
+      <CircularProgress />
+    </Box>
+  )
+
+  const emptyContent = (
+    <Paper sx={{ p: 4, textAlign: 'center' }}>
+      <Typography variant="body2" color="text.secondary">
+        No results available
+      </Typography>
+    </Paper>
+  )
+
+  if (loading) return loadingContent
+  if (!hasResults) return emptyContent
 
   return (
     <Box sx={{ p: 3, maxWidth: 1200, mx: 'auto' }}>
@@ -1380,6 +1607,54 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
             </AccordionDetails>
           </Accordion>
 
+          {perRoundChallengeItems.length > 0 && (
+            <Box>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Objectives & Challenges Status
+              </Typography>
+              <Alert severity={passedPerRoundChallengeCount === perRoundChallengeItems.length ? 'success' : 'info'} variant="outlined" sx={{ mb: 2 }}>
+                <Typography variant="body2">
+                  {challengeSummaryText}
+                </Typography>
+              </Alert>
+              <Grid container spacing={2}>
+                {perRoundChallengeItems.map((item, idx) => {
+                  const passed = Boolean(item?.passed)
+                  return (
+                    <Grid item xs={12} md={6} lg={4} key={`${item?.challenge_id || item?.name || 'challenge'}-${idx}`}>
+                      <Card variant="outlined" sx={{ height: '100%', borderColor: passed ? 'success.main' : 'divider' }}>
+                        <CardContent>
+                          <Stack spacing={1.25}>
+                            <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
+                              <Chip label={passed ? 'Achieved' : 'Open'} color={passed ? 'success' : 'default'} size="small" />
+                              {item?.required && <Chip label="Required" color="primary" size="small" variant="outlined" />}
+                              {item?.per_round && <Chip label="Per round" color="info" size="small" variant="outlined" />}
+                            </Stack>
+                            <Typography variant="subtitle2" fontWeight={600}>
+                              {item?.name || 'Challenge'}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Target: {item?.operator || '-'} {formatChallengeValue(item?.metric, item?.target)}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Actual: {formatChallengeValue(item?.metric, item?.actual)}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              Metric: {item?.metric || '-'}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              Points: {Number(item?.points || 0)}/{Number(item?.max_points || 0)}
+                            </Typography>
+                          </Stack>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  )
+                })}
+              </Grid>
+            </Box>
+          )}
+
           {/* Device Deep Dive - Hourly Breakdown per Device */}
           <Box>
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
@@ -1389,6 +1664,14 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
               Only hours from the current round are shown. KPI cards and hourly details use the same round data scope.
             </Typography>
           </Box>
+
+          {showBaselineOnlyNotice && (
+            <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
+              <Typography variant="body2">
+                Round {round} has no new intraday clearing. The visible day-ahead bid and dispatch rows are the carried-over DAM baseline from Round 1, while current-round IDM SMP, awarded volume, and KPI deltas remain at 0.
+              </Typography>
+            </Alert>
+          )}
 
           <DeviceDeepDiveTabs 
             results={results}
@@ -1452,6 +1735,16 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                 )}
                 {breakdownKey === 'profit' && (
                   <>
+                    {(() => {
+                      const revenueValue = kpis.revenue_zar || 0
+                      const variableCostValue = kpis.variable_cost_zar || 0
+                      const fixedCostValue = kpis.fixed_cost_zar || 0
+                      const imbalanceCostValue = kpis.imbalance_cost_zar || 0
+                      const batteryChargeCostValue = kpis.battery_charge_cost_zar || 0
+                      const atcCostValue = kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0
+                      const congestionRevenueValue = kpis.congestion_revenue_zar || 0
+                      return (
+                        <>
                     <Typography variant="body1" fontWeight={600} gutterBottom>
                       Profit Formula
                     </Typography>
@@ -1459,7 +1752,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                       Profit = Revenue - Variable Cost - Fixed Cost - Imbalance Cost - Battery Charge Cost - Redispatch Cost (ATC) + Congestion Revenue
                     </Typography>
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', color: 'primary.main' }}>
-                      Profit = {formatInt(kpis.revenue_zar || 0)} - {formatInt(kpis.variable_cost_zar || 0)} - {formatInt(kpis.fixed_cost_zar || 0)} - {formatInt(kpis.imbalance_cost_zar || 0)} - {formatInt(kpis.battery_charge_cost_zar || 0)} - {formatInt(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)} + {formatInt(kpis.congestion_revenue_zar || 0)}
+                      Profit = Revenue ({formatCurrency(revenueValue)}) - Variable Cost ({formatCurrency(variableCostValue)}) - Fixed Cost ({formatCurrency(fixedCostValue)}) - Imbalance Cost ({formatCurrency(imbalanceCostValue)}) - Battery Charge Cost ({formatCurrency(batteryChargeCostValue)}) - Redispatch Cost ({formatCurrency(atcCostValue)}) + Congestion Revenue ({formatCurrency(congestionRevenueValue)})
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
                       Imbalance is settled with configured balancing prices: +imbalance at {formatCurrency(balancingUpPrice)}/MWh, −imbalance at {formatCurrency(balancingDownPrice)}/MWh.
@@ -1467,6 +1760,9 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.9rem', fontWeight: 600, color: 'success.main' }}>
                       Profit = {formatCurrency(kpis.profit_zar || 0)}
                     </Typography>
+                        </>
+                      )
+                    })()}
                     <TableContainer component={Paper} variant="outlined">
                       <Table size="small">
                         <TableBody>
@@ -1503,15 +1799,136 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                         </TableBody>
                       </Table>
                     </TableContainer>
+                    {!showCumulative && (() => {
+                      const currentHourlyBreakdown = Array.isArray(currentKpis?.hourly_breakdown) ? currentKpis.hourly_breakdown : []
+                      const hourColumns = deriveHourColumns(currentHourlyBreakdown, {})
+                      const usesCurrentRoundPrice = hasIdmTradingThisRound || currentHourlyBreakdown.some((entry) => (
+                        normalizeNumber(entry?.idp) > 0 || normalizeNumber(entry?.id_price_zar) > 0
+                      ))
+                      if (!hourColumns.length) return null
+
+                      const profitInputRows = [
+                        {
+                          key: 'price',
+                          label: usesCurrentRoundPrice ? 'Current Price / SMP (ZAR/MWh)' : 'SMP (ZAR/MWh)',
+                          render: (entry) => {
+                            const price = entry?.idp ?? entry?.id_price_zar ?? entry?.market_price_zar ?? entry?.da_price_zar ?? entry?.smp ?? 0
+                            return Number(price) > 0 ? formatDecimal(price, 1) : '—'
+                          }
+                        },
+                        {
+                          key: 'dispatched',
+                          label: 'Dispatched (MWh)',
+                          render: (entry) => formatDecimal(entry?.dispatched_mw ?? entry?.dispatched_mwh ?? 0, 1)
+                        },
+                        {
+                          key: 'revenue',
+                          label: 'Revenue (ZAR)',
+                          render: (entry) => formatCurrency(entry?.revenue_zar || 0)
+                        },
+                        {
+                          key: 'variable_cost',
+                          label: 'Variable Cost (ZAR)',
+                          render: (entry) => formatCurrency(entry?.variable_cost_zar || 0)
+                        },
+                        {
+                          key: 'fixed_cost',
+                          label: 'Fixed Cost (ZAR)',
+                          render: (entry) => formatCurrency(entry?.fixed_cost_zar || 0)
+                        },
+                        {
+                          key: 'imbalance_cost',
+                          label: 'Imbalance Cost (ZAR)',
+                          render: (entry) => formatCurrency(entry?.imbalance_cost_zar || 0)
+                        },
+                        {
+                          key: 'battery_charge_cost',
+                          label: 'Battery Charge Cost (ZAR)',
+                          render: (entry) => formatCurrency(entry?.battery_charge_cost_zar || 0)
+                        },
+                        {
+                          key: 'atc_cost',
+                          label: 'Redispatch Cost (ATC) (ZAR)',
+                          render: (entry) => formatCurrency(entry?.network_shortfall_cost_zar ?? entry?.atc_dispatch_cost_zar ?? 0)
+                        },
+                        {
+                          key: 'congestion_revenue',
+                          label: 'Congestion Revenue (ZAR)',
+                          render: (entry) => formatCurrency(entry?.congestion_revenue_zar || 0)
+                        },
+                        {
+                          key: 'profit',
+                          label: isConsumer ? 'Net Result (ZAR)' : 'Profit (ZAR)',
+                          render: (entry) => formatCurrency(entry?.profit_zar || 0)
+                        },
+                      ]
+
+                      return (
+                        <>
+                          <Typography variant="body1" fontWeight={600} sx={{ mt: 2 }} gutterBottom>
+                            Hourly Formula Inputs
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" gutterBottom>
+                            The profit formula is settled hour by hour. This table shows the individual inputs behind each hourly formula term, including the current SMP/settlement price and cost components.
+                          </Typography>
+                          {renderHourMatrixTable(
+                            profitInputRows,
+                            hourColumns,
+                            (row, hIdx) => {
+                              const entry = findHourlyBreakdownEntry(currentHourlyBreakdown, hourColumns[hIdx], hIdx) || {}
+                              return row.render(entry)
+                            },
+                            'Formula input'
+                          )}
+                        </>
+                      )
+                    })()}
+                    {(() => {
+                      const currentDeviceHourlyBreakdown = kpis?.device_hourly_breakdown || {}
+                      const currentHourlyBreakdown = kpis?.hourly_breakdown || []
+                      const hourColumns = deriveHourColumns(currentHourlyBreakdown, currentDeviceHourlyBreakdown)
+                      const deviceIds = Object.keys(currentDeviceHourlyBreakdown).sort()
+                      if (!deviceIds.length) return null
+                      const hasFixedCost = deviceIds.some((devId) =>
+                        (currentDeviceHourlyBreakdown[devId] || []).some((e) => Math.abs(Number(e?.fixed_cost_zar || 0)) > 0.5)
+                      )
+                      const rows = deviceIds.flatMap((devId) => {
+                        const label = getDeviceLabel(devId)
+                        const base = [{ key: `${devId}:var`, label: `${label} — Variable`, devId, costKey: 'variable_cost_zar' }]
+                        if (hasFixedCost) base.push({ key: `${devId}:fix`, label: `${label} — Fixed`, devId, costKey: 'fixed_cost_zar' })
+                        return base
+                      })
+                      return (
+                        <>
+                          <Typography variant="body1" fontWeight={600} sx={{ mt: 2 }} gutterBottom>
+                            Device Costs per Hour
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" gutterBottom>
+                            Variable cost = dispatched MWh × effective cost rate. {hasFixedCost ? 'Fixed cost = configured daily/hourly fixed charge.' : ''}
+                          </Typography>
+                          {renderHourMatrixTable(
+                            rows,
+                            hourColumns,
+                            (row, hIdx) => {
+                              const entry = currentDeviceHourlyBreakdown?.[row.devId]?.[hIdx] || {}
+                              return formatCurrency(Math.abs(Number(entry[row.costKey] || 0)))
+                            },
+                            'Device / Cost type'
+                          )}
+                        </>
+                      )
+                    })()}
                   </>
                 )}
                 {breakdownKey === 'revenue' && (() => {
                   const currentDeviceHourlyBreakdown = currentKpis?.device_hourly_breakdown || {}
                   const currentHourlyBreakdown = currentKpis?.hourly_breakdown || []
                   const hourColumns = deriveHourColumns(currentHourlyBreakdown, currentDeviceHourlyBreakdown)
-                  const hasSplitSettlement = Number(round) > 1 && (
+                  const hasSplitSettlement = hasIdmTradingThisRound && (
                     Math.abs(Number(my_result?.da_id_breakdown?.da_revenue_zar || 0)) > 0.5
                     || Math.abs(Number(my_result?.da_id_breakdown?.id_revenue_zar || 0)) > 0.5
+                    || Math.abs(Number(my_result?.id_volume_mwh || 0)) > 0.0001
+                    || Number(my_result?.id_trade_count || 0) > 0
                   )
                   return (
                   <>
@@ -1694,8 +2111,8 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
             onClose={() => setMarketOverviewOpen(false)}
             title="Overall Market Overview"
             subtitle={`Round ${round} · ${displayCampaignName} · ${scenarioName}`}
-            cards={roundMarketOverview.cards}
-            sections={roundMarketOverview.sections}
+            tabs={roundMarketOverviewTabs}
+            defaultTabId="overview"
           />
         </Stack>
       </Paper>

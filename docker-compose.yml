@@ -79,13 +79,13 @@ services:
     stop_grace_period: 30s
 
   postgres:
-    image: postgres:15
+    image: postgres:16-alpine
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - web
     restart: unless-stopped
@@ -129,7 +129,7 @@ services:
   #   restart: unless-stopped
 
 volumes:
-  pgdata:
+  postgres_data:
 
 networks:
   web:

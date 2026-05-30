@@ -6,7 +6,7 @@ import { Container, Paper, Typography } from '@mui/material'
 export default function DocsAdmin(){
   const [content, setContent] = useState('# Admin Handbook\n\nLoading...')
   useEffect(()=>{
-    fetch('/handbooks/admin-handbook.md').then(r=> r.text()).then(setContent).catch(()=> setContent('# Admin Handbook\n\nFailed to load.'))
+    fetch('/handbooks/admin-handbook.md?v=20260527').then(r=> r.text()).then(setContent).catch(()=> setContent('# Admin Handbook\n\nFailed to load.'))
   },[])
   return (
      <Container maxWidth={false} disableGutters sx={{ mt: 4, mb: 0, px: 3, height: 'calc(100vh - 96px)', display: 'flex', flexDirection: 'column' }}>

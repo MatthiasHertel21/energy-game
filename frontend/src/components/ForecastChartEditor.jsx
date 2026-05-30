@@ -41,6 +41,7 @@ export default function ForecastChartEditor({
   fakeDate = '',
   daBaseline = null,
   committedPosition = null,
+  prevDispatch = null,
   hourStatus = [],
   totalRounds = null,
   daCommittedStart = -1,
@@ -780,6 +781,27 @@ export default function ForecastChartEditor({
       
       // Legends removed per user request (DA, ID+, ID- visual clutter)
     }
+
+    // Draw previous round dispatch line (solid lighter grey)
+    if (prevDispatch && Array.isArray(prevDispatch) && prevDispatch.length > 0) {
+      const prevData = prevDispatch.map((val, i) => ({ i, v: val }))
+      const extendedPrev = [
+        ...prevData,
+        { i: prevData[prevData.length - 1].i + 1, v: prevData[prevData.length - 1].v }
+      ]
+      const prevPath = d3.line()
+        .x(d => getHourStartX(d.i))
+        .y(d => y(d.v))
+        .curve(d3.curveStepAfter)
+      g.append('path')
+        .datum(extendedPrev)
+        .attr('fill', 'none')
+        .attr('stroke', '#bdbdbd')
+        .attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', '2,3')
+        .attr('d', prevPath)
+        .attr('opacity', 0.75)
+    }
     
     // Draw device-specific reference lines
     refLines.forEach(ref => {
@@ -1047,7 +1069,7 @@ export default function ForecastChartEditor({
     // labels
     g.append('text').attr('transform', 'rotate(-90)').attr('x', -ih / 2).attr('y', -36).attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 12).text('Power (MW) per hour')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hours, hourIndices, editableIndices, lockedUntil, onChange, maxValue, effectiveLimitMw, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, dayAheadGateHour, startTime, fakeDate, daBaseline, hourStatus, totalRounds, containerWidth])
+  }, [hours, hourIndices, editableIndices, lockedUntil, onChange, maxValue, effectiveLimitMw, smoothRadius, deviceType, deviceParams, currentRound, roundSpan, freezeHours, dayAheadGateHour, startTime, fakeDate, daBaseline, prevDispatch, hourStatus, totalRounds, containerWidth])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

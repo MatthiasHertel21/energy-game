@@ -10,6 +10,7 @@ import useAuth from '../store/auth'
 export default function CampaignDetail(){
   const user = useAuth((state) => state.user)
   const { id } = useParams()
+  const campaignId = Number(id)
   const navigate = useNavigate()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -30,37 +31,43 @@ export default function CampaignDetail(){
     api.get('/api/me/sessions').then(({data})=> setSessions(data||[])).catch(()=> setSessions([]))
   },[])
 
+  const campaignSessions = useMemo(() => {
+    if (!data?.scenarios?.length) return []
+    const scenarioIds = new Set(data.scenarios.map(sc => sc.scenario_id))
+    return sessions.filter(session => (
+      scenarioIds.has(session.scenario_id) && Number(session.campaign_id) === campaignId
+    ))
+  }, [campaignId, data, sessions])
+
   const activeByScenario = useMemo(()=>{
     const m = new Map()
-    sessions.forEach(s=>{
+    campaignSessions.forEach(s=>{
       // Keep most recent session per scenario
       if (!m.has(s.scenario_id) || m.get(s.scenario_id).id < s.id) {
         m.set(s.scenario_id, s)
       }
     })
     return m
-  },[sessions])
+  },[campaignSessions])
 
   const displayScenarios = useMemo(() => {
     if (!data?.scenarios) return []
     return data.scenarios.map(sc => {
       const session = activeByScenario.get(sc.scenario_id)
-      let status = 'not_started'
-      if (session) {
-        if (session.status === 'scenario_complete' || session.status === 'ended') {
-          status = 'completed'
-        } else {
-          status = 'in_progress'
-        }
+      if (sc.status === 'completed') {
+        return sc
       }
-      return { ...sc, status }
+      if (session && session.status !== 'scenario_complete' && session.status !== 'ended') {
+        return { ...sc, status: 'in_progress' }
+      }
+      return sc
     })
   }, [data, activeByScenario])
 
   // Get last 3 completed sessions per scenario
   const completedSessionsByScenario = useMemo(()=>{
     const m = new Map()
-    const completed = sessions.filter(s => s.status === 'ended' || s.status === 'scenario_complete')
+    const completed = campaignSessions.filter(s => s.status === 'ended' || s.status === 'scenario_complete')
     completed.sort((a, b) => b.id - a.id) // Sort by ID descending (newest first)
     
     completed.forEach(s=>{
@@ -72,16 +79,13 @@ export default function CampaignDetail(){
       }
     })
     return m
-  },[sessions])
+  },[campaignSessions])
 
   const handlePlayAction = async (scenario_id)=>{
     const session = activeByScenario.get(scenario_id)
     
-    // Consider completed only if current user finished a session
-    const isCompleted = !!session && (session.status === 'scenario_complete' || session.status === 'ended')
-    
     // Check if there's an active trainer session (shared_market) for this scenario
-    const trainerSession = sessions.find(s => 
+    const trainerSession = campaignSessions.find(s => 
       s.scenario_id === scenario_id && 
       s.mode === 'shared_market' && 
       (s.status === 'running' || s.status === 'paused' || s.status === 'round_results' || s.status === 'round_active' || s.status === 'briefing')
@@ -149,10 +153,12 @@ export default function CampaignDetail(){
           <Stack spacing={1.5}>
             {displayScenarios?.map(sc=>{
               const session = activeByScenario.get(sc.scenario_id)
-              const recentSessions = completedSessionsByScenario.get(sc.scenario_id) || []
+              const isCompleted = sc.status === 'completed'
+              const recentSessions = isCompleted ? (completedSessionsByScenario.get(sc.scenario_id) || []) : []
+              const hasActiveSession = !!session && session.status !== 'scenario_complete' && session.status !== 'ended'
               
               // Check if there's an active trainer session for this scenario
-              const trainerSession = sessions.find(s => 
+              const trainerSession = campaignSessions.find(s => 
                 s.scenario_id === sc.scenario_id && 
                 s.mode === 'shared_market' && 
                 (s.status === 'running' || s.status === 'paused' || s.status === 'round_results' || s.status === 'round_active' || s.status === 'briefing')
@@ -163,24 +169,11 @@ export default function CampaignDetail(){
               let playColor = 'primary'
               let playTooltip = 'Start a new solo session'
               
-              // Consider completed only if current user finished a session
-              const isCompleted = !!session && (session.status === 'scenario_complete' || session.status === 'ended')
-              
               if (trainerSession) {
                 // Active trainer session exists
                 playLabel = 'Join Live Session'
                 playColor = 'success'
                 playTooltip = 'Join the active trainer-led session'
-              } else if (session) {
-                if (session.status === 'scenario_complete' || isCompleted) {
-                  playLabel = 'Replay'
-                  playColor = 'primary'
-                  playTooltip = 'Replay this scenario (creates new session)'
-                } else if (session.status === 'created' || session.status === 'briefing' || session.status === 'running' || session.status === 'round_active' || session.status === 'round_results' || session.status === 'paused') {
-                  playLabel = 'Play'
-                  playColor = 'primary'
-                  playTooltip = 'Start a new solo session'
-                }
               } else if (isCompleted) {
                 playLabel = 'Replay'
                 playColor = 'primary'
@@ -193,10 +186,10 @@ export default function CampaignDetail(){
                     <Stack direction="row" spacing={2} alignItems="center">
                       <Chip size="small" label={`#${sc.order_index+1}`} variant="outlined" />
                       <Typography sx={{ flexGrow:1 }}>{sc.name}</Typography>
-                      {session && (session.status === 'scenario_complete' || session.status === 'ended') && (
+                      {isCompleted && (
                         <Chip size="small" label="Completed" variant="outlined" sx={{ borderColor: 'success.main', color: 'success.main' }} />
                       )}
-                      {session && session.status !== 'scenario_complete' && session.status !== 'ended' && (
+                      {!isCompleted && (sc.status === 'in_progress' || hasActiveSession) && (
                         <Chip size="small" label="In Progress" variant="outlined" sx={{ borderColor: 'warning.main', color: 'warning.main' }} />
                       )}
                     </Stack>

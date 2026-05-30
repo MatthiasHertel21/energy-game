@@ -27,6 +27,7 @@ import {
 import { io } from 'socket.io-client'
 const Login = React.lazy(()=> import('./pages/Login'))
 const Register = React.lazy(()=> import('./pages/Register'))
+const ResetPassword = React.lazy(()=> import('./pages/ResetPassword'))
 const AdminUsers = React.lazy(()=> import('./pages/AdminUsers'))
 const Trainer = React.lazy(()=> import('./pages/Trainer'))
 const Player = React.lazy(()=> import('./pages/Player'))
@@ -318,6 +319,7 @@ export default function App({ themeMode, onToggleTheme }) {
           <Route path="/" element={<Navigate to={user ? (user.role === 'admin' ? '/admin' : user.role === 'trainer' ? '/trainer' : user.role === 'designer' ? '/designer' : '/catalog') : '/login'} />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           {/* Public routes */}
           <Route path="/about" element={<About />} />
           <Route path="/about/details" element={<AboutDetails />} />

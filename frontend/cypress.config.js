@@ -5,5 +5,8 @@ export default defineConfig({
   baseUrl: process.env.CYPRESS_BASE_URL || 'http://localhost:5173',
     supportFile: 'cypress/support/e2e.js',
     video: false,
+    screenshotOnRunFailure: false,
+    numTestsKeptInMemory: 0,
+    experimentalMemoryManagement: true,
   },
 })
