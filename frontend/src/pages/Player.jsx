@@ -2480,7 +2480,7 @@ export default function Player() {
       const gen = cfg.general || {}
       const rounds = Number(gen.rounds || 1)
       const roundSpan = Number(gen.round_span_hours || 6)
-      const selectedRound = Number(cfg.current_round || 1)
+      const selectedRound = Number(roundFromClick || cfg.current_round || 1)
       const start = `${gen.fake_date || '2001-01-01'} ${gen.start_time || '00:00'}:00`
       const base = new Date(start.replace(' ', 'T'))
       const simHours = (Number(cfg.current_round || 1) - 1) * roundSpan

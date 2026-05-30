@@ -64,7 +64,7 @@ ssh ${SSH_OPTS} ${REMOTE} << 'ENDSSH'
     cd /root/apps
     
     if [ -d "emsg-staging" ]; then
-        echo "✓ Repository existiert bereits, update..."
+        echo "✓ Repository existiert bereits, update auf ${DEPLOY_BRANCH}..."
         cd emsg-staging
         git fetch origin ${DEPLOY_BRANCH}
         git checkout ${DEPLOY_BRANCH}

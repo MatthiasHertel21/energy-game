@@ -105,8 +105,8 @@ if [ -d .git ]; then
     CURRENT_BRANCH=$(git branch --show-current)
     info "Current branch: $CURRENT_BRANCH"
     
-    if [ "$CURRENT_BRANCH" != "feature/catalog-campaigns" ]; then
-        warning "Not on feature/catalog-campaigns branch"
+    if [ "$CURRENT_BRANCH" != "main" ]; then
+        warning "Not on main branch"
         read -p "Continue anyway? (y/n) " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
