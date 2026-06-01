@@ -131,18 +131,18 @@ export default function ForecastChartEditor({
     
     if (['coal', 'gas', 'hydro', 'nuclear'].includes(deviceTypeNorm)) {
       // Thermal generators: max_power, min_load
-      const configuredMaxPower = Number(deviceParams.max_power_mw || deviceParams.capacity_mw || 0)
+      const configuredMaxPower = Number(deviceParams.capacity_mw || deviceParams.max_power_mw || 0)
       const maxPower = Number.isFinite(Number(effectiveLimitMw)) && Number(effectiveLimitMw) > 0
         ? Number(effectiveLimitMw)
         : configuredMaxPower
       const minLoadPct = deviceParams.min_load_pct || 0
       const minPower = (minLoadPct / 100) * configuredMaxPower
       
-      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0', tooltip: `Effective maximum available power in this round: ${maxPower.toFixed(1)} MW` })
-      if (minPower > 0) refLines.push({ value: minPower, label: `Min Load (${minLoadPct}%)`, color: '#f57c00', dash: '4,2', tooltip: `Minimum stable load: ${minPower.toFixed(1)} MW (${minLoadPct}% of max power)` })
+      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Available now', color: '#d32f2f', dash: '3,0', tooltip: `Current available output in this round: ${maxPower.toFixed(1)} MW` })
+      if (minPower > 0) refLines.push({ value: minPower, label: `Min Load (${minLoadPct}%)`, color: '#f57c00', dash: '4,2', tooltip: `Minimum stable load: ${minPower.toFixed(1)} MW (${minLoadPct}% of installed capacity)` })
     } else if (['solar', 'wind'].includes(deviceTypeNorm)) {
       // Renewables: max_power, expected output
-      const configuredMaxPower = Number(deviceParams.max_power_mw || deviceParams.capacity_mw || 0)
+      const configuredMaxPower = Number(deviceParams.capacity_mw || deviceParams.max_power_mw || 0)
       const maxPower = Number.isFinite(Number(effectiveLimitMw)) && Number(effectiveLimitMw) > 0
         ? Number(effectiveLimitMw)
         : configuredMaxPower
@@ -181,7 +181,7 @@ export default function ForecastChartEditor({
       const expected = (capFactor / 100) * configuredMaxPower * monthlyFactor * hourlyFactor
       const maxEqualsExpected = Math.abs(expected - maxPower) <= Math.max(0.5, maxPower * 0.01)
       
-      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Max Power', color: '#d32f2f', dash: '3,0', tooltip: `Effective maximum available power in this round: ${maxPower.toFixed(1)} MW` })
+      if (maxPower > 0) refLines.push({ value: maxPower, label: 'Available now', color: '#d32f2f', dash: '3,0', tooltip: `Current available output in this round: ${maxPower.toFixed(1)} MW` })
       if (expected > 0 && !maxEqualsExpected) {
         refLines.push({
           value: expected,

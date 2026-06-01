@@ -55,6 +55,81 @@ def _get_battery_power_limit_mw(device: dict | None, fallback: float = float("in
     return fallback
 
 
+def _load_shared_market_capacity_scales(session_id: int, mode: str) -> Dict[str, float]:
+    if mode != "shared_market":
+        return {}
+
+    try:
+        from .models import SessionAllowedType
+    except Exception:
+        return {}
+
+    try:
+        rows = SessionAllowedType.query.filter_by(session_id=session_id).all()
+    except Exception:
+        return {}
+
+    scales: Dict[str, float] = {}
+    for row in rows or []:
+        type_id = getattr(row, "type_id", None)
+        try:
+            max_players = int(getattr(row, "max_players", None))
+        except Exception:
+            max_players = None
+        if type_id and max_players and max_players > 0:
+            scales[str(type_id)] = 1.0 / float(max_players)
+    return scales
+
+
+def _get_shared_market_player_capacity_scale(
+    player_id: int | None,
+    player_type_by_player: Dict[int, str] | None,
+    shared_market_capacity_scales: Dict[str, float] | None,
+) -> float:
+    if player_id is None or not player_type_by_player or not shared_market_capacity_scales:
+        return 1.0
+
+    try:
+        player_type_id = player_type_by_player.get(int(player_id))
+    except Exception:
+        return 1.0
+
+    if not player_type_id:
+        return 1.0
+
+    scale = shared_market_capacity_scales.get(str(player_type_id))
+    if scale is None or scale <= 0:
+        return 1.0
+    return float(scale)
+
+
+def _get_scaled_device_capacity_mw(
+    device: dict | None,
+    player_id: int | None = None,
+    player_type_by_player: Dict[int, str] | None = None,
+    shared_market_capacity_scales: Dict[str, float] | None = None,
+    fallback: float = 0.0,
+) -> float:
+    device = device or {}
+    device_type = str(device.get("type", "") or "").lower()
+    if device_type == "battery":
+        base_capacity = _get_battery_power_limit_mw(device, fallback=fallback)
+    else:
+        try:
+            base_capacity = float(device.get("capacity_mw") or device.get("max_power_mw") or fallback)
+        except Exception:
+            base_capacity = fallback
+
+    scale = _get_shared_market_player_capacity_scale(
+        player_id,
+        player_type_by_player,
+        shared_market_capacity_scales,
+    )
+    if math.isfinite(base_capacity):
+        return max(0.0, float(base_capacity) * scale)
+    return base_capacity
+
+
 def _build_battery_market_limits(config: dict, battery_soc_state: Dict[str, dict] | None) -> Dict[str, dict]:
     if not isinstance(battery_soc_state, dict) or not battery_soc_state:
         return {}
@@ -554,12 +629,13 @@ def calculate_idp(cleared_bids: List[Tuple[float, float]], smp: float,
 
 def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, float]],
                  price_floor: float = -500.0, price_cap: float = 5000.0,
-                 supply_metadata: Optional[List[dict]] = None) -> Tuple[float, float]:
+                 supply_metadata: Optional[List[dict]] = None,
+                 prefer_demand_upper_bound: bool = True) -> Tuple[float, float]:
     """
     Market clearing with Pro-rata Tie-Breaking and Inflexible Units Filter.
     
     Args:
-        supply: List of (price, volume) tuples, ascending price
+    if prefer_demand_upper_bound and supply_exhausted and not demand_exhausted and upper_bound > 0:
         demand: List of (price, volume) tuples, descending price (WTP)
         price_floor: Minimum allowed price
         price_cap: Maximum allowed price
@@ -684,7 +760,7 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
     lower_bound = last_flexible_price if last_flexible_price > 0 else marginal_supply_price
     upper_bound = marginal_demand_price if marginal_demand_price > 0 else lower_bound
 
-    if supply_exhausted and not demand_exhausted and upper_bound > 0:
+    if prefer_demand_upper_bound and supply_exhausted and not demand_exhausted and upper_bound > 0:
         smp = upper_bound
     else:
         smp = lower_bound
@@ -1349,6 +1425,7 @@ def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float,
                        da_dispatch_this_hour: Dict[str, float] = None,
                        round_events: list = None,
                        player_type_by_player: Dict[int, str] = None,
+                       shared_market_capacity_scales: Dict[str, float] = None,
                        allow_dispatch_above_capacity: bool = False,
                        use_synthetic: bool = True) -> Dict[int, Dict[str, Dict[str, dict]]]:
     """
@@ -1424,11 +1501,13 @@ def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float,
         if devices_cfg:
             device = next((d for d in devices_cfg if d.get('id') == device_id), None)
             if device:
-                if str(device.get('type', '')).lower() == 'battery':
-                    base_capacity = _get_battery_power_limit_mw(device)
-                else:
-                    # Use capacity_mw or max_power_mw, whichever is available
-                    base_capacity = device.get('capacity_mw') or device.get('max_power_mw') or float('inf')
+                base_capacity = _get_scaled_device_capacity_mw(
+                    device,
+                    player_id=player_id,
+                    player_type_by_player=player_type_by_player,
+                    shared_market_capacity_scales=shared_market_capacity_scales,
+                    fallback=float('inf'),
+                )
                 
                 # Apply events to modify capacity (e.g. plant outage reduces capacity)
                 device_type = device.get('type', '')
@@ -2307,6 +2386,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 player_type_by_player[int(sel.user_id)] = str(sel.type_id)
     except Exception:
         player_type_by_player = {}
+    shared_market_capacity_scales = _load_shared_market_capacity_scales(session_id, mode)
     span = int(general_cfg.get("round_span_hours", 6))
     round_span = span  # Save original round_span for display
     start_time_str = general_cfg.get("start_time") or "00:00"
@@ -2349,6 +2429,43 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     if normalized_devices is not raw_devices:
         config = {**config, "devices": normalized_devices}
     player_types_cfg = [pt for pt in (config.get("player_types") or []) if isinstance(pt, dict)]
+    player_type_devices = {
+        str(pt.get("id")): {
+            str(device_id) for device_id in (pt.get("devices") or []) if device_id is not None
+        }
+        for pt in player_types_cfg
+        if pt.get("id")
+    }
+
+    def _get_player_capacity_cap(player_id: int) -> float | None:
+        player_devices = [
+            device for device in (config.get("devices") or [])
+            if isinstance(device, dict)
+            and device.get("id")
+            and (device.get("owner_id") == player_id or device.get("player_id") == player_id)
+        ]
+        if not player_devices:
+            player_type_id = player_type_by_player.get(int(player_id))
+            device_ids = player_type_devices.get(str(player_type_id), set()) if player_type_id else set()
+            if device_ids:
+                player_devices = [
+                    device for device in (config.get("devices") or [])
+                    if isinstance(device, dict) and str(device.get("id")) in device_ids
+                ]
+
+        if not player_devices:
+            return None
+
+        return sum(
+            _get_scaled_device_capacity_mw(
+                device,
+                player_id=player_id,
+                player_type_by_player=player_type_by_player,
+                shared_market_capacity_scales=shared_market_capacity_scales,
+                fallback=0.0,
+            )
+            for device in player_devices
+        )
     
     # Day 1 Baseline option (Zero, Preset, Edit Round 1)
     # - Zero: DAM offering = 0 for all day 1 hours (no DAM market, starts with IDM)
@@ -2460,7 +2577,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     # Determine primary market type for this round (used for loading baselines)
     if round_num == 1:
         primary_market = "dam"
-    elif dam_market_status != "off" and idm_market_status == "off":
+    elif dam_market_status == "on" and idm_market_status == "off":
         primary_market = "dam"
     elif idm_market_status != "off":
         primary_market = "idm"
@@ -2474,7 +2591,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     # - id_delta_round: use delta vs DA baseline and ID-style settlement
     absolute_clearing_round = (
         (round_num == 1 and baseline_mode == "edit_round_1")
-        or (round_num > 1 and dam_market_status != "off" and idm_market_status == "off")
+        or (round_num > 1 and dam_market_status == "on" and idm_market_status == "off")
     )
     id_delta_round = not absolute_clearing_round
     
@@ -3086,10 +3203,14 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             return max(0.0, float(device_dispatched or 0.0))
 
         device_type = str(device.get('type', '') or '').lower()
-        if device_type == 'battery':
-            base_capacity = _get_battery_power_limit_mw(device)
-        else:
-            base_capacity = float(device.get('capacity_mw') or device.get('max_power_mw') or 0.0)
+
+        base_capacity = _get_scaled_device_capacity_mw(
+            device,
+            player_id=pid,
+            player_type_by_player=player_type_by_player,
+            shared_market_capacity_scales=shared_market_capacity_scales,
+            fallback=0.0,
+        )
 
         availability = calculate_realistic_availability(device, hour_of_day, config)
         available_capacity = max(0.0, base_capacity * availability)
@@ -3732,10 +3853,16 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 else:
                     supply_metadata.append(None)
         
+        prefer_demand_upper_bound = not (
+            mode == "isolated_per_player"
+            and not synthetic_supply
+            and bool(supply_bids)
+        )
         price, vol = clear_market(supply, demand,
                                   price_floor=config.get("market", {}).get("price_floor", -500),
                                   price_cap=config.get("market", {}).get("price_cap", 5000),
-                                  supply_metadata=supply_metadata)
+                                  supply_metadata=supply_metadata,
+                                  prefer_demand_upper_bound=prefer_demand_upper_bound)
         
         # FORENSIC: Track reconciliation data for this hour
         supply_offered_total = sum(q for _, q in supply) if supply else 0.0
@@ -3765,7 +3892,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         
         # Track bid dispatch for this hour
         hour_bid_dispatch = {}
-        if enable_bidding and (supply_bids or demand_bids):
+        if supply_bids or demand_bids:
             # Synthetic supply is always included in market clearing and must be
             # reflected in dispatch tracking for consistency.
             use_synthetic_in_dispatch = True
@@ -3811,6 +3938,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 {} if absolute_clearing_round else da_dispatch_this_hour,
                 round_events,
                 player_type_by_player,
+                shared_market_capacity_scales,
                 allow_dispatch_above_capacity,
                 use_synthetic_in_dispatch
             )
@@ -3889,6 +4017,10 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     planned = float(h[hour_idx])
                 else:
                     planned = 0.0
+
+            player_capacity_cap = _get_player_capacity_cap(int(pid)) if mode == "shared_market" else None
+            if player_capacity_cap is not None and player_capacity_cap > 0:
+                planned = min(planned, player_capacity_cap)
             
             hour_plans[pid] = planned
             total_planned += planned
@@ -3978,13 +4110,25 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         # Cap planned at device max_power (over-bidding allowed but capped)
                         if device_cfg:
                             if str(device_cfg.get('type', '')).lower() == 'battery':
-                                max_power = _get_battery_power_limit_mw(device_cfg)
+                                max_power = _get_scaled_device_capacity_mw(
+                                    device_cfg,
+                                    player_id=pid,
+                                    player_type_by_player=player_type_by_player,
+                                    shared_market_capacity_scales=shared_market_capacity_scales,
+                                    fallback=float('inf'),
+                                )
                                 if abs(device_planned_h) > max_power:
                                     if hour_offset == 0:
                                         print(f"[CAPACITY_CAP] Battery {device_id}: planned {device_planned_h:.1f} MW capped to power {max_power:.1f} MW")
                                     device_planned_h = math.copysign(max_power, device_planned_h)
                             else:
-                                max_power = device_cfg.get('max_power_mw') or device_cfg.get('capacity_mw') or float('inf')
+                                max_power = _get_scaled_device_capacity_mw(
+                                    device_cfg,
+                                    player_id=pid,
+                                    player_type_by_player=player_type_by_player,
+                                    shared_market_capacity_scales=shared_market_capacity_scales,
+                                    fallback=float('inf'),
+                                )
                                 if device_planned_h > max_power:
                                     if hour_offset == 0:  # Log once
                                         print(f"[CAPACITY_CAP] Device {device_id}: planned {device_planned_h:.1f} MW capped to max_power {max_power:.1f} MW")
@@ -4051,7 +4195,22 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                 'soc_end_pct': round(battery_soc_state[device_id]['soc_mwh'] / _cap * 100.0, 1) if _cap > 0 else 0.0,
                             })
             else:
-                dispatched = planned * dispatch_factor
+                tracked_device_dispatch = {}
+                tracked_device_charge = {}
+                if pid in hour_bid_dispatch:
+                    for device_id, device_dispatch in hour_bid_dispatch[pid].items():
+                        dispatched_mw = 0.0
+                        charged_mw = 0.0
+                        for lot_label, bid_info in (device_dispatch or {}).items():
+                            mw = float((bid_info or {}).get('mw_dispatched', 0.0) or 0.0)
+                            if lot_label.endswith('_CHG'):
+                                charged_mw += mw
+                            else:
+                                dispatched_mw += mw
+                        tracked_device_dispatch[device_id] = dispatched_mw
+                        tracked_device_charge[device_id] = charged_mw
+
+                dispatched = sum(tracked_device_dispatch.values()) if tracked_device_dispatch else (planned * dispatch_factor)
 
                 # Legacy/non-bid compatibility: retain per-device hourly quantities so
                 # KPI rollups and device breakdowns still work for flat forecast inputs.
@@ -4076,7 +4235,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 if player_devices and explicit_devices_data:
                     for device in player_devices:
                         device_hours = _get_device_forecast_hours(explicit_devices_data, device.get('id'))
-                        device_plan = float(device_hours[hour_idx] or 0.0) if hour_idx < len(device_hours) else 0.0
+                        device_hour_idx = hour_idx if hour_idx < len(device_hours) else hour_offset
+                        device_plan = float(device_hours[device_hour_idx] or 0.0) if device_hour_idx < len(device_hours) else 0.0
                         device_plans.append((device.get('id'), device_plan))
                 elif len(player_devices) == 1:
                     device_plans = [(player_devices[0].get('id'), float(planned or 0.0))]
@@ -4094,7 +4254,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         dev_cfg_entry = next((d for d in devices_cfg if d.get('id') == dev_id_entry), None)
                         if dev_cfg_entry:
                             dev_hrs = _get_device_forecast_hours(explicit_devices_data, dev_id_entry)
-                            dev_plan = float(dev_hrs[hour_idx] or 0.0) if hour_idx < len(dev_hrs) else 0.0
+                            dev_hour_idx = hour_idx if hour_idx < len(dev_hrs) else hour_offset
+                            dev_plan = float(dev_hrs[dev_hour_idx] or 0.0) if dev_hour_idx < len(dev_hrs) else 0.0
                             device_plans.append((dev_id_entry, dev_plan))
 
                 total_device_plan = sum(device_plan for _, device_plan in device_plans)
@@ -4107,13 +4268,18 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         per_device_hourly_dispatched[device_id] = [0.0] * display_span
                     if device_id not in per_device_hourly_actual:
                         per_device_hourly_actual[device_id] = [0.0] * display_span
+                    if device_id not in per_device_hourly_charged:
+                        per_device_hourly_charged[device_id] = [0.0] * display_span
 
                     per_device_hourly_planned[device_id][hour_offset] = float(device_plan)
-                    if abs(total_device_plan) > 0.000001:
+                    if tracked_device_dispatch:
+                        dispatched_share = float(tracked_device_dispatch.get(device_id, 0.0) or 0.0)
+                    elif abs(total_device_plan) > 0.000001:
                         dispatched_share = float(dispatched) * (float(device_plan) / float(total_device_plan))
                     else:
                         dispatched_share = 0.0
                     per_device_hourly_dispatched[device_id][hour_offset] = dispatched_share
+                    per_device_hourly_charged[device_id][hour_offset] = float(tracked_device_charge.get(device_id, 0.0) or 0.0)
 
             # Keep ID-only dispatched before optional delivery-time DA fallback
             id_dispatched_only = dispatched
@@ -4509,14 +4675,19 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     # Fix: actual_constrained is 0.0 in aggregate mode (no per-device tracking),
                     # so using it as upper bound incorrectly clamps actual to 0.
                     actual = max(0.0, actual + noise)
-                    # Propagate aggregate actual to any per-device tracking entries
-                    # (e.g., shared-device classic scenarios populated via explicit forecast data).
+                    # Propagate aggregate actual only to the current player's devices.
+                    # Using all tracked devices here leaks one player's actual into other
+                    # players' rows in shared-market / non-bid scenarios.
+                    _player_actual_device_ids = [
+                        _dev_id for _dev_id in player_device_ids
+                        if _dev_id in per_device_hourly_dispatched
+                    ]
                     _total_dev_disp = sum(
                         abs(float((per_device_hourly_dispatched.get(_d) or [0.0] * display_span)[hour_offset] or 0.0))
-                        for _d in per_device_hourly_dispatched
+                        for _d in _player_actual_device_ids
                     )
                     if _total_dev_disp > 0.0:
-                        for _dev_id in list(per_device_hourly_dispatched.keys()):
+                        for _dev_id in _player_actual_device_ids:
                             _dev_disp = float((per_device_hourly_dispatched[_dev_id] or [0.0] * display_span)[hour_offset] or 0.0)
                             _dev_actual = actual * (_dev_disp / _total_dev_disp)
                             if _dev_id not in per_device_hourly_actual:
@@ -4625,7 +4796,13 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         device_type_str = str(device.get('type', '')).lower()
                         tiers = device.get('variable_cost_tiers') if device_type_str in ('coal', 'gas') else None
                         if tiers:
-                            base_cap = max(0.0, float(device.get('max_power_mw') or device.get('capacity_mw') or 0.0))
+                            base_cap = _get_scaled_device_capacity_mw(
+                                device,
+                                player_id=pid,
+                                player_type_by_player=player_type_by_player,
+                                shared_market_capacity_scales=shared_market_capacity_scales,
+                                fallback=0.0,
+                            )
                             cost_zar, _ = compute_tiered_variable_cost(device_dispatched, base_cap, tiers)
                             variable_cost += round(cost_zar, 0)
                         else:
@@ -4871,12 +5048,13 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         hour_reconciliation_data.append(reconciliation_entry)
         
         # Store hourly result with unified hour structure
-        hour_idp = round(price, 1)
+        include_intraday_metadata = round_num > 1 and id_delta_round
+        hour_idp = round(price, 1) if include_intraday_metadata else None
         hour_id_trade_count = 0
         hour_id_volume_mwh = 0.0
 
         # Hourly IDP for intraday clearing hours (Round 2+ ID-delta market)
-        if round_num > 1 and id_delta_round and is_clearing_hour and enable_bidding:
+        if include_intraday_metadata and is_clearing_hour and enable_bidding:
             load_device_ids = {
                 d.get('id')
                 for d in devices_cfg_for_clearing
@@ -4906,24 +5084,29 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 hour_id_trade_count = 0
                 hour_id_volume_mwh = 0.0
 
-        idp_hourly_metrics.append({
-            'hour_idx': hour_idx,
-            'idp': float(hour_idp),
-            'id_trade_count': int(hour_id_trade_count),
-            'id_volume_mwh': float(hour_id_volume_mwh)
-        })
+        if include_intraday_metadata:
+            idp_hourly_metrics.append({
+                'hour_idx': hour_idx,
+                'idp': float(hour_idp),
+                'id_trade_count': int(hour_id_trade_count),
+                'id_volume_mwh': float(hour_id_volume_mwh)
+            })
 
-        hourly_results.append({
+        hourly_result = {
             **hour_structure,
             "hour_idx": hour_idx,
             "hour_offset": hour_offset,
             "is_clearing_hour": bool(is_clearing_hour),
             "smp": round(price, 1),
-            "idp": round(hour_idp, 2),
-            "id_trade_count": int(hour_id_trade_count),
-            "id_volume_mwh": round(hour_id_volume_mwh, 3),
             "volume": round(vol, 3),
-        })
+        }
+        if include_intraday_metadata:
+            hourly_result.update({
+                "idp": round(hour_idp, 2),
+                "id_trade_count": int(hour_id_trade_count),
+                "id_volume_mwh": round(hour_id_volume_mwh, 3),
+            })
+        hourly_results.append(hourly_result)
         
         # Store hour bid dispatch as hourly arrays (not aggregated)
         for player_id, devices in hour_bid_dispatch.items():
@@ -5881,8 +6064,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             result["dam_device_hourly_details"] = da_result_data.get("dam_device_hourly_details", da_result_data.get("device_hourly_details", {}))
             result["dam_hourly_results"] = da_result_data.get("dam_hourly_results", da_result_data.get("hourly_results", []))
     
-    # SAWEM Phase 2A: Calculate IDP for Intraday markets (round_num > 1)
-    if round_num > 1:
+    # SAWEM Phase 2A: Calculate IDP only for actual intraday/delta rounds.
+    if round_num > 1 and id_delta_round:
         traded_hours = [m for m in idp_hourly_metrics if m.get('id_trade_count', 0) > 0]
         total_id_trade_count = sum(int(m.get('id_trade_count', 0)) for m in traded_hours)
         total_id_volume = sum(float(m.get('id_volume_mwh', 0.0)) for m in traded_hours)

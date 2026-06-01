@@ -464,7 +464,7 @@ const roundValue = (val) => Number(val.toFixed(2))
 
 const buildGeneratorProfile = (device, len, pattern) => {
   const n = Math.max(1, len)
-  const maxPower = toNumber(device?.max_power_mw ?? device?.capacity_mw ?? device?.capacity ?? 0, 0)
+  const maxPower = toNumber(device?.capacity_mw ?? device?.max_power_mw ?? device?.capacity ?? 0, 0)
   if (maxPower <= 0) return zeroProfile(n)
   const minPct = clampValue(toNumber(device?.min_load_pct ?? 0, 0), 0, 100)
   const minPower = maxPower * (minPct / 100)
@@ -711,6 +711,15 @@ const getSimTemporalContext = (cfg = {}) => {
   return { hourOfDay, monthIdx }
 }
 
+const getSharedMarketTypeCapacityScale = (mode, selectedType, allowedTypes = []) => {
+  if (mode !== 'shared_market' || !selectedType) return 1
+  const selectedTypeConfig = Array.isArray(allowedTypes)
+    ? allowedTypes.find((item) => item?.type_id === selectedType)
+    : null
+  const maxPlayers = Number(selectedTypeConfig?.max_players)
+  return Number.isFinite(maxPlayers) && maxPlayers > 0 ? 1 / maxPlayers : 1
+}
+
 const resolveMixEntryForDevice = (device = {}, cfg = {}) => {
   const type = (device.type || '').toLowerCase()
   const marketCfg = cfg?.market || {}
@@ -734,7 +743,7 @@ const resolveMixEntryForDevice = (device = {}, cfg = {}) => {
   return { mixKey: consKey, mixEntry: entry }
 }
 
-const getDeviceEffectiveLimit = (device = {}, cfg = {}) => {
+const getDeviceEffectiveLimit = (device = {}, cfg = {}, capacityScale = 1) => {
   if (!device) return { limit: 0, context: null }
 
   const type = (device.type || '').toLowerCase()
@@ -780,17 +789,20 @@ const getDeviceEffectiveLimit = (device = {}, cfg = {}) => {
     }
   }
 
-  const limit = Math.max(0, configuredBase * (Number.isFinite(availabilityFactor) ? availabilityFactor : 1))
+  const safeCapacityScale = Number.isFinite(Number(capacityScale)) && Number(capacityScale) > 0
+    ? Number(capacityScale)
+    : 1
+  const limit = Math.max(0, configuredBase * safeCapacityScale * (Number.isFinite(availabilityFactor) ? availabilityFactor : 1))
   return { limit, context: `${String(hourOfDay).padStart(2, '0')}:00` }
 }
 
-const getEffectiveDeviceMetric = (device = {}, cfg = {}) => {
+const getEffectiveDeviceMetric = (device = {}, cfg = {}, capacityScale = 1) => {
   if (!device) return null
   const type = (device.type || '').toLowerCase()
-  const { limit, context } = getDeviceEffectiveLimit(device, cfg)
+  const { limit, context } = getDeviceEffectiveLimit(device, cfg, capacityScale)
   if (!(limit > 0)) return null
   return {
-    label: type.includes('load') ? 'Effective demand' : 'Effective capacity',
+    label: type.includes('load') ? 'Available demand now' : 'Available output now',
     value: limit,
     context: context || null
   }
@@ -1025,7 +1037,7 @@ function StackedLotsChart({ bidSeries = {}, hourIndices = null, maxValue, effect
       const deviceTypeNorm = (deviceType || '').toLowerCase()
       
       if (['coal', 'gas', 'hydro', 'nuclear'].includes(deviceTypeNorm)) {
-        // Thermal generators: max_power, min_load
+        // Thermal generators: current operational availability, min_load
         const configuredMaxPower = Number(deviceParams.max_power_mw || deviceParams.capacity_mw || 0)
         const maxPower = Number.isFinite(Number(effectiveLimitMw)) && Number(effectiveLimitMw) > 0
           ? Number(effectiveLimitMw)
@@ -1050,7 +1062,7 @@ function StackedLotsChart({ bidSeries = {}, hourIndices = null, maxValue, effect
             .attr('fill', referenceMaxColor)
             .style('font-size', '10px')
             .style('font-weight', 'bold')
-            .text(`Max Power: ${maxPower.toFixed(0)} MW`)
+            .text(`Available now: ${maxPower.toFixed(0)} MW`)
         }
         
         if (minPower > 0 && minPower <= yMax) {
@@ -1073,7 +1085,7 @@ function StackedLotsChart({ bidSeries = {}, hourIndices = null, maxValue, effect
             .text(`Min Load: ${minPower.toFixed(0)} MW`)
         }
       } else if (['solar', 'wind'].includes(deviceTypeNorm)) {
-        // Renewables: max_power, expected output
+        // Renewables: current operational availability, expected output
         const configuredMaxPower = Number(deviceParams.max_power_mw || deviceParams.capacity_mw || 0)
         const maxPower = Number.isFinite(Number(effectiveLimitMw)) && Number(effectiveLimitMw) > 0
           ? Number(effectiveLimitMw)
@@ -1135,7 +1147,7 @@ function StackedLotsChart({ bidSeries = {}, hourIndices = null, maxValue, effect
             .attr('fill', referenceMaxColor)
             .style('font-size', '10px')
             .style('font-weight', 'bold')
-            .text(`Max Power: ${maxPower.toFixed(0)} MW`)
+            .text(`Available now: ${maxPower.toFixed(0)} MW`)
         }
         
         if (expected > 0 && expected <= yMax && !maxEqualsExpected) {
@@ -1180,7 +1192,7 @@ function StackedLotsChart({ bidSeries = {}, hourIndices = null, maxValue, effect
             .attr('fill', referenceMaxColor)
             .style('font-size', '10px')
             .style('font-weight', 'bold')
-            .text(`Max Power: ${maxPower.toFixed(0)} MW`)
+            .text(`Available now: ${maxPower.toFixed(0)} MW`)
         }
       }
     }
@@ -1251,6 +1263,10 @@ export default function Player() {
   const [submitted, setSubmitted] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [completedTasks, setCompletedTasks] = useState(new Set())
+  const sharedCapacityScale = useMemo(
+    () => getSharedMarketTypeCapacityScale(mode, selectedType, allowedTypes),
+    [mode, selectedType, allowedTypes]
+  )
 
   
   // Persist deviceView to localStorage whenever it changes
@@ -1262,9 +1278,21 @@ export default function Player() {
     }
   }, [deviceView, sessionId])
   const [scenario, setScenario] = useState(null)
+  const [sessionConfigReady, setSessionConfigReady] = useState(false)
   const [hourlySeries, setHourlySeries] = useState([])
   const [damHourlySeries, setDamHourlySeries] = useState([])
   const [idmHourlySeries, setIdmHourlySeries] = useState([])
+  const marketInsightsMarkets = useMemo(() => {
+    const scenarioMarkets = scenario?.config?.markets || scenario?.markets || {}
+    return (cfg.markets && Object.keys(cfg.markets).length > 0)
+      ? cfg.markets
+      : scenarioMarkets
+  }, [cfg.markets, scenario])
+  const idmInsightsEnabled = useMemo(
+    () => getRoundMarketStatus(marketInsightsMarkets, 'idm', cfg.current_round) === 'on',
+    [marketInsightsMarkets, cfg.current_round]
+  )
+  const activeMarketInsightsTab = idmInsightsEnabled && marketInsightsTab === 'idm' ? 'idm' : 'dam'
   const [deviceBids, setDeviceBids] = useState({})
   const [autoBidSettings, setAutoBidSettings] = useState({}) // { [device_id]: { enabled, buyThreshold, sellThreshold } }
   const [biddingEnabled, setBiddingEnabled] = useState(false)
@@ -1304,6 +1332,12 @@ export default function Player() {
     const fallbackEnabled = deviceDef?.bid_count == null && Boolean(globalBidding && deviceDef?.enable_multi_bid === true)
     return getDeviceBidLabels(deviceDef, existingBids, fallbackEnabled)
   }, [biddingEnabled])
+
+  useEffect(() => {
+    if (!idmInsightsEnabled && marketInsightsTab === 'idm') {
+      setMarketInsightsTab('dam')
+    }
+  }, [idmInsightsEnabled, marketInsightsTab])
   
   // Persist activeLot to localStorage whenever it changes
   useEffect(() => {
@@ -1336,6 +1370,7 @@ export default function Player() {
       const markets = (cfg.markets && Object.keys(cfg.markets).length > 0)
         ? cfg.markets
         : scenarioMarkets
+      const defaultMarketTradingStatus = Object.keys(markets).length > 0 ? 'market_code' : 'off'
       const dam = (markets.dam || {})
       const idm = (markets.idm || {})
       const toTrading = (m) => (Array.isArray(m) ? m : (Array.isArray(m?.trading) ? m.trading : []))
@@ -1343,15 +1378,15 @@ export default function Player() {
       const idmTrading = toTrading(idm)
       const summary = Array.from({length: rounds}, (_,i)=>({
         round: i+1,
-        dam: { trading: damTrading[i] || 'market_code' },
-        idm: { trading: idmTrading[i] || 'market_code' }
+        dam: { trading: damTrading[i] || defaultMarketTradingStatus },
+        idm: { trading: idmTrading[i] || defaultMarketTradingStatus }
       }))
       setRoundsSummary(summary)
     } catch(err) {
       console.error('[Player] Failed to build roundsSummary:', err)
       setRoundsSummary([])
     }
-  }, [cfg.markets, cfg.general.rounds])
+  }, [cfg.markets, cfg.general.rounds, scenario, sessionConfigReady])
   
   useEffect(() => {
     forecastSeedKeyRef.current = null
@@ -1410,9 +1445,9 @@ export default function Player() {
     const relevantDevices = (allowedTypes.length > 0 && typeDevices.length > 0)
       ? scenarioDevices.filter((dev) => typeDevices.includes(dev.id))
       : scenarioDevices
-    const capacitySum = relevantDevices.reduce((sum, dev) => sum + (getDeviceEffectiveLimit(dev, cfg).limit || 0), 0)
+    const capacitySum = relevantDevices.reduce((sum, dev) => sum + (getDeviceEffectiveLimit(dev, cfg, sharedCapacityScale).limit || 0), 0)
     return capacitySum > 0 ? capacitySum : dataMax
-  }, [scenarioDevices, allowedTypes.length, typeDevices, hours, cfg])
+  }, [scenarioDevices, allowedTypes.length, typeDevices, hours, cfg, sharedCapacityScale])
 
   const seedForecastData = useCallback(async ({ generalConfig, deviceIds = [], deviceDefs = [] } = {}) => {
     if (!sessionId) return
@@ -1548,6 +1583,7 @@ export default function Player() {
   useEffect(() => {
     const load = async () => {
       if (!sessionId) return
+      setSessionConfigReady(false)
       try {
   // Use briefing endpoint which works for both trainer and player roles
   const { data } = await api.get(`/api/sessions/${sessionId}/briefing`)
@@ -1794,10 +1830,13 @@ export default function Player() {
         } catch (err) {
           console.error('Failed to load historical results:', err)
         }
+
+        setSessionConfigReady(true)
         
       } catch (error) {
         console.error('Failed to load session config:', error)
         showSnack('Failed to load session configuration', 'error')
+        setSessionConfigReady(true)
       }
     }
     load()
@@ -2009,6 +2048,13 @@ export default function Player() {
 
     s.on('round_results_ready', (p) => {
       if (Number(p?.session_id) === Number(sessionId)) {
+        const resultRound = Number(p?.round || 0)
+        if (resultRound > 0) {
+          setCfg((prev) => ({
+            ...prev,
+            current_round: resultRound,
+          }))
+        }
         setStatus('round_results')
       }
     })
@@ -2491,7 +2537,11 @@ export default function Player() {
       const fmt = (d) => `${d.toLocaleDateString()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
       
       // IMPORTANT: cfg.markets (plural) = per-round availability; cfg.market (singular) = global parameters
-      const markets = cfg.markets || {}
+      const scenarioMarkets = scenario?.config?.markets || scenario?.markets || {}
+      const markets = (cfg.markets && Object.keys(cfg.markets).length > 0)
+        ? cfg.markets
+        : scenarioMarkets
+      const defaultMarketTradingStatus = Object.keys(markets).length > 0 ? 'market_code' : 'off'
       const dam = (markets.dam || {})
       const idm = (markets.idm || {})
       const toTrading = (m) => (Array.isArray(m) ? m : (Array.isArray(m?.trading) ? m.trading : []))
@@ -2500,11 +2550,11 @@ export default function Player() {
       const derivedRoundsSummary = Array.from({length: rounds}, (_,i)=>({
         round: i+1,
         dam: { 
-          trading: damTrading[i] || 'market_code',
+          trading: damTrading[i] || defaultMarketTradingStatus,
           clearing: 'always'
         },
         idm: { 
-          trading: idmTrading[i] || 'market_code',
+          trading: idmTrading[i] || defaultMarketTradingStatus,
           clearing: 'always'
         }
       }))
@@ -2630,16 +2680,6 @@ export default function Player() {
           forecastTotal
         }
       })
-
-      if (typeof window !== 'undefined') {
-        window.__marketOverviewDebug = {
-          selectedRound,
-          selectedDamTradingStatus,
-          selectedIdmTradingStatus,
-          markets,
-          roundsSummary: effectiveRoundsSummary
-        }
-      }
 
       setMarketDialogData({
         now: fmt(now),
@@ -2850,11 +2890,11 @@ export default function Player() {
   }, [sessionId, cfg.general, allowedTypes.length, selectedType, typeDevices, scenarioDevices])
 
   const selectedHourlySeries = useMemo(() => {
-    if (marketInsightsTab === 'dam') {
+    if (activeMarketInsightsTab === 'dam') {
       return Array.isArray(damHourlySeries) && damHourlySeries.length > 0 ? damHourlySeries : hourlySeries
     }
     return Array.isArray(idmHourlySeries) && idmHourlySeries.length > 0 ? idmHourlySeries : hourlySeries
-  }, [marketInsightsTab, hourlySeries, damHourlySeries, idmHourlySeries])
+  }, [activeMarketInsightsTab, hourlySeries, damHourlySeries, idmHourlySeries])
 
   const hourlyChartData = useMemo(() => {
     console.log('[Player] hourlyChartData useMemo - selectedHourlySeries:', selectedHourlySeries?.length || 0, 'entries')
@@ -2883,10 +2923,10 @@ export default function Player() {
       .map((entry) => {
         const idx = Number(entry.hour_idx ?? entry.hour_offset ?? 0)
         const safeIdx = Number.isFinite(idx) ? idx : 0
-        const marketPrice = marketInsightsTab === 'idm'
+        const marketPrice = activeMarketInsightsTab === 'idm'
           ? Number(entry.idp ?? entry.smp ?? 0)
           : Number(entry.smp ?? 0)
-        const marketVolume = marketInsightsTab === 'idm'
+        const marketVolume = activeMarketInsightsTab === 'idm'
           ? Number(entry.id_volume_mwh ?? entry.volume ?? 0)
           : Number(entry.volume ?? 0)
         if (baseTime != null) {
@@ -2902,7 +2942,7 @@ export default function Player() {
         return { ...entry, hour_idx: safeIdx, timestamp: safeIdx, label: `h${safeIdx + 1}`, marketPrice, marketVolume }
       })
       .sort((a, b) => a.hour_idx - b.hour_idx)
-  }, [selectedHourlySeries, cfg.general.fake_date, cfg.general.start_time, marketInsightsTab])
+  }, [selectedHourlySeries, cfg.general.fake_date, cfg.general.start_time, activeMarketInsightsTab])
 
   const marketScopedHourlyData = useMemo(() => {
     if (!Array.isArray(hourlyChartData) || hourlyChartData.length === 0) return []
@@ -3017,7 +3057,7 @@ export default function Player() {
   .on('mouseleave', ()=> { tooltip.style('display','none') })
       // axis labels
       g.append('text').attr('x', W/2).attr('y', H+25).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text('Simulation Time')
-      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text(`${marketInsightsTab === 'idm' ? 'IDP' : 'SMP'} (ZAR/MWh)`)
+      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text(`${activeMarketInsightsTab === 'idm' ? 'IDP' : 'SMP'} (ZAR/MWh)`)
     }
 
     // Draw Volume chart
@@ -3094,7 +3134,7 @@ export default function Player() {
       g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text('Volume (MWh)')
     }
     return ()=> { try { tooltip.remove() } catch(_){} }
-  }, [marketScopedHourlyData, chartWidth, cfg.general.start_time, marketInsightsTab, theme.palette.mode])
+  }, [marketScopedHourlyData, chartWidth, cfg.general.start_time, activeMarketInsightsTab, theme.palette.mode])
 
   const onChange = (i, val) => setHours((prev) => prev.map((v, idx) => (idx === i ? Number(val) : v)))
   const onDeviceChange = (did, i, val) => {
@@ -3221,7 +3261,7 @@ export default function Player() {
       typeDevices.forEach(deviceId => {
         const device = scenarioDevices.find(d => d.id === deviceId)
         if (!device) return
-        const maxPower = getDeviceEffectiveLimit(device, cfg).limit || getDeviceMaxCapability(device)
+        const maxPower = getDeviceEffectiveLimit(device, cfg, sharedCapacityScale).limit || (getDeviceMaxCapability(device) * sharedCapacityScale)
         const deviceHoursData = deviceHours[deviceId] || []
 
         if (!Number.isFinite(maxPower) || maxPower <= 0) {
@@ -3710,10 +3750,10 @@ export default function Player() {
   const effectiveDeviceMetrics = useMemo(() => {
     const byId = {}
     ;(scenarioDevices || []).forEach((device) => {
-      byId[device.id] = getEffectiveDeviceMetric(device, cfg)
+      byId[device.id] = getEffectiveDeviceMetric(device, cfg, sharedCapacityScale)
     })
     return byId
-  }, [scenarioDevices, cfg])
+  }, [scenarioDevices, cfg, sharedCapacityScale])
 
   if (loading) {
     return (
@@ -4998,13 +5038,16 @@ export default function Player() {
             <Card>
               <CardContent>
                 <Tabs
-                  value={marketInsightsTab}
-                  onChange={(_, value) => setMarketInsightsTab(value)}
+                  value={activeMarketInsightsTab}
+                  onChange={(_, value) => {
+                    if (value === 'idm' && !idmInsightsEnabled) return
+                    setMarketInsightsTab(value)
+                  }}
                   variant="fullWidth"
                   sx={{ mb: 1 }}
                 >
                   <Tab value="dam" label="Day-Ahead" />
-                  <Tab value="idm" label="Intraday" />
+                  {idmInsightsEnabled && <Tab value="idm" label="Intraday" />}
                 </Tabs>
 
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
@@ -5023,18 +5066,18 @@ export default function Player() {
                   sessionId={sessionId}
                   currentRound={cfg.current_round}
                   roundSpanHours={Number(cfg.general.round_span_hours || 6)}
-                  marketMode={marketInsightsTab}
+                  marketMode={activeMarketInsightsTab}
                 />
 
                 {cfg.current_round > 1 && (
                   <>
                     <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
-                      {marketInsightsTab === 'dam' ? 'SMP' : 'IDP'} last round ({marketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
+                      {activeMarketInsightsTab === 'dam' ? 'SMP' : 'IDP'} last round ({activeMarketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
                     </Typography>
                     <svg ref={smpRef} width="100%" height={100} style={{ border: `1px solid ${theme.palette.divider}`, background: isDark ? theme.palette.background.default : theme.palette.background.paper }} />
 
                     <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
-                      Volume last round ({marketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
+                      Volume last round ({activeMarketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
                     </Typography>
                     <svg ref={volRef} width="100%" height={100} style={{ border: `1px solid ${theme.palette.divider}`, background: isDark ? theme.palette.background.default : theme.palette.background.paper }} />
                   </>

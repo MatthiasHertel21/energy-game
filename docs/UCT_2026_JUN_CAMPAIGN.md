@@ -26,7 +26,7 @@ The scenario names intentionally match the Excel column names exactly.
 
 - Focus: Market Foundations
 - Learning objective: understand who does what, when, and how in the DAM
-- App design: generator-only DAM setup with three producer portfolios sized at 400 MW, 500 MW, and 600 MW
+- App design: generator-only DAM setup with three producer portfolios mapped to low-, mid-, and high-cost coal assets with a shared technical power ceiling of 1,000 MW each
 - Market simplification: single zone, fixed synthetic demand, no forecast uncertainty, no IDM
 - Didactic intent: isolate merit order, SMP formation, dispatch logic, and infra-marginal rent without strategic or forecast complexity
 - Player guidance: one task in every round and required revenue targets for each generator portfolio

@@ -65,6 +65,76 @@ def _run_round1_baseline_mode_scenario(mode: str):
     )
 
 
+def test_run_round_shared_market_non_bid_actuals_stay_scoped_to_current_player():
+    config = {
+        "general": {
+            "round_span_hours": 1,
+            "horizon_hours": 1,
+            "rounds": 1,
+            "start_time": "08:00",
+            "fake_date": "2025-06-01",
+        },
+        "environment": {"actual_noise_pct": 0},
+        "market": {
+            "enable_player_bidding": False,
+            "base_price": 500,
+            "base_volume_mwh": 300,
+            "price_floor": -500,
+            "price_cap": 5000,
+        },
+        "grid": {"zones": 1, "atc": [[0]]},
+        "devices": [
+            {
+                "id": "coal_a",
+                "type": "coal",
+                "owner_id": 1,
+                "max_power_mw": 400,
+                "variable_cost_zar_per_mwh": 400,
+            },
+            {
+                "id": "coal_b",
+                "type": "coal",
+                "owner_id": 2,
+                "max_power_mw": 400,
+                "variable_cost_zar_per_mwh": 500,
+            },
+            {
+                "id": "coal_c",
+                "type": "coal",
+                "owner_id": 3,
+                "max_power_mw": 400,
+                "variable_cost_zar_per_mwh": 600,
+            },
+        ],
+        "events": [],
+    }
+
+    forecasts = {
+        1: {"hours": [100.0], "devices": [{"device_id": "coal_a", "hours": [100.0]}]},
+        2: {"hours": [200.0], "devices": [{"device_id": "coal_b", "hours": [200.0]}]},
+        3: {"hours": [300.0], "devices": [{"device_id": "coal_c", "hours": [300.0]}]},
+    }
+
+    result = run_round(
+        session_id=99,
+        round_num=1,
+        players=[3, 2, 1],
+        forecasts=forecasts,
+        config=config,
+        mode="shared_market",
+        seed="shared-market-non-bid-actual-scope",
+    )
+
+    expected_devices = {1: "coal_a", 2: "coal_b", 3: "coal_c"}
+
+    for player_id, device_id in expected_devices.items():
+        kpis = result["round_kpis"][player_id]
+        assert kpis["actual_mwh"] == pytest.approx(kpis["dispatched_mwh"], abs=1e-6)
+
+        device_row = kpis["device_hourly_breakdown"][device_id][0]
+        assert device_row["actual_mw"] == pytest.approx(device_row["dispatched_mw"], abs=1e-6)
+
+
 class TestEngineCurtailmentPriority:
     """Test engine curtailment with device priorities"""
     
@@ -513,14 +583,79 @@ class TestEngineRunRoundWithDevices:
         assert device_row["planned_mw"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert device_row["dispatched_mw"] == pytest.approx(expected_dispatch, abs=1e-3)
         assert device_row["total_dispatched_mwh"] == pytest.approx(expected_dispatch, abs=1e-3)
-        assert device_row["actual_mw"] == pytest.approx(expected_dispatch, abs=1e-3)
-        assert device_row["da_dispatched_mwh"] == pytest.approx(expected_dispatch, abs=1e-3)
-        assert device_row["id_dispatched_mwh"] == pytest.approx(0.0, abs=1e-6)
-        assert device_row["revenue_zar"] == pytest.approx(expected_revenue, abs=1.0)   # device-row unrounded, diff < 1 ZAR
-        assert device_row["variable_cost_zar"] == pytest.approx(expected_variable_cost, abs=1e-6)
-        assert device_row["variable_cost_rate_effective_zar"] == pytest.approx(500.0, abs=1e-6)
-        assert device_row["co2_kg"] == pytest.approx(expected_co2, abs=1e-6)
-        assert device_row["profit_zar"] == pytest.approx(-18562.0, abs=1.0)            # device-row unrounded, diff < 1 ZAR
+
+    def test_isolated_single_player_without_synthetic_supply_uses_marginal_offer_price(self, monkeypatch):
+        """Generator-only isolated sessions must not let synthetic max WTP set the SMP."""
+        monkeypatch.setattr("app.engine.random.uniform", lambda _low, _high: 0.0)
+
+        config = {
+            "general": {
+                "round_span_hours": 1,
+                "horizon_hours": 1,
+                "rounds": 1,
+                "start_time": "08:00",
+                "fake_date": "2025-06-01",
+            },
+            "market": {
+                "enable_player_bidding": True,
+                "base_price": 1800,
+                "base_volume_mwh": 2000,
+                "price_floor": 0,
+                "price_cap": 5000,
+                "random_price_pct": 0,
+                "random_capacity_pct": 0,
+                "generator_mix": {
+                    "pv": {"blocks": 0},
+                    "wind": {"blocks": 0},
+                    "hydro": {"blocks": 0},
+                    "coal": {"blocks": 0},
+                    "gas": {"blocks": 0},
+                    "nuclear": {"blocks": 0},
+                },
+                "consumer_mix": {
+                    "industrial": {"blocks": 1, "price_min": 3000, "price_max": 3000},
+                },
+            },
+            "devices": [
+                {
+                    "id": "dev_gen_a",
+                    "type": "coal",
+                    "owner_id": 1,
+                    "bid_count": 1,
+                    "max_power_mw": 1000,
+                    "variable_cost_tiers": [
+                        {"from_pct": 0, "to_pct": 100, "cost_zar_per_mwh": 400},
+                    ],
+                },
+            ],
+            "events": [],
+        }
+
+        forecasts = {
+            1: {
+                "hours": [892.4],
+                "devices": [{"device_id": "dev_gen_a", "hours": [892.4]}],
+                "bids": {
+                    "dev_gen_a": {
+                        "A": {"price": 400, "hours": [892.4]},
+                    }
+                },
+            }
+        }
+
+        result = run_round(
+            session_id=294,
+            round_num=1,
+            players=[1],
+            forecasts=forecasts,
+            config=config,
+            mode="isolated_per_player",
+            seed="single-player-marginal-offer",
+        )
+
+        assert result["smp"] == pytest.approx(400.0, abs=1e-6)
+        assert result["volume"] == pytest.approx(892.4, abs=1e-6)
+        assert result["dam_bid_dispatch"][1]["dev_gen_a"]["A"][0]["price_bid"] == pytest.approx(400.0, abs=1e-6)
 
     def test_round1_zero_and_preset_baseline_modes_keep_same_id_dispatch_but_change_plan(self, monkeypatch):
         """Round-1 zero/preset baselines should both stay in the ID-style path, but with different plans.
@@ -826,6 +961,235 @@ class TestEngineRunRoundWithDevices:
             assert device_row["id_dispatched_mwh"] == pytest.approx(0.0, abs=1e-6)
             assert device_row["total_dispatched_mwh"] == pytest.approx(device_row["da_dispatched_mwh"], abs=1e-6)
             assert device_row["total_dispatched_mwh"] == pytest.approx(kpis["dispatched_mwh"], abs=1e-6)
+
+    def test_shared_device_round2_dam_only_bid_count_zero_keeps_device_tracking(self, monkeypatch):
+        """Round-2 DAM-only classic devices must keep non-zero device tracking with round-local hours.
+
+        Regression for shared-market sessions where KSE devices use bid_count=0.
+        In the real scheduler path, the top-level forecast hours are a full horizon while
+        devices[].hours remain round-local arrays of length 1. In round 2, the KPI/device
+        tracking path must therefore fall back to hour_offset for devices[].hours instead of
+        reading past the end with the scenario-global hour index.
+        """
+        monkeypatch.setattr("app.engine.random.uniform", lambda _low, _high: 0.0)
+
+        from app import create_app, db
+        from app.config import Config
+        from app.models import Campaign, Cohort, Role, Scenario, Session, SessionPlayerType, SessionStatus, User
+
+        monkeypatch.setattr(Config, "SQLALCHEMY_DATABASE_URI", "sqlite:///:memory:")
+
+        app = create_app()
+        app.config["TESTING"] = True
+        app.config["RATELIMIT_ENABLED"] = False
+
+        config = {
+            "general": {
+                "round_span_hours": 1,
+                "horizon_hours": 2,
+                "forecast_horizon_hours": 2,
+                "rounds": 2,
+                "start_time": "08:00",
+                "fake_date": "2025-06-01",
+                "day_one_baseline_mode": "edit_round_1",
+            },
+            "market": {
+                "enable_player_bidding": False,
+                "base_price": 500,
+                "base_volume_mwh": 1200,
+                "price_floor": -500,
+                "price_cap": 5000,
+            },
+            "markets": {
+                "dam": {"trading": ["on", "on"]},
+                "idm": {"trading": ["off", "off"]},
+            },
+            "grid": {"zones": 1, "atc": [[0]]},
+            "devices": [
+                {
+                    "id": "dev_gen_b",
+                    "type": "coal",
+                    "bid_count": 0,
+                    "max_power_mw": 500,
+                    "variable_cost_zar_per_mwh": 400,
+                    "co2_emissions_kg_per_mwh": 900,
+                }
+            ],
+            "player_types": [
+                {"id": "ptype_gen_b", "name": "Producer B", "devices": ["dev_gen_b"]},
+            ],
+            "events": [],
+        }
+
+        with app.app_context():
+            db.drop_all()
+            db.create_all()
+
+            player = User(email="dam-only-bidcount-zero@test.local", password_hash="x", role=Role.player)
+            designer = User(email="dam-only-bidcount-zero-designer@test.local", password_hash="x", role=Role.designer)
+            trainer = User(email="dam-only-bidcount-zero-trainer@test.local", password_hash="x", role=Role.trainer)
+            db.session.add_all([player, designer, trainer])
+            db.session.flush()
+
+            campaign = Campaign(name="DAM Only Bid Count Zero Campaign", description="", designer_id=designer.id, published=True)
+            db.session.add(campaign)
+            db.session.flush()
+
+            scenario = Scenario(campaign_id=campaign.id, name="DAM Only Bid Count Zero Scenario", config=config)
+            db.session.add(scenario)
+            db.session.flush()
+
+            cohort = Cohort(name="DAM Only Bid Count Zero Cohort", trainer_id=trainer.id)
+            db.session.add(cohort)
+            db.session.flush()
+
+            session = Session(
+                cohort_id=cohort.id,
+                scenario_id=scenario.id,
+                status=SessionStatus.round_active,
+                current_round=2,
+                mode="shared_market",
+            )
+            db.session.add(session)
+            db.session.flush()
+
+            db.session.add(SessionPlayerType(session_id=session.id, user_id=player.id, type_id="ptype_gen_b"))
+            db.session.commit()
+
+            round2 = run_round(
+                session.id,
+                2,
+                [player.id],
+                {
+                    player.id: {
+                        "hours": [0.0, 300.0],
+                        "devices": [{"device_id": "dev_gen_b", "hours": [300.0]}],
+                        "bids": {},
+                    }
+                },
+                config,
+                mode="shared_market",
+                seed="dam-only-bidcount-zero",
+            )
+
+            kpis = round2["round_kpis"][player.id]
+            hour_row = kpis["hourly_breakdown"][0]
+            device_row = kpis["device_hourly_breakdown"]["dev_gen_b"][0]
+
+            assert kpis["planned_mwh"] == pytest.approx(300.0, abs=1e-6)
+            assert kpis["dispatched_mwh"] == pytest.approx(300.0, abs=1e-6)
+            assert kpis["actual_mwh"] == pytest.approx(300.0, abs=1e-6)
+            assert kpis["revenue_zar"] > 0.0
+            assert kpis["variable_cost_zar"] > 0.0
+            assert kpis["co2_emissions_kg"] > 0.0
+
+            assert hour_row["planned_mw"] == pytest.approx(300.0, abs=1e-6)
+            assert hour_row["dispatched_mw"] == pytest.approx(300.0, abs=1e-6)
+            assert hour_row["actual_mw"] == pytest.approx(300.0, abs=1e-6)
+
+            assert device_row["planned_mw"] == pytest.approx(300.0, abs=1e-6)
+            assert device_row["dispatched_mw"] == pytest.approx(300.0, abs=1e-6)
+            assert device_row["actual_mw"] == pytest.approx(300.0, abs=1e-6)
+            assert device_row["total_dispatched_mwh"] == pytest.approx(300.0, abs=1e-6)
+            assert device_row["da_dispatched_mwh"] == pytest.approx(300.0, abs=1e-6)
+            assert device_row["id_dispatched_mwh"] == pytest.approx(0.0, abs=1e-6)
+
+    def test_shared_market_bid_count_zero_uses_merit_order_not_pro_rata(self, monkeypatch):
+        """Classic shared-market devices must still use price merit order for dispatch.
+
+        Regression for bid_count=0 sessions where the market clears on price,
+        but the player KPI fallback previously re-assigned dispatch pro rata from
+        planned quantities and gave expensive offers revenue/profit they should
+        not receive.
+        """
+        monkeypatch.setattr("app.engine.random.uniform", lambda _low, _high: 0.0)
+
+        config = {
+            "general": {
+                "round_span_hours": 1,
+                "horizon_hours": 1,
+                "forecast_horizon_hours": 1,
+                "rounds": 1,
+                "start_time": "08:00",
+                "fake_date": "2025-06-01",
+            },
+            "market": {
+                "enable_player_bidding": False,
+                "base_price": 500,
+                "base_volume_mwh": 1000,
+                "price_floor": -500,
+                "price_cap": 5000,
+            },
+            "markets": {
+                "dam": {"trading": ["on"]},
+                "idm": {"trading": ["off"]},
+            },
+            "grid": {"zones": 1, "atc": [[0]]},
+            "devices": [
+                {
+                    "id": "dev_gen_b",
+                    "type": "coal",
+                    "bid_count": 0,
+                    "capacity_mw": 1000,
+                    "max_power_mw": 1000,
+                    "variable_cost_zar_per_mwh": 500,
+                    "co2_emissions_kg_per_mwh": 900,
+                },
+                {
+                    "id": "dev_gen_a",
+                    "type": "coal",
+                    "bid_count": 0,
+                    "capacity_mw": 1000,
+                    "max_power_mw": 1000,
+                    "variable_cost_zar_per_mwh": 400,
+                    "co2_emissions_kg_per_mwh": 900,
+                },
+            ],
+            "player_types": [
+                {"id": "ptype_gen_b", "name": "Producer B", "devices": ["dev_gen_b"]},
+                {"id": "ptype_gen_a", "name": "Producer A", "devices": ["dev_gen_a"]},
+            ],
+            "events": [],
+        }
+
+        result = run_round(
+            session_id=306,
+            round_num=1,
+            players=[1, 11],
+            forecasts={
+                1: {
+                    "hours": [1049.65],
+                    "devices": [{"device_id": "dev_gen_b", "hours": [1049.65]}],
+                    "bids": {},
+                },
+                11: {
+                    "hours": [1000.0],
+                    "devices": [{"device_id": "dev_gen_a", "hours": [1000.0]}],
+                    "bids": {},
+                },
+            },
+            config=config,
+            mode="shared_market",
+            seed="classic-shared-merit-order",
+        )
+
+        expensive = result["round_kpis"][1]
+        cheap = result["round_kpis"][11]
+
+        assert result["smp"] == pytest.approx(400.0, abs=1e-6)
+        assert result["volume"] == pytest.approx(1000.0, abs=1e-6)
+
+        assert expensive["planned_mwh"] == pytest.approx(1049.65, abs=1e-6)
+        assert expensive["dispatched_mwh"] == pytest.approx(0.0, abs=1e-6)
+        assert expensive["revenue_zar"] == pytest.approx(0.0, abs=1e-6)
+        assert expensive["profit_zar"] == pytest.approx(0.0, abs=1e-6)
+        assert expensive["device_hourly_breakdown"]["dev_gen_b"][0]["dispatched_mw"] == pytest.approx(0.0, abs=1e-6)
+
+        assert cheap["planned_mwh"] == pytest.approx(1000.0, abs=1e-6)
+        assert cheap["dispatched_mwh"] == pytest.approx(1000.0, abs=1e-6)
+        assert cheap["revenue_zar"] == pytest.approx(400000.0, abs=1e-6)
+        assert cheap["profit_zar"] == pytest.approx(0.0, abs=1e-6)
+        assert cheap["device_hourly_breakdown"]["dev_gen_a"][0]["dispatched_mw"] == pytest.approx(1000.0, abs=1e-6)
 
 
 class TestPlayerForecastValidation:

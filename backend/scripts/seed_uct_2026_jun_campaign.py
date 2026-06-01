@@ -422,6 +422,9 @@ def _add_retail_player(config: dict, device_id: str, device_name: str, baseline:
 
 def _build_level1() -> dict:
     config = _base_generator_only_config(SCENARIO_NAME_LEVEL1, "2026-06-08", multi_bid=False)
+    for device in config["devices"]:
+        device["capacity_mw"] = 1000
+        device["max_power_mw"] = 1000
     config["general"]["allow_dispatch_above_capacity"] = True
     config["balancing"] = {
         "price_mode": "smp_multiplier",
@@ -537,6 +540,9 @@ def _build_level1() -> dict:
 def _build_level2a() -> dict:
     config = _base_generator_only_config(SCENARIO_NAME_LEVEL2A, "2026-06-09", multi_bid=True)
     config = _add_retail_player(config, "dev_l2a_retail", "Retail Load Portfolio", 700, 950, 1, "ptype_l2a_retail")
+    for device in config["devices"][:3]:
+        device["capacity_mw"] = 1000
+        device["max_power_mw"] = 1000
     config["devices"][0]["name"] = "Coal Unit A (Low Cost)"
     config["devices"][1]["name"] = "Coal Unit B (Mid Cost)"
     config["devices"][2]["name"] = "Coal Unit C (High Cost)"
@@ -660,6 +666,9 @@ def _build_level2a() -> dict:
 def _build_level2b() -> dict:
     config = _base_generator_only_config(SCENARIO_NAME_LEVEL2B, "2026-06-09", multi_bid=True)
     config = _add_retail_player(config, "dev_l2b_retail", "Retail Load Portfolio", 700, 950, 2, "ptype_l2b_retail")
+    for device in config["devices"][:3]:
+        device["capacity_mw"] = 1000
+        device["max_power_mw"] = 1000
     config["devices"][0]["name"] = "Zone 1 Coal Unit A"
     config["devices"][1]["name"] = "Zone 1 Coal Unit B"
     config["devices"][2]["name"] = "Zone 2 Coal Unit C"
@@ -920,6 +929,8 @@ def _base_forecast_config(name: str, fake_date: str) -> dict:
 
 def _build_level3a() -> dict:
     config = _base_forecast_config(SCENARIO_NAME_LEVEL3A, "2026-06-10")
+    config["devices"][0]["capacity_mw"] = 1000
+    config["devices"][0]["max_power_mw"] = 1000
     config["devices"][0]["name"] = "Dispatchable Generator Portfolio"
     config["devices"][1]["name"] = "Retail Demand Portfolio"
     config["devices"][2]["name"] = "Solar Asset"

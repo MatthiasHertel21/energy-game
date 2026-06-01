@@ -109,6 +109,37 @@ def _safe_market_number(value):
     return num
 
 
+def _get_market_status_for_round(config: dict, market_key: str, round_num: int):
+    markets_cfg = (config or {}).get("markets", {})
+    round_idx = max(0, int(round_num or 1) - 1)
+    market_data = markets_cfg.get(market_key, [])
+
+    if isinstance(market_data, list):
+        return market_data[round_idx] if round_idx < len(market_data) else "market_code"
+    if isinstance(market_data, dict):
+        trading_array = market_data.get("trading", [])
+        if isinstance(trading_array, list):
+            return trading_array[round_idx] if round_idx < len(trading_array) else "market_code"
+    return "market_code"
+
+
+def _strip_intraday_hourly_metadata(rows: Any):
+    if not isinstance(rows, list):
+        return []
+
+    stripped_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            stripped_rows.append(row)
+            continue
+        cleaned = dict(row)
+        cleaned.pop("idp", None)
+        cleaned.pop("id_trade_count", None)
+        cleaned.pop("id_volume_mwh", None)
+        stripped_rows.append(cleaned)
+    return stripped_rows
+
+
 def _summarize_device_settlement(device_hourly_breakdown: Any):
     if not isinstance(device_hourly_breakdown, dict):
         return None
@@ -227,7 +258,7 @@ def _summarize_device_settlement(device_hourly_breakdown: Any):
             "id_dispatched_mwh": round(bucket["id_dispatched_mwh"], 3),
             "variable_cost_zar": round(bucket["variable_cost_zar"], 0),
             "fixed_cost_zar": round(bucket["fixed_cost_zar"], 0),
-            "imbalance_cost_zar": round(bucket["imbalance_cost_zar"], 0),
+            "imbalance_cost_zar": round(bucket["imbalance_cost_zar"], 2),
             "battery_charge_cost_zar": round(bucket["battery_charge_cost_zar"], 2),
             "atc_dispatch_cost_zar": round(bucket["atc_dispatch_cost_zar"], 0),
             "grid_constraint_cost_zar": round(bucket["grid_constraint_cost_zar"], 0),
@@ -249,7 +280,7 @@ def _summarize_device_settlement(device_hourly_breakdown: Any):
         "id_revenue_zar": round(sum(row["id_revenue_zar"] for row in hourly_rows), 0),
         "variable_cost_zar": round(sum(row["variable_cost_zar"] for row in hourly_rows), 0),
         "fixed_cost_zar": round(sum(row["fixed_cost_zar"] for row in hourly_rows), 0),
-        "imbalance_cost_zar": round(sum(row["imbalance_cost_zar"] for row in hourly_rows), 0),
+        "imbalance_cost_zar": round(sum(row["imbalance_cost_zar"] for row in hourly_rows), 2),
         "battery_charge_cost_zar": round(sum(row["battery_charge_cost_zar"] for row in hourly_rows), 2),
         "atc_dispatch_cost_zar": round(sum(row["atc_dispatch_cost_zar"] for row in hourly_rows), 0),
         "grid_constraint_cost_zar": round(sum(row["grid_constraint_cost_zar"] for row in hourly_rows), 0),
@@ -272,6 +303,373 @@ def _merge_hourly_breakdown(existing_rows: Any, derived_rows: list[dict]):
         existing_by_hour[row["hour"]] = merged
 
     return [existing_by_hour[hour] for hour in sorted(existing_by_hour)]
+
+
+def _backfill_kpis_from_device_settlement(kpis: dict):
+    device_hourly_breakdown = kpis.get("device_hourly_breakdown") if isinstance(kpis.get("device_hourly_breakdown"), dict) else {}
+    device_settlement_summary = _summarize_device_settlement(device_hourly_breakdown)
+    if device_settlement_summary and (
+        abs(float(kpis.get("revenue_zar") or 0.0) - float(device_settlement_summary["revenue_zar"])) >= 0.5
+        or abs(float(kpis.get("profit_zar") or 0.0) - float(device_settlement_summary["profit_zar"])) >= 0.5
+        or abs(float(kpis.get("imbalance_cost_zar") or 0.0) - float(device_settlement_summary["imbalance_cost_zar"])) >= 0.5
+        or abs(float(kpis.get("co2_emissions_kg") or 0.0) - float(device_settlement_summary["co2_emissions_kg"])) >= 0.5
+        or abs(float(kpis.get("dispatched_mwh") or 0.0) - float(device_settlement_summary["dispatched_mwh"])) >= 0.5
+    ):
+        kpis["hourly_breakdown"] = _merge_hourly_breakdown(
+            kpis.get("hourly_breakdown"),
+            device_settlement_summary["hourly_rows"],
+        )
+        for key in [
+            "planned_mwh",
+            "dispatched_mwh",
+            "actual_mwh",
+            "imbalance_mwh",
+            "revenue_zar",
+            "variable_cost_zar",
+            "fixed_cost_zar",
+            "imbalance_cost_zar",
+            "battery_charge_cost_zar",
+            "atc_dispatch_cost_zar",
+            "grid_constraint_cost_zar",
+            "congestion_revenue_zar",
+            "profit_zar",
+            "co2_emissions_kg",
+        ]:
+            kpis[key] = device_settlement_summary[key]
+    return kpis
+
+
+def _reconcile_device_hourly_breakdown_with_balancing(device_hourly_breakdown: Any, balancing_map: dict[str, dict[Any, dict]]):
+    if not isinstance(device_hourly_breakdown, dict) or not isinstance(balancing_map, dict):
+        return device_hourly_breakdown
+
+    for dev_id, rows in device_hourly_breakdown.items():
+        if not isinstance(rows, list):
+            continue
+        bal_by_hour = balancing_map.get(str(dev_id))
+        if not isinstance(bal_by_hour, dict):
+            continue
+
+        for entry in rows:
+            if not isinstance(entry, dict):
+                continue
+            hour_idx = entry.get("hour")
+            if hour_idx is None:
+                continue
+            bal = bal_by_hour.get(hour_idx)
+            if not isinstance(bal, dict):
+                continue
+
+            field_map = {
+                "da_dispatched_mwh": "da_dispatched_mwh",
+                "id_dispatched_mwh": "id_dispatched_mwh",
+                "total_dispatched_mwh": "total_dispatched_mwh",
+                "actual_mw": "actual_mwh",
+                "imbalance_mwh": "imbalance_mwh",
+                "imbalance_cost_zar": "balancing_cost_zar",
+            }
+            for dest_key, source_key in field_map.items():
+                source_value = bal.get(source_key)
+                if source_value is None:
+                    continue
+                current_value = entry.get(dest_key)
+                if current_value is None or abs(_safe_market_number(current_value) - _safe_market_number(source_value)) > 1e-6:
+                    entry[dest_key] = source_value
+                    entry["_settlement_backfill_required"] = True
+
+            total_dispatched = entry.get("total_dispatched_mwh")
+            if total_dispatched is not None and (
+                entry.get("dispatched_mw") is None
+                or abs(_safe_market_number(entry.get("dispatched_mw")) - _safe_market_number(total_dispatched)) > 1e-6
+            ):
+                entry["dispatched_mw"] = total_dispatched
+                entry["_settlement_backfill_required"] = True
+
+            if "network_shortfall_mwh" in entry:
+                entry["network_shortfall_mwh"] = 0.0
+                entry["_settlement_backfill_required"] = True
+            if "network_shortfall_cost_zar" in entry:
+                entry["network_shortfall_cost_zar"] = 0.0
+                entry["_settlement_backfill_required"] = True
+
+    return device_hourly_breakdown
+
+
+def _build_balancing_map(raw_details: Any):
+    balancing_by_dev = (raw_details.get("balancing") or {}) if isinstance(raw_details, dict) else {}
+    balancing_map = {}
+    if isinstance(balancing_by_dev, dict):
+        for dev_id, rows in balancing_by_dev.items():
+            if not isinstance(rows, list):
+                continue
+            by_hour = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                hour_idx = row.get("hour_idx", row.get("scenario_hour_idx", row.get("hour")))
+                if hour_idx is None:
+                    continue
+                try:
+                    by_hour[int(hour_idx)] = row
+                except Exception:
+                    continue
+            balancing_map[str(dev_id)] = by_hour
+    return balancing_map
+
+
+def _repair_device_settlement_kpis(
+    kpis: dict,
+    raw_details: Any,
+    cfg_devices: list[dict] | None = None,
+    player_device_ids: set[str] | None = None,
+    da_smp: float | None = None,
+    use_da_baseline_settlement: bool = True,
+):
+    device_hourly_breakdown = kpis.get("device_hourly_breakdown") if isinstance(kpis.get("device_hourly_breakdown"), dict) else {}
+    if not device_hourly_breakdown:
+        return kpis
+
+    cfg_devices = cfg_devices or []
+    player_device_ids = player_device_ids or set()
+    device_type_by_id = {str(d.get("id")): str(d.get("type", "")).lower() for d in cfg_devices if isinstance(d, dict) and d.get("id")}
+    balancing_map = _build_balancing_map(raw_details)
+
+    _reconcile_device_hourly_breakdown_with_balancing(device_hourly_breakdown, balancing_map)
+
+    effective_da_smp = da_smp if use_da_baseline_settlement else None
+
+    total_revenue = 0.0
+    for dev_id, rows in device_hourly_breakdown.items():
+        dev_id_s = str(dev_id)
+        if player_device_ids and dev_id_s not in player_device_ids:
+            continue
+        if not isinstance(rows, list):
+            continue
+
+        is_load = "load" in device_type_by_id.get(dev_id_s, "")
+        sign = -1.0 if is_load else 1.0
+        bal_by_hour = balancing_map.get(dev_id_s, {})
+
+        for entry in rows:
+            if not isinstance(entry, dict):
+                continue
+            hour_idx = entry.get("hour")
+            bal = bal_by_hour.get(hour_idx) if hour_idx is not None else None
+
+            if bal and entry.get("da_dispatched_mwh") is None:
+                entry["da_dispatched_mwh"] = bal.get("da_dispatched_mwh", 0.0)
+            if bal and entry.get("id_dispatched_mwh") is None:
+                entry["id_dispatched_mwh"] = bal.get("id_dispatched_mwh", 0.0)
+            if bal and entry.get("total_dispatched_mwh") is None:
+                entry["total_dispatched_mwh"] = bal.get("total_dispatched_mwh", 0.0)
+
+            dispatched_hint = entry.get("total_dispatched_mwh")
+            if dispatched_hint is None:
+                dispatched_hint = entry.get("dispatched_mw")
+            try:
+                dispatched_hint = float(dispatched_hint or 0.0)
+            except Exception:
+                dispatched_hint = 0.0
+
+            try:
+                revenue_existing = float(entry.get("revenue_zar") or 0.0)
+            except Exception:
+                revenue_existing = 0.0
+
+            current_market_price_hint = entry.get("market_price_zar", entry.get("smp"))
+            try:
+                current_market_price_hint = float(current_market_price_hint or 0.0)
+            except Exception:
+                current_market_price_hint = 0.0
+
+            stale_baseline_price = False
+            if effective_da_smp is None and current_market_price_hint > 0:
+                try:
+                    existing_da_price = float(entry.get("da_price_zar") or 0.0)
+                except Exception:
+                    existing_da_price = 0.0
+                stale_baseline_price = abs(existing_da_price - current_market_price_hint) > 1e-6
+
+            settlement_backfill_required = bool(entry.pop("_settlement_backfill_required", False))
+            needs_revenue_backfill = (
+                entry.get("revenue_zar") is None
+                or entry.get("da_revenue_zar") is None
+                or entry.get("id_revenue_zar") is None
+                or (abs(revenue_existing) < 1e-9 and abs(dispatched_hint) >= 1e-9)
+                or settlement_backfill_required
+                or stale_baseline_price
+            )
+
+            if needs_revenue_backfill:
+                market_price = entry.get("market_price_zar", entry.get("smp"))
+                try:
+                    market_price = float(market_price or 0.0)
+                except Exception:
+                    market_price = 0.0
+
+                da_price = effective_da_smp if effective_da_smp is not None else market_price
+                id_price = market_price
+
+                try:
+                    da_mwh = float(entry.get("da_dispatched_mwh") or 0.0)
+                    id_mwh = float(entry.get("id_dispatched_mwh") or 0.0)
+                except Exception:
+                    da_mwh = 0.0
+                    id_mwh = 0.0
+
+                if da_mwh == 0.0 and id_mwh == 0.0:
+                    try:
+                        fallback_total = float(entry.get("total_dispatched_mwh") or entry.get("dispatched_mw") or 0.0)
+                    except Exception:
+                        fallback_total = 0.0
+
+                    if effective_da_smp is not None:
+                        da_mwh = fallback_total
+                        id_mwh = 0.0
+                    else:
+                        id_mwh = fallback_total
+                        da_mwh = 0.0
+
+                    entry["da_dispatched_mwh"] = entry.get("da_dispatched_mwh", round(da_mwh, 3))
+                    entry["id_dispatched_mwh"] = entry.get("id_dispatched_mwh", round(id_mwh, 3))
+                    entry["total_dispatched_mwh"] = entry.get("total_dispatched_mwh", round(da_mwh + id_mwh, 3))
+
+                da_rev = sign * da_mwh * da_price
+                id_rev = sign * id_mwh * id_price
+                entry["da_price_zar"] = round(da_price, 2)
+                entry["id_price_zar"] = round(id_price, 2)
+                entry["da_revenue_zar"] = round(da_rev, 2)
+                entry["id_revenue_zar"] = round(id_rev, 2)
+                entry["revenue_zar"] = round(da_rev + id_rev, 2)
+                variable_cost = _safe_market_number(entry.get("variable_cost_zar"))
+                fixed_cost = _safe_market_number(entry.get("fixed_cost_zar"))
+                imbalance_cost = _safe_market_number(entry.get("imbalance_cost_zar"))
+                battery_charge_cost = _safe_market_number(entry.get("battery_charge_cost_zar"))
+                congestion_revenue = _safe_market_number(entry.get("congestion_revenue_zar"))
+                atc_cost = _safe_market_number(entry.get("network_shortfall_cost_zar"))
+                if abs(atc_cost) < 1e-9:
+                    atc_cost = _safe_market_number(entry.get("atc_dispatch_cost_zar"))
+                if abs(atc_cost) < 1e-9:
+                    atc_cost = _safe_market_number(entry.get("grid_constraint_cost_zar"))
+                entry["profit_zar"] = round(
+                    (da_rev + id_rev)
+                    - variable_cost
+                    - fixed_cost
+                    - imbalance_cost
+                    - battery_charge_cost
+                    - atc_cost
+                    + congestion_revenue,
+                    2,
+                )
+
+            try:
+                total_revenue += float(entry.get("revenue_zar") or 0.0)
+            except Exception:
+                pass
+
+    if abs(float(kpis.get("revenue_zar") or 0.0)) < 1e-9 and abs(total_revenue) >= 1e-9:
+        kpis["revenue_zar"] = total_revenue
+
+    return _backfill_kpis_from_device_settlement(kpis)
+
+
+def _filter_device_details_for_current_scope(details: Any, allowed_device_ids: set[str], device_hourly_breakdown: Any, current_round_num: int | None = None):
+    if not isinstance(details, dict):
+        return {}
+
+    valid_hours_by_device = {}
+    if isinstance(device_hourly_breakdown, dict):
+        for device_id, rows in device_hourly_breakdown.items():
+            hours = set()
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                hour_value = row.get("hour")
+                try:
+                    if hour_value is not None:
+                        hours.add(int(hour_value))
+                except Exception:
+                    continue
+            valid_hours_by_device[str(device_id)] = hours
+
+    filtered = {}
+    for section_key, section_value in details.items():
+        if not isinstance(section_value, dict):
+            filtered[section_key] = section_value
+            continue
+
+        section_filtered = {}
+        for device_id, rows in section_value.items():
+            device_id_str = str(device_id)
+            if allowed_device_ids and device_id_str not in allowed_device_ids:
+                continue
+            if not isinstance(rows, list):
+                section_filtered[device_id] = rows
+                continue
+
+            valid_hours = valid_hours_by_device.get(device_id_str, set())
+            valid_hour_list = sorted(valid_hours)
+            scoped_rows = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if not valid_hours:
+                    scoped_rows.append(row)
+                    continue
+
+                explicit_hour = row.get("scenario_hour_idx", row.get("hour_idx", row.get("hour")))
+                explicit_hour_value = None
+                try:
+                    if explicit_hour is not None:
+                        explicit_hour_value = int(explicit_hour)
+                except Exception:
+                    explicit_hour_value = None
+
+                if explicit_hour_value in valid_hours:
+                    scoped_rows.append(row)
+                    continue
+
+                row_round_num = row.get("round_num")
+                try:
+                    row_round_num = int(row_round_num) if row_round_num is not None else None
+                except Exception:
+                    row_round_num = None
+
+                if current_round_num is not None and row_round_num is not None and row_round_num != current_round_num:
+                    continue
+
+                row_offset = row.get("round_hour_offset", row.get("hour_offset", row.get("hour")))
+                try:
+                    row_offset = int(row_offset) if row_offset is not None else None
+                except Exception:
+                    row_offset = None
+
+                if row_offset is not None and 0 <= row_offset < len(valid_hour_list):
+                    normalized_hour = valid_hour_list[row_offset]
+                    normalized_row = dict(row)
+                    normalized_row["scenario_hour_idx"] = normalized_hour
+                    normalized_row["hour_idx"] = normalized_hour
+                    if "hour" in normalized_row:
+                        normalized_row["hour"] = normalized_hour
+                    scoped_rows.append(normalized_row)
+                    continue
+
+                if current_round_num is not None and row_round_num == current_round_num:
+                    scoped_rows.append(row)
+
+            if scoped_rows:
+                section_filtered[device_id] = scoped_rows
+
+        filtered[section_key] = section_filtered
+
+    return filtered
+
+
+def _detail_maps_equal(left: Any, right: Any) -> bool:
+    try:
+        return json.dumps(left or {}, sort_keys=True) == json.dumps(right or {}, sort_keys=True)
+    except Exception:
+        return False
 
 
 def _get_player_type_cfg(config: dict, player_type_id):
@@ -1117,6 +1515,7 @@ class RoundResults(Resource):
         scenario = Scenario.query.get(session.scenario_id)
         config = scenario.config or {}
         weights = config.get("scoring", {}).get("weights", {"profit": 0.6, "imbalance": 0.3, "curtailment": 0.1})
+        idm_trading_enabled = round_num > 1 and _get_market_status_for_round(config, "idm", round_num) != "off"
         
         # Get DA baseline forecasts for DA/ID breakdown
         from .models import Forecast
@@ -1163,22 +1562,6 @@ class RoundResults(Resource):
                 "target_id": evt.get("target_id", "")
             })
 
-        def _filter_device_details_for_player(details: Any, allowed_device_ids: set[str]):
-            if not isinstance(details, dict) or not allowed_device_ids:
-                return details if isinstance(details, dict) else {}
-
-            filtered = {}
-            for section_key, section_value in details.items():
-                if isinstance(section_value, dict):
-                    filtered[section_key] = {
-                        device_id: rows
-                        for device_id, rows in section_value.items()
-                        if str(device_id) in allowed_device_ids
-                    }
-                else:
-                    filtered[section_key] = section_value
-            return filtered
-        
         # Calculate total score for each player (normalized to 0-100)
         ranking = []
         my_result = None
@@ -1241,6 +1624,7 @@ class RoundResults(Resource):
 
                 da_smp = (r.data or {}).get("da_baseline_metadata", {}).get("da_smp")
                 da_smp = float(da_smp) if isinstance(da_smp, (int, float)) else None
+                use_da_baseline_settlement = bool(idm_trading_enabled)
 
                 # If older results don't include device_hourly_breakdown at all, reconstruct a minimal one
                 # from available device_hourly_details (balancing + co2). This keeps frontend tables and
@@ -1336,6 +1720,7 @@ class RoundResults(Resource):
                         kpis["device_hourly_breakdown"] = rebuilt
                         device_hourly_breakdown = rebuilt
                 if device_hourly_breakdown:
+                    _reconcile_device_hourly_breakdown_with_balancing(device_hourly_breakdown, balancing_map)
                     battery_summary = _summarize_battery_player_kpis(device_hourly_breakdown, cfg_devices)
                     if battery_summary["soc_start_pct"] is not None:
                         kpis["battery_charged_mwh"] = round(battery_summary["charged_mwh"], 3)
@@ -1386,11 +1771,28 @@ class RoundResults(Resource):
                             except Exception:
                                 revenue_existing = 0.0
 
+                            current_market_price_hint = entry.get("market_price_zar", entry.get("smp"))
+                            try:
+                                current_market_price_hint = float(current_market_price_hint or 0.0)
+                            except Exception:
+                                current_market_price_hint = 0.0
+
+                            stale_baseline_price = False
+                            if (not use_da_baseline_settlement) and current_market_price_hint > 0:
+                                try:
+                                    existing_da_price = float(entry.get("da_price_zar") or 0.0)
+                                except Exception:
+                                    existing_da_price = 0.0
+                                stale_baseline_price = abs(existing_da_price - current_market_price_hint) > 1e-6
+
+                            settlement_backfill_required = bool(entry.pop("_settlement_backfill_required", False))
                             needs_revenue_backfill = (
                                 entry.get("revenue_zar") is None
                                 or entry.get("da_revenue_zar") is None
                                 or entry.get("id_revenue_zar") is None
                                 or (abs(revenue_existing) < 1e-9 and abs(dispatched_hint) >= 1e-9)
+                                or settlement_backfill_required
+                                or stale_baseline_price
                             )
 
                             if needs_revenue_backfill:
@@ -1400,7 +1802,7 @@ class RoundResults(Resource):
                                 except Exception:
                                     market_price = 0.0
 
-                                da_price = da_smp if da_smp is not None else market_price
+                                da_price = da_smp if use_da_baseline_settlement and da_smp is not None else market_price
                                 id_price = market_price
 
                                 try:
@@ -1419,7 +1821,7 @@ class RoundResults(Resource):
 
                                     # Prefer DA assignment when DA reference price exists;
                                     # otherwise treat as ID quantity.
-                                    if da_smp is not None:
+                                    if use_da_baseline_settlement and da_smp is not None:
                                         da_mwh = fallback_total
                                         id_mwh = 0.0
                                     else:
@@ -1437,6 +1839,26 @@ class RoundResults(Resource):
                                 entry["da_revenue_zar"] = round(da_rev, 2)
                                 entry["id_revenue_zar"] = round(id_rev, 2)
                                 entry["revenue_zar"] = round(da_rev + id_rev, 2)
+                                variable_cost = _safe_market_number(entry.get("variable_cost_zar"))
+                                fixed_cost = _safe_market_number(entry.get("fixed_cost_zar"))
+                                imbalance_cost = _safe_market_number(entry.get("imbalance_cost_zar"))
+                                battery_charge_cost = _safe_market_number(entry.get("battery_charge_cost_zar"))
+                                congestion_revenue = _safe_market_number(entry.get("congestion_revenue_zar"))
+                                atc_cost = _safe_market_number(entry.get("network_shortfall_cost_zar"))
+                                if abs(atc_cost) < 1e-9:
+                                    atc_cost = _safe_market_number(entry.get("atc_dispatch_cost_zar"))
+                                if abs(atc_cost) < 1e-9:
+                                    atc_cost = _safe_market_number(entry.get("grid_constraint_cost_zar"))
+                                entry["profit_zar"] = round(
+                                    (da_rev + id_rev)
+                                    - variable_cost
+                                    - fixed_cost
+                                    - imbalance_cost
+                                    - battery_charge_cost
+                                    - atc_cost
+                                    + congestion_revenue,
+                                    2,
+                                )
 
                             try:
                                 total_revenue += float(entry.get("revenue_zar") or 0.0)
@@ -1447,32 +1869,7 @@ class RoundResults(Resource):
                     if abs(float(kpis.get("revenue_zar") or 0.0)) < 1e-9 and abs(total_revenue) >= 1e-9:
                         kpis["revenue_zar"] = total_revenue
 
-                    device_settlement_summary = _summarize_device_settlement(device_hourly_breakdown)
-                    if device_settlement_summary and (
-                        abs(float(kpis.get("revenue_zar") or 0.0) - float(device_settlement_summary["revenue_zar"])) >= 0.5
-                        or abs(float(kpis.get("profit_zar") or 0.0) - float(device_settlement_summary["profit_zar"])) >= 0.5
-                    ):
-                        kpis["hourly_breakdown"] = _merge_hourly_breakdown(
-                            kpis.get("hourly_breakdown"),
-                            device_settlement_summary["hourly_rows"],
-                        )
-                        for key in [
-                            "planned_mwh",
-                            "dispatched_mwh",
-                            "actual_mwh",
-                            "imbalance_mwh",
-                            "revenue_zar",
-                            "variable_cost_zar",
-                            "fixed_cost_zar",
-                            "imbalance_cost_zar",
-                            "battery_charge_cost_zar",
-                            "atc_dispatch_cost_zar",
-                            "grid_constraint_cost_zar",
-                            "congestion_revenue_zar",
-                            "profit_zar",
-                            "co2_emissions_kg",
-                        ]:
-                            kpis[key] = device_settlement_summary[key]
+                    _backfill_kpis_from_device_settlement(kpis)
             except Exception:
                 # Never fail the endpoint due to best-effort backfill
                 pass
@@ -1509,6 +1906,31 @@ class RoundResults(Resource):
             raw_device_hourly_details = r.data.get("device_hourly_details", r.data.get("dam_device_hourly_details", {}))
             raw_dam_device_hourly_details = r.data.get("dam_device_hourly_details", {})
             raw_idm_device_hourly_details = r.data.get("idm_device_hourly_details", raw_device_hourly_details)
+            current_device_hourly_breakdown = kpis.get("device_hourly_breakdown") if isinstance(kpis.get("device_hourly_breakdown"), dict) else {}
+            scoped_device_hourly_details = _filter_device_details_for_current_scope(
+                raw_device_hourly_details,
+                player_device_ids,
+                current_device_hourly_breakdown,
+                r.round_num,
+            )
+            scoped_dam_device_hourly_details = _filter_device_details_for_current_scope(
+                raw_dam_device_hourly_details,
+                player_device_ids,
+                current_device_hourly_breakdown,
+                r.round_num,
+            )
+            scoped_idm_device_hourly_details = _filter_device_details_for_current_scope(
+                raw_idm_device_hourly_details,
+                player_device_ids,
+                current_device_hourly_breakdown,
+                r.round_num,
+            )
+            if r.round_num > 1 and (scoped_device_hourly_details or raw_idm_device_hourly_details):
+                scoped_dam_device_hourly_details = {}
+            if scoped_device_hourly_details:
+                scoped_idm_device_hourly_details = {}
+            elif _detail_maps_equal(scoped_idm_device_hourly_details, scoped_device_hourly_details):
+                scoped_idm_device_hourly_details = {}
 
             player_round_results = (
                 Result.query
@@ -1529,6 +1951,12 @@ class RoundResults(Resource):
                 r.data.get("challenge_result"),
             )
 
+            player_hourly_results = r.data.get("hourly_results", [])
+            player_idm_hourly_results = r.data.get("idm_hourly_results", r.data.get("hourly_results", []))
+            if not idm_trading_enabled:
+                player_hourly_results = _strip_intraday_hourly_metadata(player_hourly_results)
+                player_idm_hourly_results = []
+
             player_data = {
                 "player_id": r.player_id,
                 "email": player_email,
@@ -1541,20 +1969,17 @@ class RoundResults(Resource):
                 "total_score": round(total_score, 2),
                 "smp": r.data.get("smp", r.data.get("mcp")),
                 "volume": r.data.get("volume"),
-                "idp": r.data.get("idp"),  # SAWEM Phase 2A: Intra-Day Price
-                "id_volume_mwh": r.data.get("id_volume_mwh", 0),  # SAWEM Phase 2A: ID volume
-                "id_trade_count": r.data.get("id_trade_count", 0),  # SAWEM Phase 2A: ID trade count
                 "bid_dispatch": raw_bid_dispatch,
                 "dam_bid_dispatch": r.data.get("dam_bid_dispatch", {}),
                 "idm_bid_dispatch": r.data.get("idm_bid_dispatch", raw_bid_dispatch),
-                "hourly_results": r.data.get("hourly_results", []),
+                "hourly_results": player_hourly_results,
                 "dam_hourly_results": r.data.get("dam_hourly_results", []),
-                "idm_hourly_results": r.data.get("idm_hourly_results", r.data.get("hourly_results", [])),
+                "idm_hourly_results": player_idm_hourly_results,
                 "hourly_breakdown": kpis.get("hourly_breakdown", []),  # Include detailed hourly breakdown
                 "device_hourly_breakdown": kpis.get("device_hourly_breakdown", {}),  # Per-device hourly breakdown
-                "device_hourly_details": _filter_device_details_for_player(raw_device_hourly_details, player_device_ids),  # NEW: Device-level CO2/balancing
-                "dam_device_hourly_details": _filter_device_details_for_player(raw_dam_device_hourly_details, player_device_ids),
-                "idm_device_hourly_details": _filter_device_details_for_player(raw_idm_device_hourly_details, player_device_ids),
+                "device_hourly_details": scoped_device_hourly_details,  # NEW: Device-level CO2/balancing
+                "dam_device_hourly_details": scoped_dam_device_hourly_details,
+                "idm_device_hourly_details": scoped_idm_device_hourly_details,
                 "challenge_result": challenge_result,
                 "player_role": resolved_role,
                 "no_clearing": bool(r.data.get("no_clearing", False)),
@@ -1567,6 +1992,10 @@ class RoundResults(Resource):
                     "down_price_zar_per_mwh": float((config.get("balancing") or {}).get("down_price_zar_per_mwh", 800.0) or 800.0),
                 }
             }
+            if idm_trading_enabled:
+                player_data["idp"] = r.data.get("idp")
+                player_data["id_volume_mwh"] = r.data.get("id_volume_mwh", 0)
+                player_data["id_trade_count"] = r.data.get("id_trade_count", 0)
             
             # Calculate DA/ID breakdown for this player
             da_hours = da_baseline_by_player.get(r.player_id, {}).get("aggregate", [])
@@ -1812,7 +2241,21 @@ class FinalResults(Resource):
                 except Exception:
                     pass
             
-            kpis = canonicalize_kpis(r.data.get("kpis", {}))
+            cfg_devices = (config.get("devices") or []) if isinstance(config, dict) else []
+            cfg_player_types = (config.get("player_types") or []) if isinstance(config, dict) else []
+            player_device_ids = set()
+            if player_type:
+                pt_cfg = next((pt for pt in cfg_player_types if isinstance(pt, dict) and pt.get("id") == player_type), None)
+                if pt_cfg and isinstance(pt_cfg.get("devices"), list):
+                    player_device_ids.update({str(x) for x in pt_cfg.get("devices") if x})
+            kpis = _repair_device_settlement_kpis(
+                canonicalize_kpis(r.data.get("kpis", {})),
+                (r.data or {}).get("device_hourly_details") or {},
+                cfg_devices=cfg_devices,
+                player_device_ids=player_device_ids,
+                da_smp=((r.data or {}).get("da_baseline_metadata") or {}).get("da_smp"),
+                use_da_baseline_settlement=idm_trading_enabled,
+            )
             resolved_role = _resolve_market_role(config, player_type, r.data.get("player_role"), kpis.get("revenue_zar", 0))
             player_totals[pid]["player_role"] = player_totals[pid]["player_role"] or resolved_role
             player_totals[pid]["profit"] += float(kpis.get("profit_zar", 0))
@@ -1880,12 +2323,19 @@ class FinalResults(Resource):
                     "result": challenge_result
                 })
             
-            # Aggregate bid dispatch data across rounds
-            if r.bid_dispatch:
+            # Aggregate bid dispatch data across rounds using the same source that
+            # RoundResults exposes as my_result.bid_dispatch.
+            raw_bid_dispatch = (
+                (r.data or {}).get("bid_dispatch")
+                or (r.data or {}).get("dam_bid_dispatch")
+                or (r.bid_dispatch or {})
+            )
+
+            if raw_bid_dispatch:
                 if pid not in player_bid_aggregates:
                     player_bid_aggregates[pid] = {}
                 
-                for device_id, device_lots in r.bid_dispatch.items():
+                for device_id, device_lots in raw_bid_dispatch.items():
                     if device_id not in player_bid_aggregates[pid]:
                         player_bid_aggregates[pid][device_id] = {}
                     
@@ -2013,7 +2463,37 @@ class FinalResults(Resource):
         round_history = []
         player_results = Result.query.filter_by(session_id=sid, player_id=player_id).order_by(Result.round_num).all()
         for r in player_results:
-            kpis = canonicalize_kpis(r.data.get("kpis", {}))
+            player_type = None
+            if _redis_client:
+                try:
+                    sel_key = f"session:{sid}:selected:{player_id}"
+                    sel_raw = _redis_client.get(sel_key)
+                    if sel_raw:
+                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
+                except Exception:
+                    pass
+            if not player_type:
+                try:
+                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=player_id).first()
+                    if sel_db:
+                        player_type = sel_db.type_id
+                except Exception:
+                    pass
+            cfg_devices = (config.get("devices") or []) if isinstance(config, dict) else []
+            cfg_player_types = (config.get("player_types") or []) if isinstance(config, dict) else []
+            player_device_ids = set()
+            if player_type:
+                pt_cfg = next((pt for pt in cfg_player_types if isinstance(pt, dict) and pt.get("id") == player_type), None)
+                if pt_cfg and isinstance(pt_cfg.get("devices"), list):
+                    player_device_ids.update({str(x) for x in pt_cfg.get("devices") if x})
+            kpis = _repair_device_settlement_kpis(
+                canonicalize_kpis(r.data.get("kpis", {})),
+                (r.data or {}).get("device_hourly_details") or {},
+                cfg_devices=cfg_devices,
+                player_device_ids=player_device_ids,
+                da_smp=((r.data or {}).get("da_baseline_metadata") or {}).get("da_smp"),
+                use_da_baseline_settlement=idm_trading_enabled,
+            )
             # BUG FIX P1-2: Use MWh quantities consistently (not costs) for scoring
             _imb3 = kpis.get("imbalance_mwh")
             imbalance_mwh = float(_imb3) if _imb3 is not None else float(kpis.get("imbalance_cost_zar", 0) / 1000)

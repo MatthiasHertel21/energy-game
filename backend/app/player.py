@@ -57,6 +57,40 @@ def _normalize_market_status(status_value) -> str:
     return mapping.get(value, "market_code")
 
 
+def _get_market_trading_array(market_value):
+    if isinstance(market_value, list):
+        return market_value
+    if isinstance(market_value, dict):
+        trading = market_value.get("trading", [])
+        if isinstance(trading, list):
+            return trading
+    return []
+
+
+def _get_market_status_for_round(config: dict, market_key: str, round_num: int) -> str:
+    markets_cfg = (config or {}).get("markets", {}) or {}
+    round_idx = max(0, int(round_num or 1) - 1)
+    trading = _get_market_trading_array(markets_cfg.get(market_key))
+    return _normalize_market_status(trading[round_idx] if round_idx < len(trading) else None)
+
+
+def _strip_intraday_hourly_metadata(rows):
+    if not isinstance(rows, list):
+        return []
+
+    stripped_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            stripped_rows.append(row)
+            continue
+        cleaned = dict(row)
+        cleaned.pop("idp", None)
+        cleaned.pop("id_trade_count", None)
+        cleaned.pop("id_volume_mwh", None)
+        stripped_rows.append(cleaned)
+    return stripped_rows
+
+
 def _normalize_boolean_flag(value, fallback: bool = False) -> bool:
     if value is None:
         return fallback
@@ -2219,6 +2253,10 @@ class PlayerResults(Resource):
         
         # Get all results for this player in this session
         results = Result.query.filter_by(session_id=session_id, player_id=player_id).order_by(Result.round_num).all()
+        session = Session.query.get(session_id)
+        session_config = {}
+        if session and getattr(session, "scenario", None) and isinstance(session.scenario.config, dict):
+            session_config = session.scenario.config
         
         print(f"[PlayerResults] Session {session_id}, Player {player_id}: Found {len(results)} results")
         
@@ -2229,6 +2267,7 @@ class PlayerResults(Resource):
         
         for result in results:
             if result.data:
+                idm_status = _get_market_status_for_round(session_config, "idm", result.round_num)
                 rounds_data.append({
                     "round": result.round_num,
                     "smp": result.data.get("smp", 0),
@@ -2239,7 +2278,8 @@ class PlayerResults(Resource):
                 hourly = result.data.get("hourly_results", [])
                 if hourly:
                     print(f"[PlayerResults] Round {result.round_num}: {len(hourly)} hourly entries")
-                    all_hourly_results.extend(hourly)
+                    normalized_hourly = _strip_intraday_hourly_metadata(hourly) if idm_status == "off" else hourly
+                    all_hourly_results.extend(normalized_hourly)
                 else:
                     print(f"[PlayerResults] Round {result.round_num}: No hourly_results in data")
 
@@ -2248,7 +2288,7 @@ class PlayerResults(Resource):
                     all_dam_hourly_results.extend(dam_hourly)
 
                 idm_hourly = result.data.get("idm_hourly_results", [])
-                if idm_hourly:
+                if idm_status != "off" and idm_hourly:
                     all_idm_hourly_results.extend(idm_hourly)
         
         print(f"[PlayerResults] Returning {len(all_hourly_results)} total hourly results")

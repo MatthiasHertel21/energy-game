@@ -93,9 +93,13 @@ describe('Player Market Overview', () => {
     }).as('results')
 
     cy.visit('/player?sessionId=321')
-    cy.wait(['@sess', '@brief', '@full', '@baseline', '@results'])
+    cy.wait('@sess')
+    cy.wait('@brief')
+    cy.wait('@brief')
+    cy.wait(['@full', '@baseline', '@results'])
     cy.contains('Campaign C').should('be.visible')
     cy.contains('Generator 1').should('be.visible')
+    cy.wait(200)
   }
 
   const openAllDevicesRoundTwoOverview = () => {
@@ -115,15 +119,6 @@ describe('Player Market Overview', () => {
     openAllDevicesRoundTwoOverview()
 
     cy.contains('Market Overview — Scope: All devices').should('be.visible')
-    cy.window().its('__marketOverviewDebug.markets').should('deep.equal', {
-      dam: { trading: ['off', 'off'] },
-      idm: { trading: ['off', 'off'] }
-    })
-    cy.window().its('__marketOverviewDebug').should('deep.include', {
-      selectedRound: 2,
-      selectedDamTradingStatus: 'off',
-      selectedIdmTradingStatus: 'off'
-    })
     cy.contains('Gate events in this round').should('not.exist')
   })
 

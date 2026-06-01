@@ -79,6 +79,8 @@ def create_app() -> Flask:
         from sqlalchemy import inspect
         from sqlalchemy import text
         from .models import (
+            Cohort,
+            CohortMember,
             SessionAllowedType,
             SessionPlayerType,
             CohortCampaign,
@@ -90,6 +92,10 @@ def create_app() -> Flask:
         
         with app.app_context():
             insp = inspect(db.engine)
+            if not insp.has_table(Cohort.__tablename__):
+                Cohort.__table__.create(bind=db.engine, checkfirst=True)
+            if not insp.has_table(CohortMember.__tablename__):
+                CohortMember.__table__.create(bind=db.engine, checkfirst=True)
             if not insp.has_table(SessionAllowedType.__tablename__):
                 SessionAllowedType.__table__.create(bind=db.engine, checkfirst=True)
             if not insp.has_table(SessionPlayerType.__tablename__):

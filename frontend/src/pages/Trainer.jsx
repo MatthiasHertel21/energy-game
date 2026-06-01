@@ -20,6 +20,8 @@ import {
 } from '../utils/marketOverview'
 import DocsFab from '../components/DocsFab'
 import MarketOverviewDialog from '../components/MarketOverviewDialog'
+
+const MARKET_OVERVIEW_ALL_ROUNDS = 'all'
 import MarketOverviewTrendPanel from '../components/MarketOverviewTrendPanel'
 import MarketStructureChartPanel from '../components/MarketStructureChartPanel'
 
@@ -79,6 +81,10 @@ export default function Trainer(){
     const maxRound = Number(availableMarketOverviewRound || 0)
     return maxRound > 0 ? Array.from({ length: maxRound }, (_, index) => index + 1) : []
   }, [availableMarketOverviewRound])
+  const isAllMarketOverviewRoundsSelected = marketOverviewSelectedRound === MARKET_OVERVIEW_ALL_ROUNDS
+  const selectedMarketOverviewRoundNumber = typeof marketOverviewSelectedRound === 'number'
+    ? marketOverviewSelectedRound
+    : null
 
   const playerTypeCounts = useMemo(() => {
     const counts = {}
@@ -617,18 +623,24 @@ export default function Trainer(){
   useEffect(() => {
     let isCancelled = false
 
-    if (!marketOverviewOpen || !sessionId || !marketOverviewSelectedRound || marketOverviewLoading || marketOverviewByRound[marketOverviewSelectedRound]) {
+    if (
+      !marketOverviewOpen
+      || !sessionId
+      || !selectedMarketOverviewRoundNumber
+      || marketOverviewLoading
+      || marketOverviewByRound[selectedMarketOverviewRoundNumber]
+    ) {
       return () => {}
     }
 
     const loadRound = async () => {
       setMarketOverviewLoading(true)
       try {
-        const { data } = await api.get(`/api/sessions/${sessionId}/round-results/${marketOverviewSelectedRound}`)
+        const { data } = await api.get(`/api/sessions/${sessionId}/round-results/${selectedMarketOverviewRoundNumber}`)
         if (!isCancelled) {
           setMarketOverviewByRound((prev) => ({
             ...prev,
-            [marketOverviewSelectedRound]: buildMarketOverviewRoundData(data, marketOverviewSelectedRound),
+            [selectedMarketOverviewRoundNumber]: buildMarketOverviewRoundData(data, selectedMarketOverviewRoundNumber),
           }))
         }
       } catch (err) {
@@ -636,9 +648,9 @@ export default function Trainer(){
         if (!isCancelled) {
           setMarketOverviewByRound((prev) => ({
             ...prev,
-            [marketOverviewSelectedRound]: {
+            [selectedMarketOverviewRoundNumber]: {
               cards: [],
-              overviewSections: [{ title: 'Error', items: [{ text: `Failed to load data for round ${marketOverviewSelectedRound}.` }] }],
+              overviewSections: [{ title: 'Error', items: [{ text: `Failed to load data for round ${selectedMarketOverviewRoundNumber}.` }] }],
               marketMixSections: [],
               rankingEntries: [],
               formatInt: (value) => `${value}`,
@@ -657,7 +669,7 @@ export default function Trainer(){
       isCancelled = true
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [marketOverviewByRound, marketOverviewOpen, marketOverviewSelectedRound, sessionId])
+  }, [marketOverviewByRound, marketOverviewOpen, marketOverviewLoading, selectedMarketOverviewRoundNumber, sessionId])
 
   useEffect(() => {
     let isCancelled = false
@@ -693,7 +705,25 @@ export default function Trainer(){
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [marketOverviewOpen, marketOverviewReplayLoaded, sessionId])
 
-  const selectedMarketOverview = marketOverviewSelectedRound ? marketOverviewByRound[marketOverviewSelectedRound] : null
+  const selectedMarketOverview = selectedMarketOverviewRoundNumber ? marketOverviewByRound[selectedMarketOverviewRoundNumber] : null
+
+  const allRoundsMeritOrderContent = availableMarketOverviewRounds.length > 0 ? (
+    <MarketStructureChartPanel
+      sessionId={sessionId}
+      roundSpan={Number(sessionInfo?.general?.round_span_hours || 6)}
+      startTime={sessionInfo?.general?.start_time || '00:00'}
+      overlayRounds={availableMarketOverviewRounds}
+    />
+  ) : (
+    <Typography variant="body2" color="text.secondary">
+      No completed rounds are available yet.
+    </Typography>
+  )
+
+  const allRoundsUnavailableSections = [{
+    title: 'Round selection required',
+    items: [{ text: 'Select a single round to view overview, market mix, and ranking data. Use All rounds in the Merit Order tab to compare every round.' }],
+  }]
 
   const marketOverviewHeaderControls = availableMarketOverviewRounds.length > 0 ? (
     <Stack direction="row" spacing={1} alignItems="center">
@@ -701,9 +731,17 @@ export default function Trainer(){
       <Select
         size="small"
         value={marketOverviewSelectedRound || ''}
-        onChange={(event) => setMarketOverviewSelectedRound(Number(event.target.value) || null)}
+        onChange={(event) => {
+          const nextValue = event.target.value
+          if (nextValue === MARKET_OVERVIEW_ALL_ROUNDS) {
+            setMarketOverviewSelectedRound(MARKET_OVERVIEW_ALL_ROUNDS)
+            return
+          }
+          setMarketOverviewSelectedRound(Number(nextValue) || null)
+        }}
         sx={{ minWidth: 120 }}
       >
+        <MenuItem value={MARKET_OVERVIEW_ALL_ROUNDS}>All rounds</MenuItem>
         {availableMarketOverviewRounds.map((roundValue) => (
           <MenuItem key={roundValue} value={roundValue}>{`Round ${roundValue}`}</MenuItem>
         ))}
@@ -715,27 +753,33 @@ export default function Trainer(){
     {
       id: 'overview',
       label: 'Overview',
-      cards: marketOverviewLoading && !selectedMarketOverview ? [] : (selectedMarketOverview?.cards || []),
-      sections: selectedMarketOverview?.overviewSections || (marketOverviewLoading
+      cards: isAllMarketOverviewRoundsSelected ? [] : (marketOverviewLoading && !selectedMarketOverview ? [] : (selectedMarketOverview?.cards || [])),
+      sections: isAllMarketOverviewRoundsSelected
+        ? allRoundsUnavailableSections
+        : (selectedMarketOverview?.overviewSections || (marketOverviewLoading
         ? [{ title: 'Loading', items: [{ text: 'Loading current market KPIs…' }] }]
-        : [{ title: 'No completed round available', items: [{ text: 'Overall market data becomes available after the first round results are available.' }] }]),
+        : [{ title: 'No completed round available', items: [{ text: 'Overall market data becomes available after the first round results are available.' }] }])),
     },
     {
       id: 'market-mix',
       label: 'Market Mix',
-      sections: selectedMarketOverview?.marketMixSections?.length > 0
+      sections: isAllMarketOverviewRoundsSelected
+        ? allRoundsUnavailableSections
+        : selectedMarketOverview?.marketMixSections?.length > 0
         ? selectedMarketOverview.marketMixSections
         : [{ title: 'Market mix', items: [{ text: marketOverviewLoading ? 'Loading market composition…' : 'No market composition data available for the selected round.' }] }],
     },
     {
       id: 'ranking',
       label: 'Ranking',
-      sections: buildGroupedRankingSections({
-        entries: selectedMarketOverview?.rankingEntries || [],
-        title: 'Round ranking',
-        scoreLabel: 'Score',
-        valueLabel: 'Profit',
-      }),
+      sections: isAllMarketOverviewRoundsSelected
+        ? allRoundsUnavailableSections
+        : buildGroupedRankingSections({
+            entries: selectedMarketOverview?.rankingEntries || [],
+            title: 'Round ranking',
+            scoreLabel: 'Score',
+            valueLabel: 'Profit',
+          }),
     },
     {
       id: 'session-trend',
@@ -747,7 +791,7 @@ export default function Trainer(){
       ) : (
         <MarketOverviewTrendPanel
           rounds={marketOverviewReplayRounds}
-          selectedRound={marketOverviewSelectedRound}
+          selectedRound={selectedMarketOverviewRoundNumber}
           formatPrice={(value) => `${Number(value || 0).toFixed(1)} ZAR/MWh`}
           formatVolume={(value) => `${selectedMarketOverview?.formatInt ? selectedMarketOverview.formatInt(value) : Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} MWh`}
         />
@@ -756,10 +800,10 @@ export default function Trainer(){
     {
       id: 'merit-order',
       label: 'Merit Order',
-      content: (
+      content: isAllMarketOverviewRoundsSelected ? allRoundsMeritOrderContent : (
         <MarketStructureChartPanel
           sessionId={sessionId}
-          roundNum={marketOverviewSelectedRound}
+          roundNum={selectedMarketOverviewRoundNumber}
           roundSpan={Number(sessionInfo?.general?.round_span_hours || 6)}
           startTime={sessionInfo?.general?.start_time || '00:00'}
         />
@@ -1052,8 +1096,14 @@ export default function Trainer(){
               <TableBody>
                 {cohortMembers.map(member => {
                   const hasSubmittedCurrentRound = submitStatusByPlayer.get(Number(member.user_id))
+                  const showSubmissionStatus = Boolean(sessionId && member.role === 'player' && member.active_session)
+                  const displayStatus = showSubmissionStatus
+                    ? (hasSubmittedCurrentRound ? 'submitted' : 'pending submit')
+                    : member.status
                   const statusColors = {
                     playing: 'success',
+                    submitted: 'success',
+                    'pending submit': 'warning',
                     briefing: 'info',
                     paused: 'warning',
                     online: 'primary',
@@ -1062,6 +1112,8 @@ export default function Trainer(){
                   }
                   const bgColors = {
                     playing: '#e8f5e9',
+                    submitted: '#e8f5e9',
+                    'pending submit': '#fff8e1',
                     briefing: '#e3f2fd',
                     paused: '#fff3e0',
                     online: '#e1f5fe',
@@ -1069,7 +1121,7 @@ export default function Trainer(){
                     inactive: 'transparent'
                   }
                   return (
-                    <TableRow key={member.user_id} sx={{ bgcolor: bgColors[member.status] || 'transparent' }}>
+                    <TableRow key={member.user_id} sx={{ bgcolor: bgColors[displayStatus] || bgColors[member.status] || 'transparent' }}>
                       <TableCell padding="checkbox">
                         <Box sx={{ width: 4, height: '100%', minHeight: 24, bgcolor: member.user_id === currentUser.id ? 'secondary.main' : 'transparent', borderRadius: 1 }} />
                       </TableCell>
@@ -1084,18 +1136,10 @@ export default function Trainer(){
                       <TableCell>
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           <Chip 
-                            label={member.status} 
+                            label={displayStatus}
                             size="small" 
-                            color={statusColors[member.status] || 'default'}
+                            color={statusColors[displayStatus] || statusColors[member.status] || 'default'}
                           />
-                          {sessionId && member.role === 'player' && member.active_session && (
-                            <Chip
-                              label={hasSubmittedCurrentRound ? 'Submitted' : 'Pending submit'}
-                              size="small"
-                              color={hasSubmittedCurrentRound ? 'success' : 'warning'}
-                              variant={hasSubmittedCurrentRound ? 'filled' : 'outlined'}
-                            />
-                          )}
                         </Stack>
                       </TableCell>
                       <TableCell align="center">
@@ -1220,7 +1264,7 @@ export default function Trainer(){
         open={marketOverviewOpen}
         onClose={() => setMarketOverviewOpen(false)}
         title="Overall Market Overview"
-        subtitle={sessionInfo ? `${sessionInfo.scenario_name || 'Scenario'} · ${marketOverviewSelectedRound ? `Round ${marketOverviewSelectedRound}` : 'No completed round yet'}` : 'Current session'}
+        subtitle={sessionInfo ? `${sessionInfo.scenario_name || 'Scenario'} · ${isAllMarketOverviewRoundsSelected ? 'All rounds' : (selectedMarketOverviewRoundNumber ? `Round ${selectedMarketOverviewRoundNumber}` : 'No completed round yet')}` : 'Current session'}
         tabs={marketOverviewTabs}
         defaultTabId="overview"
         headerControls={marketOverviewHeaderControls}

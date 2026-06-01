@@ -19,12 +19,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from app.engine import calculate_idp, clear_market
-    from app.player import _get_tradeable_hours
+    from app.player import _get_tradeable_hours, _strip_intraday_hourly_metadata
     from app.models import Session, Scenario, Forecast
 except ImportError:
     # Fallback for different import paths
     from backend.app.engine import calculate_idp, clear_market
-    from backend.app.player import _get_tradeable_hours
+    from backend.app.player import _get_tradeable_hours, _strip_intraday_hourly_metadata
     from backend.app.models import Session, Scenario, Forecast
 
 from unittest.mock import Mock
@@ -351,6 +351,102 @@ class TestIDMetadataTracking:
         assert result["idp"] == result["smp"]
         assert result["id_volume_mwh"] == 0.0
         assert result["id_trade_count"] == 0
+
+    def test_metadata_round_2_dam_only_no_idp(self):
+        """Round 2 with DAM on and IDM off remains a fresh SMP-clearing round without ID metadata."""
+        from app.engine import run_round
+
+        config = {
+            "general": {
+                "round_span_hours": 6,
+                "start_time": "00:00",
+                "fake_date": "2025-01-01"
+            },
+            "market": {
+                "enable_player_bidding": False,
+                "price_floor": -500,
+                "price_cap": 5000
+            },
+            "markets": {
+                "dam": {"trading": ["on", "on"]},
+                "idm": {"trading": ["off", "off"]},
+            },
+            "devices": []
+        }
+
+        forecasts = {
+            1: {"hours": [100] * 6, "bids": None}
+        }
+
+        result = run_round(
+            session_id=1,
+            round_num=2,
+            players=[1],
+            forecasts=forecasts,
+            config=config,
+            seed="test"
+        )
+
+        assert "idp" not in result
+        assert "id_volume_mwh" not in result
+        assert "id_trade_count" not in result
+        assert result["smp"] > 0
+        assert all("idp" not in row for row in result.get("hourly_results", []))
+        assert all("id_trade_count" not in row for row in result.get("hourly_results", []))
+        assert all("id_volume_mwh" not in row for row in result.get("hourly_results", []))
+
+    def test_metadata_round_2_dam_gated_idm_off_stays_delta_round(self):
+        """Round 2 only becomes fresh SMP-clearing when DAM is explicitly enabled."""
+        from app.engine import run_round
+
+        config = {
+            "general": {
+                "round_span_hours": 6,
+                "start_time": "00:00",
+                "fake_date": "2025-01-01"
+            },
+            "market": {
+                "enable_player_bidding": False,
+                "price_floor": -500,
+                "price_cap": 5000
+            },
+            "markets": {
+                "dam": {"trading": ["on", "market_code"]},
+                "idm": {"trading": ["off", "off"]},
+            },
+            "devices": []
+        }
+
+        forecasts = {
+            1: {"hours": [100] * 6, "bids": None}
+        }
+
+        result = run_round(
+            session_id=1,
+            round_num=2,
+            players=[1],
+            forecasts=forecasts,
+            config=config,
+            seed="test"
+        )
+
+        assert "idp" in result
+        assert "id_trade_count" in result
+        assert "id_volume_mwh" in result
+        assert all("idp" in row for row in result.get("hourly_results", []))
+
+    def test_strip_intraday_hourly_metadata_removes_id_fields(self):
+        rows = [
+            {
+                "hour_idx": 0,
+                "smp": 600,
+                "idp": 610,
+                "id_trade_count": 2,
+                "id_volume_mwh": 5,
+            }
+        ]
+
+        assert _strip_intraday_hourly_metadata(rows) == [{"hour_idx": 0, "smp": 600}]
 
 
 # =============================================================================
