@@ -1,20 +1,19 @@
 # Implementierungskonzept: Zonal Market Coupling mit ATC-bedingtem Pricing
 
-> **QS-Status**: Version 3 (nach vollstaendiger Qualitaetssicherung gegen aktuellen Codestand und Nutzerentscheidung: Empfehlungen werden uebernommen)
+> **QS-Status**: Version 4 (nach vollstaendiger Qualitaetssicherung gegen aktuellen Codestand und verbindlicher Produktentscheidung fuer eine vereinfachte V1)
 >
 > Gegenueber der Erstfassung wurden folgende wesentliche Korrekturen und Ergaenzungen vorgenommen:
 > - Enum-Werte aller KSE-Parameter vollstaendig dokumentiert (inkl. der heute gesperrten Single-Value-Parameter)
-> - Legacy-Feldnamen `transmission_loss_pct`, `losses_pct` und `market.generator_mix.*.zone_distribution_pct` hinzugefuegt
+> - Alias-Feldnamen `transmission_loss_pct`, `losses_pct` und `market.generator_mix.*.zone_distribution_pct` dokumentiert
 > - Engpasserloes-Formel korrigiert: verlustbereinigte Berechnung mit `import_price * flow_received - export_price * flow_sent`
 > - Separates Feld `losses_value_zar` eingefuehrt
 > - Heutigen `congestion_revenue_zar`-Berechnungspfad (ueber `apply_grid()` -> `cong_signal`) praezise beschrieben
-> - Risiken ergaenzt: skalare Verluste, `shared_market`-Zonenkonflikte, Balancing-Grenzfall, Event-Luecke, Backward-Compatibility fuer `replay`
-> - Szenariomatrix um Verluste, Storage und `shared_market`-Faelle erweitert
-> - Testmatrix auf 14 Backend-Tests ausgebaut
-> - Payload-Tabellen mit Fallback-Werten fuer alte Sessions ausgestattet
-> - Scope explizit um nicht-implementierte V1-Grenzen erweitert
-> - Offene Produktfragen in verbindliche V1-Entscheidungen ueberfuehrt
-> - LP-Solver-Entscheidung fuer V1 festgelegt: `scipy.optimize.linprog` als neue Backend-Abhaengigkeit bei Implementierung
+> - V1 auf ein einfaches zonales Merit-Order-Clearing mit ATC-Begrenzung festgelegt; kein LP-Solver in V1
+> - V1 ohne Alt-Session-Kompatibilitaet festgelegt; Fokus liegt ausschliesslich auf neuen Sessions
+> - V1-Zonenzuordnung festgelegt: jeder Player genau eine Zone, nur ueber `player_types[].zone`
+> - Testmatrix auf Pflichtfaelle fuer das Lehrsystem verdichtet
+> - Ergebnisfeld-Tabellen auf neue V1-Sessions vereinfacht
+> - Detaillierter Umsetzungsplan in `docs/SPRINT_27_PLAN.md` ergaenzt
 
 ## Ziel
 
@@ -174,6 +173,37 @@ Der Umbau soll nicht `global clearen -> danach zonale Korrektur` bleiben, sonder
 4. Settlement mit lokalen Zonenpreisen rechnen
 5. Netz-/Marktergebnisse konsistent in `hourly_results`, `zone_results`, `link_results`, `market_summary` und UI spiegeln
 
+### Nicht-Regressionsvertrag fuer 1-Zone und No-Split-Faelle
+
+Fuer V1 gilt eine harte Nicht-Regressionsregel:
+
+1. **`zones = 1`**
+  - Der bestehende globale Pfad bleibt der **kanonische Ausfuehrungspfad**.
+  - Es darf in diesem Fall **keine** Veraenderung an `smp`, `volume`, Revenue, Profit, KPI-Aufbau, Round Results, Scenario Results oder Player-Ansichten geben.
+  - Umsetzungskonsequenz: Bei `grid.zones <= 1` wird **nicht** der neue zonale Clearing-Pfad verwendet, sondern weiterhin der bestehende `clear_market(...)`- und Settlement-Pfad.
+
+2. **`zones > 1`, aber keine bindende Netzrestriktion / kein Preis-Split**
+  - Die publizierten Marktwerte muessen sich fuer Spieler- und Ergebnislogik **so verhalten wie heute**.
+  - Ein no-split-Mehrzonenfall ist fachlich ein Ein-Preis-Markt und darf keine veraenderten Spielerwerte erzeugen.
+  - Umsetzungskonsequenz: Sobald `zonal_pricing_active = false`, werden die **veroeffentlichten** Werte aus einem globalen Referenz-Clearing kanonisiert.
+  - Das bedeutet: `smp`, `volume`, Revenue, Profit, Summary-Werte und UI-Kennzahlen stammen im No-Split-Fall aus dem globalen Legacy-Clearing; zonale Zusatzdaten bleiben rein informativ.
+
+3. **Was sich im No-Split-Fall dennoch aendern darf**
+  - rein additive, optionale Datenfelder wie `zone_prices = [smp, smp, ...]`, `binding_link_count`, `congestion_rent_zar = 0` und informative Link-/Zonendaten zu `losses_mwh` bzw. `losses_value_zar`
+  - positive `losses_mwh` bzw. `losses_value_zar` sind im No-Split-Fall zulaessig, solange sie rein informativ bleiben und keine bestehenden Markt-, KPI- oder Settlement-Werte ueberschreiben
+  - rein informative Zonen-/Link-Abschnitte in API-Payloads, solange sie keine bestehenden Werte ueberschreiben
+
+4. **Was sich im No-Split-Fall nicht aendern darf**
+  - `smp`
+  - `volume`
+  - Producer-Revenue
+  - Consumer-Procurement-Kosten
+  - Player-Profit / Ranking
+  - bestehende KPI-Felder
+  - bestehende Texte/Ansichten, solange kein Split aktiv ist
+
+Diese Regel ist bewusst strenger als "gleicher Preis". Nicht nur der Preis, sondern die **gesamte sichtbare Wirkung** muss fuer 1-Zone und No-Split-Faelle unveraendert bleiben.
+
 ### Fachliche Kerneffekte
 
 #### Fall A: Keine bindende Restriktion
@@ -216,8 +246,8 @@ Der Umbau soll nicht `global clearen -> danach zonale Korrektur` bleiben, sonder
 
 | Parameter | Heutige Bedeutung | Zielverhalten |
 |---|---|---|
-| `player_types[].zone` | physische Zone des Spielertyps | primaere Zuordnung fuer zonale Bids und Settlement-Zone |
-| `general.player_zone` | Legacy-Fallback wenn `player_types[].zone` fehlt | nur Legacy-Fallback, keine neue Semantik |
+| `player_types[].zone` | physische Zone des Spielertyps | verpflichtende Zuordnung fuer zonale Bids und Settlement-Zone in V1 |
+| `general.player_zone` | bestehender Alt-Parameter ausserhalb des neuen Zielmodells | nicht Teil von V1; Mehrzonen-Szenarien werden ausschliesslich ueber `player_types[].zone` konfiguriert |
 | `environment.groups.*.zone_distribution_pct` | prozentuale Verteilung der synthetischen Grundlasterzeuger pro Zone (Array, Laenge = zones) | bleibt relevant fuer synthetische Angebotskurven-Anteile pro Zone im gekoppelten Clearing |
 | `market.generator_mix.*.zone_distribution_pct` | zonale Verteilung des marktbasierten Generator-Mix | wie `environment.groups.*`: muss in zonale Angebotsbuecher einfliessen |
 | `market.consumer_mix.*.zone_distribution_pct` | prozentuale Verteilung synthetischer Nachfrage pro Zone | bleibt relevant fuer synthetische Nachfrage-Anteile pro Zone im Clearing |
@@ -228,7 +258,7 @@ Der Umbau soll nicht `global clearen -> danach zonale Korrektur` bleiben, sonder
 |---|---|---|
 | `market.price_floor`, `market.price_cap` | weiterhin globale Preisgrenzen fuer alle zonalen Preise | zonale Preise duerfen price_floor und price_cap nicht ueberschreiten |
 | `market.enable_player_bidding` | explizite oder implizite Bid-Erzeugung je Zone | bei `false` erzeugen Classic-Bids zonale Angebote; `zone_id` muss aus `player_types[].zone` abgeleitet werden |
-| `mode` (`shared_market`, `isolated_per_player`) | **QS-Risiko**: in `shared_market` werden alle Spieler eines Player-Types zu einem gemeinsamen Typ zusammengefasst und mit geteiler Kapazitaetsskalierung versehen; wenn Spieler desselben Types in unterschiedlichen Zonen sitzen, ist die Zuordnung der gemeinsamen Kapazitaet zu Zonen unklar und muss explizit konzipiert werden |
+| `mode` (`shared_market`, `isolated_per_player`) | gemeinsame Kapazitaetsskalierung eines Player-Types bleibt moeglich | in V1 nur zulaessig, wenn alle Spieler eines Player-Types derselben Zone zugeordnet sind; gemischte Zonen-Zuweisungen sind ein Validierungsfehler |
 | `markets.dam.trading`, `markets.idm.trading` | zonale Preisbildung in aktivem Marktsegment; DAM und IDM koennen in derselben Runde unterschiedliche zonale Preise erzeugen | IDM-Deltas und DA-Kapazitaets-Carryover muessen pro Zone korrekt aufgebaut werden |
 | `balancing.price_mode`, `balancing.up_price_zar_per_mwh`, `balancing.down_price_zar_per_mwh`, `balancing.up_price_smp_pct`, `balancing.down_price_smp_pct` | heute globale Balancing-Preise; Modus `absolute` oder `smp_multiplier` | **QS-Risiko**: wenn Balancing global bleibt, koennen in einer Inselzone mit hohem Zonenpreis Balancing-Kosten < Zonenpreis entstehen; bei `smp_multiplier` ist offen, ob der Multiplikator auf `system_price` oder lokalen `zone_price` angewendet wird. Empfehlung fuer V1: Balancing bleibt global und nutzt `system_price`; diese Entscheidung muss bewusst dokumentiert werden |
 | `round_span_hours` | ATC-Matrix gilt heute fuer alle Stunden einer Runde gleichermassen | **QS-Risiko**: ATC ist ein Config-Wert, kein stundenscharfer Wert; in zukuenftigen Versionen koennte ATC stundenscharf variieren (z. B. Leitungswartung); fuer V1 gilt: eine ATC-Matrix gilt fuer alle Stunden einer Runde |
@@ -361,6 +391,8 @@ congestion_rent_zar = (import_zone_price - export_zone_price) * flow_mwh
 
 **QS-Hinweis**: Die Verlustkomponente erzeugt einen Residualterm (`losses_value = import_zone_price * (flow_sent - flow_received) = import_zone_price * flow_sent * losses_pct/100`), der dem Netz als Verlustkosten zugerechnet wird. Dieser Verlustterm ist kein Engpasserloes, sondern eine physische Leitungsbelastung und sollte separat in `link_results` als `losses_value_zar` ausgewiesen werden. Bei 500 MWh Export, 2 % Verlusten, Exportpreis 500 und Importpreis 700 ergibt sich z. B.: Brutto-Spread-Effekt = `(700 - 500) * 500 = 100000`, Verlustwert = `700 * 10 = 7000`, Netto-Engpasserloes = `700 * 490 - 500 * 500 = 93000`.
 
+**QS-Hinweis: No-Split-Berichtskanon**: Wenn kein Preis-Split vorliegt, wird `congestion_rent_zar` in der Ergebnisdarstellung kanonisch als `0` gefuehrt. Eventuelle Leitungsverluste duerfen in diesem Fall weiterhin separat als `losses_value_zar` ausgewiesen werden, bleiben aber rein informativ und wirken nicht auf kanonische Legacy-Werte.
+
 ## Zielarchitektur Backend
 
 ### A. Neue Clearing-Schicht
@@ -369,7 +401,17 @@ Es wird eine neue Funktion empfohlen, z. B.:
 
 - `clear_market_coupled_atc(...)`
 
-Die V1 soll als **LP-basiertes Welfare-Maximization-Problem** umgesetzt werden, nicht als heuristische Multi-Zone-Merit-Order-Simulation. Dadurch lassen sich Dispatch, Fluesse, bindende Nebenbedingungen und zonale Preise konsistent aus derselben Loesung ableiten.
+Die V1 soll **bewusst nicht** als LP-basiertes Optimierungsproblem umgesetzt werden. Fuer ein Lehrsystem ist ein einfaches, deterministisches zonales Merit-Order-Clearing mit ATC-Begrenzung die praktikablere und besser erklaerbare Variante.
+
+Vorgeschlagenes Verfahren fuer V1:
+
+1. je Zone lokale Angebots- und Nachfragebuecher aufbauen
+2. je Zone ein lokales Ausgangsgleichgewicht bestimmen
+3. Handel zwischen guenstigen Exportzonen und teureren Importzonen iterativ zulassen, solange Preisdifferenz > 0 und freie ATC besteht
+4. nach jedem Handel Mengen und Grenzpreise der betroffenen Zonen aktualisieren
+5. finale `zone_prices`, Nettofluesse und Restknappheit aus dem deterministischen Ergebnis ableiten
+
+Ziel ist nicht die moeglichst exakte Abbildung eines realen Marktcouplings, sondern eine robuste, nachvollziehbare Preislogik fuer 1 bis 5 Zonen.
 
 Eingaben:
 
@@ -393,7 +435,7 @@ Ausgaben pro Stunde:
 - `congestion_rents` (Dict von Link-Tuples zu `congestion_rent_zar`, `losses_value_zar`)
 - `residual_unserved_demand_by_zone` (Array; 0 wenn zonal vollstaendig gecleart)
 
-**QS-Hinweis: Tie-Breaking in der zonalen Loesung**: Das heutige `clear_market()` loest Tie-Bids pro-rata innerhalb des globalen Gleichgewichts. Im zonalen Modell koennen Tie-Situationen an den Grenzpreisen zweier Zonen entstehen. Die neue Clearing-Funktion muss ein konsistentes Tie-Verhalten definieren (empfohlen: pro-rata innerhalb jeder Zone unabhaengig).
+**QS-Hinweis: Tie-Breaking in der zonalen Loesung**: Das heutige `clear_market()` loest Tie-Bids pro-rata innerhalb des globalen Gleichgewichts. Im zonalen Modell wird fuer V1 dasselbe Prinzip je Zone beibehalten: Tie-Bids werden innerhalb der betroffenen Zone pro-rata behandelt.
 
 ### B. Integration in `run_round(...)`
 
@@ -407,13 +449,19 @@ Heute:
 
 Ziel:
 
-1. `build_supply_from_bids(...)` und `build_demand_from_bids(...)` um `zone_id`-Feld in jedem Bid erweitern (abgeleitet aus `player_types[player_id].zone` / `general.player_zone`-Fallback)
+1. `build_supply_from_bids(...)` und `build_demand_from_bids(...)` um `zone_id`-Feld in jedem Bid erweitern (abgeleitet ausschliesslich aus `player_types[player_id].zone`)
 2. pro Stunde und Zone zonale Angebots-/Nachfragebuecher erzeugen
 3. `clear_market_coupled_atc(...)` statt `clear_market(...)` aufrufen
 4. `track_bid_dispatch(...)` muss den lokalen `zone_price` statt globalem `smp` verwenden, um Dispatch-Revenue korrekt zu berechnen
 5. Dispatch-Tracking, KPI-Aufbau und Revenue-Berechnung auf zonale Preise umstellen
 6. `_compute_interzonal_round_outputs(...)` stark verschlanken: Zonen-Surplus/Defizit-Rechnung entfaellt, da aus Clearing direkt `zone_net_position_mwh` kommt
-7. `apply_grid(...)` nur noch fuer Legacy-Kompatibilitaet oder Restcurtailment ausserhalb des zonalen Modells verwenden
+7. `apply_grid(...)` nur noch fuer bestehende Phase-1-Netzsignale ausserhalb der zonalen Preisbildung oder fuer Restcurtailment verwenden
+
+Praezisierung fuer V1-Nicht-Regressionsfaelle:
+
+8. bei `grid.zones <= 1` den bestehenden globalen Pfad unveraendert weiterverwenden
+9. bei `grid.zones > 1` den zonalen Pfad rechnen, aber bei `zonal_pricing_active = false` die veroeffentlichten Ergebniswerte gegen ein globales Referenz-Clearing kanonisieren
+10. nur wenn `zonal_pricing_active = true` oder Restknappheit vorliegt, duerfen zonale Werte Settlement und sichtbare Ergebnisse veraendern
 
 **QS-Hinweis: `congestion_revenue_zar` heutiger Berechnungspfad**: Heute wird `cong_signal` in `apply_grid()` als `min(1.0, curtailment_needed / max(1.0, volume))` berechnet und dann in `run_round()` als `dispatched * price * cong_signal` verwendet, um `congestion_revenue_zar` je Player zu ermitteln. Das ist ein heuristisches Surrogate, kein echter Engpasserloes. In Phase 2 muss dieser Berechnungspfad ersetzt werden durch den linkbasierten `congestion_rent_zar`.
 
@@ -426,9 +474,9 @@ Ziel:
 Empfehlung:
 
 - `compute_zone_flows(...)`, `apply_grid(...)` und `_compute_interzonal_round_outputs(...)` nicht sofort loeschen
-- sie als Legacy/Fallback kennzeichnen
 - neue zonale Clearing-Ergebnisse als primaere Quelle verwenden
-- bestehende Shortfall-Logik nur fuer Restknappheit nach zonalem Clearing einsetzen
+- bestehende Phase-1-Netzlogik nur noch fuer informative Netzsicht und Restknappheit nach zonalem Clearing einsetzen
+- keine zweite konkurrierende Preislogik parallel zum zonalen Clearing beibehalten
 
 ## Ziel-Payloads
 
@@ -462,7 +510,7 @@ Heutige Struktur enthaelt bereits viele passende Felder. Zielerweiterungen:
 - `zone_price_zar_per_mwh`
 - `market_split_active`
 - `net_position_mwh`
-- `price_source` (`uniform`, `zonal_split`, `islanded`, `shortfall_fallback`)
+- `price_source` (`uniform`, `zonal_split`, `islanded`, `shortfall_separate`)
 
 ### 3. `link_results`
 
@@ -491,17 +539,17 @@ Zielerweiterung:
 ```
 
 **QS-Hinweis: Feldberechnung**:
-- `congestion_rent_zar = to_zone_price * flow_received_mwh - from_zone_price * flow_mwh`
+- `congestion_rent_zar = to_zone_price * flow_received_mwh - from_zone_price * flow_mwh` fuer Split-Faelle; bei `zonal_pricing_active = false` wird der Feldwert kanonisch als `0` berichtet
 - `losses_value_zar = to_zone_price * losses_mwh`
 - `gross_spread_value_zar = price_spread_zar_per_mwh * flow_mwh`
-- bei positivem Fluss von Export- zu Importzone gilt: `gross_spread_value_zar = congestion_rent_zar + losses_value_zar`
+- bei positivem Fluss von Export- zu Importzone und aktivem Preis-Split gilt: `gross_spread_value_zar = congestion_rent_zar + losses_value_zar`
 
 ### 4. `player_zone_info_by_player`
 
 Empfohlene Erweiterungen:
 
 - `zone_price_zar_per_mwh`
-- `zonal_pricing_active`
+- `player_zone_split_active`
 - `connected_binding_links`
 - `zone_market_split_reason`
 
@@ -534,7 +582,7 @@ Ziel:
 
 Empfehlung:
 
-- `congestion_revenue_zar` im Spieler-KPI als Legacy-Feld explizit kennzeichnen und in Phase 2 durch das neue zonale Settlement-Delta ersetzen (Differenz `zone_price - global_smp` * eigener Dispatch)
+- `congestion_revenue_zar` im zonalen Pfad nicht als Preis- oder Rentenkomponente weiterverwenden
 - echter Netz-Engpasserloes (`congestion_rent_zar`) nur auf Link-/Marktebene fuehren, **nicht** in Spieler-KPIs einfliessen lassen
 - beim Umbau sicherstellen, dass die bestehende `_check('congestion_revenue_zar', ...)` Konsistenzpruefung im Engine-Code entsprechend angepasst oder entfernt wird
 
@@ -551,9 +599,9 @@ Ziel:
 Wenn selbst zonal kein vollstaendiger Ausgleich moeglich ist:
 
 - `shortfall_price_mode` und `shortfall_price_value` bleiben aktiv; alle drei Varianten (`fixed_price`, `smp_multiplier`, `value_of_lost_load`) muessen unterstuetzt werden
-- daraus folgt echte Knappheitskostenbehandlung zusaetzlich zum zonalen Preis
-- der Shortfall-Preis gilt dann als lokaler Zonenpreis fuer die Residualknappheit in der betroffenen Zone, nicht als systemweiter Preis
-- `_apply_consumer_network_shortfalls(...)` muss in Phase 2 den lokalen `zone_price` statt globalem `smp` als Basispreis verwenden, um Balancing-Aufschlaege korrekt zu berechnen
+- daraus folgt eine separate Knappheitskostenbehandlung zusaetzlich zum zonalen Marktpreis
+- der Shortfall-Preis ersetzt in V1 **nicht** den normalen Marktpreis der Zone
+- `_apply_consumer_network_shortfalls(...)` muss fuer `smp_multiplier` den `system_price` als Basispreis verwenden und den Aufschlag nur auf die Residualknappheit anwenden
 - diese Faelle muessen im UI klar als `Restknappheit nach zonalem Clearing` markiert werden
 
 **QS-Hinweis: Balancing-Grenzfall**: Wenn `balancing_up_price < zone_price` einer Importzone, wuerden Verbraucher in dieser Zone lieber Balancing-Support beziehen als den hohen Zonenmarktpreis zahlen. Das ist wirtschaftlich inkonsistent. Empfehlung fuer V1: Balancing-Preis bleibt systemweit global und wird nur auf Restknappheit angewendet, die nach zonalem Clearing noch besteht. Explizit dokumentieren, dass `balancing_up_price` heute nicht zonenspezifisch ist.
@@ -782,8 +830,8 @@ Empfehlung:
 
 - Spieler desselben Types in unterschiedlichen Zonen
 - Kapazitaetsskalierung via `_load_shared_market_capacity_scales()` ist typenbasiert, nicht zonenbasiert
-- Risiko: wie wird geteilte Kapazitaet auf Zonen aufgeteilt?
-- Empfehlung: fuer V1 gilt, dass `shared_market`-Kapazitaet anteilig nach `zone_distribution_pct` der jeweiligen Player-Type-Zone aufgeteilt wird
+- V1-Regel: diese Konfiguration ist unzulaessig
+- Erwartung: die Validierung bricht Szenarien mit gemischten Zonen-Zuweisungen innerhalb desselben Player-Types frueh ab
 
 ### Szenario 9: Storage-/Batteriegeraete in Exportzone
 
@@ -795,87 +843,115 @@ Empfehlung:
 
 - eine Zone hat nicht genug Erzeugung und ATC ist ausgeschoepft
 - `shortfall_price_mode = value_of_lost_load` mit hohem VoLL
-- Zonenpreis springt auf VoLL-Niveau
+- Marktpreis der Zone bleibt der normale zonale Clearing-Preis
+- Shortfall-Kosten werden zusaetzlich ausgewiesen
 - UI muss diesen Extremfall klar als Knappheitssignal anzeigen
 
 ## Implementierungsphasen
 
-### Phase A: Analyse- und Datenmodell-Vorbereitung
+Die detaillierte Umsetzungsplanung fuer V1 steht in `docs/SPRINT_27_PLAN.md`. Im Konzept bleiben nur die fachlichen Hauptphasen festgehalten.
 
-- bestehende globale Preisverwendung inventarisieren
-- neue Payload-Felder definieren
-- UI-Feature-Toggles/kompatible Fallbacks festlegen
+### Phase A: Konfiguration und Validierung
 
-### Phase B: Backend-Clearing
+- `player_types[].zone` in Mehrzonen-Szenarien verpflichtend machen
+- `general.player_zone` fuer V1 aus dem neuen Zonenpfad herausnehmen
+- gemischte Zonen-Zuweisungen innerhalb desselben Player-Types als Validierungsfehler behandeln
+- KSE-Texte und Defaults auf das neue V1-Modell anpassen
 
-- neue zonale Clearing-Funktion einfuehren
-- Bids um `zone_id` erweitern
-- zonale Preise und Fluesse je Stunde erzeugen
-- `link_results` und `zone_results` aus dem Clearing befuellen
+### Phase B: Backend-Clearing und Settlement
 
-### Phase C: Settlement
+- deterministisches zonales Merit-Order-Clearing mit ATC-Begrenzung einfuehren
+- Bids und Dispatch-Daten um `zone_id` und `zone_price` erweitern
+- Settlement fuer Split-Faelle auf lokalen `zone_price` umstellen
+- No-Split-Faelle ueber globales Referenz-Clearing kanonisieren (gehoert zur Engine, nicht zur API-Schicht)
+- `_compute_interzonal_round_outputs(...)` verschlanken; Zonen-Surplus/Defizit-Rechnung entfaellt
+- `apply_grid(...)` im zonalen Pfad nur noch fuer Restcurtailment ausserhalb der Preisbildung verwenden
+- Restknappheit als separaten Shortfall-Pfad behandeln
 
-- Producer/Consumer auf zonale Preise umstellen
-- `congestion_rent_zar` separat berechnen und speichern
-- Phase-1-ATC/Shortfall-Logik auf Restfaelle zurueckbauen
+### Phase C: APIs und Aggregation
 
-### Phase D: APIs
+- `round-results`, `final-results`, `replay` und `market-structure` fuer neue zonale Felder erweitern
+- `market_summary`, `zone_results` und `link_results` um Preis-, Spread- und Verlustdaten ergaenzen
 
-- `round-results`
-- `final-results`
-- `replay`
-- `market-structure`
+### Phase D: UI, Hardening und Rollout
 
-muessen die neuen zonalen Preis-/Spread-/Rent-Daten tragen.
+- UI bei `zones = 1` und No-Split fachlich unveraendert lassen
+- zonale Preis- und Link-Infos nur in echten Split-Faellen anzeigen
+- Golden Cases fuer `zones = 1`, No-Split und Split-Faelle absichern
+- Rollout ueber das Scenario-Flag `general.zonal_pricing_v1_enabled` vorbereiten (Default `false`; aktiv nur bei `grid.zones > 1`)
 
-### Phase E: UI
-
-- Playerscreen und Market Structure View zonal erweiterbar machen
-- Round Results um zonale Preis- und Link-Informationen erweitern
-- Scenario Results / Overall Market View um zonale Preisaggregate und Engpasserloese erweitern
-
-## Rueckwaertskompatibilitaet
+## Kompatibilitaet im Bestand
 
 ### Harte Anforderungen
 
-1. Alte Ein-Zonen-Szenarien duerfen unveraendert funktionieren.
-2. Mehrzonen-Szenarien ohne bindende Restriktion sollen wie einheitlich bepreiste Szenarien erscheinen.
-3. Bestehende Result-Views duerfen bei alten Sessions nicht brechen, wenn neue Felder fehlen.
+1. Ein-Zonen-Szenarien muessen sich exakt wie heute verhalten.
+2. Mehrzonen-Szenarien ohne Preis-Split muessen sich fuer Spieler, KPI und UI exakt wie ein Ein-Preis-Markt verhalten.
+3. Nur neue V1-Sessions sind im Scope; Alt-Sessions werden nicht beruecksichtigt.
+4. Sichtbare Aenderungen sind nur bei echtem Preis-Split oder bei echter Restknappheit zulaessig.
 
-### Empfehlenswerte Strategie
+### Strategie
 
-- neue Felder additiv einfuehren
-- bestehende Felder wie `smp` und `volume` zunaechst beibehalten
-- `smp` als `system_price` interpretierbar halten
-- zonale Felder optional rendern
+- der bestehende globale Clearing-Pfad bleibt fuer `zones <= 1` kanonisch
+- im Mehrzonen-No-Split-Fall werden sichtbare Werte aus einem globalen Referenz-Clearing kanonisiert
+- neue Zonen- und Linkdaten bleiben in No-Split-Faellen rein informativ
+- die bestehende Phase-1-Netzlogik bleibt nur fuer Restknappheit und Netzsicht erhalten
 
 ## Testmatrix
 
-### Backend-Tests
+### Backend-Pflichttests
 
-1. `zones=1` -> ein Preis, keine Link-Results, kein `zonal_pricing_active`
-2. `zones=2`, hohe ATC -> ein Preis, Flow >= 0, `binding=false`, `congestion_rent_zar=0`
-3. `zones=2`, bindende ATC -> zwei Preise, `binding=true`, `congestion_rent_zar > 0`
-4. `zones=2`, bindende ATC + `losses_pct_per_link > 0` -> `congestion_rent_zar` + `losses_value_zar` korrekt berechnet, Energiebilanz geschlossen
-5. `zones=3`, partielle Kopplung -> zwei gekoppelte Zonen, eine abweichende; alle Preise arbitragefrei
-6. Inselbildung (ATC=0) -> mehrere getrennte Preiscluster, kein Fluss, keine Rents
-7. `enable_player_bidding=false` / `bid_count=0` -> Classic-Bids erhalten `zone_id` aus `player_types[].zone`
-8. DAM-only / IDM-only / DAM+IDM -> zonale Preisbildung in aktivem Marktsegment; DA-Kapazitaet wird fuer ID-Phase korrekt zonal reserviert
-9. `shortfall_price_mode=fixed_price` / `smp_multiplier` / `value_of_lost_load` -> lokaler Zonenpreis benutzt Shortfall-Preis als Deckung
-10. `generator_curtailment_mode` alle 4 Varianten (`pro_rata`, `reverse_merit_order`, `renewables_first`, `renewables_last`) -> nur Restcurtailment nach zonalem Clearing veraendert sich
-11. `shared_market` + 2 Zonen + bindende ATC -> Kapazitaetsskalierung und zonale Preise konsistent
-12. Storage-Geraet in Exportzone -> `zone_id` korrekt; Batterie-Supply erhoeht Exportfluss
-13. `balancing_up_price < zone_price` in Importzone -> Balancing-Logik in `_apply_consumer_network_shortfalls` benutzt globalen Balancing-Preis; kein inkonsistentes Ergebnis
-14. Alte Sessions ohne neue Payload-Felder -> `zone_prices`, `zonal_pricing_active` etc. fehlen ohne Fehler; `smp` bleibt als Fallback
+1. `zones=1`
+  - genau ein Preis, keine preiswirksamen Link-Effekte, `zonal_pricing_active = false`
+  - `smp`, `volume`, Revenue, Procurement, Profit, Ranking und KPI-Felder sind exakt gleich zum heutigen Verhalten
 
-### Frontend-Tests
+2. `zones=2`, hohe ATC, kein Preis-Split
+  - `zone_prices = [p, p]`, Fluesse sind erlaubt, `zonal_pricing_active = false`
+  - alle sichtbaren Markt- und Spielerwerte bleiben exakt wie im heutigen globalen Pfad
 
-1. Playerscreen zeigt globalen Preis wenn kein Marktsplitting aktiv
-2. Playerscreen zeigt Zonenauswahl / lokale Preise wenn Marktsplitting aktiv
-3. Round Results zeigt Zone Price / System Price / Spread korrekt
-4. Market Overview zeigt Link-Flow + Engpasserloes
-5. Scenario Results aggregiert zonale Preis- und Rent-Daten korrekt
-6. Alte Sessions ohne neue Felder bleiben darstellbar
+3. `zones=2`, bindende ATC
+  - Exportzone billiger, Importzone teurer, `zonal_pricing_active = true`
+  - Settlement erfolgt mit lokalem `zone_price`
+
+4. `zones=2`, bindende ATC plus Verluste
+  - `losses_mwh > 0` und `losses_value_zar > 0`
+  - Verluste allein erzeugen keinen eigenen Preis-Split
+
+5. `zones=2`, Restknappheit in einer Zone
+  - nach zonalem Handel bleibt `network_shortfall_mwh > 0`
+  - Shortfall wird separat als Knappheitskosten ausgewiesen
+  - der normale Marktpreis der Zone wird nicht durch VoLL ersetzt
+
+6. Multi-Zone-Validierung
+  - jeder Player ist genau einer Zone zugeordnet
+  - fehlende oder gemischte Zonenzuordnungen sind Validierungsfehler
+  - `general.player_zone` wird im V1-Pfad nicht verwendet
+
+### API- und Ergebnis-Tests
+
+7. No-Split-API
+  - bei `zonal_pricing_active = false` bleiben bestehende Felder und Werte fachlich identisch zum heutigen Verhalten
+  - neue Zonenfelder sind optional und rein informativ
+
+8. Split-API
+  - bei `zonal_pricing_active = true` enthalten Results `zone_prices`, zonale Fluesse, Link-Infos und getrennte Verlust-/Engpasswerte
+  - Player- und Hourly-Ergebnisse verwenden den Preis der eigenen Zone
+
+9. Ergebnis-Konsistenz
+  - Detaildaten, KPI-Felder, Summary und Player-Ansichten benutzen dieselbe Preislogik
+  - keine Mischung aus globalem `smp` und lokalem `zone_price` fuer dieselbe fachliche Zeile
+
+### UI-Pflichttests
+
+10. UI bei `zones=1`
+   - keine sichtbare Regression gegen heute
+
+11. UI bei No-Split-Mehrzonenfall
+   - Standardansichten bleiben fachlich gleich zu heute
+   - Zoneninfos duerfen sichtbar sein, aber keine bestehenden Werte veraendern
+
+12. UI bei aktivem Preis-Split
+   - lokale Zonenpreise werden klar angezeigt
+   - Shortfall erscheint als separate Knappheits-/Balancing-Komponente, nicht als normaler Marktpreis
 
 ## Risiken
 
@@ -885,21 +961,15 @@ Risiko:
 
 - `atc_dispatch_cost_zar`: heutiger Consumer-Netzaufschlag bei Defizit
 - `network_shortfall_cost_zar`: heutiger Consumer-Shortfall-Aufschlag
-- `congestion_revenue_zar`: heutiger spielerbezogener Curtailment-Kompensations-Term (kein echter Engpasserloes – berechnet via `apply_grid()` -> `cong_signal`)
+- `congestion_revenue_zar`: heutiger spielerbezogener Curtailment-Kompensations-Term (kein echter Engpasserloes)
 - neuer `congestion_rent_zar`: echter link-basierter Netz-Engpasserloes aus Preisspreads
 - neuer `losses_value_zar`: Verlustanteil je Link
 
-Alle fuenf Felder koennen gleichzeitig im Payload existieren und fachlich verwechselt werden.
-
 Empfehlung:
 
-- im Konzept und spaeter im Code strikt trennen:
-  - **zonal price effect** (in zonalen Preisen ausgedrueckt, kein separates Feld)
-  - **restknappheitskosten** (`network_shortfall_cost_zar`, bleibt fuer VoLL/Curtailment)
-  - **spielerbezogene Legacy-Signale** (`congestion_revenue_zar`, Phase 1 Heritage; in Phase 2 als deprecated markieren)
-  - **netzseitiger Engpasserloes** (`congestion_rent_zar`, neues Link-Level-Feld)
-  - **physische Leitungsverluste** (`losses_value_zar`, neues Link-Level-Feld)
-  - **Consumer-Netzaufschlag** (`atc_dispatch_cost_zar`, Phase 1 Heritage; in Phase 2 als deprecated markieren oder umwidmen)
+- im zonalen Pfad strikt trennen zwischen Marktpreis, Restknappheitskosten, Engpasserloes und Verlustwert
+- `congestion_revenue_zar` nicht als neuen Preis- oder Rententerm weiterverwenden
+- `atc_dispatch_cost_zar` und `network_shortfall_cost_zar` nur noch fuer Restknappheit nutzen
 
 ### 2. Globale Market-Structure-API ist aktuell inkompatibel
 
@@ -907,187 +977,251 @@ Die heutige `MarketStructureAPI` liefert nur globale `supply`, `demand`, `smp`, 
 
 Empfehlung:
 
-- neue zonale Antwortform additiv einfuehren (neues Feld `zones` mit pro-Zone-Arrays)
-- globalen Modus fuer `zonal_pricing_active=false` beibehalten (keine UI-Regression)
-- Preview-Modus (`market_source=synthetic_preview`) muss zonale Kurven aus `zone_distribution_pct` ableiten koennen
+- neue zonale Antwortform additiv einfuehren
+- globalen Modus fuer `zonal_pricing_active = false` beibehalten
+- Preview-Modus (`market_source=synthetic_preview`) aus `zone_distribution_pct` je Zone ableiten
 
-### 3. Sessions-/Replay-Aggregation muss erweitert werden
+### 3. Sessions-Aggregation muss erweitert werden
 
 `backend/app/sessions.py` aggregiert heute `price_points`, `zone_breakdown` und `binding_links`, aber keine zonalen Preisverteilungen und keine Engpasserloese.
 
 Empfehlung:
 
-- `_build_zone_breakdown(...)` um `avg_zone_price`, `max_zone_price`, `congestion_rent_total_zar` erweitern
-- `_build_price_stats(...)` um `max_price_spread`, `split_hours_count` erweitern
-- bei der Aggregation alter Sessions (ohne neue Felder) muessen fehlende Felder mit `null` oder `0` befuellt werden, damit Frontend-Renders nicht brechen
+- `_build_zone_breakdown(...)` um zonale Preis- und Spread-Sichten erweitern
+- `_build_price_stats(...)` um Split-Haeufigkeit und Spread-Werte erweitern
+- nur neue V1-Sessions als Eingabe annehmen; Alt-Session-Fallbacks sind nicht Teil von V1
 
 ### 4. `losses_pct_per_link` ist ein skalarer Wert fuer alle Links
 
 Risiko:
 
-- bei 3-5 Zonen mit topologisch sehr unterschiedlichen Linklängen (z. B. kurze Nahverbindung + lange Fernverbindung) erzeugt ein einheitlicher Verlustsatz falsche physische Ergebnisse
-- das Konzept behauptet zonales Pricing sei praezise, aber ein skalarer Verlustsatz macht die Losung nur scheingrenau
+- bei 3-5 Zonen mit topologisch sehr unterschiedlichen Linklängen erzeugt ein einheitlicher Verlustsatz nur eine grobe Naeherung
 
 Empfehlung:
 
 - fuer V1 akzeptieren und explizit als vereinfachende Annahme dokumentieren
-- in KSE-Tooltip darauf hinweisen
-- langfristig: per-Link-Verlustmatrix analog zur ATC-Matrix einfuehren
+- Verluste nur als Mengenabschlag und Infofeld behandeln
+- per-Link-Verlustmatrix fuer eine spaetere Ausbaustufe vormerken
 
 ### 5. `shared_market`-Kapazitaetsskalierung ist nicht zonal
 
 Risiko:
 
 - `_load_shared_market_capacity_scales()` skaliert je Player-Type, nicht je Zone
-- wenn Spieler desselben Types in verschiedenen Zonen sitzen, ist unklar welcher Teil der gemeinsamen Kapazitaet welcher Zone gehoert
 
 Empfehlung:
 
-- fuer V1 gilt: jeder Spieler wird in der Zone seines Player-Types eingesetzt; `shared_market`-Skalierung veraendert nur die absolute Kapazitaet, nicht die Zonenlokalitaet
-- dokumentieren, dass `shared_market` mit gemischten Zonen-Zuweisungen im selben Player-Type konzeptionell nicht unterstuetzt wird
+- V1 erlaubt `shared_market` nur bei eindeutiger Zonenzuordnung pro Player-Type
+- gemischte Zonen-Zuweisungen im selben Player-Type werden frueh validiert und abgelehnt
 
 ### 6. Fehlende Event-Typen fuer ATC-Aenderungen
 
 Risiko:
 
-- heute koennen Events zonenspezifische Kapazitaets- und Nachfrage-Parameter aendern
-- es gibt keinen Event-Typ fuer Leitungsausfall oder temporaere ATC-Reduktion
-- ohne diesen Event-Typ ist Zonal-Pricing zwar vorhanden, aber das Netz selbst unveraenderlich
+- das Netz selbst bleibt waehrend einer Session statisch
 
 Empfehlung:
 
-- fuer V1: keine neuen Event-Typen einfuehren
-- als kuenftige Erweiterung vormerken: Event-Typ `atc_reduction` oder `line_outage` mit Ziel-Link und Zeitrahmen
-
-### 7. Backward-Compatibility fuer `replay`-API mit alten Sessions
-
-Risiko:
-
-- alte Sessions haben kein `zone_prices`, kein `zonal_pricing_active`, kein `congestion_rent_zar` in ihren gespeicherten Results
-- `replay`-API in `backend/app/sessions.py` iteriert ueber gespeicherte Round-Results und aggregiert diese
-
-Empfehlung:
-
-- alle neuen Felder mit `get(field, default)` lesen, nie direkt indizieren
-- fehlende `zone_prices` auf `[smp]` fallbacken (1-Element-Array mit globalem SMP)
-- fehlende `zonal_pricing_active` auf `false` fallbacken
-- Frontend muss neue Felder als optional behandeln und graceful degraden
+- fuer V1 keine neuen Event-Typen einfuehren
+- `atc_reduction` oder `line_outage` als Phase-2-Erweiterung vormerken
 
 ## Getroffene Produktentscheidungen
 
-Die QS-Empfehlungen wurden als V1-Leitplanken uebernommen. Damit gelten fuer die Implementierung folgende Entscheidungen:
+Die QS-Empfehlungen wurden als verbindliche V1-Leitplanken uebernommen. Damit gelten fuer die Implementierung folgende Entscheidungen:
 
-1. **Definition von `zonal_pricing_active`**
+1. **V1 ist ein Lehrsystem**
+  - Ziel ist eine einfache, nachvollziehbare Abbildung von Zonen, ATC und Preis-Splits.
+  - V1 soll didaktisch klar und stabil sein, nicht moeglichst realmarktgenau.
+
+2. **Keine Legacy-Zonenzuordnung**
+  - `general.player_zone` wird in V1 nicht mehr verwendet.
+  - In Mehrzonen-Szenarien ist `player_types[].zone` verpflichtend.
+  - Jeder Player spielt genau in einer Grid Zone.
+
+3. **Einfaches zonales Clearing statt LP**
+  - V1 verwendet kein LP / keine Welfare-Maximization als primaeren Clearing-Ansatz.
+  - V1 verwendet ein einfaches, deterministisches zonales Merit-Order-Clearing mit ATC-Begrenzung.
+
+4. **Definition von `zonal_pricing_active`**
   - `zonal_pricing_active = true` nur wenn mindestens zwei Zonenpreise wirklich voneinander abweichen.
+  - Als Toleranzgrenze gilt: Preisunterschied < 0,01 ZAR/MWh gilt als identisch (Floating-Point-Schutz). Der exakte Schwellwert ist in der Implementierung als benannte Konstante zu fuehren.
   - Physisch bindende Links werden separat ueber `binding_link_count` ausgewiesen.
 
-2. **Clearing-Algorithmus**
-  - V1 wird als LP / Welfare-Maximization mit ATC-Constraints konzipiert.
-  - Kein heuristisches Multi-Zone-Merit-Order-Verfahren als primaerer Pfad.
+5. **Verluste sind nur Hilfsgruesse**
+  - Verluste werden als Mengenabschlag und als `losses_value_zar` ausgewiesen.
+  - Verluste allein loesen in V1 keinen Preis-Split aus.
 
-3. **Empfaenger der Engpasserloese**
+6. **Restknappheit bleibt separat**
+  - Shortfall-/Scarcity-Kosten werden getrennt vom normalen Marktpreis ausgewiesen.
+  - Der Shortfall-Preis ersetzt nicht den Zonenmarktpreis.
+  - Bei `smp_multiplier` wird in V1 der `system_price` als Basis verwendet.
+
+7. **Empfaenger der Engpasserloese**
   - `congestion_rent_zar` wird in V1 nur separat berichtet.
   - Keine Einrechnung in Player-Profit oder Ranking.
 
-4. **Verlustkosten / `losses_value_zar`**
-  - Verluste werden separat als `losses_value_zar` ausgewiesen.
-  - Keine Vermischung mit `congestion_rent_zar`.
-
-5. **Balancing-Basis bei `smp_multiplier`**
-  - Der Multiplikator wird in V1 auf `system_price` angewendet.
-  - Begruendung: Balancing ist heute global konfiguriert.
-
-6. **Shortfall-Preis vs. Market Price Cap**
-  - `value_of_lost_load` darf ueber `market.price_cap` liegen.
-  - Der Marktpreis selbst bleibt am Cap; Shortfall-/Scarcity-Komponente wird getrennt ausgewiesen.
-
-7. **ATC-Richtung und Asymmetrie**
+8. **ATC-Richtung und Asymmetrie**
   - V1 bleibt bei symmetrischer ATC.
   - Asymmetrische ATCs sind nicht Teil der V1.
 
-8. **`shared_market` mit Player-Types in mehreren Zonen**
-  - Player desselben Typs sollen in V1 nicht automatisch ueber mehrere Zonen verteilt werden.
-  - Empfehlung fuer Umsetzung: Validierung/Verbot fuer gemischte Zonen-Zuweisungen innerhalb desselben Player-Types oder eindeutige Zuordnung ueber `player_types[].zone`.
+9. **Event-Scope**
+  - Events wirken in V1 nur indirekt ueber Erzeugung, Nachfrage und Verfuegbarkeit.
+  - ATC-Events sind nicht Teil von V1.
 
-9. **Rundungs- und Einheitendefinition**
-  - Stundenweise Clearing-Einheit ist MWh.
-  - ATC-MW entspricht bei 1h-Zeitschritt MWh/h.
-  - Bei anderen Zeitschritten waere eine explizite Umrechnung erforderlich; das ist nicht V1-Scope.
+10. **Nicht-Regressionsregel fuer No-Split-Faelle**
+  - `zones = 1` bleibt auf dem bestehenden globalen Clearing-Pfad.
+  - `zones > 1` ohne Preis-Split verwendet fuer sichtbare Marktwerte das globale Referenz-Clearing als kanonische Quelle.
+  - Ziel ist nicht nur gleiche Preislogik, sondern gleiche sichtbare Werte und gleiches Verhalten.
 
-10. **Event-Scope**
-   - Events wirken in V1 nur indirekt ueber Erzeugung/Nachfrage/Verfuegbarkeit.
-   - ATC-Events (`line_outage`, `atc_reduction`) sind Phase-2-Erweiterung.
+11. **Alt-Sessions sind nicht Teil von V1**
+  - V1 trifft keine Kompatibilitaetszusagen fuer bereits gespeicherte alte Sessions.
+  - Neue Payload-Felder und neue API-Sichten gelten nur fuer neu erzeugte Sessions unter dem neuen Modell.
 
-### Technische Solver-Entscheidung
+### Konzeptioneller Algorithmus
 
-Fachlich sind die Produktfragen fuer V1 damit entschieden. Auch die Solver-Richtung ist festgelegt:
+V1 verwendet einen einfachen, deterministischen Ablauf:
 
-- V1 verwendet `scipy.optimize.linprog` fuer das LP-basierte zonale Clearing.
-- SciPy ist aktuell nicht in `backend/requirements.txt` enthalten und muss bei der spaeteren Implementierung als Backend-Abhaengigkeit ergaenzt werden.
-- Begruendung: `linprog` ist robust genug fuer kleine 1-5-Zonen-LP-Probleme, vermeidet eine eigene Optimierungsheuristik und braucht keinen separaten externen Solver-Dienst.
-- Um Docker-Build-Risiken klein zu halten, soll eine konkrete SciPy-Version gepinnt werden und der Backend-Container nach Dependency-Ergaenzung einmal voll gebaut werden.
+1. lokale Angebots- und Nachfragekurven je Zone bilden
+2. lokales Ausgangsgleichgewicht je Zone bestimmen
+3. Handel zwischen guenstigen Exportzonen und teureren Importzonen iterativ zulassen, solange **Preisdifferenz > 0** und freie ATC besteht
+4. Verluste nur als Mengenabschlag auf dem Link beruecksichtigen
+5. `system_price`, `zone_price`, Fluesse und Restknappheit aus dem finalen Ergebnis ableiten
+
+Fuer V1 ist dafuer keine neue Optimierungsabhaengigkeit wie SciPy erforderlich.
 
 ## Konkrete Empfehlung fuer die Umsetzung
 
-1. **Zuerst Backend-Clearing und Payloads**, nicht UI.
-2. **Immer zonal coupled rechnen**, aber Preise nur bei bindender Restriktion differenzieren.
-3. **Engpasserloese separat** in `link_results` und `market_summary` fuehren.
-4. **Phase-1-Shortfall-/ATC-Cost-Logik nur als Restknappheits-/Fallback-Pfad behalten**.
-5. **Ein-Zonen- und No-Split-Faelle strikt kompatibel halten**.
+1. **Zuerst Validierung und Datenmodell**, dann Clearing, dann UI.
+2. **Den bestehenden globalen Pfad fuer `zones <= 1` unveraendert lassen**.
+3. **Mehrzonen-No-Split-Faelle ueber globales Referenz-Clearing kanonisieren**.
+4. **Settlement und Detaildaten im Split-Fall konsequent auf `zone_price` umstellen**.
+5. **Shortfall nur als separaten Knappheitspfad behandeln**.
+6. **Rollout erst nach Golden-Case-Abgleich fuer `zones = 1`, No-Split und Split-Faelle**.
+
+## Abnahmekapitel: Nicht-Regressionsvertrag
+
+Dieses Kapitel definiert, wann die spaetere Umsetzung fachlich und technisch als abnahmefaehig gilt. Entscheidend ist, dass sich in 1-Zonen- und No-Split-Faellen **keine sichtbare Wirkung** aendert.
+
+### 1. Fachliche Akzeptanzkriterien
+
+#### 1.1 Ein-Zonen-Fall (`zones = 1`)
+
+- Das System verwendet weiterhin den bestehenden globalen Clearing- und Settlement-Pfad.
+- `smp`, `volume`, `hourly_results`, Player-KPIs, Round Results, Scenario Results und Player-Screen-Werte bleiben identisch zum heutigen Verhalten.
+
+#### 1.2 Mehrzonenfall ohne Preis-Split
+
+- Wenn `zonal_pricing_active = false`, muss sich das Ergebnis fuer Spieler und UI genauso verhalten wie heute.
+- `smp`, `volume`, Revenue, Procurement-Kosten, Profit, KPI-Summen und Rankings muessen dem globalen Referenz-Clearing entsprechen.
+- Zonen- und Linkdaten duerfen sichtbar sein, aber nur informativ und ohne Auswirkung auf bestehende Werte.
+
+#### 1.3 Mehrzonenfall mit Preis-Split
+
+- Erst in diesem Fall duerfen sich sichtbare Werte gegenueber dem heutigen Verhalten aendern.
+- Producer- und Consumer-Settlement darf dann auf lokalen Zonenpreisen basieren.
+- `congestion_rent_zar` und `losses_value_zar` muessen separat ausgewiesen werden.
+
+#### 1.4 Restknappheit / Shortfall-Faelle
+
+- Shortfall-Kosten duerfen nur dann sichtbare Zusatzkosten erzeugen, wenn selbst das zonale Clearing keine vollstaendige Versorgung herstellen kann.
+- Ein reiner No-Split-Fall darf nicht ueber den Shortfall-Pfad nachtraeglich veraendert werden.
+
+#### 1.5 UI-Kompatibilitaet
+
+- Wenn `zonal_pricing_active = false`, bleibt die Standarddarstellung auf Player Screen, Round Results, Scenario Results und Market Overview fachlich gleich zum heutigen Verhalten.
+- Zusatzelemente wie Zonenauswahl, Spread-Anzeige oder Link-Engpasswerte erscheinen nur, wenn ein echter Preis-Split oder ein expliziter Zonenkontext vorliegt.
+
+### 2. Technische Abnahmefaelle
+
+- `zones = 1`: kompletter `run_round(...)`-Output wird gegen einen Golden Case verglichen.
+- `zones > 1` mit hoher ATC und `zonal_pricing_active = false`: kompletter Ergebnisvergleich gegen globales Referenz-Clearing.
+- `zones > 1` mit bindendem ATC: zonale Preise muessen auseinanderlaufen; `congestion_rent_zar > 0`.
+- `zones > 1` mit Verlusten: `losses_value_zar > 0`, Energiebilanz geschlossen.
+- Restknappheit wird separat als Shortfall-Kosten ausgewiesen und ersetzt nicht den Marktpreis.
+
+### 3. Rollout- und Fallback-Checkliste
+
+#### 3.1 Vor dem ersten Rollout
+
+- Referenzszenarien fuer `zones = 1`, Mehrzonen-No-Split und Mehrzonen-Split definieren.
+- Fuer diese Referenzszenarien Vorher-/Nachher-Vergleiche der Kernwerte archivieren.
+- Sicherstellen, dass der Restore-Commit `7948f1c4a` als Ruecksprungpunkt dokumentiert und erreichbar bleibt.
+
+#### 3.2 Staging-Gate
+
+- Kein Rollout, wenn irgendein `zones = 1`-Golden-Case oder No-Split-Golden-Case abweicht.
+- Kein Rollout, wenn `congestion_rent_zar` in No-Split-Faellen ungleich null wird.
+- `losses_value_zar` darf in No-Split-Faellen nur als rein informatives Zusatzfeld auftreten und keine bestehenden kanonischen Markt-, KPI- oder Settlement-Werte veraendern.
+
+#### 3.3 Produktiver Rollout
+
+- Zunaechst mit temporaerem Rollout-Schutz `general.zonal_pricing_v1_enabled = true` aktivieren.
+- Nach Aktivierung gezielt Referenzszenarien pruefen: `zones = 1`, Mehrzonen ohne Split, Mehrzonen mit Split.
+
+#### 3.4 Fallback bei Fehlverhalten
+
+- Wenn `zones = 1` oder No-Split-Faelle abweichen, gilt das als Blocker.
+- Erster Fallback: `general.zonal_pricing_v1_enabled = false` setzen und den zonalen Pfad deaktivieren.
+- Zweiter Fallback: Ruecksprung auf Commit `7948f1c4a`.
+
+#### 3.5 Abnahmeentscheidung
+
+- Die Implementierung gilt nur dann als abgenommen, wenn alle Nicht-Regressionsfaelle gruen sind.
+- Ein korrekt funktionierender Split-Fall kompensiert **keine** Abweichung in `zones = 1` oder No-Split-Faellen.
 
 ## Empfohlene neue/erweiterte Ergebnisfelder
 
 ### Stunde (`hourly_results` je Stunde)
 
-| Feld | Typ | Bedeutung | Fallback fuer alte Sessions |
-|---|---|---|---|
-| `zonal_pricing_active` | Boolean | true wenn mindestens zwei Zonenpreise voneinander abweichen | `false` |
-| `system_price_zar_per_mwh` | Float | Systempreis (gleich SMP wenn kein Split) | `smp` |
-| `zone_prices` | Array[Float] | Preis je Zone (Laenge = zones) | `[smp]` |
-| `zone_cleared_supply_mwh` | Array[Float] | gecleart Einspeisemenge je Zone | `null` |
-| `zone_cleared_demand_mwh` | Array[Float] | gecleart Abnahmemenge je Zone | `null` |
-| `binding_link_count` | Integer | Anzahl physisch bindender Links, unabhaengig davon ob ein Preis-Split entsteht | `0` |
-| `total_congestion_rent_zar` | Float | Summe aller Link-Engpasserloese | `0` |
-| `total_losses_value_zar` | Float | Summe aller Leitungsverlust-Werte | `0` |
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `zonal_pricing_active` | Boolean | true wenn mindestens zwei Zonenpreise voneinander abweichen |
+| `system_price_zar_per_mwh` | Float | Systempreis (gleich SMP wenn kein Split) |
+| `zone_prices` | Array[Float] | Preis je Zone (Laenge = zones) |
+| `zone_cleared_supply_mwh` | Array[Float] | geclearte Einspeisemenge je Zone |
+| `zone_cleared_demand_mwh` | Array[Float] | geclearte Abnahmemenge je Zone |
+| `binding_link_count` | Integer | Anzahl physisch bindender Links, unabhaengig davon ob ein Preis-Split entsteht |
+| `total_congestion_rent_zar` | Float | Summe aller Link-Engpasserloese |
+| `total_losses_value_zar` | Float | Summe aller Leitungsverlust-Werte |
 
 ### Zone (`zone_results` je Zone)
 
-| Feld | Typ | Bedeutung | Fallback |
-|---|---|---|---|
-| `zone_price_zar_per_mwh` | Float | Clearing-Preis dieser Zone | `null` |
-| `net_position_mwh` | Float | Nettoexport (+) / Nettoimport (-) | `null` |
-| `market_split_active` | Boolean | true wenn Zonenpreis != Systempreis | `false` |
-| `price_source` | Enum | `uniform`, `zonal_split`, `islanded`, `shortfall_fallback` | `uniform` |
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `zone_price_zar_per_mwh` | Float | Clearing-Preis dieser Zone |
+| `net_position_mwh` | Float | Nettoexport (+) / Nettoimport (-) |
+| `market_split_active` | Boolean | true wenn Zonenpreis != Systempreis |
+| `price_source` | Enum | `uniform`, `zonal_split`, `islanded`, `shortfall_separate` |
 
 ### Link (`link_results` je Link)
 
-| Feld | Typ | Bedeutung | Fallback |
-|---|---|---|---|
-| `from_zone_price_zar_per_mwh` | Float | Exportzonenpreis | `null` |
-| `to_zone_price_zar_per_mwh` | Float | Importzonenpreis | `null` |
-| `price_spread_zar_per_mwh` | Float | Preisdifferenz `import - export` | `0` |
-| `flow_received_mwh` | Float | Empfangene Menge nach Verlusten | `null` |
-| `congestion_rent_zar` | Float | Linker Engpasserloes | `0` |
-| `losses_value_zar` | Float | Verlustanteil bewertet zum Importpreis | `0` |
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `from_zone_price_zar_per_mwh` | Float | Exportzonenpreis |
+| `to_zone_price_zar_per_mwh` | Float | Importzonenpreis |
+| `price_spread_zar_per_mwh` | Float | Preisdifferenz `import - export` |
+| `flow_received_mwh` | Float | Empfangene Menge nach Verlusten |
+| `congestion_rent_zar` | Float | Link-Engpasserloes |
+| `losses_value_zar` | Float | Verlustanteil bewertet zum Importpreis |
 
 ### Player-Zone-Info (`player_zone_info_by_player` je Spieler)
 
-| Feld | Typ | Bedeutung | Fallback |
-|---|---|---|---|
-| `zone_price_zar_per_mwh` | Float | lokaler Zonenpreis des Spielers | `null` |
-| `zonal_pricing_active` | Boolean | true wenn Spielerzone vom Systempreis abweicht | `false` |
-| `connected_binding_links` | Array | Liste der bindenden Links an der Zonengrenze | `[]` |
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `zone_price_zar_per_mwh` | Float | lokaler Zonenpreis des Spielers |
+| `player_zone_split_active` | Boolean | true wenn der lokale Zonenpreis des Spielers vom `system_price` abweicht |
+| `connected_binding_links` | Array | Liste der bindenden Links an der Zonengrenze |
 
 ### Markt-Summary (`market_summary`)
 
-| Feld | Typ | Bedeutung | Fallback |
-|---|---|---|---|
-| `total_congestion_rent_zar` | Float | Kumulierter Engpasserloes ueber alle Runden/Stunden | `0` |
-| `avg_zone_prices` | Object | Durchschnittspreis je Zone-ID | `null` |
-| `max_price_spread_zar_per_mwh` | Float | Maximaler Preis-Spread ueber alle Stunden/Runden | `0` |
-| `split_hours_count` | Integer | Anzahl Stunden mit aktivem Marktsplitting | `0` |
-| `split_rounds_count` | Integer | Anzahl Runden mit mindestens einer Split-Stunde | `0` |
-| `uniform_price_share_pct` | Float | Anteil Stunden ohne Split in Prozent | `100` |
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `total_congestion_rent_zar` | Float | Kumulierter Engpasserloes ueber alle Runden/Stunden |
+| `avg_zone_prices` | Object | Durchschnittspreis je Zone-ID |
+| `max_price_spread_zar_per_mwh` | Float | Maximaler Preis-Spread ueber alle Stunden/Runden |
+| `split_hours_count` | Integer | Anzahl Stunden mit aktivem Marktsplitting |
+| `split_rounds_count` | Integer | Anzahl Runden mit mindestens einer Split-Stunde |
+| `uniform_price_share_pct` | Float | Anteil Stunden ohne Split in Prozent |
 
 ## Fazit
 

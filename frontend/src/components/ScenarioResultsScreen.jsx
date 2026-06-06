@@ -812,19 +812,51 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                 <>
                   <Box sx={{ width: '100%', overflowX: 'auto' }}>
                     {(() => {
-                      const W = 820; const H = 200; const padX = 20; const padY = 20;
-                      const chartW = W - padX; const chartH = H - padY * 2;
+                      const primaryAxisMetricKey = activeSelectedMetrics[0] || null;
+                      const secondaryAxisMetricKey = activeSelectedMetrics[1] || null;
+                      const primaryAxisMetric = ALL_CHART_METRICS.find((metric) => metric.key === primaryAxisMetricKey) || null;
+                      const secondaryAxisMetric = ALL_CHART_METRICS.find((metric) => metric.key === secondaryAxisMetricKey) || null;
+                      const primaryAxisRange = primaryAxisMetricKey ? multiChartData.ranges[primaryAxisMetricKey] || null : null;
+                      const secondaryAxisRange = secondaryAxisMetricKey ? multiChartData.ranges[secondaryAxisMetricKey] || null : null;
+                      const W = 820; const H = 200; const padY = 20;
+                      const leftAxisWidth = primaryAxisMetric && primaryAxisRange ? 96 : 20;
+                      const rightAxisWidth = secondaryAxisMetric && secondaryAxisRange ? 96 : 20;
+                      const chartLeft = leftAxisWidth;
+                      const chartRight = W - rightAxisWidth;
+                      const chartW = Math.max(120, chartRight - chartLeft); const chartH = H - padY * 2;
                       const n = trendSeries.length;
                       const stepX = n > 1 ? chartW / (n - 1) : 0;
-                      const toX = (i) => padX + i * stepX;
+                      const toX = (i) => chartLeft + i * stepX;
                       const toY = (norm) => padY + (1 - norm) * chartH;
                       return (
                         <svg viewBox={`0 0 ${W + 20} ${H + 20}`} width="100%" height={H + 20} role="img" aria-label="Multi-KPI chart">
                           <rect x="0" y="0" width={W + 20} height={H + 20} fill="transparent" />
                           {/* horizontal grid lines */}
                           {[0, 0.25, 0.5, 0.75, 1].map((v) => (
-                            <line key={v} x1={padX} y1={toY(v)} x2={W} y2={toY(v)} stroke="#e0e0e0" strokeWidth="1" strokeDasharray="4 3" />
+                            <line key={v} x1={chartLeft} y1={toY(v)} x2={chartRight} y2={toY(v)} stroke="#e0e0e0" strokeWidth="1" strokeDasharray="4 3" />
                           ))}
+                          {primaryAxisMetric && primaryAxisRange ? (
+                            <>
+                              <line x1={chartLeft} y1={toY(0)} x2={chartLeft} y2={toY(1)} stroke={primaryAxisMetric.color} strokeWidth="1.5" opacity="0.55" />
+                              <text x={chartLeft - 10} y={toY(1) + 4} fontSize="11" textAnchor="end" fill={primaryAxisMetric.color} fontWeight="600">
+                                {primaryAxisMetric.formatter(primaryAxisRange.max)}
+                              </text>
+                              <text x={chartLeft - 10} y={toY(0) + 4} fontSize="11" textAnchor="end" fill={primaryAxisMetric.color} fontWeight="600">
+                                {primaryAxisMetric.formatter(primaryAxisRange.min)}
+                              </text>
+                            </>
+                          ) : null}
+                          {secondaryAxisMetric && secondaryAxisRange ? (
+                            <>
+                              <line x1={chartRight} y1={toY(0)} x2={chartRight} y2={toY(1)} stroke={secondaryAxisMetric.color} strokeWidth="1.5" opacity="0.55" />
+                              <text x={chartRight + 10} y={toY(1) + 4} fontSize="11" textAnchor="start" fill={secondaryAxisMetric.color} fontWeight="600">
+                                {secondaryAxisMetric.formatter(secondaryAxisRange.max)}
+                              </text>
+                              <text x={chartRight + 10} y={toY(0) + 4} fontSize="11" textAnchor="start" fill={secondaryAxisMetric.color} fontWeight="600">
+                                {secondaryAxisMetric.formatter(secondaryAxisRange.min)}
+                              </text>
+                            </>
+                          ) : null}
                           {/* x-axis labels */}
                           {trendSeries.map((r, i) => (
                             <text key={r.round} x={toX(i)} y={H + 14} fontSize="11" textAnchor="middle" fill="#888">R{r.round}</text>

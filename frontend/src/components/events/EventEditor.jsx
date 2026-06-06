@@ -33,6 +33,7 @@ export default function EventEditor({ open, onClose, event, onSave, playerTypes 
     name: '',
     description: '',
     type: 'systemic',
+    market_phase: 'both',
     trigger_type: 'round',
     trigger_value: 1,
     duration_rounds: 1,
@@ -51,6 +52,7 @@ export default function EventEditor({ open, onClose, event, onSave, playerTypes 
         name: '',
         description: '',
         type: 'systemic',
+        market_phase: 'both',
         trigger_type: 'round',
         trigger_value: 1,
         duration_rounds: 1,
@@ -137,6 +139,20 @@ export default function EventEditor({ open, onClose, event, onSave, playerTypes 
               <MenuItem value="device">Device (specific device type)</MenuItem>
               <MenuItem value="task">Task (displayed as actionable to-do item)</MenuItem>
             </TextField>
+            {formData.type === 'task' && (
+              <TextField
+                select
+                label="Market Phase (two-phase rounds)"
+                value={formData.market_phase || 'both'}
+                onChange={(e) => handleChange('market_phase', e.target.value)}
+                fullWidth
+                helperText="In two-phase rounds, show this task card only in the chosen phase. 'Both' shows it in DAM and IDM (and in single-phase rounds)."
+              >
+                <MenuItem value="both">Both phases (DAM & IDM)</MenuItem>
+                <MenuItem value="dam">Day-Ahead only (Phase 1)</MenuItem>
+                <MenuItem value="idm">Intraday only (Phase 2)</MenuItem>
+              </TextField>
+            )}
             <Box sx={{ p: 1.5, bgcolor: 'info.lighter', borderRadius: 1, border: 1, borderColor: 'info.light' }}>
               <Typography variant="caption" fontWeight={600} display="block" gutterBottom>
                 Type Documentation:

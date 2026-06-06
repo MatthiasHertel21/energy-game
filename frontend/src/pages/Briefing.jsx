@@ -92,8 +92,59 @@ export default function Briefing() {
   const maxRounds = g.rounds || 10
   const allowedTypes = data.allowed_player_types || []
   const playerTypes = data.player_types || []
+  const scenarioDevices = data.devices || []
   const selectedTypeId = hasSelectedType ? data.selected_type : null
-  const selectedTypeInfo = hasSelectedType ? playerTypes.find((pt) => pt.id === selectedTypeId) : null
+  const briefingDescription = g.description || data.objectives || ''
+
+  const normalizeScope = (value) => String(value || '').trim().toLowerCase()
+
+  const getPlayerTypeInfo = (typeId) => (
+    playerTypes.find((pt) => String(pt?.id || '') === String(typeId || '')) || null
+  )
+
+  const getPlayerTypeDevices = (typeId) => {
+    const playerType = getPlayerTypeInfo(typeId)
+    const deviceIds = new Set((playerType?.devices || []).map((deviceId) => String(deviceId || '')))
+    return scenarioDevices.filter((device) => deviceIds.has(String(device?.id || '')))
+  }
+
+  const inferRoleForType = (typeId) => {
+    const devices = getPlayerTypeDevices(typeId)
+    if (!devices.length) return null
+
+    let hasLoad = false
+    let hasGen = false
+
+    devices.forEach((device) => {
+      const type = normalizeScope(device?.type)
+      const category = normalizeScope(device?.category)
+      if (category === 'load' || type.includes('load') || type.endsWith('_load')) {
+        hasLoad = true
+      } else if (category || type) {
+        hasGen = true
+      }
+    })
+
+    if (hasLoad && !hasGen) return 'consumer'
+    if (hasGen && !hasLoad) return 'producer'
+    return null
+  }
+
+  const matchesApplicableTo = (applicableTo, typeId) => {
+    const scopes = (typeof applicableTo === 'string' ? [applicableTo] : Array.isArray(applicableTo) ? applicableTo : [])
+      .map((item) => normalizeScope(item))
+      .filter(Boolean)
+
+    if (!scopes.length || scopes.includes('all')) return true
+
+    const normalizedTypeId = normalizeScope(typeId)
+    const normalizedRole = normalizeScope(inferRoleForType(typeId))
+
+    return (normalizedTypeId && scopes.includes(normalizedTypeId))
+      || (normalizedRole && scopes.includes(normalizedRole))
+  }
+
+  const selectedTypeInfo = hasSelectedType ? getPlayerTypeInfo(selectedTypeId) : null
 
   const handleSelectType = async (typeId) => {
     setSelecting(true)
@@ -174,24 +225,30 @@ export default function Briefing() {
 
   // Filter challenges by player type
   const getChallengesForType = (typeId) => {
-    return challenges.filter(c => {
-      // If applicable_to is empty or undefined, it applies to all
-      if (!c.applicable_to || c.applicable_to.length === 0) return true
-      return c.applicable_to.includes(typeId)
-    })
+    return challenges.filter((challenge) => matchesApplicableTo(challenge?.applicable_to, typeId))
   }
 
-  // Filter events by player type (exclude task events)
+  // Filter events by player type.
   const getEventsForType = (typeId) => {
     const events = data.events || []
+    const normalizedTypeId = normalizeScope(typeId)
+    const normalizedRole = normalizeScope(inferRoleForType(typeId))
+    const typeDevices = getPlayerTypeDevices(typeId)
+    const deviceIds = new Set(typeDevices.map((device) => normalizeScope(device?.id)))
+    const deviceTypes = new Set(typeDevices.map((device) => normalizeScope(device?.type)))
+
     return events.filter(e => {
-      // Exclude task events
-      if (e.type === 'task') return false
-      // Events with target="player" and target_id matching the type
-      if (e.target === 'player' && e.target_id === typeId) return true
-      // Events with target="all" or no target
-      if (!e.target || e.target === 'all') return true
-      return false
+      const target = normalizeScope(e?.target || 'all')
+      const targetId = normalizeScope(e?.target_id)
+
+      if (!target || target === 'all') return true
+      if (target === 'player') {
+        return targetId === normalizedTypeId || targetId === normalizedRole
+      }
+      if (target === 'device') {
+        return deviceIds.has(targetId) || deviceTypes.has(targetId)
+      }
+      return true
     })
   }
 
@@ -318,7 +375,7 @@ export default function Briefing() {
         </Box>
 
         {/* Mission KPI Card - Only shown after type selection */}
-        {hasSelectedType && requiredChallenges.length > 0 && (
+        {hasSelectedType && selectedTypeObjectives.length > 0 && (
           <Card variant="outlined" sx={{ mb: 3, bgcolor: 'primary.lighter', borderColor: 'primary.main', borderWidth: 2 }}>
             <CardContent>
               <Typography variant="overline" color="text.secondary" fontWeight={600}>
@@ -343,9 +400,9 @@ export default function Briefing() {
 
         {/* Briefing Text - Formatted */}
         <Box sx={{ mb: 3, '& h1,& h2,& h3,& h4': { marginTop: '0.75em', marginBottom: '0.25em' }, '& ul, & ol': { paddingLeft: '1.5em' }, '& p': { margin: '0 0 0.5em' } }}>
-          {data.objectives ? (
+          {briefingDescription ? (
             <Typography variant="body1" color="text.secondary" component="div">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.objectives}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{briefingDescription}</ReactMarkdown>
             </Typography>
           ) : (
             <Typography variant="body1" color="text.secondary" fontStyle="italic">
@@ -442,48 +499,35 @@ export default function Briefing() {
                 </Box>
               )}
 
-              <Box sx={{ mb: 3 }}>
-                <Typography variant="subtitle1" fontWeight={600} gutterBottom>
-                  ⚡ Events
-                </Typography>
-                <Grid container spacing={2}>
-                  <Grid item xs={12} sm={6} md={4}>
-                    <Card variant="outlined" sx={{ height: '100%', bgcolor: 'info.lighter', borderColor: 'info.main', borderWidth: 1 }}>
-                      <CardContent>
-                        <Stack spacing={1}>
-                          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
-                            <BoltIcon color="info" sx={{ fontSize: 20 }} />
-                            <Typography variant="subtitle2" fontWeight={600} sx={{ flexGrow: 1 }}>
-                              Round 1: Baseline Setup
-                            </Typography>
-                          </Box>
-                          <Typography variant="body2" color="text.secondary">
-                            The first round establishes your baseline position. You'll set initial forecasts and day-ahead bids that serve as the foundation for subsequent trading rounds.
-                          </Typography>
-                          <Chip label="Round 1" size="small" variant="outlined" color="info" />
-                        </Stack>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-
-                  {selectedTypeEvents.map((event, eidx) => (
+              {selectedTypeEvents.length > 0 && (
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+                    ⚡ Tasks & Events
+                  </Typography>
+                  <Grid container spacing={2}>
+                    {selectedTypeEvents.map((event, eidx) => (
                     <Grid item xs={12} sm={6} md={4} key={`event-selected-${eidx}`}>
                       <Card variant="outlined" sx={{ height: '100%', bgcolor: 'background.default' }}>
                         <CardContent>
                           <Stack spacing={1}>
                             <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
-                              <BoltIcon color="warning" sx={{ fontSize: 20 }} />
+                              <BoltIcon color={event.type === 'task' ? 'info' : 'warning'} sx={{ fontSize: 20 }} />
                               <Typography variant="subtitle2" fontWeight={600} sx={{ flexGrow: 1 }}>
                                 {event.name}
                               </Typography>
                             </Box>
                             {event.description && (
-                              <Typography variant="body2" color="text.secondary">
+                              <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-line' }}>
                                 {event.description}
                               </Typography>
                             )}
                             <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
-                              <Chip label={`Round ${event.trigger_value}`} size="small" variant="outlined" />
+                              {event.trigger_value != null && (
+                                <Chip label={`Round ${event.trigger_value}`} size="small" variant="outlined" />
+                              )}
+                              {event.type && (
+                                <Chip label={String(event.type).replace(/_/g, ' ')} size="small" variant="outlined" color={event.type === 'task' ? 'info' : 'default'} />
+                              )}
                               {event.duration_rounds > 1 && (
                                 <Chip label={`${event.duration_rounds} rounds`} size="small" variant="outlined" color="info" />
                               )}
@@ -492,9 +536,10 @@ export default function Briefing() {
                         </CardContent>
                       </Card>
                     </Grid>
-                  ))}
-                </Grid>
-              </Box>
+                    ))}
+                  </Grid>
+                </Box>
+              )}
             </Box>
             <Divider sx={{ my: 3 }} />
           </>
@@ -610,49 +655,35 @@ export default function Briefing() {
                     )}
 
                     {/* Events */}
-                    <Box sx={{ mb: 3 }}>
-                      <Typography variant="subtitle1" fontWeight={600} gutterBottom>
-                        ⚡ Events
-                      </Typography>
-                      <Grid container spacing={2}>
-                        {/* Round 1 as first event card */}
-                        <Grid item xs={12} sm={6} md={4}>
-                          <Card variant="outlined" sx={{ height: '100%', bgcolor: 'info.lighter', borderColor: 'info.main', borderWidth: 1 }}>
-                            <CardContent>
-                              <Stack spacing={1}>
-                                <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
-                                  <BoltIcon color="info" sx={{ fontSize: 20 }} />
-                                  <Typography variant="subtitle2" fontWeight={600} sx={{ flexGrow: 1 }}>
-                                    Round 1: Baseline Setup
-                                  </Typography>
-                                </Box>
-                                <Typography variant="body2" color="text.secondary">
-                                  The first round establishes your baseline position. You'll set initial forecasts and day-ahead bids that serve as the foundation for subsequent trading rounds.
-                                </Typography>
-                                <Chip label="Round 1" size="small" variant="outlined" color="info" />
-                              </Stack>
-                            </CardContent>
-                          </Card>
-                        </Grid>
-                        {/* Other events */}
+                    {typeEvents.length > 0 && (
+                      <Box sx={{ mb: 3 }}>
+                        <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+                          ⚡ Tasks & Events
+                        </Typography>
+                        <Grid container spacing={2}>
                         {typeEvents.map((event, eidx) => (
                           <Grid item xs={12} sm={6} md={4} key={eidx}>
                             <Card variant="outlined" sx={{ height: '100%', bgcolor: 'background.default' }}>
                               <CardContent>
                                 <Stack spacing={1}>
                                   <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
-                                    <BoltIcon color="warning" sx={{ fontSize: 20 }} />
+                                    <BoltIcon color={event.type === 'task' ? 'info' : 'warning'} sx={{ fontSize: 20 }} />
                                     <Typography variant="subtitle2" fontWeight={600} sx={{ flexGrow: 1 }}>
                                       {event.name}
                                     </Typography>
                                   </Box>
                                   {event.description && (
-                                    <Typography variant="body2" color="text.secondary">
+                                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-line' }}>
                                       {event.description}
                                     </Typography>
                                   )}
                                   <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
-                                    <Chip label={`Round ${event.trigger_value}`} size="small" variant="outlined" />
+                                    {event.trigger_value != null && (
+                                      <Chip label={`Round ${event.trigger_value}`} size="small" variant="outlined" />
+                                    )}
+                                    {event.type && (
+                                      <Chip label={String(event.type).replace(/_/g, ' ')} size="small" variant="outlined" color={event.type === 'task' ? 'info' : 'default'} />
+                                    )}
                                     {event.duration_rounds > 1 && (
                                       <Chip label={`${event.duration_rounds} rounds`} size="small" variant="outlined" color="info" />
                                     )}
@@ -662,8 +693,9 @@ export default function Briefing() {
                             </Card>
                           </Grid>
                         ))}
-                      </Grid>
-                    </Box>
+                        </Grid>
+                      </Box>
+                    )}
 
 
 

@@ -33,9 +33,10 @@ const getNormalizedBidCount = (device) => {
  * DeviceDeepDiveTabs - Shows hourly breakdown per device with tabs
  * @param {Object} results - Round results data
  * @param {Object} scenario - Scenario configuration
+ * @param {string} mode - Session market mode
  * @param {string} roleType - 'producer' or 'consumer'
  */
-export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
+export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }) {
   const [selectedDeviceIdx, setSelectedDeviceIdx] = useState(0)
 
   if (!results || !results.my_result) {
@@ -43,6 +44,8 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   }
 
   const { my_result } = results
+  const playerTypeId = my_result?.type
+  const allowedPlayerTypes = Array.isArray(scenario?.allowed_player_types) ? scenario.allowed_player_types : []
   const currentRound = Number(results?.round || 0)
   const roundSpan = Number(scenario?.config?.general?.round_span_hours || 6)
   const forecastHorizon = Number(scenario?.config?.general?.forecast_horizon_hours || scenario?.config?.general?.horizon_hours || 48)
@@ -54,6 +57,24 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       .filter((hourIdx) => hourIdx >= roundStartHour && hourIdx < roundEndHour)
   )
   const isConsumer = roleType === 'consumer'
+  const sharedMarketSlotScale = (() => {
+    if (mode !== 'shared_market' || !playerTypeId) return 1
+    const allowedType = allowedPlayerTypes.find((entry) => String(entry?.type_id || '') === String(playerTypeId || ''))
+    const maxPlayers = Number(allowedType?.max_players)
+    return Number.isFinite(maxPlayers) && maxPlayers > 0 ? 1 / maxPlayers : 1
+  })()
+  const scaleDisplayedCapacity = (value) => {
+    const numericValue = Number(value)
+    if (!Number.isFinite(numericValue)) return value
+    return Math.round(numericValue * sharedMarketSlotScale * 1000) / 1000
+  }
+  const derivedGridZoneCount = Number(
+    scenario?.config?.grid?.zones
+      || my_result?.zone_results?.length
+      || my_result?.hourly_results?.[0]?.zone_prices?.length
+      || 1
+  )
+  const gridZoneCount = Math.max(1, Number.isFinite(derivedGridZoneCount) ? derivedGridZoneCount : 1)
   const roundLevelIdp = Number(my_result?.idp)
   const roundLevelDaPrice = Number(
     my_result?.kpis?.hourly_breakdown?.find((entry) => entry?.da_price_zar !== undefined && entry?.da_price_zar !== null)?.da_price_zar
@@ -78,7 +99,13 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
 
   const damStatus = getTradingStatusForRound('dam')
   const idmStatus = getTradingStatusForRound('idm')
-  const isIdmRound = currentRound > 1 && idmStatus !== 'off'
+  // Two-phase rounds clear DAM and IDM within the SAME round (incl. round 1).
+  const twoPhaseRoundsCfg = scenario?.config?.general?.two_phase_rounds
+  const isTwoPhaseRound = Array.isArray(twoPhaseRoundsCfg)
+    && Boolean(twoPhaseRoundsCfg[Math.max(0, currentRound - 1)])
+    && damStatus === 'on'
+    && idmStatus === 'on'
+  const isIdmRound = (currentRound > 1 && idmStatus !== 'off') || isTwoPhaseRound
   const isCurrentRoundDamOnly = currentRound > 1 && damStatus !== 'off' && idmStatus === 'off'
   
   // Debug logging
@@ -106,17 +133,19 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     })
   }
 
-  const hasHistoricalDam = hasBidDispatchRows(my_result.dam_bid_dispatch)
-    || hasDeviceHourlyDetailRows(my_result.dam_device_hourly_details)
-    || Boolean(damHourlyResults.length)
+  const canUseCurrentRoundDamFallback = currentRound <= 1 || isCurrentRoundDamOnly
 
   const preferredDamBidDispatch = hasBidDispatchRows(my_result?.dam_bid_dispatch)
     ? (my_result.dam_bid_dispatch || {})
-    : (my_result.bid_dispatch || {})
+    : (canUseCurrentRoundDamFallback ? (my_result.bid_dispatch || {}) : {})
 
   const preferredDamDeviceHourlyDetails = hasDeviceHourlyDetailRows(my_result?.dam_device_hourly_details)
     ? (my_result.dam_device_hourly_details || {})
-    : (my_result.device_hourly_details || {})
+    : (canUseCurrentRoundDamFallback ? (my_result.device_hourly_details || {}) : {})
+
+  const hasHistoricalDam = hasBidDispatchRows(preferredDamBidDispatch)
+    || hasDeviceHourlyDetailRows(preferredDamDeviceHourlyDetails)
+    || Boolean(damHourlyResults.length)
 
   const damHasCoverageForWindow = (bidDispatch) => {
     if (!bidDispatch || typeof bidDispatch !== 'object') return false
@@ -160,17 +189,15 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
   }
 
   // Separate DAM and IDM data
-  const hasDam = isCurrentRoundDamOnly || (hasHistoricalDam && damHasCoverageForWindow(preferredDamBidDispatch))
-  const damBidDispatch = isCurrentRoundDamOnly
-    ? preferredDamBidDispatch
-    : (hasDam ? (my_result.dam_bid_dispatch || {}) : {})
+  const hasDam = canUseCurrentRoundDamFallback
+    ? hasHistoricalDam
+    : (hasHistoricalDam && damHasCoverageForWindow(preferredDamBidDispatch))
+  const damBidDispatch = hasDam ? preferredDamBidDispatch : {}
   const idmBidDispatch = isIdmRound
     ? (my_result.idm_bid_dispatch || my_result.bid_dispatch || {})
     : {}
   
-  const damDeviceHourlyDetails = isCurrentRoundDamOnly
-    ? preferredDamDeviceHourlyDetails
-    : (hasDam ? (my_result.dam_device_hourly_details || {}) : {})
+  const damDeviceHourlyDetails = hasDam ? preferredDamDeviceHourlyDetails : {}
   const idmDeviceHourlyDetails = isIdmRound
     ? (my_result.idm_device_hourly_details || my_result.device_hourly_details || {})
     : {}
@@ -241,7 +268,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         || (Number.isFinite(volume) && volume > 0)
         || (Number.isFinite(idVolume) && idVolume > 0)
     })
-  const showDamBaselineNotice = isIdmRound && hasDam && !hasIdmActivity
+  const showDamBaselineNotice = isIdmRound && !isTwoPhaseRound && hasDam && !hasIdmActivity
 
   // Get device list from all available sources
   const deviceIdSet = new Set()
@@ -354,6 +381,21 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     return Number.isFinite(num) ? num : null
   }
 
+  const formatPriceSourceLabel = (value) => {
+    switch (String(value || '')) {
+      case 'uniform':
+        return 'Uniform'
+      case 'zonal_split':
+        return 'Zonal split'
+      case 'islanded':
+        return 'Islanded'
+      case 'shortfall_separate':
+        return 'Shortfall separate'
+      default:
+        return value ? String(value).replaceAll('_', ' ') : '—'
+    }
+  }
+
   // Get hourly data for selected device - separate DAM and IDM
   const deviceBidsDAM = damBidDispatch[selectedDeviceId] || {}
   const deviceBidsIDM = idmBidDispatch[selectedDeviceId] || {}
@@ -458,11 +500,17 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     const lotA_DAM = findLotData(deviceBidsDAM.A)
     const lotB_DAM = findLotData(deviceBidsDAM.B)
     const lotC_DAM = findLotData(deviceBidsDAM.C)
+    const damLots = Object.values(deviceBidsDAM || {})
+      .map((lotsArray) => findLotData(lotsArray))
+      .filter((lot) => lot && typeof lot === 'object' && Object.keys(lot).length > 0)
     
     // IDM bids for this hour (lots A, B, C) - FIND BY hour_offset
     const lotA_IDM = findLotData(deviceBidsIDM.A)
     const lotB_IDM = findLotData(deviceBidsIDM.B)
     const lotC_IDM = findLotData(deviceBidsIDM.C)
+    const idmLots = Object.values(deviceBidsIDM || {})
+      .map((lotsArray) => findLotData(lotsArray))
+      .filter((lot) => lot && typeof lot === 'object' && Object.keys(lot).length > 0)
 
     // Get CO2 for this hour - FIND BY hour_offset
     const co2Dam = findHourlyEntry(deviceCO2_DAM, hourOffset, scenarioHourIdx)
@@ -479,27 +527,37 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     const deviceBreakdown = deviceBreakdownArray.find(b => (b.hour_offset ?? b.hour ?? b.hour_idx) === hourOffset) || {}
     const baseCapacityRaw = parseOptionalNumber(deviceBreakdown.base_capacity_mw)
     const effectiveCapacityRaw = parseOptionalNumber(deviceBreakdown.effective_capacity_mw)
+    const offerPrice = parseOptionalNumber(deviceBreakdown.offer_price_zar)
     const totalOfferedFromBreakdown = deviceBreakdown.total_offered_mw || 0
     const totalOfferedFromPlannedFallback = Math.abs(Number(deviceBreakdown.planned_mw ?? deviceBreakdown.planned_mwh ?? 0))
 
     // Calculate totals for DAM/IDM:
     // Prefer backend-provided canonical DA/ID split so KPI and details cannot diverge.
-    const totalOffered_DAM_Lots = (lotA_DAM.mw_offered || 0) + (lotB_DAM.mw_offered || 0) + (lotC_DAM.mw_offered || 0)
-    const totalOffered_DAM = Number(totalOfferedFromBreakdown || 0) > 0
-      ? Number(totalOfferedFromBreakdown || 0)
-      : (totalOffered_DAM_Lots > 0 ? totalOffered_DAM_Lots : totalOfferedFromPlannedFallback)
-    const totalOffered_IDM = getSignedOffered(lotA_IDM) + getSignedOffered(lotB_IDM) + getSignedOffered(lotC_IDM)
+    const totalOffered_DAM_Lots = damLots.reduce((sum, lot) => sum + Number(lot?.mw_offered || 0), 0)
+    // In two-phase rounds the device_hourly_breakdown is built from the IDM-phase run,
+    // so its total_offered_mw reflects the IDM offer, not the DAM offer. Use the DAM
+    // bid-dispatch lots for the DAM "Offered" so it does not equal the IDM offered.
+    const totalOffered_DAM = isTwoPhaseRound
+      ? (totalOffered_DAM_Lots > 0
+        ? totalOffered_DAM_Lots
+        : (Number(totalOfferedFromBreakdown || 0) > 0
+          ? Number(totalOfferedFromBreakdown || 0)
+          : totalOfferedFromPlannedFallback))
+      : (Number(totalOfferedFromBreakdown || 0) > 0
+        ? Number(totalOfferedFromBreakdown || 0)
+        : (totalOffered_DAM_Lots > 0 ? totalOffered_DAM_Lots : totalOfferedFromPlannedFallback))
+    const totalOffered_IDM = idmLots.reduce((sum, lot) => sum + getSignedOffered(lot), 0)
 
     const backendDaDispatched = parseOptionalNumber(deviceBreakdown.da_dispatched_mwh)
     const backendIdDispatched = parseOptionalNumber(deviceBreakdown.id_dispatched_mwh)
 
     const totalDispatched_DAM = backendDaDispatched !== null
       ? backendDaDispatched
-      : ((lotA_DAM.mw_dispatched || 0) + (lotB_DAM.mw_dispatched || 0) + (lotC_DAM.mw_dispatched || 0))
+      : damLots.reduce((sum, lot) => sum + Number(lot?.mw_dispatched || 0), 0)
 
     const totalDispatched_IDM = backendIdDispatched !== null
       ? backendIdDispatched
-      : ((lotA_IDM.mw_dispatched || 0) + (lotB_IDM.mw_dispatched || 0) + (lotC_IDM.mw_dispatched || 0))
+      : idmLots.reduce((sum, lot) => sum + Number(lot?.mw_dispatched || 0), 0)
     const marketAwardedMwh = totalDispatched_DAM + totalDispatched_IDM
 
     const fallbackDemandBase = Math.max(
@@ -516,26 +574,41 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       fallbackDemandBase
     )
 
-    const baseCapacity = isConsumer
+    const rawBaseCapacity = isConsumer
       ? (baseCapacityRaw !== null && baseCapacityRaw > 0 ? baseCapacityRaw : fallbackDemandBase)
       : (baseCapacityRaw ?? Number(deviceCapacity || 0))
-    const effectiveCapacity = isConsumer
+    const rawEffectiveCapacity = isConsumer
       ? (effectiveCapacityRaw !== null && effectiveCapacityRaw > 0 ? effectiveCapacityRaw : fallbackDemandEffective)
       : (effectiveCapacityRaw ?? Number(deviceCapacity || 0))
+    const baseCapacity = scaleDisplayedCapacity(rawBaseCapacity)
+    const effectiveCapacity = scaleDisplayedCapacity(rawEffectiveCapacity)
 
     const offeredForOverbid = totalOfferedFromBreakdown > 0 ? totalOfferedFromBreakdown : totalOffered_DAM
     const backendOverbid = parseOptionalNumber(deviceBreakdown.overbid_mw)
+    const displayedBackendOverbid = backendOverbid !== null ? scaleDisplayedCapacity(backendOverbid) : null
     const fallbackOverbid = Math.max(0, offeredForOverbid - Number(effectiveCapacity || 0))
+    const preferDisplayedSharedMarketOverbid = sharedMarketSlotScale !== 1
     const preferFallbackConsumerOverbid = isConsumer
       && offeredForOverbid > 0
-      && effectiveCapacity > 0
+      && rawEffectiveCapacity > 0
       && (effectiveCapacityRaw === null || effectiveCapacityRaw <= 0)
-    const overbidMw = (!preferFallbackConsumerOverbid && backendOverbid !== null)
-      ? backendOverbid
+    const overbidMw = (!preferDisplayedSharedMarketOverbid && !preferFallbackConsumerOverbid && displayedBackendOverbid !== null)
+      ? displayedBackendOverbid
       : fallbackOverbid
     const capacityViolation = Boolean(deviceBreakdown.capacity_violation) || overbidMw > 0.001
     
     const smp = hour.smp || 0
+    const rawZonePrice = parseOptionalNumber(hour?.zone_price_zar_per_mwh ?? deviceBreakdown.zone_price_zar_per_mwh)
+    const rawSystemPrice = parseOptionalNumber(hour?.system_price_zar_per_mwh ?? deviceBreakdown.system_price_zar_per_mwh)
+    const systemPrice = rawSystemPrice !== null ? rawSystemPrice : (Number.isFinite(Number(smp)) ? Number(smp) : null)
+    const zonePrice = rawZonePrice !== null ? rawZonePrice : systemPrice
+    const rawPriceSource = String(hour?.price_source || '').trim()
+    const priceSource = rawPriceSource || (
+      zonePrice !== null && systemPrice !== null
+        ? (Math.abs(zonePrice - systemPrice) > 0.05 ? 'zonal_split' : 'uniform')
+        : ''
+    )
+    const zonalPricingActive = Boolean(hour?.zonal_pricing_active)
     const backendDaPrice = parseOptionalNumber(deviceBreakdown.da_price_zar)
     const backendIdPrice = parseOptionalNumber(deviceBreakdown.id_price_zar)
     const damPrice = isCurrentRoundDamOnly
@@ -634,18 +707,25 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       lotA_DAM,
       lotB_DAM,
       lotC_DAM,
+      damLots,
       totalOffered_DAM_Lots,
       totalOfferedFromBreakdown: Number(totalOfferedFromBreakdown || 0),
       totalOfferedFromPlannedFallback,
       totalOffered_DAM,
       totalDispatched_DAM,
+      offerPrice,
       damPrice,
       smp,
+      zonePrice,
+      systemPrice,
+      priceSource,
+      zonalPricingActive,
       revenue_DAM,
       // IDM
       lotA_IDM,
       lotB_IDM,
       lotC_IDM,
+      idmLots,
       totalOffered_IDM,
       totalDispatched_IDM,
       idp,
@@ -704,12 +784,84 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     }
   }
 
+  const getWeightedAverageOfferPrice = ({ marketKey, signed = false, fallbackPriceKey = null, fallbackVolumeKey = null }) => {
+    let weightedPriceTotal = 0
+    let offeredWeightTotal = 0
+
+    hourlyData.forEach((hourData) => {
+      const lots = marketKey === 'idm' ? hourData?.idmLots : hourData?.damLots
+      let contributedFromLots = false
+
+      ;(Array.isArray(lots) ? lots : []).forEach((lot) => {
+        const rawOffered = signed ? getSignedOffered(lot) : Number(lot.mw_offered || 0)
+        const offered = Math.abs(Number(rawOffered || 0))
+        const price = Number(lot.price_bid)
+        if (!Number.isFinite(offered) || offered <= 0 || !Number.isFinite(price)) return
+        weightedPriceTotal += offered * price
+        offeredWeightTotal += offered
+        contributedFromLots = true
+      })
+
+      if (!contributedFromLots && fallbackPriceKey && fallbackVolumeKey) {
+        const fallbackPrice = Number(hourData?.[fallbackPriceKey])
+        const fallbackVolume = Math.abs(Number(hourData?.[fallbackVolumeKey] || 0))
+        if (Number.isFinite(fallbackPrice) && Number.isFinite(fallbackVolume) && fallbackVolume > 0) {
+          weightedPriceTotal += fallbackPrice * fallbackVolume
+          offeredWeightTotal += fallbackVolume
+        }
+      }
+    })
+
+    if (!(offeredWeightTotal > 0)) {
+      return { hasPrice: false, avgPrice: 0 }
+    }
+
+    return {
+      hasPrice: true,
+      avgPrice: weightedPriceTotal / offeredWeightTotal,
+    }
+  }
+
   const damLotA = getAvgLotPrice('lotA_DAM')
   const damLotB = getAvgLotPrice('lotB_DAM')
   const damLotC = getAvgLotPrice('lotC_DAM')
   const idmLotA = getAvgLotPrice('lotA_IDM')
   const idmLotB = getAvgLotPrice('lotB_IDM')
   const idmLotC = getAvgLotPrice('lotC_IDM')
+  const damWeightedOfferPrice = getWeightedAverageOfferPrice({
+    marketKey: 'dam',
+    fallbackPriceKey: 'offerPrice',
+    fallbackVolumeKey: 'totalOffered_DAM',
+  })
+  const idmWeightedOfferPrice = getWeightedAverageOfferPrice({ marketKey: 'idm', signed: true })
+  const idmOfferedRowLabel = (() => {
+    if (isBatteryDevice) return 'ID Submitted (MWh)'
+    if (isConsumer) return 'Demanded (MWh)'
+
+    const nonZeroSignedOffers = hourlyData
+      .map((hourData) => Number(hourData.totalOffered_IDM || 0))
+      .filter((value) => Math.abs(value) > 0.001)
+
+    if (nonZeroSignedOffers.length === 0) return 'Offered (MWh)'
+    if (nonZeroSignedOffers.every((value) => value < 0)) return 'Offered to buy (MWh)'
+    if (nonZeroSignedOffers.every((value) => value > 0)) return 'Offered to sell (MWh)'
+    return 'Offered to buy / sell (MWh)'
+  })()
+  const zonalContextHours = hourlyData.filter((hourData) => (
+    hourData.zonePrice !== null || hourData.systemPrice !== null || hourData.priceSource
+  ))
+  const zonalPriceSourceCounts = zonalContextHours.reduce((acc, hourData) => {
+    if (!hourData.priceSource) return acc
+    acc[hourData.priceSource] = (acc[hourData.priceSource] || 0) + 1
+    return acc
+  }, {})
+  const dominantPriceSource = Object.entries(zonalPriceSourceCounts)
+    .sort((left, right) => right[1] - left[1])[0]?.[0] || ''
+  const zonalPriceSourceSummary = Object.entries(zonalPriceSourceCounts)
+    .sort((left, right) => right[1] - left[1])
+    .map(([source, count]) => `${formatPriceSourceLabel(source)} (${count}h)`)
+    .join(' · ')
+  const showZonalPriceContext = gridZoneCount > 1 && zonalContextHours.length > 0
 
   // Calculate round totals/averages
   const roundTotals = {
@@ -729,6 +881,9 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     hasLotC_DAM: damLotC.hasPrice,
     avgDamPrice: hourlyData.filter(h => h.damPrice > 0).reduce((sum, h) => sum + h.damPrice, 0) / (hourlyData.filter(h => h.damPrice > 0).length || 1),
     avgSMP: hourlyData.filter(h => h.smp > 0).reduce((sum, h) => sum + h.smp, 0) / (hourlyData.filter(h => h.smp > 0).length || 1),
+    avgZonePrice: zonalContextHours.filter((h) => h.zonePrice !== null).reduce((sum, h) => sum + Number(h.zonePrice || 0), 0) / (zonalContextHours.filter((h) => h.zonePrice !== null).length || 1),
+    avgSystemPrice: zonalContextHours.filter((h) => h.systemPrice !== null).reduce((sum, h) => sum + Number(h.systemPrice || 0), 0) / (zonalContextHours.filter((h) => h.systemPrice !== null).length || 1),
+    zonalSplitHours: zonalContextHours.filter((h) => h.zonalPricingActive).length,
     // IDM - Summed
     totalOffered_IDM: hourlyData.reduce((sum, h) => sum + h.totalOffered_IDM, 0),
     totalLotAOffered_IDM: hourlyData.reduce((sum, h) => sum + getSignedOffered(h.lotA_IDM), 0),
@@ -765,12 +920,15 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     battSocStart: hourlyData.length > 0 ? hourlyData[0].socStartPct : 0,
     battSocEnd: hourlyData.length > 0 ? hourlyData[hourlyData.length - 1].socEndPct : 0,
   }
-  const showIdmSection = isIdmRound && hourlyData.some((h) => (
-    h.totalOffered_IDM !== 0
-    || h.totalDispatched_IDM > 0
-    || displayMoney(h.revenue_IDM) !== 0
-    || h.idp > 0
-  ))
+  const showIdmSection = isIdmRound && (
+    isTwoPhaseRound
+    || hourlyData.some((h) => (
+      h.totalOffered_IDM !== 0
+      || h.totalDispatched_IDM > 0
+      || displayMoney(h.revenue_IDM) !== 0
+      || h.idp > 0
+    ))
+  )
   const batteryAwardPhysicalGapMwh = Math.max(0, roundTotals.totalMarketAwardedMwh - roundTotals.totalDischargedMwh)
 
   const selectedDeviceVariableRate = Math.max(0, Number(deviceConfig.variable_cost_zar_per_mwh ?? deviceConfig.cost_per_mwh_zar ?? 0))
@@ -913,6 +1071,9 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
     if (metricKey.startsWith('battery_')) {
       return 'Visible because the selected device is a battery and state-of-charge / charging data exists for battery devices only.'
     }
+    if (metricKey === 'zone_price' || metricKey === 'system_price' || metricKey === 'price_source') {
+      return 'Visible because this scenario carries zonal settlement context for the shown hours.'
+    }
     if (metricKey === 'grid_curtailed') {
       return 'Visible because this producer has player-level constrained-off energy in the round and the value is only shown in the single-device producer view to avoid double counting.'
     }
@@ -941,6 +1102,9 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       dam_price: isIdmRound
         ? `This row shows the day-ahead settlement price used for the DA portion of settlement in each hour. In later rounds with active IDM it stays the DA baseline price for previously cleared DA volume.\n\n${rowVisibilityReason('dam_price')}`
         : `This row shows the market clearing price (SMP) used to settle the shown DAM-only hour.\n\n${rowVisibilityReason('dam_price')}`,
+      zone_price: `This row shows the local zone settlement price attached to the selected player's zone in each hour. When a zonal split is active, this is the price that differs from the system reference and is used for the player's local settlement basis.\n\n${rowVisibilityReason('zone_price')}`,
+      system_price: `This row shows the system-wide reference price for the same hour. It stays useful as the market-wide benchmark even when local zone settlement prices diverge.\n\n${rowVisibilityReason('system_price')}`,
+      price_source: `This row explains why the price context looks the way it does in each hour: uniform, zonal split, islanded, or shortfall separate. It helps distinguish a real zonal price split from shortfall handling or a no-split hour.\n\n${rowVisibilityReason('price_source')}`,
       dam_dispatched: `${isBatteryDevice ? 'This row shows the day-ahead awarded market volume for the battery.' : 'This row shows the day-ahead dispatched or consumed volume for the device.'} It is the awarded DA volume, preferably taken from backend-settled DA dispatch fields so the detail table stays consistent with the KPI computation.${isBatteryDevice ? ' For batteries this is a market commitment and can exceed the physically executable discharge shown in the Battery Storage section.' : ''}\n\n${rowVisibilityReason('dam_dispatched')}`,
       grid_curtailed: `Grid curtailed energy is commercially cleared producer output that could not be physically transported because of network constraints. It is shown separately so delivery and profit interpretation can distinguish market clearing from feasible physical transport.\n\n${rowVisibilityReason('grid_curtailed')}`,
       dam_revenue: `This row shows day-ahead ${revenueLabel} for the device. It is based on backend-settled DA revenue when available, otherwise approximated as DA dispatched volume × DA price.\n\n${rowVisibilityReason('dam_revenue')}`,
@@ -981,11 +1145,13 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       case 'base_capacity':
         lines.push(`Displayed value: ${tt(hourData.baseCapacity)} MW.`)
         lines.push(`Source: frontend uses device-hour breakdown base_capacity_mw when present; otherwise a role-specific fallback baseline is derived.`)
+        if (sharedMarketSlotScale !== 1) lines.push(`Shared-market display: the shown number is scaled to your per-slot share (factor ${tt(sharedMarketSlotScale)}).`)
         break
       case 'effective_capacity':
         lines.push(`Displayed value: ${tt(hourData.effectiveCapacity)} MW.`)
         lines.push(`Source: device-hour breakdown effective_capacity_mw when available, otherwise a fallback derived from actual/planned/dispatch context.`)
         lines.push(`Interpretation: this is the effective ${demandLabel} after dynamic reductions, profiles, or event effects.`)
+        if (sharedMarketSlotScale !== 1) lines.push(`Shared-market display: the shown number is scaled to your per-slot share (factor ${tt(sharedMarketSlotScale)}).`)
         break
       case 'dam_offered':
         lines.push(`Source priority: backend total_offered_mw = ${tt(hourData.totalOfferedFromBreakdown)} MWh; fallback lot sum = ${tt(hourData.lotA_DAM.mw_offered || 0)} + ${tt(hourData.lotB_DAM.mw_offered || 0)} + ${tt(hourData.lotC_DAM.mw_offered || 0)} = ${tt(hourData.totalOffered_DAM_Lots)} MWh; final fallback planned_mw = ${tt(hourData.totalOfferedFromPlannedFallback)} MWh.`)
@@ -1004,6 +1170,24 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         lines.push(`Displayed value: ${tt(hourData.damPrice)} ZAR/MWh.`)
         lines.push('Source priority: device-hour breakdown DA price, otherwise round-level DA price, otherwise SMP fallback.')
         break
+      case 'zone_price':
+        lines.push(`Displayed value: ${tt(hourData.zonePrice)} ZAR/MWh.`)
+        lines.push(`Source priority: hourly zone_price_zar_per_mwh, otherwise device-hour zone price, otherwise system/SMP fallback.`)
+        if (hourData.systemPrice !== null) {
+          lines.push(`Current spread versus system reference: ${tt((hourData.zonePrice || 0) - (hourData.systemPrice || 0))} ZAR/MWh.`)
+        }
+        break
+      case 'system_price':
+        lines.push(`Displayed value: ${tt(hourData.systemPrice)} ZAR/MWh.`)
+        lines.push('Source priority: hourly system_price_zar_per_mwh, otherwise device-hour system price, otherwise SMP fallback.')
+        break
+      case 'price_source':
+        lines.push(`Displayed value: ${formatPriceSourceLabel(hourData.priceSource || 'uniform')}.`)
+        lines.push(`Zonal split active in this hour: ${hourData.zonalPricingActive ? 'yes' : 'no'}.`)
+        if (hourData.zonePrice !== null && hourData.systemPrice !== null) {
+          lines.push(`Local vs. system price: ${tt(hourData.zonePrice)} vs ${tt(hourData.systemPrice)} ZAR/MWh.`)
+        }
+        break
       case 'dam_dispatched':
         lines.push(`Displayed value: ${tt(hourData.totalDispatched_DAM)} MWh.`)
         lines.push(`Source priority: backend da_dispatched_mwh, otherwise sum of DAM lot dispatches.`)
@@ -1021,7 +1205,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
         break
       case 'overbid':
         lines.push(`Displayed value: ${tt(hourData.overbidMw)} MW.`)
-        lines.push(`Formula: max(0, offered/requested - effective ${demandLabel}) = max(0, ${tt((hourData.totalOffered_DAM || 0))} - ${tt(hourData.effectiveCapacity)}) with backend overbid preferred when available.`)
+        lines.push(`Formula: max(0, offered/requested - effective ${demandLabel}) = max(0, ${tt((hourData.totalOffered_DAM || 0))} - ${tt(hourData.effectiveCapacity)}). In shared-market mode this uses the displayed slot capacity; otherwise backend overbid is preferred when available.`)
         break
       case 'idm_offered':
         lines.push(`Formula: IDM total offered = signed lot A + lot B + lot C = ${tt(getSignedOffered(hourData.lotA_IDM), 1)} + ${tt(getSignedOffered(hourData.lotB_IDM), 1)} + ${tt(getSignedOffered(hourData.lotC_IDM), 1)} = ${tt(hourData.totalOffered_IDM)} MWh.`)
@@ -1145,6 +1329,18 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
       case 'dam_price':
         lines.push(`Formula: arithmetic average of shown hourly DA prices = ${tt(roundTotals.avgDamPrice)} ZAR/MWh.`)
         lines.push('This is explanatory only. KPI revenue is not computed from this average but from hour-by-hour price × volume settlement.')
+        break
+      case 'zone_price':
+        lines.push(`Formula: arithmetic average of shown hourly local zone prices = ${tt(roundTotals.avgZonePrice)} ZAR/MWh.`)
+        lines.push('This is explanatory only. Settlement still uses hour-by-hour local zone prices, not the displayed average.')
+        break
+      case 'system_price':
+        lines.push(`Formula: arithmetic average of shown hourly system reference prices = ${tt(roundTotals.avgSystemPrice)} ZAR/MWh.`)
+        lines.push('This is the benchmark market price across the shown hours, not a separate settlement sum.')
+        break
+      case 'price_source':
+        lines.push(`Dominant source mix across shown hours: ${zonalPriceSourceSummary || formatPriceSourceLabel(dominantPriceSource || 'uniform')}.`)
+        lines.push(`Zonal split active in ${roundTotals.zonalSplitHours}/${zonalContextHours.length || 0} shown hour(s).`)
         break
       case 'dam_dispatched':
         lines.push(`Formula: sum of hourly DA dispatched values = ${tt(roundTotals.totalDispatched_DAM)} MWh.`)
@@ -1440,14 +1636,68 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               </TableCell>
             </TableRow>
 
+            {showZonalPriceContext && (
+              <>
+                <TableRow sx={{ bgcolor: 'warning.50' }}>
+                  <TableCell colSpan={hourlyData.length + 2} sx={{ fontWeight: 'bold', color: 'warning.dark' }}>
+                    Zonal Price Context
+                  </TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell><RowLabel title={getRowTooltip('zone_price')}>Local Zone Price (ZAR/MWh)</RowLabel></TableCell>
+                  {hourlyData.map((h) => (
+                    <TableCell
+                      key={h.hourKey}
+                      align="right"
+                      sx={{
+                        color: h.zonalPricingActive && h.zonePrice !== null && h.systemPrice !== null && Math.abs(h.zonePrice - h.systemPrice) > 0.05 ? 'warning.dark' : 'inherit',
+                        fontWeight: h.zonalPricingActive ? 'medium' : 'normal'
+                      }}
+                    >
+                      <HourTip title={getHourTooltip('zone_price', h)}>{h.zonePrice !== null && h.zonePrice > 0 ? formatNumber(h.zonePrice, 1) : '-'}</HourTip>
+                    </TableCell>
+                  ))}
+                  <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
+                    <TotalTip title={getTotalTooltip('zone_price')}>{roundTotals.avgZonePrice > 0 ? `Avg ${formatNumber(roundTotals.avgZonePrice, 1)}` : '-'}</TotalTip>
+                  </TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell><RowLabel title={getRowTooltip('system_price')}>System Price (ZAR/MWh)</RowLabel></TableCell>
+                  {hourlyData.map((h) => (
+                    <TableCell key={h.hourKey} align="right">
+                      <HourTip title={getHourTooltip('system_price', h)}>{h.systemPrice !== null && h.systemPrice > 0 ? formatNumber(h.systemPrice, 1) : '-'}</HourTip>
+                    </TableCell>
+                  ))}
+                  <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
+                    <TotalTip title={getTotalTooltip('system_price')}>{roundTotals.avgSystemPrice > 0 ? `Avg ${formatNumber(roundTotals.avgSystemPrice, 1)}` : '-'}</TotalTip>
+                  </TableCell>
+                </TableRow>
+                <TableRow hover>
+                  <TableCell><RowLabel title={getRowTooltip('price_source')}>Price Source</RowLabel></TableCell>
+                  {hourlyData.map((h) => (
+                    <TableCell key={h.hourKey} align="center">
+                      <HourTip title={getHourTooltip('price_source', h)}>{h.priceSource ? formatPriceSourceLabel(h.priceSource) : '-'}</HourTip>
+                    </TableCell>
+                  ))}
+                  <TableCell align="center" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
+                    <TotalTip title={getTotalTooltip('price_source')}>
+                      {dominantPriceSource
+                        ? `${formatPriceSourceLabel(dominantPriceSource)}${roundTotals.zonalSplitHours > 0 ? ` (${roundTotals.zonalSplitHours}h split)` : ''}`
+                        : '-'}
+                    </TotalTip>
+                  </TableCell>
+                </TableRow>
+              </>
+            )}
+
             {/* DAM Section */}
             <TableRow sx={{ bgcolor: 'primary.50' }}>
               <TableCell colSpan={hourlyData.length + 2} sx={{ fontWeight: 'bold' }}>
-                {isIdmRound ? 'Day-Ahead Baseline (from Round 1)' : 'Day-Ahead Market (DAM)'}
+                {(isIdmRound && !isTwoPhaseRound) ? 'Day-Ahead Baseline (from Round 1)' : 'Day-Ahead Market (DAM)'}
               </TableCell>
             </TableRow>
             <TableRow hover>
-              <TableCell><RowLabel title={getRowTooltip('dam_offered')}>{isBatteryDevice ? 'DA Submitted (MWh)' : (isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)')}</RowLabel></TableCell>
+              <TableCell><RowLabel title={getRowTooltip('dam_offered')}>{isBatteryDevice ? 'DA Submitted (MWh)' : (isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)')}{damWeightedOfferPrice.hasPrice ? ` at ZAR ${formatNumber(damWeightedOfferPrice.avgPrice, 1)}/MWh` : ''}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
                   <HourTip title={getHourTooltip('dam_offered', h)}>{h.totalOffered_DAM > 0 ? formatNumber(h.totalOffered_DAM, 1) : '-'}</HourTip>
@@ -1480,7 +1730,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
               </TableRow>
             ))}
             <TableRow hover>
-              <TableCell><RowLabel title={getRowTooltip('dam_price')}>{isIdmRound ? 'DA Price (ZAR/MWh)' : 'SMP (ZAR/MWh)'}</RowLabel></TableCell>
+              <TableCell><RowLabel title={getRowTooltip('dam_price')}>{(isIdmRound && !isTwoPhaseRound) ? 'DA Price (ZAR/MWh)' : 'SMP (ZAR/MWh)'}</RowLabel></TableCell>
               {hourlyData.map((h) => (
                 <TableCell key={h.hourKey} align="right">
                   <HourTip title={getHourTooltip('dam_price', h)}>{h.damPrice > 0 ? formatNumber(h.damPrice, 1) : '-'}</HourTip>
@@ -1569,14 +1819,14 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   </TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell><RowLabel title={getRowTooltip('idm_offered')}>{isBatteryDevice ? 'ID Submitted (MWh)' : (isConsumer ? 'Demanded (MWh)' : 'Offered (MWh)')}</RowLabel></TableCell>
+                  <TableCell><RowLabel title={getRowTooltip('idm_offered')}>{idmOfferedRowLabel}{idmWeightedOfferPrice.hasPrice ? ` at ZAR ${formatNumber(idmWeightedOfferPrice.avgPrice, 1)}/MWh` : ''}</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
-                      <HourTip title={getHourTooltip('idm_offered', h)}>{h.totalOffered_IDM !== 0 ? formatNumber(h.totalOffered_IDM, 1) : '-'}</HourTip>
+                      <HourTip title={getHourTooltip('idm_offered', h)}>{h.totalOffered_IDM !== 0 ? formatNumber(h.totalOffered_IDM, 1) : (isTwoPhaseRound ? formatNumber(0, 1) : '-')}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
-                    <TotalTip title={getTotalTooltip('idm_offered')}>{roundTotals.totalOffered_IDM !== 0 ? formatNumber(roundTotals.totalOffered_IDM, 1) : '-'}</TotalTip>
+                    <TotalTip title={getTotalTooltip('idm_offered')}>{roundTotals.totalOffered_IDM !== 0 ? formatNumber(roundTotals.totalOffered_IDM, 1) : (isTwoPhaseRound ? formatNumber(0, 1) : '-')}</TotalTip>
                   </TableCell>
                 </TableRow>
                 {showDetailedBidRows && idmLotRowConfigs.map((config) => (
@@ -1616,7 +1866,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   <TableCell><RowLabel title={getRowTooltip('idm_dispatched')}>{isBatteryDevice ? 'ID Awarded (MWh)' : (isConsumer ? 'Consumed (MWh)' : 'Dispatched (MWh)')}</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right" sx={getOverbidStyle(h)}>
-                      <HourTip title={getHourTooltip('idm_dispatched', h)}>{h.totalDispatched_IDM > 0 ? formatNumber(h.totalDispatched_IDM, 1) : '-'}</HourTip>
+                      <HourTip title={getHourTooltip('idm_dispatched', h)}>{h.totalDispatched_IDM > 0 ? formatNumber(h.totalDispatched_IDM, 1) : (isTwoPhaseRound ? formatNumber(0, 1) : '-')}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
@@ -1627,7 +1877,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, roleType }) {
                   <TableCell><RowLabel title={getRowTooltip('idm_revenue')}>{isConsumer ? 'Cost (ZAR)' : 'Revenue (ZAR)'}</RowLabel></TableCell>
                   {hourlyData.map((h) => (
                     <TableCell key={h.hourKey} align="right">
-                      <HourTip title={getHourTooltip('idm_revenue', h)}>{displayMoney(h.revenue_IDM) !== 0 ? formatInteger(displayMoney(h.revenue_IDM)) : '-'}</HourTip>
+                      <HourTip title={getHourTooltip('idm_revenue', h)}>{displayMoney(h.revenue_IDM) !== 0 ? formatInteger(displayMoney(h.revenue_IDM)) : (isTwoPhaseRound ? formatInteger(0) : '-')}</HourTip>
                     </TableCell>
                   ))}
                   <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>

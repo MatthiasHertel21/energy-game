@@ -8,6 +8,7 @@ import {
   Button,
   Tooltip,
   Alert,
+  AlertTitle,
   Box,
   Card,
   CardContent,
@@ -269,10 +270,20 @@ function MarketCurves({ sessionId, currentRound, roundSpanHours = 6, marketMode 
       setLoading(true)
       setError(null)
       try {
+        // Keep the IDM snapshot hour INSIDE the current round. For wide rounds we
+        // show a mid-round hour; for narrow rounds (e.g. round_span_hours = 1) the
+        // offset must stay within [0, roundSpanHours-1] so it does not leak into the
+        // next round's hour.
+        const idmOffset = Math.min(
+          Math.max(0, roundSpanHours - 1),
+          Math.max(1, Math.floor(roundSpanHours / 2)),
+        )
         const modeHour = marketMode === 'idm'
-          ? roundStartHour + Math.max(1, Math.floor(roundSpanHours / 2))
+          ? roundStartHour + idmOffset
           : roundStartHour
-        const { data } = await api.get(`/api/player/market-structure/${sessionId}/${currentRound}/${modeHour}`)
+        const { data } = await api.get(`/api/player/market-structure/${sessionId}/${currentRound}/${modeHour}`, {
+          params: { market_phase: marketMode === 'idm' ? 'idm' : 'dam' },
+        })
         setMarketData(data)
       } catch (err) {
         console.error('[MarketCurves] Failed to load market structure:', err)
@@ -462,9 +473,21 @@ const clampValue = (val, min = 0, max = Number.POSITIVE_INFINITY) => {
 const samplePattern = (pattern, idx) => pattern[idx % pattern.length]
 const roundValue = (val) => Number(val.toFixed(2))
 
-const buildGeneratorProfile = (device, len, pattern) => {
+const scaleMwBySharedMarketSlot = (value, sharedMarketContext = {}) => {
+  const numericValue = Number(value)
+  if (!Number.isFinite(numericValue)) return numericValue
+  return numericValue * getSharedMarketSlotScale(sharedMarketContext)
+}
+
+const formatMwValue = (value) => {
+  const numericValue = Number(value)
+  if (!Number.isFinite(numericValue)) return '-'
+  return Number.isInteger(numericValue) ? `${numericValue}` : numericValue.toFixed(1)
+}
+
+const buildGeneratorProfile = (device, len, pattern, sharedMarketContext = {}) => {
   const n = Math.max(1, len)
-  const maxPower = toNumber(device?.capacity_mw ?? device?.max_power_mw ?? device?.capacity ?? 0, 0)
+  const maxPower = toNumber(scaleMwBySharedMarketSlot(device?.max_power_mw ?? device?.capacity_mw ?? device?.capacity ?? 0, sharedMarketContext), 0)
   if (maxPower <= 0) return zeroProfile(n)
   const minPct = clampValue(toNumber(device?.min_load_pct ?? 0, 0), 0, 100)
   const minPower = maxPower * (minPct / 100)
@@ -481,10 +504,10 @@ const buildGeneratorProfile = (device, len, pattern) => {
   })
 }
 
-const buildLoadProfile = (device, len) => {
+const buildLoadProfile = (device, len, sharedMarketContext = {}) => {
   const n = Math.max(1, len)
-  const baseline = Math.max(0, toNumber(device?.baseline_load_mw ?? 0, 0))
-  const peakRaw = toNumber(device?.peak_load_mw ?? baseline, baseline)
+  const baseline = Math.max(0, toNumber(scaleMwBySharedMarketSlot(device?.baseline_load_mw ?? 0, sharedMarketContext), 0))
+  const peakRaw = toNumber(scaleMwBySharedMarketSlot(device?.peak_load_mw ?? baseline, sharedMarketContext), baseline)
   const peak = Math.max(baseline + 5, peakRaw)
   const span = Math.max(peak - baseline, 1)
   return Array.from({ length: n }, (_, idx) => {
@@ -494,9 +517,9 @@ const buildLoadProfile = (device, len) => {
   })
 }
 
-const buildRenewableProfile = (device, len, pattern, cfNormalizer) => {
+const buildRenewableProfile = (device, len, pattern, cfNormalizer, sharedMarketContext = {}) => {
   const n = Math.max(1, len)
-  const capacity = toNumber(device?.capacity_mw ?? device?.max_power_mw ?? device?.max_power ?? 0, 0)
+  const capacity = toNumber(scaleMwBySharedMarketSlot(device?.max_power_mw ?? device?.capacity_mw ?? device?.max_power ?? 0, sharedMarketContext), 0)
   if (capacity <= 0) return zeroProfile(n)
   const cf = clampValue(toNumber(device?.capacity_factor_pct ?? 0, 0) / 100, 0, 1)
   const scale = cf > 0 ? clampValue(cf / cfNormalizer, 0.4, 0.92) : 0.7
@@ -508,9 +531,9 @@ const buildRenewableProfile = (device, len, pattern, cfNormalizer) => {
   })
 }
 
-const buildBatteryProfile = (device, len) => {
+const buildBatteryProfile = (device, len, sharedMarketContext = {}) => {
   const n = Math.max(1, len)
-  const power = toNumber(device?.power_rating_mw ?? device?.power_mw ?? device?.capacity_mw ?? 0, 0)
+  const power = toNumber(scaleMwBySharedMarketSlot(device?.power_rating_mw ?? device?.power_mw ?? device?.capacity_mw ?? 0, sharedMarketContext), 0)
   if (power <= 0) return zeroProfile(n)
   const limit = power * 0.9
   return Array.from({ length: n }, (_, idx) => {
@@ -520,24 +543,24 @@ const buildBatteryProfile = (device, len) => {
   })
 }
 
-const buildGenericProfile = (device, len) => {
+const buildGenericProfile = (device, len, sharedMarketContext = {}) => {
   const n = Math.max(1, len)
-  const capacity = Math.max(20, toNumber(device?.capacity_mw ?? device?.max_power_mw ?? 60, 60))
+  const capacity = Math.max(20, toNumber(scaleMwBySharedMarketSlot(device?.max_power_mw ?? device?.capacity_mw ?? 60, sharedMarketContext), 60))
   return Array.from({ length: n }, (_, idx) => {
     const value = capacity * 0.6 * samplePattern(DEFAULT_AGG_PATTERN, idx)
     return roundValue(value)
   })
 }
 
-const buildDeviceProfile = (device, len) => {
+const buildDeviceProfile = (device, len, sharedMarketContext = {}) => {
   const type = (device?.type || '').toLowerCase()
-  if (['coal', 'nuclear'].includes(type)) return buildGeneratorProfile(device, len, BASELOAD_PATTERN)
-  if (['gas', 'hydro'].includes(type)) return buildGeneratorProfile(device, len, PEAKING_PATTERN)
-  if (type === 'solar') return buildRenewableProfile(device, len, SOLAR_PATTERN, 0.3)
-  if (type === 'wind') return buildRenewableProfile(device, len, WIND_PATTERN, 0.4)
-  if (type === 'battery') return buildBatteryProfile(device, len)
-  if (type.includes('load')) return buildLoadProfile(device, len)
-  return buildGenericProfile(device, len)
+  if (['coal', 'nuclear'].includes(type)) return buildGeneratorProfile(device, len, BASELOAD_PATTERN, sharedMarketContext)
+  if (['gas', 'hydro'].includes(type)) return buildGeneratorProfile(device, len, PEAKING_PATTERN, sharedMarketContext)
+  if (type === 'solar') return buildRenewableProfile(device, len, SOLAR_PATTERN, 0.3, sharedMarketContext)
+  if (type === 'wind') return buildRenewableProfile(device, len, WIND_PATTERN, 0.4, sharedMarketContext)
+  if (type === 'battery') return buildBatteryProfile(device, len, sharedMarketContext)
+  if (type.includes('load')) return buildLoadProfile(device, len, sharedMarketContext)
+  return buildGenericProfile(device, len, sharedMarketContext)
 }
 
 const getEffectiveVariableCostBase = (device) => {
@@ -576,24 +599,28 @@ const getDeviceCostSummary = (device) => {
   return costRange ? `Cost: ${costRange}` : null
 }
 
-const getDeviceCapacityLabel = (device) => {
+const getDeviceCapacityLabel = (device, sharedMarketContext = {}) => {
   const type = (device?.type || '').toLowerCase()
-  const batteryPowerMw = device?.power_mw ?? device?.power_rating_mw ?? device?.max_power_mw ?? device?.capacity_mw
+  const batteryPowerMw = scaleMwBySharedMarketSlot(device?.power_mw ?? device?.power_rating_mw ?? device?.max_power_mw ?? device?.capacity_mw, sharedMarketContext)
 
   if (type.includes('load')) {
-    const baseline = device?.baseline_load_mw != null ? `${device.baseline_load_mw} MW base` : null
-    const peak = device?.peak_load_mw != null ? `${device.peak_load_mw} MW peak` : null
+    const baseline = device?.baseline_load_mw != null ? `${formatMwValue(scaleMwBySharedMarketSlot(device.baseline_load_mw, sharedMarketContext))} MW base` : null
+    const peak = device?.peak_load_mw != null ? `${formatMwValue(scaleMwBySharedMarketSlot(device.peak_load_mw, sharedMarketContext))} MW peak` : null
     return [baseline, peak].filter(Boolean).join(' / ') || '-'
   }
 
   if (type === 'battery') {
-    const power = batteryPowerMw != null ? `${batteryPowerMw} MW power` : null
+    const power = Number.isFinite(Number(batteryPowerMw)) ? `${formatMwValue(batteryPowerMw)} MW power` : null
     const capacity = (device?.capacity_mwh ?? device?.capacity_mw) != null ? `${device.capacity_mwh ?? device.capacity_mw} MWh` : null
     const efficiency = device?.efficiency_pct != null ? `Eff. ${device.efficiency_pct}%` : null
     return [power, capacity, efficiency].filter(Boolean).join(' / ') || '-'
   }
 
-  return device?.capacity_mw != null ? `${device.capacity_mw} MW` : '-'
+  if (device?.capacity_mw != null || device?.max_power_mw != null || device?.capacity != null) {
+    const capacity = scaleMwBySharedMarketSlot(device?.capacity_mw ?? device?.max_power_mw ?? device?.capacity, sharedMarketContext)
+    return `${formatMwValue(capacity)} MW`
+  }
+  return '-'
 }
 
 const getDeviceFixedCostLabel = (device) => {
@@ -669,8 +696,8 @@ const getDeviceMaxCapability = (device = {}) => {
   }
 
   const candidates = [
-    device.capacity_mw,
     device.max_power_mw,
+    device.capacity_mw,
     device.max_power,
     device.capacity,
     device.nameplate_mw,
@@ -681,6 +708,15 @@ const getDeviceMaxCapability = (device = {}) => {
     if (val != null) return val
   }
   return 0
+}
+
+const getSharedMarketSlotScale = (sharedMarketContext = {}) => {
+  if (sharedMarketContext?.mode !== 'shared_market' || !sharedMarketContext?.selectedType) return 1
+  const allowedType = Array.isArray(sharedMarketContext?.allowedTypes)
+    ? sharedMarketContext.allowedTypes.find((entry) => String(entry?.type_id || '') === String(sharedMarketContext.selectedType || ''))
+    : null
+  const maxPlayers = Number(allowedType?.max_players)
+  return Number.isFinite(maxPlayers) && maxPlayers > 0 ? 1 / maxPlayers : 1
 }
 
 const toFactorArray = (value, expectedLength) => {
@@ -711,15 +747,6 @@ const getSimTemporalContext = (cfg = {}) => {
   return { hourOfDay, monthIdx }
 }
 
-const getSharedMarketTypeCapacityScale = (mode, selectedType, allowedTypes = []) => {
-  if (mode !== 'shared_market' || !selectedType) return 1
-  const selectedTypeConfig = Array.isArray(allowedTypes)
-    ? allowedTypes.find((item) => item?.type_id === selectedType)
-    : null
-  const maxPlayers = Number(selectedTypeConfig?.max_players)
-  return Number.isFinite(maxPlayers) && maxPlayers > 0 ? 1 / maxPlayers : 1
-}
-
 const resolveMixEntryForDevice = (device = {}, cfg = {}) => {
   const type = (device.type || '').toLowerCase()
   const marketCfg = cfg?.market || {}
@@ -743,7 +770,7 @@ const resolveMixEntryForDevice = (device = {}, cfg = {}) => {
   return { mixKey: consKey, mixEntry: entry }
 }
 
-const getDeviceEffectiveLimit = (device = {}, cfg = {}, capacityScale = 1) => {
+const getDeviceEffectiveLimit = (device = {}, cfg = {}, sharedMarketContext = {}) => {
   if (!device) return { limit: 0, context: null }
 
   const type = (device.type || '').toLowerCase()
@@ -789,17 +816,15 @@ const getDeviceEffectiveLimit = (device = {}, cfg = {}, capacityScale = 1) => {
     }
   }
 
-  const safeCapacityScale = Number.isFinite(Number(capacityScale)) && Number(capacityScale) > 0
-    ? Number(capacityScale)
-    : 1
-  const limit = Math.max(0, configuredBase * safeCapacityScale * (Number.isFinite(availabilityFactor) ? availabilityFactor : 1))
+  const slotScale = getSharedMarketSlotScale(sharedMarketContext)
+  const limit = Math.max(0, configuredBase * (Number.isFinite(availabilityFactor) ? availabilityFactor : 1) * slotScale)
   return { limit, context: `${String(hourOfDay).padStart(2, '0')}:00` }
 }
 
-const getEffectiveDeviceMetric = (device = {}, cfg = {}, capacityScale = 1) => {
+const getEffectiveDeviceMetric = (device = {}, cfg = {}, sharedMarketContext = {}) => {
   if (!device) return null
   const type = (device.type || '').toLowerCase()
-  const { limit, context } = getDeviceEffectiveLimit(device, cfg, capacityScale)
+  const { limit, context } = getDeviceEffectiveLimit(device, cfg, sharedMarketContext)
   if (!(limit > 0)) return null
   return {
     label: type.includes('load') ? 'Available demand now' : 'Available output now',
@@ -1235,12 +1260,22 @@ export default function Player() {
     campaign_name: ''
   })
   const [status, setStatus] = useState('pending')
+  // Two-phase rounds: 'dam' (Day-Ahead phase) | 'idm' (Intraday phase) | null (single-phase / no phase)
+  const [marketPhase, setMarketPhase] = useState(null)
+  // DAM-phase clearing feedback shown at the top of the player screen during the IDM phase
+  const [damPhaseFeedback, setDamPhaseFeedback] = useState(null)
   const [marketDialogOpen, setMarketDialogOpen] = useState(false)
   const [marketDialogData, setMarketDialogData] = useState(null)
   const [roundsSummary, setRoundsSummary] = useState([])
   const [timeRemaining, setTimeRemaining] = useState(null)
   const [initialDuration, setInitialDuration] = useState(null)
   const [marketInsightsTab, setMarketInsightsTab] = useState('dam')
+  // In a two-phase round the Market Insights / overview scope must follow the active
+  // phase: during the DAM phase show Day-Ahead, during the IDM phase switch to Intraday.
+  useEffect(() => {
+    if (marketPhase === 'dam') setMarketInsightsTab('dam')
+    else if (marketPhase === 'idm') setMarketInsightsTab('idm')
+  }, [marketPhase])
   const [mode, setMode] = useState('isolated_per_player')
   const [typeDialogOpen, setTypeDialogOpen] = useState(false)
   const [allowedTypes, setAllowedTypes] = useState([])
@@ -1263,10 +1298,6 @@ export default function Player() {
   const [submitted, setSubmitted] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [completedTasks, setCompletedTasks] = useState(new Set())
-  const sharedCapacityScale = useMemo(
-    () => getSharedMarketTypeCapacityScale(mode, selectedType, allowedTypes),
-    [mode, selectedType, allowedTypes]
-  )
 
   
   // Persist deviceView to localStorage whenever it changes
@@ -1282,17 +1313,6 @@ export default function Player() {
   const [hourlySeries, setHourlySeries] = useState([])
   const [damHourlySeries, setDamHourlySeries] = useState([])
   const [idmHourlySeries, setIdmHourlySeries] = useState([])
-  const marketInsightsMarkets = useMemo(() => {
-    const scenarioMarkets = scenario?.config?.markets || scenario?.markets || {}
-    return (cfg.markets && Object.keys(cfg.markets).length > 0)
-      ? cfg.markets
-      : scenarioMarkets
-  }, [cfg.markets, scenario])
-  const idmInsightsEnabled = useMemo(
-    () => getRoundMarketStatus(marketInsightsMarkets, 'idm', cfg.current_round) === 'on',
-    [marketInsightsMarkets, cfg.current_round]
-  )
-  const activeMarketInsightsTab = idmInsightsEnabled && marketInsightsTab === 'idm' ? 'idm' : 'dam'
   const [deviceBids, setDeviceBids] = useState({})
   const [autoBidSettings, setAutoBidSettings] = useState({}) // { [device_id]: { enabled, buyThreshold, sellThreshold } }
   const [biddingEnabled, setBiddingEnabled] = useState(false)
@@ -1314,9 +1334,62 @@ export default function Player() {
     da_committed_start: -1,
     da_committed_end: -1,
     market_timeline: null,
+    idm_forecast_change: null,
     current_position: { devices: {}, bids: {}, aggregate: [] },
     prev_dispatched: {}
   })
+
+  const currentIdmForecastChange = useMemo(() => {
+    const change = daBaseline?.idm_forecast_change
+    if (!change || typeof change !== 'object') return null
+    if (!change.active) return null
+    if (Number(change.round_num || 0) !== Number(cfg.current_round || 0)) return null
+    return change
+  }, [cfg.current_round, daBaseline?.idm_forecast_change])
+
+  // Round-matched IDM forecast change for the task card. Unlike currentIdmForecastChange
+  // this is NOT gated on `active`, so the card also renders in rounds without a synthetic
+  // shift (e.g. round 1, which never has one) to explicitly tell the player there is none.
+  const idmForecastChangeRound = useMemo(() => {
+    const change = daBaseline?.idm_forecast_change
+    if (!change || typeof change !== 'object') return null
+    if (Number(change.round_num || 0) !== Number(cfg.current_round || 0)) return null
+    return change
+  }, [cfg.current_round, daBaseline?.idm_forecast_change])
+
+  const getIdmGuidance = useCallback((idmForecastChange) => {
+    const totals = idmForecastChange?.round_totals || {}
+    const deltaSupply = Number(totals.delta_supply_mwh || 0)
+    const deltaDemand = Number(totals.delta_demand_mwh || 0)
+    const fmtMwh = (value) => `${Math.round(Math.abs(Number(value || 0))).toLocaleString()} MWh`
+
+    if (deltaDemand > 0.5 && deltaSupply <= 0.5) {
+      return {
+        title: 'IDM instruction',
+        summary: `Power demand up ~${fmtMwh(deltaDemand)}.`,
+        action: 'Forecast: increase above the DAM baseline.',
+      }
+    }
+    if (deltaSupply > 0.5 && deltaDemand <= 0.5) {
+      return {
+        title: 'IDM instruction',
+        summary: `Power demand down ~${fmtMwh(deltaSupply)}.`,
+        action: 'Forecast: reduce below the DAM baseline.',
+      }
+    }
+    if (deltaSupply > 0.5 && deltaDemand > 0.5) {
+      return {
+        title: 'IDM instruction',
+        summary: `Demand +${fmtMwh(deltaDemand)}. Supply +${fmtMwh(deltaSupply)}.`,
+        action: 'Forecast: increase to add supply; reduce to create demand.',
+      }
+    }
+    return {
+      title: 'IDM instruction',
+      summary: 'No IDM shift in this round.',
+      action: '',
+    }
+  }, [])
 
   const isDeviceMultiBidEnabled = useCallback((deviceDef, globalBidding = biddingEnabled) => {
     const normalizedBidCount = getNormalizedBidCount(deviceDef)
@@ -1332,12 +1405,6 @@ export default function Player() {
     const fallbackEnabled = deviceDef?.bid_count == null && Boolean(globalBidding && deviceDef?.enable_multi_bid === true)
     return getDeviceBidLabels(deviceDef, existingBids, fallbackEnabled)
   }, [biddingEnabled])
-
-  useEffect(() => {
-    if (!idmInsightsEnabled && marketInsightsTab === 'idm') {
-      setMarketInsightsTab('dam')
-    }
-  }, [idmInsightsEnabled, marketInsightsTab])
   
   // Persist activeLot to localStorage whenever it changes
   useEffect(() => {
@@ -1390,7 +1457,7 @@ export default function Player() {
   
   useEffect(() => {
     forecastSeedKeyRef.current = null
-    setDaBaseline({ devices: {}, bids: {}, hour_status: [], locked_until_hour: 0, da_until_hour: 24, id_until_hour: 24, prev_dispatched: {} }) // Reset DA baseline when session changes
+    setDaBaseline({ devices: {}, bids: {}, hour_status: [], locked_until_hour: 0, da_until_hour: 24, id_until_hour: 24, idm_forecast_change: null, prev_dispatched: {} }) // Reset DA baseline when session changes
     setHourlySeries([])
     setDamHourlySeries([])
     setIdmHourlySeries([])
@@ -1434,6 +1501,12 @@ export default function Player() {
       clearTimeout(scrollTimer)
     }
   }, [sessionId])
+
+  const sharedMarketContext = useMemo(() => ({
+    mode,
+    selectedType,
+    allowedTypes,
+  }), [mode, selectedType, allowedTypes])
   
   const aggregateMax = useMemo(() => {
     const dataMax = Array.isArray(hours) && hours.length > 0
@@ -1445,9 +1518,9 @@ export default function Player() {
     const relevantDevices = (allowedTypes.length > 0 && typeDevices.length > 0)
       ? scenarioDevices.filter((dev) => typeDevices.includes(dev.id))
       : scenarioDevices
-    const capacitySum = relevantDevices.reduce((sum, dev) => sum + (getDeviceEffectiveLimit(dev, cfg, sharedCapacityScale).limit || 0), 0)
+    const capacitySum = relevantDevices.reduce((sum, dev) => sum + (getDeviceEffectiveLimit(dev, cfg, sharedMarketContext).limit || 0), 0)
     return capacitySum > 0 ? capacitySum : dataMax
-  }, [scenarioDevices, allowedTypes.length, typeDevices, hours, cfg, sharedCapacityScale])
+  }, [scenarioDevices, allowedTypes.length, typeDevices, hours, cfg, sharedMarketContext])
 
   const seedForecastData = useCallback(async ({ generalConfig, deviceIds = [], deviceDefs = [] } = {}) => {
     if (!sessionId) return
@@ -1512,7 +1585,7 @@ export default function Player() {
       deviceIdsSafe.forEach((id) => {
         const def = byId.get(id)
         defaults[id] = zeroHiddenSeries(
-          buildDeviceProfile(def, fhHours),
+          buildDeviceProfile(def, fhHours, sharedMarketContext),
           { general, player_input: cfg.player_input },
           general.round_span_hours
         )
@@ -1546,7 +1619,7 @@ export default function Player() {
     } else {
       setHours(aggregateFallback)
     }
-  }, [sessionId, biddingEnabled, cfg.player_input])
+  }, [sessionId, biddingEnabled, cfg.player_input, sharedMarketContext])
 
   // Auto-load active session
   useEffect(() => {
@@ -1638,6 +1711,9 @@ export default function Player() {
         setBiddingEnabled(bidding)
         setStatus(sessionData.status || 'pending')
         setMode(sessionData.mode || 'isolated_per_player')
+        // Two-phase rounds: initialise the active market phase from the session record so
+        // a reload/late-join lands in the correct phase (DAM or IDM) for task cards etc.
+        setMarketPhase(sessionData.market_phase ?? null)
         
         // Set scenario data from briefing
         setScenario({
@@ -1647,6 +1723,7 @@ export default function Player() {
           campaign_id: data.campaign_id,
           config: {
             general: data.general,
+            grid: data.grid || {},
             market: data.market || {},
             markets: data.markets || {},
             player_input: sessionData.player_input || data.player_input || {},
@@ -1688,6 +1765,15 @@ export default function Player() {
           setScenarioDevices(devices)
           // load type devices from scenario config if selected
           let devs = []
+          // React state updates from setAllowedTypes/setSelectedType above have not
+          // applied yet, so the memoised sharedMarketContext still holds the previous
+          // (empty) values. Build a fresh local context from the briefing payload so
+          // slot scaling works on the very first initialisation pass.
+          const localSharedMarketContext = {
+            mode: sessionData.mode || 'isolated_per_player',
+            selectedType: sel,
+            allowedTypes: allowed,
+          }
           if(sel){
             const t = (pts||[]).find(x=> x.id===sel)
             devs = t?.devices || []
@@ -1711,7 +1797,7 @@ export default function Player() {
                 const deviceBidding = isDeviceMultiBidEnabled(deviceDef, globalBidding)
                 
                 if (deviceBidding && !next[did]) {
-                  const baseProfile = buildDeviceProfile(deviceDef, fh)
+                  const baseProfile = buildDeviceProfile(deviceDef, fh, localSharedMarketContext)
 
                   next[did] = buildInitialBidsForDevice(deviceDef, fh, baseProfile)
                 }
@@ -1744,7 +1830,7 @@ export default function Player() {
                 const deviceBidding = isDeviceMultiBidEnabled(deviceDef, globalBidding)
                 
                 if (deviceBidding && !next[did]) {
-                  const baseProfile = buildDeviceProfile(deviceDef, fh)
+                  const baseProfile = buildDeviceProfile(deviceDef, fh, localSharedMarketContext)
 
                   next[did] = buildInitialBidsForDevice(deviceDef, fh, baseProfile)
                 }
@@ -1777,6 +1863,9 @@ export default function Player() {
               da_committed_start: baselineRes.data.da_committed_start ?? -1,
               da_committed_end: baselineRes.data.da_committed_end ?? -1,
               market_timeline: baselineRes.data.market_timeline || null,
+              idm_forecast_change: baselineRes.data.idm_forecast_change || null,
+              dam_phase_smp: baselineRes.data.dam_phase_smp ?? null,
+              dam_phase_volume: baselineRes.data.dam_phase_volume ?? null,
               current_position: baselineRes.data.current_position || { devices: {}, bids: {}, aggregate: [] },
               prev_dispatched: baselineRes.data.prev_dispatched || {}
             })
@@ -1829,6 +1918,32 @@ export default function Player() {
           }
         } catch (err) {
           console.error('Failed to load historical results:', err)
+        }
+
+        // Pre-populate activeEvents from briefing events for the current round
+        // (handles page reload / late join where WebSocket event_triggered was missed)
+        try {
+          const currentRound = Number(sessionData.current_round || 1)
+          const briefingEvents = data.events || []
+          const preloaded = briefingEvents
+            .filter(evt => {
+              const trig = (evt.trigger_type || 'round').toLowerCase()
+              if (trig !== 'round') return false
+              const start = Number(evt.trigger_value ?? 1)
+              const dur = Math.max(1, Number(evt.duration_rounds ?? 1))
+              return currentRound >= start && currentRound <= (start + dur - 1)
+            })
+            .map((evt, idx) => ({
+              ...evt,
+              id: evt.id || evt.key || evt.name || `evt-${idx}`,
+              round: currentRound
+            }))
+          if (preloaded.length > 0) {
+            setActiveEvents(preloaded)
+            console.log('[Player] Pre-loaded', preloaded.length, 'active events for round', currentRound)
+          }
+        } catch (err) {
+          console.error('[Player] Failed to pre-load events:', err)
         }
 
         setSessionConfigReady(true)
@@ -1888,9 +2003,17 @@ export default function Player() {
         try{ sessionStorage.removeItem(`emsg_timer_${sessionId}`) }catch(_){ }
         setSubmitted(false)
         autoSubmitRef.current = false
+        // Clear stale events from the previous round
+        setActiveEvents([])
         try{
           const { data } = await api.get(`/api/sessions/${sessionId}`)
           const newRound = Number(data.current_round || 1)
+          // Re-sync the two-phase market phase from the authoritative session record
+          // (the round_start socket may carry p.phase, but the GET is the source of truth).
+          setMarketPhase(data.market_phase ?? p?.phase ?? null)
+          // A fresh round_start always begins with the DAM phase (or single-phase); clear
+          // any stale DAM-phase feedback banner from the previous round.
+          setDamPhaseFeedback(null)
           setCfg(prev=> ({ 
             ...prev, 
             current_round: newRound, 
@@ -1916,12 +2039,38 @@ export default function Player() {
                 da_until_hour: baselineRes.data.da_until_hour || 24,
                 id_until_hour: baselineRes.data.id_until_hour || 24,
                 market_timeline: baselineRes.data.market_timeline || null,
+                idm_forecast_change: baselineRes.data.idm_forecast_change || null,
+                dam_phase_smp: baselineRes.data.dam_phase_smp ?? null,
+                dam_phase_volume: baselineRes.data.dam_phase_volume ?? null,
                 prev_dispatched: baselineRes.data.prev_dispatched || {}
               })
               console.log('[Player] Loaded DA baseline on round_start:', baselineRes.data)
             }
           } catch (err) {
             console.error('Failed to load DA baseline on round_start:', err)
+          }
+          // Re-populate activeEvents for the new round (fallback if event_triggered is missed)
+          try {
+            const briefRes = await api.get(`/api/sessions/${sessionId}/briefing`)
+            const allEvents = briefRes.data?.events || []
+            const preloaded = allEvents
+              .filter(evt => {
+                const trig = (evt.trigger_type || 'round').toLowerCase()
+                if (trig !== 'round') return false
+                const start = Number(evt.trigger_value ?? 1)
+                const dur = Math.max(1, Number(evt.duration_rounds ?? 1))
+                return newRound >= start && newRound <= (start + dur - 1)
+              })
+              .map((evt, idx) => ({
+                ...evt,
+                id: evt.id || evt.key || evt.name || `evt-${idx}`,
+                round: newRound
+              }))
+            if (preloaded.length > 0) {
+              setActiveEvents(preloaded)
+            }
+          } catch (err) {
+            console.error('[Player] Failed to pre-load events on round_start:', err)
           }
         }catch(_){ }
       }
@@ -1939,6 +2088,45 @@ export default function Player() {
       if (Number(p?.session_id) === Number(sessionId)) {
         setTimeRemaining(0)
         try{ sessionStorage.setItem(`emsg_timer_${sessionId}`, JSON.stringify({ t: Date.now(), rem: 0, paused: false })) }catch(_){ }
+      }
+    })
+
+    // Two-phase rounds: the DAM phase has cleared and the IDM phase is now opening.
+    // Capture the player's own DAM clearing feedback (SMP + award) to show at the top
+    // of the screen, and switch the UI into the IDM phase.
+    s.on('dam_phase_cleared', async (p) => {
+      if (Number(p?.session_id) !== Number(sessionId)) return
+      setMarketPhase('idm')
+      const kpis = p?.kpis || {}
+      setDamPhaseFeedback({
+        round: Number(p?.round || 0),
+        smp: p?.smp ?? null,
+        revenue_zar: kpis.revenue_zar ?? kpis.da_revenue_zar ?? null,
+        dispatched_mwh: kpis.dispatched_mwh ?? kpis.da_dispatched_mwh ?? null,
+        profit_zar: kpis.profit_zar ?? null,
+      })
+      setSubmitted(false)
+      autoSubmitRef.current = false
+      // Reload the DA baseline so the IDM phase shows the intra-round DAM position.
+      try {
+        const baselineRes = await api.get(`/api/player/da-baseline/${sessionId}`)
+        if (baselineRes.data) {
+          setDaBaseline({
+            devices: baselineRes.data.devices || {},
+            bids: baselineRes.data.bids || {},
+            hour_status: baselineRes.data.hour_status || [],
+            locked_until_hour: baselineRes.data.locked_until_hour || 0,
+            da_until_hour: baselineRes.data.da_until_hour || 24,
+            id_until_hour: baselineRes.data.id_until_hour || 24,
+            market_timeline: baselineRes.data.market_timeline || null,
+            idm_forecast_change: baselineRes.data.idm_forecast_change || null,
+            dam_phase_smp: baselineRes.data.dam_phase_smp ?? null,
+            dam_phase_volume: baselineRes.data.dam_phase_volume ?? null,
+            prev_dispatched: baselineRes.data.prev_dispatched || {}
+          })
+        }
+      } catch (err) {
+        console.error('Failed to reload DA baseline on dam_phase_cleared:', err)
       }
     })
 
@@ -2048,14 +2236,10 @@ export default function Player() {
 
     s.on('round_results_ready', (p) => {
       if (Number(p?.session_id) === Number(sessionId)) {
-        const resultRound = Number(p?.round || 0)
-        if (resultRound > 0) {
-          setCfg((prev) => ({
-            ...prev,
-            current_round: resultRound,
-          }))
-        }
         setStatus('round_results')
+        // The combined round result is in; clear the two-phase phase + DAM banner.
+        setMarketPhase(null)
+        setDamPhaseFeedback(null)
       }
     })
 
@@ -2177,13 +2361,6 @@ export default function Player() {
     const marketsCfg = cfg.markets || {}
     const baseStatus = Array.isArray(daBaseline?.hour_status) ? daBaseline.hour_status : []
 
-    const idGateInterval = Math.max(1, Number(general.id_gate_interval_hours || 4))
-    const idGateBase = Number(general.id_gate_base_hour || 0)
-    const idFreezeHours = Number(general.id_freeze_hours || 0)
-    const nextIdGate = calculateNextIdGateHour(currentSimHour, idGateInterval, idGateBase)
-    const idGateWindowStart = Math.max(currentSimHour + idFreezeHours, nextIdGate)
-    const idGateWindowEnd = idGateWindowStart + idGateInterval
-
     return Array.from({ length: horizon }, (_, hourIdx) => {
       if (hourIdx < currentSimHour) return 'locked'
 
@@ -2194,13 +2371,6 @@ export default function Player() {
 
       if (idmStatus === 'off' && status === 'id') {
         status = damStatus === 'on' ? 'da' : 'forecast'
-      }
-
-      if (roundNum === currentRound && idmStatus === 'on' && status === 'id') {
-        const idIsOpenNow = hourIdx >= idGateWindowStart && hourIdx < idGateWindowEnd
-        if (!idIsOpenNow) {
-          status = 'forecast'
-        }
       }
 
       return status
@@ -2405,6 +2575,13 @@ export default function Player() {
     return { damOpenHours, damSpecialHours, idmOpenHours }
   }, [cfg.general, effectiveHourStatus])
 
+  const currentRoundIdmTradingStatus = useMemo(
+    () => getRoundMarketStatus(cfg.markets, 'idm', cfg.current_round || 1),
+    [cfg.markets, cfg.current_round]
+  )
+
+  const showDaBaselineOverlay = currentRoundIdmTradingStatus !== 'off'
+
   const marketMatrixCellSx = useCallback((rowKey, roundCol = {}) => {
     const baseSurface = theme.palette.background.paper
     const clearedColor = isDark ? alpha(theme.palette.text.primary, 0.35) : '#BDBDBD'
@@ -2426,6 +2603,13 @@ export default function Player() {
       : 'repeating-linear-gradient(135deg, rgba(230,81,0,0.35) 0 6px, rgba(251,140,0,0.15) 6px 12px)'
 
     if (roundCol?.isCleared) {
+      return { backgroundColor: clearedColor }
+    }
+
+    // Two-phase rounds: the Day-Ahead gate of the current round closes once the round
+    // enters the Intraday phase. Render the DAM cell grey (closed/cleared) instead of
+    // the yellow "open" colour.
+    if (rowKey === 'dam' && roundCol?.damPhaseCleared) {
       return { backgroundColor: clearedColor }
     }
 
@@ -2629,6 +2813,7 @@ export default function Player() {
       gateEvents.sort((a, b) => Number(a.absHour || 0) - Number(b.absHour || 0))
 
       const currentTimelineStatus = Array.isArray(effectiveHourStatus) ? effectiveHourStatus : []
+      const currentRoundNum = Number(cfg.current_round || 1)
 
       const roundColumns = effectiveRoundsSummary.map((roundItem) => {
         const startIdx = (roundItem.round - 1) * roundSpan
@@ -2637,12 +2822,23 @@ export default function Player() {
         const statusSlice = currentTimelineStatus.slice(startIdx, endIdx)
         const damTradingStatus = normalizeMarketStatusValue(roundItem?.dam?.trading)
         const damOpenFromTimeline = statusSlice.filter((status) => status === 'da' || status === 'da_r1').length
-        const damOpenCount = damTradingStatus === 'off' ? 0 : damOpenFromTimeline
+        // Two-phase rounds: once the DAM phase has cleared and the round moved into the
+        // Intraday phase, the Day-Ahead gate for that round is closed. marketPhase is only
+        // set on two-phase rounds, so marketPhase === 'idm' on the current round means the
+        // DAM is already cleared and must render as closed (grey), not open (yellow).
+        const damPhaseCleared = marketPhase === 'idm' && roundItem.round === currentRoundNum
+        const damOpenCount = damPhaseCleared
+          ? 0
+          : damTradingStatus === 'on'
+          ? hoursInRound
+          : damTradingStatus === 'off'
+          ? 0
+          : damOpenFromTimeline
         const damSpecialCount = statusSlice.filter((status) => status === 'da_r1').length
         const idmOpenFromTimeline = statusSlice.filter((status) => status === 'id').length
         const idmTradingStatus = normalizeMarketStatusValue(roundItem?.idm?.trading)
         const isIdmDisabled = idmTradingStatus === 'off'
-        let idmOpenCount = isIdmDisabled ? 0 : idmOpenFromTimeline
+        let idmOpenCount = idmTradingStatus === 'on' ? hoursInRound : (isIdmDisabled ? 0 : idmOpenFromTimeline)
 
         if (idmTradingStatus === 'market_code' && roundItem.round === selectedRound) {
           let gateBasedOpenCount = 0
@@ -2671,6 +2867,7 @@ export default function Player() {
           round: roundItem.round,
           hoursInRound,
           isCleared,
+          damPhaseCleared,
           damOpenCount,
           damSpecialCount,
           idmOpenCount,
@@ -2687,6 +2884,7 @@ export default function Player() {
         roundStart,
         roundEnd,
         scopeLabel: scopedDevice ? (scopedDevice.name || scopedDevice.id) : 'All devices',
+        idmForecastChange: selectedRound === currentRoundNumber ? currentIdmForecastChange : null,
         gateEvents,
         roundColumns,
         matrixRows: [
@@ -2705,6 +2903,7 @@ export default function Player() {
         roundStart: 0,
         roundEnd: Number(cfg?.general?.round_span_hours || 6),
         scopeLabel: deviceId || 'All devices',
+        idmForecastChange: Number(cfg?.current_round || 1) === currentRoundNumber ? currentIdmForecastChange : null,
         gateEvents: [],
         roundColumns: Array.from({ length: Math.max(1, fallbackRounds) }, (_, idx) => ({
           round: idx + 1,
@@ -2771,7 +2970,7 @@ export default function Player() {
   // Sessions can get stuck on calculating without socket updates; poll backend as a fallback
   useEffect(() => {
     if (!sessionId) return
-    if (!(status === 'round_closing' || status === 'calculating')) return
+    if (!(status === 'round_closing' || status === 'calculating' || status === 'round_active' || status === 'running')) return
 
     let cancelled = false
 
@@ -2793,6 +2992,12 @@ export default function Player() {
             console.log(`[Player] Round poll: ${prev.current_round} -> ${nextRound}`)
             return { ...prev, current_round: nextRound }
           })
+        }
+
+        // Two-phase rounds: keep the active market phase in sync if the dam_phase_cleared
+        // socket was missed (the session record is the source of truth).
+        if ('market_phase' in (data || {})) {
+          setMarketPhase((prev) => (prev === data.market_phase ? prev : (data.market_phase ?? null)))
         }
       } catch (err) {
         console.error('Session status poll failed:', err)
@@ -2823,7 +3028,7 @@ export default function Player() {
         const hasFullLength = Array.isArray(current) && current.length === fh
         if (hasFullLength) return
         const def = scenarioById.get(did)
-        const fallback = buildDeviceProfile(def, fh)
+        const fallback = buildDeviceProfile(def, fh, sharedMarketContext)
         if (Array.isArray(current) && current.length > 0) {
           next[did] = Array.from({ length: fh }, (_, i) => Number(current[i] || 0))
         } else {
@@ -2851,7 +3056,7 @@ export default function Player() {
           if (!next[did]) {
             needsInit = true
             const def = scenarioById.get(did)
-            const deviceHoursFallback = buildDeviceProfile(def, fh)
+            const deviceHoursFallback = buildDeviceProfile(def, fh, sharedMarketContext)
 
             next[did] = buildInitialBidsForDevice(def, fh, deviceHoursFallback)
           }
@@ -2859,7 +3064,7 @@ export default function Player() {
         return needsInit ? next : prev
       })
     }
-  }, [selectedType, typeDevices, cfg.general.forecast_horizon_hours, scenarioDevices, biddingEnabled])
+  }, [selectedType, typeDevices, cfg.general.forecast_horizon_hours, scenarioDevices, biddingEnabled, sharedMarketContext])
 
   useEffect(() => {
     if (!sessionId) return
@@ -2890,11 +3095,11 @@ export default function Player() {
   }, [sessionId, cfg.general, allowedTypes.length, selectedType, typeDevices, scenarioDevices])
 
   const selectedHourlySeries = useMemo(() => {
-    if (activeMarketInsightsTab === 'dam') {
+    if (marketInsightsTab === 'dam') {
       return Array.isArray(damHourlySeries) && damHourlySeries.length > 0 ? damHourlySeries : hourlySeries
     }
     return Array.isArray(idmHourlySeries) && idmHourlySeries.length > 0 ? idmHourlySeries : hourlySeries
-  }, [activeMarketInsightsTab, hourlySeries, damHourlySeries, idmHourlySeries])
+  }, [marketInsightsTab, hourlySeries, damHourlySeries, idmHourlySeries])
 
   const hourlyChartData = useMemo(() => {
     console.log('[Player] hourlyChartData useMemo - selectedHourlySeries:', selectedHourlySeries?.length || 0, 'entries')
@@ -2923,10 +3128,10 @@ export default function Player() {
       .map((entry) => {
         const idx = Number(entry.hour_idx ?? entry.hour_offset ?? 0)
         const safeIdx = Number.isFinite(idx) ? idx : 0
-        const marketPrice = activeMarketInsightsTab === 'idm'
+        const marketPrice = marketInsightsTab === 'idm'
           ? Number(entry.idp ?? entry.smp ?? 0)
           : Number(entry.smp ?? 0)
-        const marketVolume = activeMarketInsightsTab === 'idm'
+        const marketVolume = marketInsightsTab === 'idm'
           ? Number(entry.id_volume_mwh ?? entry.volume ?? 0)
           : Number(entry.volume ?? 0)
         if (baseTime != null) {
@@ -2942,7 +3147,7 @@ export default function Player() {
         return { ...entry, hour_idx: safeIdx, timestamp: safeIdx, label: `h${safeIdx + 1}`, marketPrice, marketVolume }
       })
       .sort((a, b) => a.hour_idx - b.hour_idx)
-  }, [selectedHourlySeries, cfg.general.fake_date, cfg.general.start_time, activeMarketInsightsTab])
+  }, [selectedHourlySeries, cfg.general.fake_date, cfg.general.start_time, marketInsightsTab])
 
   const marketScopedHourlyData = useMemo(() => {
     if (!Array.isArray(hourlyChartData) || hourlyChartData.length === 0) return []
@@ -3057,7 +3262,7 @@ export default function Player() {
   .on('mouseleave', ()=> { tooltip.style('display','none') })
       // axis labels
       g.append('text').attr('x', W/2).attr('y', H+25).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text('Simulation Time')
-      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text(`${activeMarketInsightsTab === 'idm' ? 'IDP' : 'SMP'} (ZAR/MWh)`)
+      g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text(`${marketInsightsTab === 'idm' ? 'IDP' : 'SMP'} (ZAR/MWh)`)
     }
 
     // Draw Volume chart
@@ -3134,7 +3339,7 @@ export default function Player() {
       g.append('text').attr('transform', `rotate(-90)`).attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill',axisColor).attr('font-size','10px').text('Volume (MWh)')
     }
     return ()=> { try { tooltip.remove() } catch(_){} }
-  }, [marketScopedHourlyData, chartWidth, cfg.general.start_time, activeMarketInsightsTab, theme.palette.mode])
+  }, [marketScopedHourlyData, chartWidth, cfg.general.start_time, marketInsightsTab, theme.palette.mode])
 
   const onChange = (i, val) => setHours((prev) => prev.map((v, idx) => (idx === i ? Number(val) : v)))
   const onDeviceChange = (did, i, val) => {
@@ -3261,7 +3466,7 @@ export default function Player() {
       typeDevices.forEach(deviceId => {
         const device = scenarioDevices.find(d => d.id === deviceId)
         if (!device) return
-        const maxPower = getDeviceEffectiveLimit(device, cfg, sharedCapacityScale).limit || (getDeviceMaxCapability(device) * sharedCapacityScale)
+        const maxPower = getDeviceEffectiveLimit(device, cfg, sharedMarketContext).limit || getDeviceMaxCapability(device)
         const deviceHoursData = deviceHours[deviceId] || []
 
         if (!Number.isFinite(maxPower) || maxPower <= 0) {
@@ -3542,7 +3747,7 @@ export default function Player() {
   const dayAheadGateHour = Number(cfg.general?.day_ahead_gate_hour ?? 10)
   const daSpecialRuleNote = useMemo(() => {
     if (!openMarkets.daOpen || currentRoundNumber !== 1) return ''
-    return `Special game rule: In Round 1, Day-Ahead bidding is still open. Normally, these bids should have been submitted on the previous day before the DA gate time (about ${String(dayAheadGateHour).padStart(2, '0')}:00).`
+    return `Special game rule: In Round 1, Day-Ahead bidding is open. Normally, these bids should have been submitted on the previous day.`
   }, [openMarkets.daOpen, currentRoundNumber, dayAheadGateHour])
   const campaignDisplayName = useMemo(() => {
     const raw = String(cfg.campaign_name || '').trim()
@@ -3555,20 +3760,28 @@ export default function Player() {
   }, [cfg.campaign_name, cfg.scenario_name])
   const summaryLines = useMemo(() => {
     const lines = []
-    if (openMarkets.daOpen) {
+    const showDa = marketPhase ? (marketPhase === 'dam') : openMarkets.daOpen
+    const showId = marketPhase ? (marketPhase === 'idm') : openMarkets.idOpen
+    if (showDa) {
       lines.push(`Day-Ahead market open - submit bids for ${deviceText}`)
     }
-    if (openMarkets.idOpen) {
+    if (showId) {
       lines.push(`Intraday market open - review bids for ${deviceText}`)
     }
     if (lines.length === 0) {
       lines.push('No markets open right now. Monitor results and prepare bids.')
     }
     return lines
-  }, [openMarkets, deviceText])
+  }, [openMarkets, marketPhase, deviceText])
   const taskItems = useMemo(() => {
     const items = []
-    if (openMarkets.daOpen) {
+    // Two-phase rounds: gate task cards by the active market phase so the player only
+    // sees the card for the phase that is currently trading (DAM phase -> Day-Ahead card,
+    // IDM phase -> Intraday card). For single-phase rounds (marketPhase === null) fall back
+    // to the legacy open-market detection from the hour_status timeline.
+    const showDaCard = marketPhase ? (marketPhase === 'dam') : openMarkets.daOpen
+    const showIdCard = marketPhase ? (marketPhase === 'idm') : openMarkets.idOpen
+    if (showDaCard) {
       items.push({
         id: 'market-da',
         title: 'Day-Ahead market open',
@@ -3580,7 +3793,7 @@ export default function Player() {
         status: 'Open'
       })
     }
-    if (openMarkets.idOpen) {
+    if (showIdCard) {
       items.push({
         id: 'market-id',
         title: 'Intraday market open',
@@ -3591,10 +3804,45 @@ export default function Player() {
         status: 'Open'
       })
     }
-    // Add task events to task list
+    if (showIdCard && idmForecastChangeRound) {
+      const guidance = getIdmGuidance(idmForecastChangeRound)
+      const totals = idmForecastChangeRound.round_totals || {}
+      const prod = Math.round(Number(totals.production_delta_mwh || 0))
+      const cons = Math.round(Number(totals.consumption_delta_mwh || 0))
+      const hasShift = Math.abs(prod) > 0 || Math.abs(cons) > 0
+      const signed = (v) => `${v >= 0 ? '+' : ''}${v.toLocaleString()} MWh`
+      const changeLine = hasShift
+        ? `Producers ${signed(prod)} · consumers ${signed(cons)}.`
+        : 'No producer/consumer shift this round.'
+      const recommendation = guidance.action || 'Keep your Day-Ahead position.'
+      items.push({
+        id: 'market-idm-forecast-change',
+        title: 'Forecast update',
+        description: `${changeLine} ${recommendation}`,
+        priority: 'medium',
+        status: 'Info'
+      })
+    }
+    // Add task events to task list (filter by player type if target is set)
     const taskEvents = activeEvents
       .filter(e => e.type === 'task')
       .filter(e => isEventActive(e, Number(cfg.current_round || 1)))
+      .filter(e => {
+        if (!e.target || e.target === 'all') return true
+        if (e.target === 'player') return !e.target_id || e.target_id === selectedType
+        return true
+      })
+      .filter(e => {
+        // Two-phase rounds: only show task events that belong to the active phase.
+        // Events carry a market_phase ('dam' | 'idm'); when a phase is active hide the
+        // events authored for the other phase (e.g. the IDM task must not appear during
+        // the DAM phase). Events without a market_phase, or single-phase rounds
+        // (marketPhase === null), are always shown.
+        if (!marketPhase) return true
+        const evtPhase = String(e.market_phase || e.phase || '').toLowerCase()
+        if (evtPhase !== 'dam' && evtPhase !== 'idm') return true
+        return evtPhase === marketPhase
+      })
     taskEvents.forEach(event => {
       items.push({
         id: `task-${event.id || event.name}`,
@@ -3614,7 +3862,7 @@ export default function Player() {
       })
     }
     return items
-  }, [openMarkets, activeEvents, cfg.current_round, deviceText, daSpecialRuleNote])
+  }, [openMarkets, marketPhase, activeEvents, cfg.current_round, currentIdmForecastChange, idmForecastChangeRound, deviceText, daSpecialRuleNote, getIdmGuidance, selectedType])
 
   const playerAssistantContext = useMemo(() => ({
     page: 'player_round',
@@ -3750,10 +3998,10 @@ export default function Player() {
   const effectiveDeviceMetrics = useMemo(() => {
     const byId = {}
     ;(scenarioDevices || []).forEach((device) => {
-      byId[device.id] = getEffectiveDeviceMetric(device, cfg, sharedCapacityScale)
+      byId[device.id] = getEffectiveDeviceMetric(device, cfg, sharedMarketContext)
     })
     return byId
-  }, [scenarioDevices, cfg, sharedCapacityScale])
+  }, [scenarioDevices, cfg, sharedMarketContext])
 
   if (loading) {
     return (
@@ -3981,6 +4229,21 @@ export default function Player() {
                 </Typography>
               </Box>
 
+              {marketDialogData.idmForecastChange?.active && (() => {
+                const guidance = getIdmGuidance(marketDialogData.idmForecastChange)
+                return (
+                  <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'info.light', borderRadius: 1, bgcolor: isDark ? alpha(theme.palette.info.main, 0.12) : alpha(theme.palette.info.main, 0.06) }}>
+                    <Typography variant="subtitle2" sx={{ mb: 0.5 }}>{guidance.title}</Typography>
+                    <Typography variant="body2" color="text.secondary">{guidance.summary}</Typography>
+                    {guidance.action && (
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                        {guidance.action}
+                      </Typography>
+                    )}
+                  </Box>
+                )
+              })()}
+
               {(marketDialogData.gateEvents || []).length > 0 && (
                 <Box>
                   <Typography variant="subtitle2" sx={{ mb: 1 }}>Gate events in this round</Typography>
@@ -4050,7 +4313,7 @@ export default function Player() {
 
                 {(() => {
                   const cols = marketDialogData.roundColumns || []
-                  const hasCleared = cols.some((col) => Boolean(col?.isCleared))
+                  const hasCleared = cols.some((col) => Boolean(col?.isCleared) || Boolean(col?.damPhaseCleared))
                   const hasDamSpecial = cols.some((col) => Number(col?.damSpecialCount || 0) > 0)
                   const hasDamOpen = cols.some((col) => Number(col?.damOpenCount || 0) > 0)
                   const hasIdmOpen = cols.some((col) => Number(col?.idmOpenCount || 0) > 0)
@@ -4143,6 +4406,21 @@ export default function Player() {
         <TimerAndClock timeRemaining={timeRemaining} />
       </Box>
 
+      {/* Two-phase round banner: tells the player which phase (DAM/IDM) is trading now. */}
+      {marketPhase && (
+        <Alert severity="info" icon={<InfoOutlined fontSize="inherit" />} sx={{ mb: 2 }}>
+          {marketPhase === 'dam'
+            ? `Phase 1 of 2 — Day-Ahead market (Round ${cfg.current_round ?? 1}). Submit your DA bids now; the Intraday phase follows next.`
+            : (() => {
+                const damSmp = (damPhaseFeedback && Number(damPhaseFeedback.round) === Number(cfg.current_round ?? 1) && damPhaseFeedback.smp != null)
+                  ? Number(damPhaseFeedback.smp)
+                  : (daBaseline?.dam_phase_smp != null ? Number(daBaseline.dam_phase_smp) : null)
+                const smpText = damSmp != null ? ` The Day-Ahead market cleared at ${damSmp.toLocaleString()} ZAR/MWh.` : ''
+                return `Phase 2 of 2 — Intraday market (Round ${cfg.current_round ?? 1}). Adjust your position against your cleared Day-Ahead baseline.${smpText}`
+              })()}
+        </Alert>
+      )}
+
       <Stack
         direction={{ xs: 'column', md: 'row' }}
         spacing={1.5}
@@ -4227,6 +4505,20 @@ export default function Player() {
                 )}
               </Stack>
             </Paper>
+            {marketPhase === 'idm' && damPhaseFeedback && (
+              <Alert severity="success" sx={{ borderRadius: 2 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                  Day-Ahead phase cleared — now trading Intraday
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {[
+                    damPhaseFeedback.smp != null ? `DA price ${Math.round(Number(damPhaseFeedback.smp)).toLocaleString()} ZAR/MWh` : null,
+                    damPhaseFeedback.dispatched_mwh != null ? `awarded ${Math.round(Number(damPhaseFeedback.dispatched_mwh)).toLocaleString()} MWh` : null,
+                    damPhaseFeedback.revenue_zar != null ? `revenue ${Math.round(Number(damPhaseFeedback.revenue_zar)).toLocaleString()} ZAR` : null,
+                  ].filter(Boolean).join(' · ') || 'Your Day-Ahead position is now fixed. Adjust it in the Intraday market below.'}
+                </Typography>
+              </Alert>
+            )}
             <Typography variant="overline" color="text.secondary" sx={{ pl: 0.5 }}>
               Your tasks
             </Typography>
@@ -4375,6 +4667,29 @@ export default function Player() {
               </Alert>
             )}
 
+            {/* IDM synthetic forecast change: tell the player how the synthetic
+                consumption/production was revised and in which direction to move
+                their Intraday forecast relative to the DA baseline. */}
+            {marketPhase === 'idm' && currentIdmForecastChange && (() => {
+              const guidance = getIdmGuidance(currentIdmForecastChange)
+              if (!guidance || !guidance.action) return null
+              const totals = currentIdmForecastChange.round_totals || {}
+              const deltaSupply = Math.round(Number(totals.delta_supply_mwh || 0))
+              const deltaDemand = Math.round(Number(totals.delta_demand_mwh || 0))
+              const isSell = /reduce|below/i.test(guidance.action)
+              return (
+                <Alert severity={isSell ? 'warning' : 'success'} sx={{ mb: 2 }}>
+                  <AlertTitle>Forecast update — adjust your Intraday forecast</AlertTitle>
+                  {guidance.summary} {guidance.action}
+                  {(deltaSupply !== 0 || deltaDemand !== 0) && (
+                    <Typography variant="caption" component="div" sx={{ mt: 0.5 }}>
+                      System shift this round: supply {deltaSupply.toLocaleString()} MWh · demand {deltaDemand.toLocaleString()} MWh.
+                    </Typography>
+                  )}
+                </Alert>
+              )
+            })()}
+
             {(allowedTypes.length === 0 || (selectedType && typeDevices.length>0)) ? (
               allowedTypes.length > 0 ? (
                 <>
@@ -4410,7 +4725,10 @@ export default function Player() {
                   const deviceType = deviceDef?.type || 'unknown'
                   const deviceParams = deviceDef || {}
                   const deviceEffectiveMetric = effectiveDeviceMetrics[did]
-                  const deviceMax = Number(deviceEffectiveMetric?.value || getDeviceMaxCapability(deviceParams) || 0)
+                  const deviceEffectiveLimitMw = Number.isFinite(Number(deviceEffectiveMetric?.value))
+                    ? Number(deviceEffectiveMetric.value)
+                    : null
+                  const deviceMax = Number(deviceEffectiveLimitMw || getDeviceMaxCapability(deviceParams) || 0)
                   const fhLocal = Number(cfg.general.forecast_horizon_hours||24)
                   const series = (Array.isArray(deviceHours[did]) && deviceHours[did].length===fhLocal)
                     ? deviceHours[did]
@@ -4443,11 +4761,12 @@ export default function Player() {
                               {(() => {
                                 const t = (deviceType||'').toLowerCase()
                                 if (t.includes('load')) {
-                                  const base = deviceParams.baseline_load_mw != null ? `Baseline: ${deviceParams.baseline_load_mw} MW` : null
-                                  const peak = deviceParams.peak_load_mw != null ? `Peak: ${deviceParams.peak_load_mw} MW` : null
+                                  const base = deviceParams.baseline_load_mw != null ? `Baseline: ${formatMwValue(scaleMwBySharedMarketSlot(deviceParams.baseline_load_mw, sharedMarketContext))} MW` : null
+                                  const peak = deviceParams.peak_load_mw != null ? `Peak: ${formatMwValue(scaleMwBySharedMarketSlot(deviceParams.peak_load_mw, sharedMarketContext))} MW` : null
                                   return [`Type: ${deviceType}`, base, peak].filter(Boolean).join(' • ')
                                 } else {
-                                  const cap = deviceParams.capacity_mw != null ? `Capacity: ${deviceParams.capacity_mw} MW` : null
+                                  const capacityValue = scaleMwBySharedMarketSlot(deviceParams.capacity_mw ?? deviceParams.max_power_mw ?? deviceParams.capacity, sharedMarketContext)
+                                  const cap = Number.isFinite(Number(capacityValue)) ? `Capacity: ${formatMwValue(capacityValue)} MW` : null
                                   const cost = getDeviceCostSummary(deviceParams)
                                   return [`Type: ${deviceType}`, cap, cost].filter(Boolean).join(' • ')
                                 }
@@ -4656,6 +4975,7 @@ export default function Player() {
                                     lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil}
                                     onChange={(i, val) => onBidQuantityChange(did, activeLot, toChartActualHourIndex(i), val)}
                                     maxValue={deviceMax}
+                                    effectiveLimitMw={deviceEffectiveLimitMw}
                                     smoothRadius={smoothDragRadius}
                                     currentRound={Number(cfg.current_round || 1)}
                                     roundSpan={Number(cfg.general.round_span_hours || 6)}
@@ -4664,8 +4984,8 @@ export default function Player() {
                                     startTime={cfg.general.start_time || '00:00'}
                                     deviceType={deviceType}
                                     deviceParams={deviceParams}
-                                    daBaseline={toChartSeries(daBaseline.bids?.[did]?.[activeLot]?.hours || daBaseline.devices?.[did] || [])}
-                                    committedPosition={toChartSeries(daBaseline.current_position?.bids?.[did]?.[activeLot]?.hours || daBaseline.current_position?.devices?.[did] || [])}
+                                    daBaseline={showDaBaselineOverlay ? toChartSeries(daBaseline.bids?.[did]?.[activeLot]?.hours || daBaseline.devices?.[did] || []) : null}
+                                    committedPosition={showDaBaselineOverlay ? toChartSeries(daBaseline.current_position?.bids?.[did]?.[activeLot]?.hours || daBaseline.current_position?.devices?.[did] || []) : null}
                                     prevDispatch={toChartSeries(daBaseline.prev_dispatched?.[did]?.[activeLot] || [])}
                                     hourStatus={toChartStatuses(effectiveHourStatus || [])}
                                     totalRounds={Number(cfg.general.rounds)}
@@ -4685,7 +5005,7 @@ export default function Player() {
                                       )}
                                       hourIndices={chartHourIndices}
                                       maxValue={deviceMax}
-                                      effectiveLimitMw={deviceMax}
+                                      effectiveLimitMw={deviceEffectiveLimitMw}
                                       currentRound={Number(cfg.current_round || 1)}
                                       roundSpan={Number(cfg.general.round_span_hours || 6)}
                                       lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil}
@@ -4722,7 +5042,7 @@ export default function Player() {
                                   lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil} 
                                   onChange={(i, val)=> onDeviceChange(did, toChartActualHourIndex(i), val)} 
                                   maxValue={deviceMax} 
-                                  effectiveLimitMw={deviceMax}
+                                  effectiveLimitMw={deviceEffectiveLimitMw}
                                   smoothRadius={smoothDragRadius}
                                   currentRound={Number(cfg.current_round || 1)}
                                   roundSpan={Number(cfg.general.round_span_hours || 6)}
@@ -4732,8 +5052,8 @@ export default function Player() {
                                   fakeDate={cfg.general.fake_date || ''}
                                   deviceType={deviceType}
                                   deviceParams={deviceParams}
-                                  daBaseline={toChartSeries(daBaseline.devices?.[did] || [])}
-                                  committedPosition={toChartSeries(daBaseline.current_position?.devices?.[did] || [])}
+                                  daBaseline={showDaBaselineOverlay ? toChartSeries(daBaseline.devices?.[did] || []) : null}
+                                  committedPosition={showDaBaselineOverlay ? toChartSeries(daBaseline.current_position?.devices?.[did] || []) : null}
                                   prevDispatch={toChartSeries(
                                     Object.values(daBaseline.prev_dispatched?.[did] || {}).reduce(
                                       (acc, lotHours) => lotHours.map((v, i) => (acc[i] || 0) + v), []
@@ -4782,7 +5102,7 @@ export default function Player() {
                                         )}
                                         hourIndices={chartHourIndices}
                                         maxValue={deviceMax}
-                                        effectiveLimitMw={deviceMax}
+                                          effectiveLimitMw={deviceEffectiveLimitMw}
                                         currentRound={Number(cfg.current_round || 1)}
                                         roundSpan={Number(cfg.general.round_span_hours || 6)}
                                         lockedUntil={hideNonEditableHours ? 0 : effectiveLockedUntil}
@@ -4941,8 +5261,8 @@ export default function Player() {
                       freezeHours={Number(cfg.general.freeze_hours || 6)}
                       startTime={cfg.general.start_time || '00:00'}
                       fakeDate={cfg.general.fake_date || ''}
-                      daBaseline={toChartSeries(daBaseline.aggregate || [])}
-                      committedPosition={toChartSeries(daBaseline.current_position?.aggregate || [])}
+                      daBaseline={showDaBaselineOverlay ? toChartSeries(daBaseline.aggregate || []) : null}
+                      committedPosition={showDaBaselineOverlay ? toChartSeries(daBaseline.current_position?.aggregate || []) : null}
                       prevDispatch={toChartSeries(
                         Object.values(daBaseline.prev_dispatched || {}).flatMap(lots => Object.values(lots))
                           .reduce((acc, lotHours) => lotHours.map((v, i) => (acc[i] || 0) + v), [])
@@ -5038,16 +5358,13 @@ export default function Player() {
             <Card>
               <CardContent>
                 <Tabs
-                  value={activeMarketInsightsTab}
-                  onChange={(_, value) => {
-                    if (value === 'idm' && !idmInsightsEnabled) return
-                    setMarketInsightsTab(value)
-                  }}
+                  value={marketInsightsTab}
+                  onChange={(_, value) => setMarketInsightsTab(value)}
                   variant="fullWidth"
                   sx={{ mb: 1 }}
                 >
                   <Tab value="dam" label="Day-Ahead" />
-                  {idmInsightsEnabled && <Tab value="idm" label="Intraday" />}
+                  <Tab value="idm" label="Intraday" disabled={marketPhase === 'dam'} />
                 </Tabs>
 
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
@@ -5066,18 +5383,18 @@ export default function Player() {
                   sessionId={sessionId}
                   currentRound={cfg.current_round}
                   roundSpanHours={Number(cfg.general.round_span_hours || 6)}
-                  marketMode={activeMarketInsightsTab}
+                  marketMode={marketInsightsTab}
                 />
 
                 {cfg.current_round > 1 && (
                   <>
                     <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
-                      {activeMarketInsightsTab === 'dam' ? 'SMP' : 'IDP'} last round ({activeMarketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
+                      {marketInsightsTab === 'dam' ? 'SMP' : 'IDP'} last round ({marketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
                     </Typography>
                     <svg ref={smpRef} width="100%" height={100} style={{ border: `1px solid ${theme.palette.divider}`, background: isDark ? theme.palette.background.default : theme.palette.background.paper }} />
 
                     <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
-                      Volume last round ({activeMarketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
+                      Volume last round ({marketInsightsTab === 'dam' ? 'Day-Ahead' : 'Intraday'})
                     </Typography>
                     <svg ref={volRef} width="100%" height={100} style={{ border: `1px solid ${theme.palette.divider}`, background: isDark ? theme.palette.background.default : theme.palette.background.paper }} />
                   </>
@@ -5134,7 +5451,7 @@ export default function Player() {
                                 Capacity
                               </Typography>
                               <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
-                                {getDeviceCapacityLabel(dev)}
+                                {getDeviceCapacityLabel(dev, sharedMarketContext)}
                               </Typography>
                             </Box>
 

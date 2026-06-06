@@ -9,10 +9,12 @@ except Exception:
     _redis_client = None
 from .extensions import socketio
 from .models import Session, SessionStatus, Scenario, CohortMember, Forecast, Result, PlayerProgress, PlayerProgressStatus
+from .models import PhaseResult
 from .extensions import db
 from .utils import log_activity
-from .engine import run_round, compute_zone_flows
+from .engine import run_round, compute_zone_flows, _load_shared_market_capacity_scales
 from .models import PlayerProgress, Campaign
+from .phases import is_two_phase_round, normalize_round_phase
 
 
 _running: Set[int] = set()
@@ -28,11 +30,14 @@ def _force_nav(cohort_id: int, url: str):
         pass
 
 
-def _auto_submit_missing(session_id: int, round_num: int, hours_per_round: int):
+def _auto_submit_missing(session_id: int, round_num: int, hours_per_round: int, market_phase: str | None = None):
     players = db.session.query(CohortMember.user_id).filter_by(cohort_id=db.session.query(Session.cohort_id).filter_by(id=session_id).scalar()).all()
     player_ids = [uid for (uid,) in players]
     for pid in player_ids:
-        exists = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=round_num).first()
+        _exists_q = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=round_num)
+        if market_phase is not None:
+            _exists_q = _exists_q.filter(Forecast.market_phase == market_phase)
+        exists = _exists_q.first()
         if not exists:
             # Copy auto_bid settings from most recent previous forecast for this player
             prev = Forecast.query.filter_by(session_id=session_id, player_id=pid).order_by(Forecast.round_num.desc()).first()
@@ -51,10 +56,307 @@ def _auto_submit_missing(session_id: int, round_num: int, hours_per_round: int):
                 round_num=round_num,
                 data=forecast_data,
                 bids=None,
+                market_phase=(market_phase or "single"),
             )
             db.session.add(f)
             socketio.emit("player_submit", {"session_id": session_id, "player_id": pid}, namespace="/trainer")
     db.session.commit()
+
+
+def _collect_forecasts_base(session_id: int, players, rounds: int, hours_span: int, current: int, market_phase: str | None = None):
+    """Build {pid: {'hours','bids','devices'}} of ABSOLUTE forecasts for a round.
+
+    Mirrors the legacy inline collection exactly when ``market_phase`` is None, so
+    single-phase behaviour is byte-for-byte unchanged. When ``market_phase`` is set
+    (two-phase rounds), the current-round submission is filtered to that phase.
+    """
+    forecasts = {}
+    for pid in players:
+        full = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=0).first()
+        _round_q = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=current)
+        if market_phase is not None:
+            _round_q = _round_q.filter(Forecast.market_phase == market_phase)
+        _all_round_forecasts = _round_q.order_by(Forecast.id.desc()).all()
+        current_round_forecast = next(
+            (f for f in _all_round_forecasts if f.bids is not None),
+            _all_round_forecasts[0] if _all_round_forecasts else None
+        )
+        current_bids = current_round_forecast.bids if current_round_forecast and current_round_forecast.bids else None
+        current_devices = (current_round_forecast.data or {}).get("devices", []) if current_round_forecast else []
+
+        if full and isinstance(full.data, dict):
+            forecasts[pid] = {
+                'hours': list(full.data.get("hours", [])),
+                'bids': current_bids,
+                'devices': current_devices,
+            }
+        else:
+            total_hours = rounds * hours_span
+            full_horizon = [0.0] * total_hours
+            _hz_q = Forecast.query.filter_by(session_id=session_id, player_id=pid).filter(Forecast.round_num > 0)
+            if market_phase is not None:
+                _hz_q = _hz_q.filter(Forecast.market_phase == market_phase)
+            all_forecasts = _hz_q.order_by(Forecast.round_num).all()
+            for fc in all_forecasts:
+                fc_hours = (fc.data or {}).get("hours", [])
+                start_idx = (fc.round_num - 1) * hours_span
+                for i, val in enumerate(fc_hours):
+                    if start_idx + i < total_hours:
+                        full_horizon[start_idx + i] = val
+            forecasts[pid] = {'hours': full_horizon, 'bids': current_bids, 'devices': current_devices}
+    return forecasts
+
+
+def _build_intra_round_baseline_from_dam(dam_res: dict, players) -> dict:
+    """Build the intra_round_baseline payload the engine expects for the IDM phase.
+
+    Derives per-player forecasts/bids/dispatch from the DAM phase engine result so
+    the IDM phase clears as a delta against the SAME round's DAM dispatch.
+    """
+    dam_dispatch = dam_res.get("dam_bid_dispatch", dam_res.get("bid_dispatch", {})) or {}
+    dam_hourly_results = dam_res.get("dam_hourly_results", dam_res.get("hourly_results", [])) or []
+    synthetic_demand_carryover_by_hour = {}
+    for hour_row in dam_hourly_results:
+        if not isinstance(hour_row, dict):
+            continue
+        curve = hour_row.get("unserved_synthetic_demand_curve") or []
+        curve_by_zone = hour_row.get("unserved_synthetic_demand_curve_by_zone") or []
+        if curve or any(zone_curve for zone_curve in curve_by_zone):
+            scenario_hour_idx = int(hour_row.get("scenario_hour_idx", hour_row.get("hour_idx", 0)) or 0)
+            synthetic_demand_carryover_by_hour[scenario_hour_idx] = {
+                "curve": curve,
+                "curve_by_zone": curve_by_zone,
+            }
+    baseline = {
+        'forecasts': {},
+        'bids': {},
+        'dispatch': {},
+        'smp': dam_res.get("smp", dam_res.get("mcp")),
+        'synthetic_demand_carryover_by_hour': synthetic_demand_carryover_by_hour,
+        'result_data': {
+            'dam_bid_dispatch': dam_dispatch,
+            'dam_hourly_results': dam_hourly_results,
+            'dam_device_hourly_details': dam_res.get("dam_device_hourly_details", dam_res.get("device_hourly_details", {})),
+            'smp': dam_res.get("smp", dam_res.get("mcp")),
+        },
+        'hourly_results': dam_hourly_results,
+    }
+    for pid in players:
+        player_dispatch = dam_dispatch.get(pid)
+        if player_dispatch is None:
+            player_dispatch = dam_dispatch.get(str(pid))
+        if isinstance(player_dispatch, dict):
+            baseline['dispatch'][int(pid)] = player_dispatch
+    return baseline
+
+
+def _run_active_window(s, current: int, timer_sec: int, hours_span: int, market_phase: str | None = None):
+    """Run the active -> closing -> calculating cycle for one (phase of a) round.
+
+    Used for legacy single-phase rounds (market_phase=None) and for each phase of a
+    two-phase round (market_phase 'dam'/'idm'). Returns the refreshed Session row;
+    on return the session status is ``calculating`` and submissions are collected.
+    """
+    phase_extra = {"phase": market_phase} if market_phase else {}
+
+    # Round active phase
+    s.status = SessionStatus.round_active
+    db.session.add(s)
+    db.session.commit()
+    if s.mode == "shared_market":
+        _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
+
+    socketio.emit("round_start", {"session_id": s.id, "round": current, **phase_extra}, namespace="/trainer")
+    socketio.emit("round_start", {"session_id": s.id, "round": current, **phase_extra}, namespace="/game", to=f"session-{s.id}")
+
+    # Clear stale timer extensions from prior rounds
+    if _redis_client is not None:
+        try:
+            _redis_client.delete(f"session:{s.id}:timer_extend_sec")
+            _redis_client.delete(f"session:{s.id}:force_end_round")
+        except Exception:
+            pass
+
+    # countdown
+    remaining = timer_sec
+    while remaining > 0:
+        time.sleep(1)
+        s = Session.query.get(s.id)
+        if s and s.status in [
+            SessionStatus.round_closing,
+            SessionStatus.calculating,
+            SessionStatus.round_results,
+            SessionStatus.scenario_complete,
+            SessionStatus.ended,
+        ]:
+            remaining = 0
+            break
+        if s and s.status == SessionStatus.paused:
+            continue
+        if s and s.frozen:
+            continue
+
+        if _redis_client is not None:
+            try:
+                force_key = f"session:{s.id}:force_end_round"
+                if _redis_client.get(force_key):
+                    _redis_client.delete(force_key)
+                    remaining = 0
+            except Exception:
+                pass
+
+        if _redis_client is not None:
+            try:
+                ext_key = f"session:{s.id}:timer_extend_sec"
+                raw_ext = _redis_client.get(ext_key)
+                ext = int(raw_ext) if raw_ext is not None else 0
+                if ext > 0:
+                    remaining += ext
+                    _redis_client.delete(ext_key)
+                    socketio.emit(
+                        "timer_extended",
+                        {"session_id": s.id, "seconds": ext, "remaining": remaining},
+                        namespace="/trainer"
+                    )
+                    socketio.emit(
+                        "timer_extended",
+                        {"session_id": s.id, "seconds": ext, "remaining": remaining},
+                        namespace="/game",
+                        to=f"session-{s.id}"
+                    )
+            except Exception:
+                pass
+
+        remaining -= 1
+
+        # In solo mode, skip remaining time once the player has submitted THIS phase.
+        if s and s.mode == 'isolated_per_player':
+            players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
+            if players:
+                player_id = players[0]  # Solo mode has only 1 player
+                _fq = Forecast.query.filter_by(session_id=s.id, player_id=player_id, round_num=current)
+                if market_phase is not None:
+                    _fq = _fq.filter(Forecast.market_phase == market_phase)
+                if _fq.first():
+                    remaining = 0
+
+        socketio.emit("tick", {"session_id": s.id, "remaining": remaining}, namespace="/trainer")
+        socketio.emit("tick", {"session_id": s.id, "remaining": remaining}, namespace="/game", to=f"session-{s.id}")
+
+    # Round closing phase - wait for all submits
+    s.status = SessionStatus.round_closing
+    db.session.add(s)
+    db.session.commit()
+    if s.mode == "shared_market":
+        _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
+    socketio.emit("round_closing", {"session_id": s.id, "round": current, **phase_extra}, namespace="/trainer")
+    socketio.emit("round_closing", {"session_id": s.id, "round": current, **phase_extra}, namespace="/game", to=f"session-{s.id}")
+
+    # auto-submit for missing players (phase-aware)
+    _auto_submit_missing(s.id, current, hours_span, market_phase=market_phase)
+
+    # Wait briefly for any last-second submits (grace period)
+    time.sleep(2)
+
+    # Calculating phase
+    s.status = SessionStatus.calculating
+    db.session.add(s)
+    db.session.commit()
+    if s.mode == "shared_market":
+        _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
+    socketio.emit("calculating", {"session_id": s.id, "round": current, **phase_extra}, namespace="/trainer")
+    socketio.emit("calculating", {"session_id": s.id, "round": current, **phase_extra}, namespace="/game", to=f"session-{s.id}")
+    return s
+
+
+def _persist_dam_phase_results(s, current: int, players, dam_res: dict):
+    """Persist provisional DAM phase results into PhaseResult (not the final Result).
+
+    Replaces any existing DAM PhaseResult rows for this round (idempotent on re-run).
+    """
+    dam_dispatch = dam_res.get("dam_bid_dispatch", dam_res.get("bid_dispatch", {})) or {}
+    round_kpis = dam_res.get("round_kpis") or {}
+    PhaseResult.query.filter_by(session_id=s.id, round_num=current, market_phase="dam").delete()
+    for pid in players:
+        kp = round_kpis.get(pid) or round_kpis.get(str(pid)) or {}
+        player_dispatch = dam_dispatch.get(pid)
+        if player_dispatch is None:
+            player_dispatch = dam_dispatch.get(str(pid))
+        data = {
+            "kpis": kp,
+            "smp": dam_res.get("smp", dam_res.get("mcp", 0)),
+            "volume": dam_res.get("volume", 0),
+            "dam_hourly_results": dam_res.get("dam_hourly_results", dam_res.get("hourly_results", [])),
+            "dam_bid_dispatch": player_dispatch,
+            "battery_soc_end_state": dam_res.get("battery_soc_end_state"),
+        }
+        pr = PhaseResult(
+            session_id=s.id,
+            player_id=pid,
+            round_num=current,
+            market_phase="dam",
+            data=data,
+            bid_dispatch=player_dispatch,
+        )
+        db.session.add(pr)
+    db.session.commit()
+
+
+def _emit_dam_phase_feedback(s, current: int, dam_res: dict, players):
+    """Emit intermediate DAM clearing feedback (own award + SMP) after the DAM phase.
+
+    This is NOT a final round result: no round_results_ready / status change to
+    round_results. Players use this to inform their IDM phase submission.
+    """
+    dam_dispatch = dam_res.get("dam_bid_dispatch", dam_res.get("bid_dispatch", {})) or {}
+    round_kpis = dam_res.get("round_kpis") or {}
+    smp = dam_res.get("smp", dam_res.get("mcp", 0))
+    # Trainer gets the aggregate; players get their own slice.
+    socketio.emit(
+        "dam_phase_cleared",
+        {
+            "session_id": s.id,
+            "round": current,
+            "smp": smp,
+            "dam_hourly_results": dam_res.get("dam_hourly_results", dam_res.get("hourly_results", [])),
+        },
+        namespace="/trainer",
+    )
+    for pid in players:
+        player_dispatch = dam_dispatch.get(pid)
+        if player_dispatch is None:
+            player_dispatch = dam_dispatch.get(str(pid))
+        kp = round_kpis.get(pid) or round_kpis.get(str(pid)) or {}
+        socketio.emit(
+            "dam_phase_cleared",
+            {
+                "session_id": s.id,
+                "round": current,
+                "player_id": pid,
+                "smp": smp,
+                "dam_bid_dispatch": player_dispatch,
+                "kpis": kp,
+            },
+            namespace="/game",
+            to=f"session-{s.id}",
+        )
+
+
+def _resolve_campaign_seed(scenario_id: int, players) -> str | None:
+    """Derive the deterministic campaign seed for a round, if exactly one campaign applies."""
+    try:
+        camp_ids = set(
+            cid for (cid,) in db.session.query(PlayerProgress.campaign_id)
+            .filter(PlayerProgress.scenario_id == scenario_id, PlayerProgress.user_id.in_(players))
+            .distinct().all()
+        )
+        if len(camp_ids) == 1:
+            camp = Campaign.query.get(next(iter(camp_ids)))
+            if camp and camp.seed:
+                return str(camp.seed)
+    except Exception:
+        return None
+    return None
 
 
 def run_rounds(session_id: int, app=None):
@@ -99,170 +401,66 @@ def run_rounds(session_id: int, app=None):
                 return
             
             while current <= rounds:
-                # Round active phase
-                s.status = SessionStatus.round_active
-                db.session.add(s)
-                db.session.commit()
-                if s.mode == "shared_market":
-                    _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
-                
-                socketio.emit("round_start", {"session_id": s.id, "round": current}, namespace="/trainer")
-                socketio.emit("round_start", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
+                players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
+                phase_seq = ["dam", "idm"] if is_two_phase_round(cfg, current) else ["single"]
+                is_two_phase = len(phase_seq) > 1
 
-                # Clear stale timer extensions from prior rounds
-                if _redis_client is not None:
-                    try:
-                        _redis_client.delete(f"session:{s.id}:timer_extend_sec")
-                        _redis_client.delete(f"session:{s.id}:force_end_round")
-                    except Exception:
-                        pass
-                
-                # countdown
-                remaining = timer_sec
-                while remaining > 0:
-                    time.sleep(1)
-                    # pause handling
-                    s = Session.query.get(s.id)
-                    if s and s.status in [
-                        SessionStatus.round_closing,
-                        SessionStatus.calculating,
-                        SessionStatus.round_results,
-                        SessionStatus.scenario_complete,
-                        SessionStatus.ended,
-                    ]:
-                        remaining = 0
-                        break
-                    if s and s.status == SessionStatus.paused:
-                        continue
-                    # Check for frozen state (trainer freeze)
-                    if s and s.frozen:
-                        # Don't count down timer while frozen
-                        continue
+                # Per-round injection state for the IDM phase of a two-phase round.
+                intra_round_baseline = None
+                seed_battery_soc_state = None
+                camp_seed = _resolve_campaign_seed(s.scenario_id, players)
 
-                    # Trainer-triggered early round end
-                    if _redis_client is not None:
-                        try:
-                            force_key = f"session:{s.id}:force_end_round"
-                            if _redis_client.get(force_key):
-                                _redis_client.delete(force_key)
-                                remaining = 0
-                        except Exception:
-                            pass
+                if is_two_phase:
+                    # ---- PHASE 1: DAM ----
+                    s.market_phase = "dam"
+                    s.phase_index = 0
+                    db.session.add(s)
+                    db.session.commit()
+                    s = _run_active_window(s, current, timer_sec, hours_span, market_phase="dam")
 
-                    # Apply trainer time extension (+seconds) if requested
-                    if _redis_client is not None:
-                        try:
-                            ext_key = f"session:{s.id}:timer_extend_sec"
-                            raw_ext = _redis_client.get(ext_key)
-                            ext = int(raw_ext) if raw_ext is not None else 0
-                            if ext > 0:
-                                remaining += ext
-                                _redis_client.delete(ext_key)
-                                socketio.emit(
-                                    "timer_extended",
-                                    {"session_id": s.id, "seconds": ext, "remaining": remaining},
-                                    namespace="/trainer"
-                                )
-                                socketio.emit(
-                                    "timer_extended",
-                                    {"session_id": s.id, "seconds": ext, "remaining": remaining},
-                                    namespace="/game",
-                                    to=f"session-{s.id}"
-                                )
-                        except Exception:
-                            pass
+                    dam_forecasts = _collect_forecasts_base(s.id, players, rounds, hours_span, current, market_phase="dam")
+                    sc = Scenario.query.get(s.scenario_id)
+                    dam_res = run_round(
+                        s.id, current, players, dam_forecasts, sc.config or {},
+                        mode=s.mode or "isolated_per_player", seed=camp_seed,
+                        execution_phase="dam",
+                    )
+                    _persist_dam_phase_results(s, current, players, dam_res)
+                    intra_round_baseline = _build_intra_round_baseline_from_dam(dam_res, players)
+                    seed_battery_soc_state = dam_res.get("battery_soc_end_state")
+                    _emit_dam_phase_feedback(s, current, dam_res, players)
 
-                    remaining -= 1
-                    
-                    # In solo mode, check if player has submitted and skip remaining time
-                    if s and s.mode == 'isolated_per_player':
-                        players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
-                        if players:
-                            player_id = players[0]  # Solo mode has only 1 player
-                            forecast = Forecast.query.filter_by(session_id=s.id, player_id=player_id, round_num=current).first()
-                            if forecast:
-                                # Player has submitted, skip to end of round
-                                remaining = 0
-                    
-                    socketio.emit("tick", {"session_id": s.id, "remaining": remaining}, namespace="/trainer")
-                    socketio.emit("tick", {"session_id": s.id, "remaining": remaining}, namespace="/game", to=f"session-{s.id}")
-                
-                # Round closing phase - wait for all submits
-                s.status = SessionStatus.round_closing
-                db.session.add(s)
-                db.session.commit()
-                if s.mode == "shared_market":
-                    _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
-                socketio.emit("round_closing", {"session_id": s.id, "round": current}, namespace="/trainer")
-                socketio.emit("round_closing", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
-                
-                # auto-submit for missing players
-                _auto_submit_missing(s.id, current, hours_span)
-                
-                # Wait briefly for any last-second submits (grace period)
-                time.sleep(2)
-                
-                # Calculating phase
-                s.status = SessionStatus.calculating
-                db.session.add(s)
-                db.session.commit()
-                if s.mode == "shared_market":
-                    _force_nav(s.cohort_id, f"/player?sessionId={s.id}")
-                socketio.emit("calculating", {"session_id": s.id, "round": current}, namespace="/trainer")
-                socketio.emit("calculating", {"session_id": s.id, "round": current}, namespace="/game", to=f"session-{s.id}")
-                
+                    # ---- transition to PHASE 2: IDM (same round, no advance wait) ----
+                    s.market_phase = "idm"
+                    s.phase_index = 1
+                    db.session.add(s)
+                    db.session.commit()
+                    s = _run_active_window(s, current, timer_sec, hours_span, market_phase="idm")
+                else:
+                    s.market_phase = None
+                    s.phase_index = 0
+                    db.session.add(s)
+                    db.session.commit()
+                    s = _run_active_window(s, current, timer_sec, hours_span, market_phase=None)
+
+                # Active window already advanced status to `calculating`.
                 # collect forecasts per player (full horizon if exists + this round slice fallback)
                 # Support both legacy (quantity-only) and new (multi-bid) formats
                 players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
                 print(f"[SCHEDULER] Session {s.id} Round {current}: {len(players)} players")
-                forecasts = {}
-                for pid in players:
-                    full = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=0).first()
-                    # Get bids from current round (not from full forecast)
-                    # Prefer forecast rows with non-null bids (latest ID wins if duplicates exist).
-                    # Use Python-level None check because JSON null is stored as 'null'::jsonb,
-                    # which passes SQL IS NOT NULL but returns None in Python.
-                    _all_round_forecasts = (
-                        Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=current)
-                        .order_by(Forecast.id.desc())
-                        .all()
-                    )
-                    current_round_forecast = next(
-                        (f for f in _all_round_forecasts if f.bids is not None),
-                        _all_round_forecasts[0] if _all_round_forecasts else None
-                    )
-                    current_bids = current_round_forecast.bids if current_round_forecast and current_round_forecast.bids else None
-                    current_devices = (current_round_forecast.data or {}).get("devices", []) if current_round_forecast else []
-                    print(f"[SCHEDULER] Player {pid}: has_full={full is not None}, has_current={current_round_forecast is not None}, has_bids={current_bids is not None}")
-                    
-                    if full and isinstance(full.data, dict):
-                        forecast_data = {
-                            'hours': list(full.data.get("hours", [])),
-                            'bids': current_bids,  # Use bids from current round, not from full forecast
-                            'devices': current_devices
-                        }
-                        forecasts[pid] = forecast_data
-                        print(f"[SCHEDULER] Player {pid}: loaded forecast with bids={current_bids is not None}")
-                    else:
-                        # Build full horizon from all round-specific forecasts
-                        total_hours = rounds * hours_span
-                        full_horizon = [0.0] * total_hours
-                        all_forecasts = (
-                            Forecast.query.filter_by(session_id=s.id, player_id=pid)
-                            .filter(Forecast.round_num > 0)
-                            .order_by(Forecast.round_num)
-                            .all()
-                        )
-                        for fc in all_forecasts:
-                            fc_hours = (fc.data or {}).get("hours", [])
-                            start_idx = (fc.round_num - 1) * hours_span
-                            for i, val in enumerate(fc_hours):
-                                if start_idx + i < total_hours:
-                                    full_horizon[start_idx + i] = val
-                        forecasts[pid] = {'hours': full_horizon, 'bids': current_bids, 'devices': current_devices}  # Use bids from current round
-                        print(f"[SCHEDULER] Player {pid}: built horizon from round forecasts, bids={current_bids is not None}")
+                players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
+                print(f"[SCHEDULER] Session {s.id} Round {current}: {len(players)} players")
+                # Two-phase IDM phase uses phase-specific (absolute) submissions; the engine
+                # computes the delta against the same round's DAM phase via intra_round_baseline.
+                forecasts = _collect_forecasts_base(
+                    s.id, players, rounds, hours_span, current,
+                    market_phase=("idm" if is_two_phase else None),
+                )
                 # DA snapshot (round_num = -1): set on first round if not present, else use for IDM delta
-                if current == 1:
+                if is_two_phase:
+                    # Two-phase: no cross-round DA snapshot/delta; baseline is the intra-round DAM phase.
+                    pass
+                elif current == 1:
                     for pid in players:
                         snap = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=-1).first()
                         if not snap:
@@ -319,24 +517,16 @@ def run_rounds(session_id: int, app=None):
                                 cur_entry['hours'] = merged
                                 forecasts[pid] = cur_entry
                     # else: IDM=off → absolute forecast values are passed through unchanged.
-                # Determine campaign seed if available (derive from player progress entries for this scenario)
-                camp_seed = None
-                try:
-                    # collect distinct campaign_ids across players for this scenario
-                    camp_ids = set(
-                        cid for (cid,) in db.session.query(PlayerProgress.campaign_id)
-                        .filter(PlayerProgress.scenario_id == s.scenario_id, PlayerProgress.user_id.in_(players))
-                        .distinct().all()
-                    )
-                    if len(camp_ids) == 1:
-                        camp = Campaign.query.get(next(iter(camp_ids)))
-                        if camp and camp.seed:
-                            camp_seed = str(camp.seed)
-                except Exception:
-                    camp_seed = None
+                # camp_seed already resolved at loop top (shared by DAM + IDM phases).
                 # run engine for this round
                 sc = Scenario.query.get(s.scenario_id)
-                res = run_round(s.id, current, players, forecasts, sc.config or {}, mode=s.mode or "isolated_per_player", seed=camp_seed)
+                res = run_round(
+                    s.id, current, players, forecasts, sc.config or {},
+                    mode=s.mode or "isolated_per_player", seed=camp_seed,
+                    execution_phase=("idm" if is_two_phase else "single"),
+                    intra_round_baseline=intra_round_baseline,
+                    seed_battery_soc_state=seed_battery_soc_state,
+                )
                 
                 # Emit active events for this round
                 try:
@@ -424,6 +614,8 @@ def run_rounds(session_id: int, app=None):
                         return "consumer"
                     return "unknown"
 
+                shared_market_capacity_scales = _load_shared_market_capacity_scales(s.id, s.mode)
+
                 for pid, kp in (res.get("round_kpis") or {}).items():
                     # Determine player role based on their player type devices
                     player_role = 'unknown'
@@ -458,15 +650,19 @@ def run_rounds(session_id: int, app=None):
                     # Compute capacity scaling for shared_market
                     capacity_scale = 1.0
                     if s.mode == "shared_market" and player_role in ["producer", "consumer"]:
-                        try:
-                            total_role_capacity = sum(
-                                _device_capacity_mw(d) for d in devices_cfg if _device_role(d) == player_role
-                            )
-                            player_capacity = sum(_device_capacity_mw(d) for d in player_devices)
-                            if total_role_capacity > 0:
-                                capacity_scale = max(0.0, min(1.0, player_capacity / total_role_capacity))
-                        except Exception as e:
-                            print(f"[SCHEDULER] Capacity scale calc failed for player {pid}: {e}")
+                        slot_scale = shared_market_capacity_scales.get(str(player_type_id or ""))
+                        if slot_scale is not None and slot_scale > 0:
+                            capacity_scale = float(slot_scale)
+                        else:
+                            try:
+                                total_role_capacity = sum(
+                                    _device_capacity_mw(d) for d in devices_cfg if _device_role(d) == player_role
+                                )
+                                player_capacity = sum(_device_capacity_mw(d) for d in player_devices)
+                                if total_role_capacity > 0:
+                                    capacity_scale = max(0.0, min(1.0, player_capacity / total_role_capacity))
+                            except Exception as e:
+                                print(f"[SCHEDULER] Capacity scale calc failed for player {pid}: {e}")
 
                     # Evaluate challenges
                     challenge_result = None
@@ -637,6 +833,9 @@ def run_rounds(session_id: int, app=None):
                 
                 # Set status to round_results - players can now view results
                 s.status = SessionStatus.round_results
+                # Reset two-phase tracking now the final (IDM/single) result is in.
+                s.market_phase = None
+                s.phase_index = 0
                 db.session.add(s)
                 db.session.commit()
                 if s.mode == "shared_market":

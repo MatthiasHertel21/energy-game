@@ -1116,7 +1116,7 @@ class TestEngineRunRoundWithDevices:
             "market": {
                 "enable_player_bidding": False,
                 "base_price": 500,
-                "base_volume_mwh": 1000,
+                "base_volume_mwh": 0,
                 "price_floor": -500,
                 "price_cap": 5000,
             },
@@ -1144,10 +1144,18 @@ class TestEngineRunRoundWithDevices:
                     "variable_cost_zar_per_mwh": 400,
                     "co2_emissions_kg_per_mwh": 900,
                 },
+                {
+                    "id": "dev_load",
+                    "type": "industrial_load",
+                    "bid_count": 0,
+                    "max_power_mw": 1000,
+                    "willingness_to_pay": 3000,
+                },
             ],
             "player_types": [
                 {"id": "ptype_gen_b", "name": "Producer B", "devices": ["dev_gen_b"]},
                 {"id": "ptype_gen_a", "name": "Producer A", "devices": ["dev_gen_a"]},
+                {"id": "ptype_load", "name": "Load", "devices": ["dev_load"]},
             ],
             "events": [],
         }
@@ -1155,7 +1163,7 @@ class TestEngineRunRoundWithDevices:
         result = run_round(
             session_id=306,
             round_num=1,
-            players=[1, 11],
+            players=[1, 11, 22],
             forecasts={
                 1: {
                     "hours": [1049.65],
@@ -1167,6 +1175,11 @@ class TestEngineRunRoundWithDevices:
                     "devices": [{"device_id": "dev_gen_a", "hours": [1000.0]}],
                     "bids": {},
                 },
+                22: {
+                    "hours": [1000.0],
+                    "devices": [{"device_id": "dev_load", "hours": [1000.0]}],
+                    "bids": {},
+                },
             },
             config=config,
             mode="shared_market",
@@ -1175,8 +1188,8 @@ class TestEngineRunRoundWithDevices:
 
         expensive = result["round_kpis"][1]
         cheap = result["round_kpis"][11]
+        consumer = result["round_kpis"][22]
 
-        assert result["smp"] == pytest.approx(400.0, abs=1e-6)
         assert result["volume"] == pytest.approx(1000.0, abs=1e-6)
 
         assert expensive["planned_mwh"] == pytest.approx(1049.65, abs=1e-6)
@@ -1187,9 +1200,368 @@ class TestEngineRunRoundWithDevices:
 
         assert cheap["planned_mwh"] == pytest.approx(1000.0, abs=1e-6)
         assert cheap["dispatched_mwh"] == pytest.approx(1000.0, abs=1e-6)
-        assert cheap["revenue_zar"] == pytest.approx(400000.0, abs=1e-6)
-        assert cheap["profit_zar"] == pytest.approx(0.0, abs=1e-6)
+        assert cheap["revenue_zar"] == pytest.approx(result["smp"] * cheap["dispatched_mwh"], abs=1e-6)
+        assert cheap["profit_zar"] > 0.0
         assert cheap["device_hourly_breakdown"]["dev_gen_a"][0]["dispatched_mw"] == pytest.approx(1000.0, abs=1e-6)
+        assert consumer["dispatched_mwh"] == pytest.approx(1000.0, abs=1e-6)
+
+    def test_single_bid_market_flag_with_bid_count_zero_caps_actual_and_books_imbalance(self, monkeypatch):
+        """Single-bid market configs with classic device bid_count must still cap actual output.
+
+        Regression for session-312-style configs where market-level single-bid trading is enabled,
+        devices still carry bid_count=0, and the engine already computes the correct commercial
+        merit-order dispatch. The settlement path must use that tracked device dispatch to cap
+        actual generation at physical capacity and charge balancing for the over-award.
+        """
+        monkeypatch.setattr("app.engine.random.uniform", lambda _low, _high: 0.0)
+
+        config = {
+            "general": {
+                "round_span_hours": 1,
+                "horizon_hours": 1,
+                "forecast_horizon_hours": 1,
+                "rounds": 1,
+                "start_time": "08:00",
+                "fake_date": "2025-06-01",
+                "allow_dispatch_above_capacity": True,
+            },
+            "market": {
+                "enable_player_bidding": True,
+                "bid_count": 1,
+                "base_price": 500,
+                "base_volume_mwh": 0,
+                "price_floor": -500,
+                "price_cap": 5000,
+            },
+            "markets": {
+                "dam": {"trading": ["on"]},
+                "idm": {"trading": ["off"]},
+            },
+            "grid": {"zones": 1, "atc": [[0]]},
+            "devices": [
+                {
+                    "id": "dev_gen_a",
+                    "type": "coal",
+                    "bid_count": 0,
+                    "enable_multi_bid": False,
+                    "capacity_mw": 1000,
+                    "max_power_mw": 1000,
+                    "variable_cost_zar_per_mwh": 400,
+                    "co2_emissions_kg_per_mwh": 900,
+                },
+                {
+                    "id": "dev_gen_b",
+                    "type": "coal",
+                    "bid_count": 0,
+                    "enable_multi_bid": False,
+                    "capacity_mw": 1000,
+                    "max_power_mw": 1000,
+                    "variable_cost_zar_per_mwh": 500,
+                    "co2_emissions_kg_per_mwh": 900,
+                },
+                {
+                    "id": "dev_gen_c",
+                    "type": "coal",
+                    "bid_count": 0,
+                    "enable_multi_bid": False,
+                    "capacity_mw": 1000,
+                    "max_power_mw": 1000,
+                    "variable_cost_zar_per_mwh": 600,
+                    "co2_emissions_kg_per_mwh": 900,
+                },
+                {
+                    "id": "dev_load",
+                    "type": "industrial_load",
+                    "bid_count": 0,
+                    "max_power_mw": 1500,
+                    "willingness_to_pay": 3000,
+                },
+            ],
+            "player_types": [
+                {"id": "ptype_gen_a", "name": "Producer A", "devices": ["dev_gen_a"]},
+                {"id": "ptype_gen_b", "name": "Producer B", "devices": ["dev_gen_b"]},
+                {"id": "ptype_gen_c", "name": "Producer C", "devices": ["dev_gen_c"]},
+                {"id": "ptype_load", "name": "Load", "devices": ["dev_load"]},
+            ],
+            "events": [],
+        }
+
+        result = run_round(
+            session_id=312,
+            round_num=1,
+            players=[11, 333, 10, 22],
+            forecasts={
+                11: {
+                    "hours": [1085.79],
+                    "devices": [{"device_id": "dev_gen_a", "hours": [1085.79]}],
+                    "bids": {},
+                },
+                333: {
+                    "hours": [939.4],
+                    "devices": [{"device_id": "dev_gen_b", "hours": [939.4]}],
+                    "bids": {},
+                },
+                10: {
+                    "hours": [999.16],
+                    "devices": [{"device_id": "dev_gen_c", "hours": [999.16]}],
+                    "bids": {},
+                },
+                22: {
+                    "hours": [1500.0],
+                    "devices": [{"device_id": "dev_load", "hours": [1500.0]}],
+                    "bids": {},
+                },
+            },
+            config=config,
+            mode="shared_market",
+            seed="single-bid-capacity-overaward",
+        )
+
+        cheap = result["round_kpis"][11]
+        medium = result["round_kpis"][333]
+        expensive = result["round_kpis"][10]
+        consumer = result["round_kpis"][22]
+        cheap_device = cheap["device_hourly_breakdown"]["dev_gen_a"][0]
+
+        assert result["volume"] == pytest.approx(1500.0, abs=1e-6)
+
+        assert cheap["dispatched_mwh"] == pytest.approx(1085.79, abs=1e-6)
+        assert cheap["planned_mwh"] == pytest.approx(1085.79, abs=1e-6)
+        assert cheap["actual_mwh"] == pytest.approx(1000.0, abs=1e-6)
+        assert cheap["imbalance_cost_zar"] > 0.0
+        assert cheap_device["effective_capacity_mw"] == pytest.approx(1000.0, abs=1e-6)
+        assert cheap_device["planned_mw"] == pytest.approx(1085.79, abs=1e-6)
+        assert cheap_device["overbid_mw"] == pytest.approx(85.79, abs=1e-6)
+        assert cheap_device["capacity_violation"] is True
+        assert cheap_device["dispatched_mw"] == pytest.approx(1085.79, abs=1e-6)
+        assert cheap_device["actual_mw"] == pytest.approx(1000.0, abs=1e-6)
+        assert cheap_device["imbalance_mwh"] == pytest.approx(-85.79, abs=1e-6)
+        assert cheap_device["imbalance_cost_zar"] > 0.0
+        assert result["dam_bid_dispatch"][11]["dev_gen_a"]["CLASSIC"][0]["mw_dispatched"] == pytest.approx(1085.79, abs=1e-6)
+
+        assert medium["dispatched_mwh"] == pytest.approx(414.21, abs=1e-6)
+        assert medium["actual_mwh"] == pytest.approx(414.21, abs=1e-6)
+        assert medium["imbalance_cost_zar"] == pytest.approx(0.0, abs=1e-6)
+
+        assert expensive["dispatched_mwh"] == pytest.approx(0.0, abs=1e-6)
+        assert expensive["actual_mwh"] == pytest.approx(0.0, abs=1e-6)
+
+    def test_isolated_single_bid_market_flag_with_bid_count_zero_tracks_demand_limited_dispatch(self, monkeypatch):
+        """Market-level single-bid configs should stay in explicit mode for isolated players too."""
+        monkeypatch.setattr("app.engine.random.uniform", lambda _low, _high: 0.0)
+
+        config = {
+            "general": {
+                "round_span_hours": 1,
+                "horizon_hours": 3,
+                "forecast_horizon_hours": 6,
+                "rounds": 3,
+                "start_time": "09:00",
+                "fake_date": "2026-06-08",
+                "allow_dispatch_above_capacity": True,
+            },
+            "market": {
+                "enable_player_bidding": True,
+                "bid_count": 1,
+                "base_price": 1800,
+                "base_volume_mwh": 2000,
+                "price_floor": 0,
+                "price_cap": 5000,
+                "generator_mix": {
+                    "pv": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "gas": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "coal": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "wind": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "hydro": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "nuclear": {"blocks": 0, "zone_distribution_pct": [100]},
+                },
+                "consumer_mix": {
+                    "industrial": {
+                        "blocks": 1,
+                        "profile": [0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 1, 1, 1, 0.75, 0.5, 1, 1, 1, 1, 1, 1, 1, 0.98, 0.98, 0.98, 0.97, 0.96, 0.95],
+                        "seasonal_profile": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                        "price_min": 3000,
+                        "price_max": 3000,
+                        "zone_distribution_pct": [100],
+                    },
+                },
+                "dam_synthetic_capacity_pct": 100,
+                "idm_synthetic_capacity_pct": 0,
+                "idm_price_markup_consumer_pct": 0,
+                "idm_price_discount_producer_pct": 0,
+            },
+            "markets": {
+                "dam": {"trading": ["on"]},
+                "idm": {"trading": ["off"]},
+            },
+            "grid": {"zones": 1, "atc": [[0]]},
+            "devices": [
+                {
+                    "id": "dev_gen_a",
+                    "type": "coal",
+                    "bid_count": 0,
+                    "enable_multi_bid": False,
+                    "capacity_mw": 1000,
+                    "max_power_mw": 1000,
+                    "variable_cost_zar_per_mwh": 400,
+                    "co2_emissions_kg_per_mwh": 950,
+                },
+                {
+                    "id": "dev_gen_b",
+                    "type": "coal",
+                    "bid_count": 0,
+                    "enable_multi_bid": False,
+                    "capacity_mw": 1000,
+                    "max_power_mw": 1000,
+                    "variable_cost_zar_per_mwh": 500,
+                    "co2_emissions_kg_per_mwh": 950,
+                },
+                {
+                    "id": "dev_gen_c",
+                    "type": "coal",
+                    "bid_count": 0,
+                    "enable_multi_bid": False,
+                    "capacity_mw": 1000,
+                    "max_power_mw": 1000,
+                    "variable_cost_zar_per_mwh": 600,
+                    "co2_emissions_kg_per_mwh": 950,
+                },
+            ],
+            "player_types": [
+                {"id": "ptype_gen_a", "name": "Producer A", "devices": ["dev_gen_a"]},
+                {"id": "ptype_gen_b", "name": "Producer B", "devices": ["dev_gen_b"]},
+                {"id": "ptype_gen_c", "name": "Producer C", "devices": ["dev_gen_c"]},
+            ],
+            "events": [],
+        }
+
+        result = run_round(
+            session_id=313,
+            round_num=1,
+            players=[1],
+            forecasts={
+                1: {
+                    "hours": [2200.0, 2200.0, 2200.0],
+                    "devices": [{"device_id": "dev_gen_a", "hours": [2200.0, 2200.0, 2200.0]}],
+                    "bids": None,
+                },
+            },
+            config=config,
+            mode="isolated_per_player",
+            seed="single-bid-isolated-overbid",
+        )
+
+        player = result["round_kpis"][1]
+        device = player["device_hourly_breakdown"]["dev_gen_a"][0]
+
+        assert result["volume"] == pytest.approx(1500.0, abs=1e-6)
+        assert player["planned_mwh"] == pytest.approx(2200.0, abs=1e-6)
+        assert player["dispatched_mwh"] == pytest.approx(1500.0, abs=1e-6)
+        assert player["actual_mwh"] == pytest.approx(1000.0, abs=1e-6)
+        assert player["imbalance_cost_zar"] > 0.0
+        assert result["dam_bid_dispatch"][1]["dev_gen_a"]["CLASSIC"][0]["mw_dispatched"] == pytest.approx(1500.0, abs=1e-6)
+        assert device["planned_mw"] == pytest.approx(2200.0, abs=1e-6)
+        assert device["total_offered_mw"] == pytest.approx(2200.0, abs=1e-6)
+        assert device["overbid_mw"] == pytest.approx(500.0, abs=1e-6)
+        assert device["capacity_violation"] is True
+
+    def test_isolated_round2_dam_undersupply_uses_demand_price_cap(self, monkeypatch):
+        """Round-2 DAM-only undersupply must clear at the unmet demand price, not the last offer."""
+        monkeypatch.setattr("app.engine.random.uniform", lambda _low, _high: 0.0)
+
+        config = {
+            "general": {
+                "round_span_hours": 1,
+                "horizon_hours": 3,
+                "forecast_horizon_hours": 6,
+                "rounds": 3,
+                "start_time": "08:00",
+                "fake_date": "2026-06-08",
+                "day_one_baseline_mode": "edit_round_1",
+            },
+            "market": {
+                "enable_player_bidding": True,
+                "bid_count": 1,
+                "base_price": 1800,
+                "base_volume_mwh": 2000,
+                "price_floor": 0,
+                "price_cap": 5000,
+                "generator_mix": {
+                    "pv": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "gas": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "coal": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "wind": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "hydro": {"blocks": 0, "zone_distribution_pct": [100]},
+                    "nuclear": {"blocks": 0, "zone_distribution_pct": [100]},
+                },
+                "consumer_mix": {
+                    "industrial": {
+                        "blocks": 1,
+                        "profile": [0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 1, 1, 1, 0.75, 0.5, 1, 1, 1, 1, 1, 1, 1, 0.98, 0.98, 0.98, 0.97, 0.96, 0.95],
+                        "seasonal_profile": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                        "price_min": 3000,
+                        "price_max": 3000,
+                        "zone_distribution_pct": [100],
+                    },
+                },
+                "dam_synthetic_capacity_pct": 100,
+                "idm_synthetic_capacity_pct": 0,
+                "idm_price_markup_consumer_pct": 0,
+                "idm_price_discount_producer_pct": 0,
+            },
+            "markets": {
+                "dam": {"trading": ["on", "on", "on"]},
+                "idm": {"trading": ["off", "off", "off"]},
+            },
+            "grid": {"zones": 1, "atc": [[0]]},
+            "devices": [
+                {
+                    "id": "dev_gen_a",
+                    "type": "coal",
+                    "bid_count": 1,
+                    "capacity_mw": 1000,
+                    "max_power_mw": 1000,
+                    "variable_cost_zar_per_mwh": 400,
+                    "co2_emissions_kg_per_mwh": 950,
+                },
+            ],
+            "player_types": [
+                {"id": "ptype_gen_a", "name": "Producer A", "devices": ["dev_gen_a"]},
+            ],
+            "events": [],
+        }
+
+        result = run_round(
+            session_id=319,
+            round_num=2,
+            players=[1],
+            forecasts={
+                1: {
+                    "hours": [2800.0, 882.7, 0.0],
+                    "devices": [{"device_id": "dev_gen_a", "hours": [882.7]}],
+                    "bids": {
+                        "dev_gen_a": {
+                            "A": {"price": 400.0, "hours": [2800.0, 882.7, 0.0]},
+                        }
+                    },
+                },
+            },
+            config=config,
+            mode="isolated_per_player",
+            seed="isolated-round2-dam-undersupply",
+        )
+
+        player = result["round_kpis"][1]
+        device = player["device_hourly_breakdown"]["dev_gen_a"][0]
+
+        assert result["volume"] == pytest.approx(882.7, abs=1e-6)
+        assert result["smp"] == pytest.approx(3000.0, abs=1e-6)
+        assert player["planned_mwh"] == pytest.approx(882.7, abs=1e-6)
+        assert player["dispatched_mwh"] == pytest.approx(882.7, abs=1e-6)
+        assert player["actual_mwh"] == pytest.approx(882.7, abs=1e-6)
+        assert player["imbalance_cost_zar"] == pytest.approx(0.0, abs=1e-6)
+        assert device["market_price_zar"] == pytest.approx(3000.0, abs=1e-6)
+        assert result["dam_bid_dispatch"][1]["dev_gen_a"]["A"][0]["mw_dispatched"] == pytest.approx(882.7, abs=1e-6)
 
 
 class TestPlayerForecastValidation:

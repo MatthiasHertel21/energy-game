@@ -24,9 +24,10 @@ class Config:
     SWAGGER_UI_DOC_EXPANSION = "list"
     API_TITLE = "EMSG API"
     API_VERSION = "0.1.0"
+    TRUST_PROXY_HOPS = int(os.getenv("TRUST_PROXY_HOPS", "1"))
 
     # System Limits (from concept.md)
     MAX_USERS = int(os.getenv("MAX_USERS", "1000"))
     MAX_COHORTS = int(os.getenv("MAX_COHORTS", "10"))
-    MAX_PLAYERS_PER_COHORT = int(os.getenv("MAX_PLAYERS_PER_COHORT", "80"))
+    MAX_PLAYERS_PER_COHORT = int(os.getenv("MAX_PLAYERS_PER_COHORT", "150"))
     MAX_SCENARIOS = int(os.getenv("MAX_SCENARIOS", "100"))

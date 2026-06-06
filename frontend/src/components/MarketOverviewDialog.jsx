@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Box,
   Card,
@@ -58,6 +58,12 @@ function OverviewPanel({ cards = [], sections = [], content = null }) {
             </Typography>
           ) : null}
 
+          {section.caption ? (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: -1, mb: 1.5 }}>
+              {section.caption}
+            </Typography>
+          ) : null}
+
           {Array.isArray(section.rows) && section.rows.length > 0 ? (
             <TableContainer>
               <Table size="small">
@@ -65,7 +71,11 @@ function OverviewPanel({ cards = [], sections = [], content = null }) {
                   <TableHead>
                     <TableRow>
                       {section.columns.map((column) => (
-                        <TableCell key={column.key || column.label} align={column.align || 'left'}>
+                        <TableCell
+                          key={column.key || column.label}
+                          align={column.align || 'left'}
+                          sx={column.headerSx}
+                        >
                           {column.label}
                         </TableCell>
                       ))}
@@ -74,10 +84,18 @@ function OverviewPanel({ cards = [], sections = [], content = null }) {
                 ) : null}
                 <TableBody>
                   {section.rows.map((row, rowIdx) => (
-                    <TableRow key={row.key || rowIdx}>
+                    <TableRow key={row.key || rowIdx} sx={row.sx}>
                       {section.columns
                         ? section.columns.map((column) => (
-                            <TableCell key={column.key} align={column.align || 'left'}>
+                            <TableCell
+                              key={column.key}
+                              align={column.align || 'left'}
+                              sx={[
+                                column.cellSx,
+                                row.cellSx,
+                                row.cellSxByKey?.[column.key],
+                              ]}
+                            >
                               {row[column.key]}
                             </TableCell>
                           ))
@@ -155,6 +173,7 @@ export default function MarketOverviewDialog({
   }, [defaultTabId, normalizedTabs])
 
   const [activeTabId, setActiveTabId] = useState(fallbackTabId)
+  const previousOpenRef = useRef(open)
 
   useEffect(() => {
     setActiveTabId((current) => {
@@ -164,9 +183,11 @@ export default function MarketOverviewDialog({
   }, [fallbackTabId, normalizedTabs])
 
   useEffect(() => {
-    if (open) {
+    const wasOpen = previousOpenRef.current
+    if (open && !wasOpen) {
       setActiveTabId(fallbackTabId)
     }
+    previousOpenRef.current = open
   }, [fallbackTabId, open])
 
   const activeTab = normalizedTabs.find((tab) => tab.id === activeTabId) || normalizedTabs[0]

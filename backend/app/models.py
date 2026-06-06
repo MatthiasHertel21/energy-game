@@ -185,6 +185,11 @@ class Session(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     mode = db.Column(db.String(32), default="isolated_per_player", nullable=False)
     frozen = db.Column(db.Boolean, default=False, nullable=False)
+    # Two-phase rounds: which market phase of the current round is active.
+    # NULL = legacy single-phase round (no transition). 'dam'/'idm' otherwise.
+    market_phase = db.Column(db.String(16), nullable=True, default=None)
+    # 0-based index of the active phase within the round's phase sequence.
+    phase_index = db.Column(db.Integer, nullable=False, default=0)
     
     scenario = db.relationship("Scenario", backref="sessions", lazy="joined")
 
@@ -233,6 +238,9 @@ class Forecast(db.Model):
     #   }
     # }
     is_da_baseline = db.Column(db.Boolean, nullable=False, default=False)  # Day-Ahead baseline flag
+    # Two-phase rounds: which phase this forecast belongs to.
+    # 'single' = legacy single-phase submission; 'dam'/'idm' for two-phase rounds.
+    market_phase = db.Column(db.String(16), nullable=False, default="single")
     submitted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -253,6 +261,33 @@ class Result(db.Model):
     #   }
     # }
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PhaseResult(db.Model):
+    """Provisional per-phase result for two-phase rounds (DAM phase).
+
+    Kept separate from ``Result`` so the final-result pipeline (round history,
+    final results, exports) is never polluted by intermediate DAM clearings.
+    Only written when a round is two-phase; never used by legacy single-phase rounds.
+    """
+
+    __tablename__ = "phase_results"
+
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.Integer, db.ForeignKey("sessions.id"), nullable=False, index=True)
+    player_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    round_num = db.Column(db.Integer, nullable=False, index=True)
+    market_phase = db.Column(db.String(16), nullable=False, default="dam")
+    data = db.Column(db.JSON, nullable=False)
+    bid_dispatch = db.Column(db.JSON, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "session_id", "player_id", "round_num", "market_phase",
+            name="uq_phase_result_session_player_round_phase",
+        ),
+    )
 
 
 class PlayerProgressStatus(enum.Enum):

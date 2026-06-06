@@ -1,5 +1,6 @@
 from flask import Flask
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 from .config import Config
 from .extensions import db, migrate, bcrypt, jwt, api, socketio, limiter, talisman
 from .auth import ns as auth_ns
@@ -22,6 +23,16 @@ from .static_pages import ns as static_pages_ns
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config.from_object(Config())
+
+    proxy_hops = int(app.config.get("TRUST_PROXY_HOPS", 0) or 0)
+    if proxy_hops > 0:
+        app.wsgi_app = ProxyFix(
+            app.wsgi_app,
+            x_for=proxy_hops,
+            x_proto=proxy_hops,
+            x_host=proxy_hops,
+            x_port=proxy_hops,
+        )
 
     # Extensions
     db.init_app(app)
@@ -87,6 +98,7 @@ def create_app() -> Flask:
             Scenario,
             CampaignScenario,
             PasswordResetToken,
+            PhaseResult,
         )
         from .static_pages import StaticPage
         
@@ -110,6 +122,8 @@ def create_app() -> Flask:
                 StaticPage.__table__.create(bind=db.engine, checkfirst=True)
             if not insp.has_table(PasswordResetToken.__tablename__):
                 PasswordResetToken.__table__.create(bind=db.engine, checkfirst=True)
+            if not insp.has_table(PhaseResult.__tablename__):
+                PhaseResult.__table__.create(bind=db.engine, checkfirst=True)
 
             # Lightweight column backfill for campaigns to avoid 500s when migrations weren't run
             try:
@@ -123,6 +137,20 @@ def create_app() -> Flask:
                 # Add cover_image_url column if missing
                 if 'cover_image_url' not in cols:
                     db.session.execute(text("ALTER TABLE campaigns ADD COLUMN cover_image_url VARCHAR(512)"))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+
+            # Lightweight column backfill for two-phase rounds (additive, legacy-safe)
+            try:
+                session_cols = {c['name'] for c in insp.get_columns('sessions')}
+                if 'market_phase' not in session_cols:
+                    db.session.execute(text("ALTER TABLE sessions ADD COLUMN market_phase VARCHAR(16)"))
+                if 'phase_index' not in session_cols:
+                    db.session.execute(text("ALTER TABLE sessions ADD COLUMN phase_index INTEGER DEFAULT 0 NOT NULL"))
+                forecast_cols = {c['name'] for c in insp.get_columns('forecasts')}
+                if 'market_phase' not in forecast_cols:
+                    db.session.execute(text("ALTER TABLE forecasts ADD COLUMN market_phase VARCHAR(16) DEFAULT 'single' NOT NULL"))
                 db.session.commit()
             except Exception:
                 db.session.rollback()

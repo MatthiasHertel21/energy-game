@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Paper, Typography, Stack, TextField, Button, Table, TableHead, TableRow, TableCell, TableBody, Select, MenuItem, Tooltip, Checkbox, FormControlLabel, Chip, Box, IconButton, Dialog, DialogTitle, DialogContent, IconButton as MuiIconButton, Skeleton } from '@mui/material'
-import { Pause as PauseIcon, PlayArrow as PlayIcon, Stop as StopIcon, SkipNext as NextIcon, SkipPrevious as PrevIcon, BarChart as ComparisonIcon, Close as CloseIcon, Public as MarketOverviewIcon } from '@mui/icons-material'
+import { Pause as PauseIcon, PlayArrow as PlayIcon, Stop as StopIcon, SkipNext as NextIcon, BarChart as ComparisonIcon, Close as CloseIcon, Public as MarketOverviewIcon } from '@mui/icons-material'
 import { useSearchParams } from 'react-router-dom'
 import InfoLabel from '../components/InfoLabel'
 import { io } from 'socket.io-client'
@@ -20,6 +20,7 @@ import {
 } from '../utils/marketOverview'
 import DocsFab from '../components/DocsFab'
 import MarketOverviewDialog from '../components/MarketOverviewDialog'
+import RoundResultsScreenSimple from '../components/RoundResultsScreenSimple'
 
 const MARKET_OVERVIEW_ALL_ROUNDS = 'all'
 import MarketOverviewTrendPanel from '../components/MarketOverviewTrendPanel'
@@ -28,6 +29,7 @@ import MarketStructureChartPanel from '../components/MarketStructureChartPanel'
 export default function Trainer(){
   const [searchParams] = useSearchParams()
   const cohortId = searchParams.get('cohort') || '1'
+  const requestedSessionId = searchParams.get('sessionId')
   const [campaignId, setCampaignId] = useState('')
   const [scenarioId, setScenarioId] = useState('')
   const [sessionId, setSessionId] = useState(null)
@@ -37,6 +39,7 @@ export default function Trainer(){
   const [log, setLog] = useState([])
   const [message, setMessage] = useState('')
   const [tick, setTick] = useState(null)
+  const [marketPhase, setMarketPhase] = useState(null) // two-phase rounds: 'dam' | 'idm' | null
   const [status, setStatus] = useState({ rounds: 0, players: [] })
   const [typesCfg, setTypesCfg] = useState([]) // from scenario config
   const [allowedTypes, setAllowedTypes] = useState([]) // [{type_id, enabled, max_players}]
@@ -67,13 +70,15 @@ export default function Trainer(){
   const [marketOverviewReplayRounds, setMarketOverviewReplayRounds] = useState([])
   const [marketOverviewReplayLoading, setMarketOverviewReplayLoading] = useState(false)
   const [marketOverviewReplayLoaded, setMarketOverviewReplayLoaded] = useState(false)
+  const [roundDetailsOpen, setRoundDetailsOpen] = useState(false)
+  const [roundDetailsView, setRoundDetailsView] = useState(null)
   const [cohortMembers, setCohortMembers] = useState([])
   const [membersLoading, setMembersLoading] = useState(false)
   const isLastRound = !!(sessionInfo?.general?.rounds && sessionInfo?.current_round >= sessionInfo?.general?.rounds)
   const availableMarketOverviewRound = useMemo(() => {
     const currentRound = Number(sessionInfo?.current_round || 0)
     if (!currentRound) return null
-    if (sessionInfo?.status === 'round_results') return currentRound
+    if (['round_results', 'ended', 'scenario_complete'].includes(sessionInfo?.status)) return currentRound
     return currentRound > 1 ? currentRound - 1 : null
   }, [sessionInfo])
 
@@ -82,9 +87,11 @@ export default function Trainer(){
     return maxRound > 0 ? Array.from({ length: maxRound }, (_, index) => index + 1) : []
   }, [availableMarketOverviewRound])
   const isAllMarketOverviewRoundsSelected = marketOverviewSelectedRound === MARKET_OVERVIEW_ALL_ROUNDS
-  const selectedMarketOverviewRoundNumber = typeof marketOverviewSelectedRound === 'number'
-    ? marketOverviewSelectedRound
-    : null
+  const selectedMarketOverviewRoundNumber = useMemo(() => {
+    if (marketOverviewSelectedRound === MARKET_OVERVIEW_ALL_ROUNDS) return null
+    const parsedRound = Number(marketOverviewSelectedRound)
+    return Number.isFinite(parsedRound) && parsedRound > 0 ? parsedRound : null
+  }, [marketOverviewSelectedRound])
 
   const playerTypeCounts = useMemo(() => {
     const counts = {}
@@ -171,8 +178,11 @@ export default function Trainer(){
     s.on('message', p=> setLog(l=>[...l, `message ${JSON.stringify(p)}`]))
     s.on('player_submit', p=> setLog(l=>[...l, `player_submit ${JSON.stringify(p)}`]))
     s.on('tick', p=> setTick(p?.remaining))
+    s.on('round_start', p=> { setMarketPhase(p?.phase || null) })
+    s.on('dam_phase_cleared', p=> { setMarketPhase('idm'); setLog(l=>[...l, `dam_phase_cleared ${JSON.stringify(p)}`]) })
     s.on('round_results', p=> {
       loadStatus()
+      setMarketPhase(null)
       if(p?.round && p?.smp!=null){ setSeries(prev=> [...prev, { r: p.round, smp: p.smp, volume: p.volume }]) }
       if(p?.kpis){
         setAgg(prev => {
@@ -220,15 +230,26 @@ export default function Trainer(){
     if(!cohortId) return
     const run = async ()=>{
       try{
+        if (requestedSessionId) {
+          const { data } = await api.get(`/api/sessions/${Number(requestedSessionId)}`)
+          if (data?.id) {
+            setSessionId(data.id)
+            setSessionInfo(data)
+          } else {
+            setSessionId(null)
+            setSessionInfo(null)
+          }
+        } else {
         // Check active session for cohort
-        const activeRes = await api.get('/api/sessions/active', { params: { cohort_id: Number(cohortId) } })
-        const active = activeRes.data?.active
-        if(active && active.id){
-          setSessionId(active.id)
-          setSessionInfo(active)
-        }else{
-          setSessionId(null)
-          setSessionInfo(null)
+          const activeRes = await api.get('/api/sessions/active', { params: { cohort_id: Number(cohortId) } })
+          const active = activeRes.data?.active
+          if(active && active.id){
+            setSessionId(active.id)
+            setSessionInfo(active)
+          }else{
+            setSessionId(null)
+            setSessionInfo(null)
+          }
         }
       }catch(_){ setSessionId(null); setSessionInfo(null) }
       try{
@@ -239,7 +260,7 @@ export default function Trainer(){
       }catch(_){ setCampaigns([]); setCampaignId('') }
     }
     run()
-  },[cohortId])
+  },[cohortId, requestedSessionId])
 
   // When campaign changes: load scenarios from catalog and filter cohort-enabled
   useEffect(()=>{
@@ -368,13 +389,6 @@ export default function Trainer(){
       const msg = e?.response?.data?.error || 'Action failed'
       if(window.__showSnack) window.__showSnack(msg, 'error')
     }
-  }
-  const rewindRound = async ()=>{
-    if(!sessionId) return
-    try{
-      await api.post(`/api/sessions/${sessionId}/rewind-round`)
-      setTimeout(loadStatus, 300)
-    }catch(_){ }
   }
   const extendTimer = async ()=>{
     if(!sessionId) return
@@ -604,6 +618,7 @@ export default function Trainer(){
       type: resolvePlayerTypeLabel(row?.type),
       score: normalize(row?.total_score).toFixed(1),
       primaryValue: formatCurrency(row?.kpis?.profit_zar || 0),
+      sourceRow: row,
     }))
 
     return {
@@ -617,6 +632,7 @@ export default function Trainer(){
       marketMixSections: [compositionSection, zoneSection].filter(Boolean),
       rankingEntries,
       formatInt,
+      rawResultsData: data,
     }
   }
 
@@ -627,7 +643,6 @@ export default function Trainer(){
       !marketOverviewOpen
       || !sessionId
       || !selectedMarketOverviewRoundNumber
-      || marketOverviewLoading
       || marketOverviewByRound[selectedMarketOverviewRoundNumber]
     ) {
       return () => {}
@@ -669,12 +684,12 @@ export default function Trainer(){
       isCancelled = true
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [marketOverviewByRound, marketOverviewOpen, marketOverviewLoading, selectedMarketOverviewRoundNumber, sessionId])
+  }, [marketOverviewByRound, marketOverviewOpen, selectedMarketOverviewRoundNumber, sessionId])
 
   useEffect(() => {
     let isCancelled = false
 
-    if (!marketOverviewOpen || !sessionId || marketOverviewReplayLoading || marketOverviewReplayLoaded) {
+    if (!marketOverviewOpen || !sessionId || marketOverviewReplayLoaded) {
       return () => {}
     }
 
@@ -706,6 +721,45 @@ export default function Trainer(){
   }, [marketOverviewOpen, marketOverviewReplayLoaded, sessionId])
 
   const selectedMarketOverview = selectedMarketOverviewRoundNumber ? marketOverviewByRound[selectedMarketOverviewRoundNumber] : null
+  const roundDetailsScenario = useMemo(() => ({
+    name: sessionInfo?.scenario_name || brief?.name || 'Scenario',
+    campaign_name: sessionInfo?.campaign_name || brief?.campaign_name || '',
+    description: brief?.description || '',
+    allowed_player_types: brief?.allowed_player_types || allowedTypes || [],
+    config: {
+      description: brief?.description || '',
+      general: brief?.general || sessionInfo?.general || {},
+      market: brief?.market || sessionInfo?.market || {},
+      markets: brief?.markets || sessionInfo?.markets || {},
+      grid: brief?.grid || {},
+      events: brief?.events || [],
+      challenges: brief?.challenges || [],
+      scoring: brief?.scoring || {},
+      player_types: brief?.player_types || [],
+      devices: brief?.devices || [],
+      player_input: brief?.player_input || sessionInfo?.player_input || {},
+    },
+  }), [allowedTypes, brief, sessionInfo])
+
+  const openRoundDetailsFromRankingEntry = (entry) => {
+    if (!entry?.sourceRow || !selectedMarketOverviewRoundNumber || !selectedMarketOverview?.rawResultsData) return
+    const resultsData = structuredClone(selectedMarketOverview.rawResultsData)
+    resultsData.my_result = structuredClone(entry.sourceRow)
+    if (!resultsData.my_result?.type && resultsData.my_result?.player_type) {
+      resultsData.my_result.type = resultsData.my_result.player_type
+    }
+    setRoundDetailsView({
+      playerLabel: entry.player || entry.sourceRow?.email || `Player ${entry.sourceRow?.player_id || '-'}`,
+      roundNumber: selectedMarketOverviewRoundNumber,
+      resultsData,
+    })
+    setRoundDetailsOpen(true)
+  }
+
+  const closeRoundDetails = () => {
+    setRoundDetailsOpen(false)
+    setRoundDetailsView(null)
+  }
 
   const allRoundsMeritOrderContent = availableMarketOverviewRounds.length > 0 ? (
     <MarketStructureChartPanel
@@ -775,10 +829,18 @@ export default function Trainer(){
       sections: isAllMarketOverviewRoundsSelected
         ? allRoundsUnavailableSections
         : buildGroupedRankingSections({
-            entries: selectedMarketOverview?.rankingEntries || [],
+            entries: (selectedMarketOverview?.rankingEntries || []).map((entry) => ({
+              ...entry,
+              action: entry?.sourceRow ? (
+                <Button size="small" variant="text" onClick={() => openRoundDetailsFromRankingEntry(entry)}>
+                  Show round details
+                </Button>
+              ) : null,
+            })),
             title: 'Round ranking',
             scoreLabel: 'Score',
             valueLabel: 'Profit',
+            actionLabel: 'Action',
           }),
     },
     {
@@ -954,9 +1016,6 @@ export default function Trainer(){
             <Tooltip title="Stop">
               <IconButton onClick={end} disabled={!sessionId} color="error" size="small"><StopIcon /></IconButton>
             </Tooltip>
-            <Tooltip title="Back">
-              <IconButton onClick={rewindRound} disabled={!sessionId || sessionInfo?.status !== 'round_results' || (sessionInfo?.current_round || 1) <= 1} color="primary" size="small"><PrevIcon /></IconButton>
-            </Tooltip>
             <Stack spacing={0} sx={{ minWidth: 130 }} alignItems="center">
               <Typography variant="body2" fontWeight="bold">
                 {sessionInfo.status === 'briefing'
@@ -965,6 +1024,11 @@ export default function Trainer(){
                     ? `Round ${sessionInfo.current_round || 1} / ${sessionInfo.general?.rounds || '?'}`
                     : `Round ${sessionInfo.current_round || 1} / ${sessionInfo.general?.rounds || '?'}`}
               </Typography>
+              {marketPhase && (
+                <Typography variant="caption" color={marketPhase === 'dam' ? 'info.main' : 'warning.main'} fontWeight="bold">
+                  {marketPhase === 'dam' ? 'Phase 1/2 · Day-Ahead' : 'Phase 2/2 · Intraday'}
+                </Typography>
+              )}
               <Typography variant="caption" color="text.secondary">
                 {['running','round_active','paused'].includes(sessionInfo?.status)
                   ? `ETA ${tick !== null ? tick : '—'}s`
@@ -1095,8 +1159,11 @@ export default function Trainer(){
               </TableHead>
               <TableBody>
                 {cohortMembers.map(member => {
-                  const hasSubmittedCurrentRound = submitStatusByPlayer.get(Number(member.user_id))
-                  const showSubmissionStatus = Boolean(sessionId && member.role === 'player' && member.active_session)
+                  const playerId = Number(member.user_id)
+                  const hasSubmittedCurrentRound = submitStatusByPlayer.get(playerId)
+                  const hasSubmitStatusEntry = submitStatusByPlayer.has(playerId)
+                  const isMemberInCurrentSession = Number(member.active_session?.session_id) === Number(sessionId)
+                  const showSubmissionStatus = Boolean(sessionId && (isMemberInCurrentSession || hasSubmitStatusEntry))
                   const displayStatus = showSubmissionStatus
                     ? (hasSubmittedCurrentRound ? 'submitted' : 'pending submit')
                     : member.status
@@ -1269,6 +1336,32 @@ export default function Trainer(){
         defaultTabId="overview"
         headerControls={marketOverviewHeaderControls}
       />
+
+      <Dialog open={roundDetailsOpen} onClose={closeRoundDetails} maxWidth="xl" fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2 }}>
+          <Box>
+            <Typography variant="h6">Round Details</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {roundDetailsView ? `${roundDetailsView.playerLabel} · Round ${roundDetailsView.roundNumber}` : ''}
+            </Typography>
+          </Box>
+          <MuiIconButton onClick={closeRoundDetails} size="small" aria-label="Close round details">
+            <CloseIcon fontSize="small" />
+          </MuiIconButton>
+        </DialogTitle>
+        <DialogContent dividers>
+          {roundDetailsView?.resultsData ? (
+            <RoundResultsScreenSimple
+              sessionId={sessionId}
+              round={roundDetailsView.roundNumber}
+              scenario={roundDetailsScenario}
+              campaignName={sessionInfo?.campaign_name || brief?.campaign_name || ''}
+              externalResultsData={roundDetailsView.resultsData}
+              embedded
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
       
       <DocsFab href="/docs/trainer" label="Open Trainer Handbook" />
     </Paper>

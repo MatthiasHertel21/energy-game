@@ -40,6 +40,12 @@ def _normalize_boolean_flag(value, fallback: bool = False) -> bool:
     return bool(value)
 
 
+def _is_zonal_pricing_v1_enabled(config: dict | None) -> bool:
+    general_cfg = (config or {}).get("general", {}) or {}
+    zones = max(1, int((config or {}).get("grid", {}).get("zones", 1) or 1))
+    return zones > 1 and _normalize_boolean_flag(general_cfg.get("zonal_pricing_v1_enabled"), False)
+
+
 BID_LABELS = ["A", "B", "C", "D", "E"]
 
 
@@ -264,6 +270,13 @@ def _normalize_bid_count(value, fallback: int = 0) -> int:
     return max(0, min(len(BID_LABELS), normalized))
 
 
+def _market_config_requests_explicit_bids(config: dict | None) -> bool:
+    market_cfg = (config or {}).get("market", {}) or {}
+    if not _normalize_boolean_flag(market_cfg.get("enable_player_bidding", False), False):
+        return False
+    return _normalize_bid_count(market_cfg.get("bid_count"), 0) > 0
+
+
 def _get_device_bid_count(device: dict | None, legacy_global_enabled: bool = False) -> int:
     device = device or {}
     if device.get("bid_count") is not None:
@@ -426,15 +439,26 @@ def _get_single_bid_fallback_price(
     device_bids: dict | None,
     hour_idx: int,
     legacy_global_enabled: bool = False,
+    hour_offset: int | None = None,
 ) -> float:
     device = device or {}
     labels = _get_bid_labels(device_bids, device, legacy_global_enabled)
     fallback_label = labels[0] if labels else 'A'
 
     if isinstance(device_bids, dict) and fallback_label in device_bids:
+        price_idx = hour_idx
+        prices = device_bids.get(fallback_label, {}).get('prices', []) if isinstance(device_bids.get(fallback_label), dict) else []
+        if (
+            isinstance(prices, list)
+            and hour_offset is not None
+            and hour_offset != hour_idx
+            and (hour_idx is None or hour_idx >= len(prices))
+            and hour_offset < len(prices)
+        ):
+            price_idx = hour_offset
         return _extract_bid_price(
             device_bids.get(fallback_label),
-            hour_idx,
+            price_idx,
             _get_default_device_market_price(device, is_consumer='load' in str(device.get('type', '')).lower()),
         )
 
@@ -450,6 +474,10 @@ def _get_single_bid_fallback_price(
 
 
 def _config_uses_explicit_bids(config: dict, forecasts: Dict[int, dict] | None = None) -> bool:
+    config = config or {}
+    if _market_config_requests_explicit_bids(config):
+        return True
+
     legacy_global_enabled = _normalize_boolean_flag(config.get("market", {}).get("enable_player_bidding", False), False)
     for device in config.get("devices", []) or []:
         if _get_device_bid_count(device, legacy_global_enabled) > 0:
@@ -770,6 +798,360 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
     return round(price, 1), vol
 
 
+def _iter_path_edges(path: List[int]) -> List[Tuple[int, int]]:
+    return [(path[idx], path[idx + 1]) for idx in range(len(path) - 1)]
+
+
+def _get_path_transfer_profile(path: List[int], loss_rate: float) -> Tuple[List[float], List[float], float]:
+    sent_factors: List[float] = []
+    received_factors: List[float] = []
+    cumulative_factor = 1.0
+    for _from_zone, _to_zone in _iter_path_edges(path):
+        sent_factors.append(cumulative_factor)
+        cumulative_factor *= (1.0 - loss_rate)
+        received_factors.append(cumulative_factor)
+    return sent_factors, received_factors, cumulative_factor
+
+
+def _get_max_source_sent_for_path(residual: List[List[float]], path: List[int], loss_rate: float) -> Tuple[float, float, List[float], List[float]]:
+    if len(path) <= 1:
+        return float("inf"), 1.0, [], []
+
+    sent_factors, received_factors, total_received_factor = _get_path_transfer_profile(path, loss_rate)
+    max_source_sent = float("inf")
+    for edge_idx, (from_zone, to_zone) in enumerate(_iter_path_edges(path)):
+        factor_before_edge = sent_factors[edge_idx]
+        if factor_before_edge <= 1e-9:
+            return 0.0, 0.0, sent_factors, received_factors
+        edge_capacity = max(0.0, float(residual[from_zone][to_zone] or 0.0))
+        max_source_sent = min(max_source_sent, edge_capacity / factor_before_edge)
+
+    return max_source_sent, total_received_factor, sent_factors, received_factors
+
+
+def _apply_path_flow(
+    residual: List[List[float]],
+    path: List[int],
+    source_sent_mwh: float,
+    loss_rate: float,
+    link_flow_accumulator: Dict[Tuple[int, int], dict],
+) -> None:
+    if len(path) <= 1 or source_sent_mwh <= 1e-9:
+        return
+
+    sent_factors, received_factors, _ = _get_path_transfer_profile(path, loss_rate)
+    for edge_idx, (from_zone, to_zone) in enumerate(_iter_path_edges(path)):
+        flow_sent = source_sent_mwh * sent_factors[edge_idx]
+        flow_received = source_sent_mwh * received_factors[edge_idx]
+        losses_mwh = max(0.0, flow_sent - flow_received)
+        residual[from_zone][to_zone] = max(0.0, float(residual[from_zone][to_zone] or 0.0) - flow_sent)
+        key = (from_zone + 1, to_zone + 1)
+        if key not in link_flow_accumulator:
+            link_flow_accumulator[key] = {
+                "flow_mwh": 0.0,
+                "flow_received_mwh": 0.0,
+                "losses_mwh": 0.0,
+            }
+        link_flow_accumulator[key]["flow_mwh"] += flow_sent
+        link_flow_accumulator[key]["flow_received_mwh"] += flow_received
+        link_flow_accumulator[key]["losses_mwh"] += losses_mwh
+
+
+def clear_market_coupled_atc(
+    zone_supply_curves: List[List[Tuple[float, float]]],
+    zone_demand_curves: List[List[Tuple[float, float]]],
+    atc: List[List[float]],
+    losses_pct_per_link: float = 0.0,
+    price_floor: float = -500.0,
+    price_cap: float = 5000.0,
+    price_tolerance: float = 0.01,
+) -> dict:
+    zones = max(len(zone_supply_curves), len(zone_demand_curves), 1)
+    normalized_supply = [sorted(list(zone_supply_curves[idx] if idx < len(zone_supply_curves) else []), key=lambda item: item[0]) for idx in range(zones)]
+    normalized_demand = [sorted(list(zone_demand_curves[idx] if idx < len(zone_demand_curves) else []), key=lambda item: item[0], reverse=True) for idx in range(zones)]
+    normalized_atc = [
+        [float((atc[i][j] if i < len(atc) and j < len(atc[i]) else 0.0) or 0.0) for j in range(zones)]
+        for i in range(zones)
+    ]
+    residual = [[value for value in row] for row in normalized_atc]
+    loss_rate = max(0.0, min(0.95, float(losses_pct_per_link or 0.0) / 100.0))
+
+    global_supply = [step for zone_curve in normalized_supply for step in zone_curve]
+    global_demand = [step for zone_curve in normalized_demand for step in zone_curve]
+    system_price, system_volume = clear_market(
+        global_supply,
+        global_demand,
+        price_floor=price_floor,
+        price_cap=price_cap,
+    )
+
+    supply_blocks = []
+    for zone_idx, zone_curve in enumerate(normalized_supply):
+        for block_idx, (price, quantity) in enumerate(zone_curve):
+            quantity_value = max(0.0, float(quantity or 0.0))
+            if quantity_value <= 1e-9:
+                continue
+            supply_blocks.append({
+                "zone_idx": zone_idx,
+                "price": float(price),
+                "remaining": quantity_value,
+                "block_idx": block_idx,
+            })
+    supply_blocks.sort(key=lambda item: (item["price"], item["zone_idx"], item["block_idx"]))
+
+    demand_blocks = []
+    for zone_idx, zone_curve in enumerate(normalized_demand):
+        for block_idx, (price, quantity) in enumerate(zone_curve):
+            quantity_value = max(0.0, float(quantity or 0.0))
+            if quantity_value <= 1e-9:
+                continue
+            demand_blocks.append({
+                "zone_idx": zone_idx,
+                "price": float(price),
+                "remaining": quantity_value,
+                "block_idx": block_idx,
+            })
+    demand_blocks.sort(key=lambda item: (-item["price"], item["zone_idx"], item["block_idx"]))
+
+    zone_supply_volume_mwh = [0.0] * zones
+    zone_demand_volume_mwh = [0.0] * zones
+    zone_export_sent_mwh = [0.0] * zones
+    zone_import_received_mwh = [0.0] * zones
+    import_supply_blocks: List[List[Tuple[float, float]]] = [[] for _ in range(zones)]
+    export_virtual_demand_mwh = [0.0] * zones
+    last_import_price_by_zone = [0.0] * zones
+    link_flow_accumulator: Dict[Tuple[int, int], dict] = {}
+
+    while True:
+        best_candidate = None
+        best_key = None
+
+        for supply_idx, supply_block in enumerate(supply_blocks):
+            if supply_block["remaining"] <= 1e-9:
+                continue
+            for demand_idx, demand_block in enumerate(demand_blocks):
+                if demand_block["remaining"] <= 1e-9:
+                    continue
+                welfare = demand_block["price"] - supply_block["price"]
+                if welfare < -1e-9:
+                    continue
+
+                source_zone = supply_block["zone_idx"]
+                sink_zone = demand_block["zone_idx"]
+                if source_zone == sink_zone:
+                    path = [source_zone]
+                    max_source_sent = float("inf")
+                    received_factor = 1.0
+                else:
+                    path = _shortest_path_with_capacity(residual, source_zone, sink_zone)
+                    if not path:
+                        continue
+                    max_source_sent, received_factor, _, _ = _get_max_source_sent_for_path(residual, path, loss_rate)
+                    if max_source_sent <= 1e-9 or received_factor <= 1e-9:
+                        continue
+
+                ranking_key = (
+                    welfare,
+                    -supply_block["price"],
+                    demand_block["price"],
+                    -abs(source_zone - sink_zone),
+                    -len(path),
+                    -source_zone,
+                    -sink_zone,
+                )
+                if best_key is None or ranking_key > best_key:
+                    best_key = ranking_key
+                    best_candidate = {
+                        "supply_idx": supply_idx,
+                        "demand_idx": demand_idx,
+                        "path": path,
+                        "max_source_sent": max_source_sent,
+                        "received_factor": received_factor,
+                    }
+
+        if best_candidate is None:
+            break
+
+        supply_block = supply_blocks[best_candidate["supply_idx"]]
+        demand_block = demand_blocks[best_candidate["demand_idx"]]
+        path = best_candidate["path"]
+        max_source_sent = best_candidate["max_source_sent"]
+        received_factor = best_candidate["received_factor"]
+
+        if len(path) <= 1:
+            source_sent = min(supply_block["remaining"], demand_block["remaining"])
+            received_mwh = source_sent
+        else:
+            demand_limited_source_sent = demand_block["remaining"] / received_factor
+            source_sent = min(supply_block["remaining"], max_source_sent, demand_limited_source_sent)
+            received_mwh = source_sent * received_factor
+
+        if source_sent <= 1e-9 or received_mwh <= 1e-9:
+            if supply_block["remaining"] <= demand_block["remaining"]:
+                supply_block["remaining"] = 0.0
+            else:
+                demand_block["remaining"] = 0.0
+            continue
+
+        supply_block["remaining"] -= source_sent
+        demand_block["remaining"] -= received_mwh
+
+        source_zone = supply_block["zone_idx"]
+        sink_zone = demand_block["zone_idx"]
+        zone_supply_volume_mwh[source_zone] += source_sent
+        zone_demand_volume_mwh[sink_zone] += received_mwh
+
+        if source_zone != sink_zone:
+            zone_export_sent_mwh[source_zone] += source_sent
+            zone_import_received_mwh[sink_zone] += received_mwh
+            export_virtual_demand_mwh[source_zone] += source_sent
+            import_supply_blocks[sink_zone].append((supply_block["price"], received_mwh))
+            last_import_price_by_zone[sink_zone] = max(last_import_price_by_zone[sink_zone], float(supply_block["price"]))
+            _apply_path_flow(residual, path, source_sent, loss_rate, link_flow_accumulator)
+
+    zone_net_position_mwh = [
+        round(zone_export_sent_mwh[idx] - zone_import_received_mwh[idx], 3)
+        for idx in range(zones)
+    ]
+
+    zone_prices = []
+    local_clear_prices = []
+    for zone_idx in range(zones):
+        local_price, _local_volume = clear_market(
+            normalized_supply[zone_idx],
+            normalized_demand[zone_idx],
+            price_floor=price_floor,
+            price_cap=price_cap,
+        )
+        local_clear_prices.append(local_price)
+
+        augmented_supply = list(normalized_supply[zone_idx]) + list(import_supply_blocks[zone_idx])
+        augmented_demand = list(normalized_demand[zone_idx])
+        if export_virtual_demand_mwh[zone_idx] > 1e-9:
+            augmented_demand.append((price_cap, export_virtual_demand_mwh[zone_idx]))
+
+        zone_price, _augmented_volume = clear_market(
+            augmented_supply,
+            augmented_demand,
+            price_floor=price_floor,
+            price_cap=price_cap,
+        )
+        if zone_import_received_mwh[zone_idx] > 1e-9 and not normalized_supply[zone_idx]:
+            zone_price = max(zone_price, last_import_price_by_zone[zone_idx])
+        zone_prices.append(round(zone_price, 2))
+
+    zonal_pricing_active = False
+    for zone_idx in range(zones):
+        for other_idx in range(zone_idx + 1, zones):
+            if abs(zone_prices[zone_idx] - zone_prices[other_idx]) >= price_tolerance:
+                zonal_pricing_active = True
+                break
+        if zonal_pricing_active:
+            break
+
+    interzonal_flows = {}
+    binding_links = []
+    congestion_rents = {}
+    for from_zone in range(zones):
+        for to_zone in range(zones):
+            if from_zone == to_zone:
+                continue
+            key = (from_zone + 1, to_zone + 1)
+            flow_entry = link_flow_accumulator.get(key)
+            flow_sent = round(float((flow_entry or {}).get("flow_mwh", 0.0) or 0.0), 3)
+            flow_received = round(float((flow_entry or {}).get("flow_received_mwh", 0.0) or 0.0), 3)
+            losses_mwh = round(float((flow_entry or {}).get("losses_mwh", 0.0) or 0.0), 3)
+            atc_value = round(float(normalized_atc[from_zone][to_zone] or 0.0), 3)
+            is_binding = flow_sent > 1e-9 and atc_value > 1e-9 and abs(flow_sent - atc_value) <= 1e-6
+            if is_binding:
+                binding_links.append(key)
+
+            if flow_sent <= 1e-9:
+                congestion_rent = 0.0
+                losses_value = 0.0
+            elif zonal_pricing_active:
+                congestion_rent = (zone_prices[to_zone] * flow_received) - (zone_prices[from_zone] * flow_sent)
+                losses_value = zone_prices[to_zone] * losses_mwh
+            else:
+                congestion_rent = 0.0
+                losses_value = zone_prices[to_zone] * losses_mwh
+
+            interzonal_flows[key] = {
+                "flow_mwh": flow_sent,
+                "flow_received_mwh": flow_received,
+                "losses_mwh": losses_mwh,
+                "atc_mwh": atc_value,
+                "binding": is_binding,
+            }
+            congestion_rents[key] = {
+                "congestion_rent_zar": round(congestion_rent, 2),
+                "losses_value_zar": round(losses_value, 2),
+            }
+
+    residual_unserved_demand_by_zone = []
+    for zone_idx in range(zones):
+        total_zone_demand = sum(max(0.0, float(quantity or 0.0)) for _price, quantity in normalized_demand[zone_idx])
+        residual_unserved_demand_by_zone.append(round(max(0.0, total_zone_demand - zone_demand_volume_mwh[zone_idx]), 3))
+
+    return {
+        "system_price": round(system_price, 2),
+        "system_volume": round(system_volume, 3),
+        "zone_prices": [round(price, 2) for price in zone_prices],
+        "local_clear_prices": [round(price, 2) for price in local_clear_prices],
+        "zonal_pricing_active": zonal_pricing_active,
+        "zone_supply_volume_mwh": [round(value, 3) for value in zone_supply_volume_mwh],
+        "zone_demand_volume_mwh": [round(value, 3) for value in zone_demand_volume_mwh],
+        "zone_net_position_mwh": zone_net_position_mwh,
+        "interzonal_flows": interzonal_flows,
+        "binding_links": binding_links,
+        "congestion_rents": congestion_rents,
+        "residual_unserved_demand_by_zone": residual_unserved_demand_by_zone,
+    }
+
+
+def _split_curve_by_zone(curve: List[Tuple[float, float]], zone_shares: List[float]) -> List[List[Tuple[float, float]]]:
+    zonal_curves: List[List[Tuple[float, float]]] = [[] for _ in zone_shares]
+    if not zone_shares:
+        return zonal_curves
+
+    for price, quantity in curve or []:
+        quantity_value = max(0.0, float(quantity or 0.0))
+        if quantity_value <= 1e-9:
+            continue
+        for zone_idx, share in enumerate(zone_shares):
+            zone_quantity = quantity_value * max(0.0, float(share or 0.0))
+            if zone_quantity <= 1e-9:
+                continue
+            zonal_curves[zone_idx].append((float(price), zone_quantity))
+    return zonal_curves
+
+
+def _merge_dispatch_maps(target: Dict[int, Dict[str, Dict[str, dict]]], addition: Dict[int, Dict[str, Dict[str, dict]]],
+                         zone_id: Optional[int] = None, zone_price: Optional[float] = None,
+                         system_price: Optional[float] = None, zonal_pricing_active: bool = False) -> None:
+    for raw_player_id, devices in (addition or {}).items():
+        try:
+            player_id = int(raw_player_id)
+        except Exception:
+            player_id = raw_player_id
+        if player_id not in target:
+            target[player_id] = {}
+        for device_id, lots in (devices or {}).items():
+            if device_id not in target[player_id]:
+                target[player_id][device_id] = {}
+            for lot_label, lot_data in (lots or {}).items():
+                merged_lot = dict(lot_data or {})
+                if zone_id is not None:
+                    merged_lot["zone_id"] = int(zone_id)
+                if zone_price is not None:
+                    merged_lot["zone_price_zar_per_mwh"] = round(float(zone_price), 2)
+                if system_price is not None:
+                    merged_lot["system_price_zar_per_mwh"] = round(float(system_price), 2)
+                if zone_id is not None:
+                    merged_lot["zonal_pricing_active"] = bool(zonal_pricing_active)
+                target[player_id][device_id][lot_label] = merged_lot
+
+
 def generate_curves_from_config(cfg: dict, seed: Optional[str] = None, hour_of_day: Optional[int] = None, month_of_year: Optional[int] = None) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
     """
     Step-wise supply and demand curves using detailed Merit Order by generator/consumer type.
@@ -1017,6 +1399,267 @@ def generate_curves_from_config(cfg: dict, seed: Optional[str] = None, hour_of_d
     return supply, demand
 
 
+def _safe_market_percentage(value, default: float = 0.0) -> float:
+    try:
+        numeric_value = float(value if value is not None else default)
+    except Exception:
+        numeric_value = default
+    return max(0.0, min(100.0, numeric_value))
+
+
+def _curve_total_volume(curve: List[Tuple[float, float]]) -> float:
+    return sum(max(0.0, float(quantity or 0.0)) for _, quantity in (curve or []))
+
+
+def _build_scaled_curve(
+    curve: List[Tuple[float, float]],
+    quantity_factor: float,
+    price_factor: float,
+    descending: bool,
+) -> List[Tuple[float, float]]:
+    scaled_curve = []
+    for price, quantity in curve or []:
+        scaled_quantity = max(0.0, float(quantity or 0.0) * max(0.0, float(quantity_factor or 0.0)))
+        if scaled_quantity <= 1e-9:
+            continue
+        scaled_curve.append((float(price or 0.0) * float(price_factor or 1.0), scaled_quantity))
+    return sorted(scaled_curve, key=lambda item: item[0], reverse=descending)
+
+
+def _deterministic_signed_percentage(max_abs_pct: float, seed_material: str) -> float:
+    bounded_max = _safe_market_percentage(max_abs_pct, 0.0)
+    if bounded_max <= 0:
+        return 0.0
+    digest = hashlib.sha256(str(seed_material).encode("utf-8")).digest()
+    raw = int.from_bytes(digest[:8], "big") / float(1 << 64)
+    return ((raw * 2.0) - 1.0) * bounded_max
+
+
+def _compute_idm_synthetic_forecast_change(
+    config: dict,
+    session_id: int,
+    round_num: int,
+    idm_market_status: str = "off",
+    seed_override: Optional[str] = None,
+    execution_phase: str = "single",
+) -> dict:
+    market_cfg = (config or {}).get("market", {}) or {}
+    production_change_max_pct = _safe_market_percentage(market_cfg.get("idm_production_forecast_change_max_pct", 0.0), 0.0)
+    consumption_change_max_pct = _safe_market_percentage(market_cfg.get("idm_consumption_forecast_change_max_pct", 0.0), 0.0)
+    # Two-phase rounds run a dedicated IDM phase every round (including round 1), so the
+    # synthetic forecast change qualifies whenever execution_phase == "idm". For the
+    # legacy single-phase flow the gate stays `round_num > 1`.
+    execution_phase = str(execution_phase or "single").strip().lower()
+    phase_enables_idm = (int(round_num or 0) > 1 and execution_phase == "single") or execution_phase == "idm"
+    idm_enabled = phase_enables_idm and str(idm_market_status or "off").strip().lower() != "off"
+    env_seed = seed_override if seed_override is not None else ((config or {}).get("environment", {}) or {}).get("seed") or "preview"
+
+    change = {
+        "mode": "forecast_change",
+        "idm_active": bool(idm_enabled),
+        "active": bool(idm_enabled and (production_change_max_pct > 0 or consumption_change_max_pct > 0)),
+        "round_num": int(round_num or 0),
+        "production_change_max_pct": round(production_change_max_pct, 3),
+        "consumption_change_max_pct": round(consumption_change_max_pct, 3),
+        "production_change_pct": 0.0,
+        "consumption_change_pct": 0.0,
+    }
+
+    if not change["active"]:
+        return change
+
+    production_seed = f"idm-forecast-change|{env_seed}|session:{session_id}|round:{round_num}|production"
+    consumption_seed = f"idm-forecast-change|{env_seed}|session:{session_id}|round:{round_num}|consumption"
+
+    change["production_change_pct"] = round(
+        _deterministic_signed_percentage(production_change_max_pct, production_seed),
+        3,
+    )
+    change["consumption_change_pct"] = round(
+        _deterministic_signed_percentage(consumption_change_max_pct, consumption_seed),
+        3,
+    )
+    return change
+
+
+def _build_idm_synthetic_delta_curves(
+    base_supply: List[Tuple[float, float]],
+    base_demand: List[Tuple[float, float]],
+    market_cfg: dict,
+    production_change_pct: float,
+    consumption_change_pct: float,
+) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]], dict]:
+    supply_price_factor = max(0.0, 1.0 - (_safe_market_percentage(market_cfg.get("idm_price_discount_producer_pct", 10.0), 10.0) / 100.0))
+    demand_price_factor = max(0.0, 1.0 + (_safe_market_percentage(market_cfg.get("idm_price_markup_consumer_pct", 10.0), 10.0) / 100.0))
+
+    production_ratio = float(production_change_pct or 0.0) / 100.0
+    consumption_ratio = float(consumption_change_pct or 0.0) / 100.0
+
+    synthetic_supply: List[Tuple[float, float]] = []
+    synthetic_demand: List[Tuple[float, float]] = []
+
+    if production_ratio > 1e-9:
+        synthetic_supply.extend(_build_scaled_curve(base_supply, production_ratio, supply_price_factor, descending=False))
+    elif production_ratio < -1e-9:
+        synthetic_demand.extend(_build_scaled_curve(base_supply, abs(production_ratio), demand_price_factor, descending=True))
+
+    if consumption_ratio > 1e-9:
+        synthetic_demand.extend(_build_scaled_curve(base_demand, consumption_ratio, demand_price_factor, descending=True))
+    elif consumption_ratio < -1e-9:
+        synthetic_supply.extend(_build_scaled_curve(base_demand, abs(consumption_ratio), supply_price_factor, descending=False))
+
+    synthetic_supply = sorted(synthetic_supply, key=lambda item: item[0])
+    synthetic_demand = sorted(synthetic_demand, key=lambda item: item[0], reverse=True)
+
+    baseline_supply_mwh = _curve_total_volume(base_supply)
+    baseline_demand_mwh = _curve_total_volume(base_demand)
+    production_delta_mwh = baseline_supply_mwh * production_ratio
+    consumption_delta_mwh = baseline_demand_mwh * consumption_ratio
+
+    return synthetic_supply, synthetic_demand, {
+        "baseline_supply_mwh": round(baseline_supply_mwh, 3),
+        "baseline_demand_mwh": round(baseline_demand_mwh, 3),
+        "production_delta_mwh": round(production_delta_mwh, 3),
+        "consumption_delta_mwh": round(consumption_delta_mwh, 3),
+        "delta_supply_mwh": round(_curve_total_volume(synthetic_supply), 3),
+        "delta_demand_mwh": round(_curve_total_volume(synthetic_demand), 3),
+    }
+
+
+def _remaining_demand_curve_after_served(
+    demand_curve: List[Tuple[float, float]],
+    served_volume_mwh: float,
+) -> List[Tuple[float, float]]:
+    """Return the unmet tail of a descending demand curve after serving volume at its WTP order."""
+    remaining_to_serve = max(0.0, float(served_volume_mwh or 0.0))
+    leftover: List[Tuple[float, float]] = []
+
+    for price, quantity in sorted(list(demand_curve or []), key=lambda item: item[0], reverse=True):
+        quantity_value = max(0.0, float(quantity or 0.0))
+        if quantity_value <= 1e-9:
+            continue
+
+        served_here = min(quantity_value, remaining_to_serve)
+        remaining_to_serve = max(0.0, remaining_to_serve - served_here)
+        leftover_quantity = quantity_value - served_here
+        if leftover_quantity > 1e-9:
+            leftover.append((float(price), round(leftover_quantity, 3)))
+
+    return leftover
+
+
+def _serialize_curve_steps(curve: List[Tuple[float, float]]) -> List[dict]:
+    serialized = []
+    for price, quantity in curve or []:
+        quantity_value = max(0.0, float(quantity or 0.0))
+        if quantity_value <= 1e-9:
+            continue
+        serialized.append({
+            "price": round(float(price or 0.0), 3),
+            "volume": round(quantity_value, 3),
+        })
+    return serialized
+
+
+def _deserialize_curve_steps(payload) -> List[Tuple[float, float]]:
+    curve: List[Tuple[float, float]] = []
+    for item in payload or []:
+        if isinstance(item, dict):
+            price = item.get("price")
+            quantity = item.get("volume")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            price, quantity = item[0], item[1]
+        else:
+            continue
+
+        quantity_value = max(0.0, float(quantity or 0.0))
+        if quantity_value <= 1e-9:
+            continue
+        curve.append((float(price or 0.0), quantity_value))
+
+    return sorted(curve, key=lambda item: item[0], reverse=True)
+
+
+def _merge_demand_curves(curves: List[List[Tuple[float, float]]]) -> List[Tuple[float, float]]:
+    merged: List[Tuple[float, float]] = []
+    for curve in curves or []:
+        merged.extend(curve or [])
+    return sorted(merged, key=lambda item: item[0], reverse=True)
+
+
+def _compute_round_idm_synthetic_forecast_change_summary(
+    config: dict,
+    session_id: int,
+    round_num: int,
+    idm_market_status: str = "off",
+    seed_override: Optional[str] = None,
+    execution_phase: str = "single",
+) -> dict:
+    general_cfg = (config or {}).get("general", {}) or {}
+    round_span = max(1, int(general_cfg.get("round_span_hours", 6) or 6))
+    round_start_hour = max(0, (int(round_num or 1) - 1) * round_span)
+    round_end_hour = round_start_hour + round_span
+    start_time = general_cfg.get("start_time", "00:00")
+    fake_date = general_cfg.get("fake_date") or "2001-01-01"
+    env_seed = seed_override if seed_override is not None else ((config or {}).get("environment", {}) or {}).get("seed") or "preview"
+    market_cfg = (config or {}).get("market", {}) or {}
+
+    summary = {
+        **_compute_idm_synthetic_forecast_change(
+            config,
+            session_id,
+            round_num,
+            idm_market_status=idm_market_status,
+            seed_override=env_seed,
+            execution_phase=execution_phase,
+        ),
+        "round_start_hour": round_start_hour,
+        "round_end_hour": round_end_hour,
+        "hourly": [],
+        "round_totals": {
+            "baseline_supply_mwh": 0.0,
+            "baseline_demand_mwh": 0.0,
+            "production_delta_mwh": 0.0,
+            "consumption_delta_mwh": 0.0,
+            "delta_supply_mwh": 0.0,
+            "delta_demand_mwh": 0.0,
+        },
+    }
+
+    if not summary["active"]:
+        return summary
+
+    for hour_offset in range(round_span):
+        scenario_hour_idx = round_start_hour + hour_offset
+        hour_of_day = extract_hour_of_day(scenario_hour_idx, start_time)
+        month_of_year = extract_month(fake_date)
+        base_supply, base_demand = generate_curves_from_config(
+            config,
+            seed=env_seed,
+            hour_of_day=hour_of_day,
+            month_of_year=month_of_year,
+        )
+        synthetic_supply, synthetic_demand, delta_meta = _build_idm_synthetic_delta_curves(
+            base_supply,
+            base_demand,
+            market_cfg,
+            summary["production_change_pct"],
+            summary["consumption_change_pct"],
+        )
+        hourly_entry = {
+            "scenario_hour_idx": scenario_hour_idx,
+            "round_hour_offset": hour_offset,
+            "hour_of_day": hour_of_day,
+            "display_label": f"H{scenario_hour_idx} ({hour_of_day:02d}:00)",
+            **delta_meta,
+        }
+        summary["hourly"].append(hourly_entry)
+        for key in summary["round_totals"].keys():
+            summary["round_totals"][key] = round(summary["round_totals"][key] + float(delta_meta.get(key, 0.0) or 0.0), 3)
+
+    return summary
+
+
 def _get_device_auto_bid(devices_data, device_id: str):
     """Return auto_bid config dict if auto-bid is enabled for this device, else None."""
     if not isinstance(devices_data, list):
@@ -1033,7 +1676,8 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                            synthetic_supply: List[Tuple[float, float]],
                            config: dict, round_events: list = None,
                            battery_market_limits: Dict[str, dict] | None = None,
-                           hour_offset: int = 0) -> Tuple[List[Tuple[float, float]], List[dict]]:
+                           hour_offset: int = 0,
+                           player_zone_map: Dict[int, int] | None = None) -> Tuple[List[Tuple[float, float]], List[dict]]:
     """
     Merge player bids with synthetic supply curve for market clearing.
     Includes explicit-bid devices (A-E lots) and classic devices (implicit single bid at marginal cost).
@@ -1099,6 +1743,7 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                         'player_id': player_id,
                         'device_id': device_id,
                         'bid_label': 'AUTO_SELL',
+                        'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
                     })
                     print(f"[AUTO_BID] Player {player_id}, Device {device_id}: AUTO_SELL {max_discharge:.1f} MW @ {sell_threshold:.1f} ZAR/MWh")
                 continue
@@ -1141,7 +1786,8 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                             'quantity': quantity,
                             'player_id': player_id,
                             'device_id': device_id,
-                            'bid_label': bid_label
+                            'bid_label': bid_label,
+                            'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
                         })
                     elif quantity < 0:
                         # Negative delta: Generator buying back (reduce position)
@@ -1174,7 +1820,8 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                         'quantity': quantity,
                         'player_id': player_id,
                         'device_id': device_id,
-                        'bid_label': bid_label
+                        'bid_label': bid_label,
+                        'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
                     })
     
     # Sort supply_bids by price (merit order - ascending)
@@ -1185,7 +1832,10 @@ def build_supply_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
     
     # Synthetic supply is treated as pre-submitted and always participates in clearing.
     for price, quantity in synthetic_supply:
-        combined_supply.append((price, quantity))
+        quantity_value = float(quantity or 0.0)
+        if quantity_value <= 1e-9:
+            continue
+        combined_supply.append((price, quantity_value))
     print(f"[SUPPLY_DEBUG] hour_idx={hour_idx}: Added {len(synthetic_supply)} synthetic supply steps (total {sum(q for p,q in synthetic_supply):.1f} MW)")
     
     # Add sorted player bids
@@ -1209,7 +1859,8 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                            synthetic_demand: List[Tuple[float, float]],
                            config: dict, round_events: list = None,
                            battery_market_limits: Dict[str, dict] | None = None,
-                           hour_offset: int = 0) -> Tuple[List[Tuple[float, float]], List[dict]]:
+                           hour_offset: int = 0,
+                           player_zone_map: Dict[int, int] | None = None) -> Tuple[List[Tuple[float, float]], List[dict]]:
     """
     Merge player demand bids with synthetic demand curve for market clearing.
     Includes explicit-bid consumer devices (A-E lots with WTP) and classic consumer devices (implicit WTP).
@@ -1276,6 +1927,7 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                         'device_id': device_id,
                         'bid_label': 'AUTO_BUY_CHG',
                         'is_battery_charge': True,
+                        'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
                     })
                     print(f"[AUTO_BID] Player {player_id}, Device {device_id}: AUTO_BUY_CHG {max_charge:.1f} MW @ {buy_threshold:.1f} ZAR/MWh")
                 continue
@@ -1312,7 +1964,8 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                             'quantity': quantity,
                             'player_id': player_id,
                             'device_id': device_id,
-                            'bid_label': bid_label
+                            'bid_label': bid_label,
+                            'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
                         })
                     elif is_battery and quantity < 0:
                         quantity = min(
@@ -1329,7 +1982,8 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                             'player_id': player_id,
                             'device_id': device_id,
                             'bid_label': f"{bid_label}_CHG",
-                            'is_battery_charge': True
+                            'is_battery_charge': True,
+                            'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
                         })
                         print(f"[BATTERY_CHARGE] Player {player_id}, Device {device_id}, Lot {bid_label}: Charging {quantity:.1f} MW @ {price:.1f} ZAR/MWh")
                     elif is_generator and quantity < 0:
@@ -1340,7 +1994,8 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                             'player_id': player_id,
                             'device_id': device_id,
                             'bid_label': bid_label,
-                            'is_buyback': True  # Flag for tracking
+                            'is_buyback': True,  # Flag for tracking
+                            'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
                         })
                         print(f"[BUYBACK] Player {player_id}, Device {device_id}, Lot {bid_label}: Buying back {abs(quantity):.1f} MW @ {price:.1f} ZAR/MWh")
             elif is_consumer:
@@ -1363,7 +2018,31 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                         'quantity': quantity,
                         'player_id': player_id,
                         'device_id': device_id,
-                        'bid_label': bid_label
+                        'bid_label': bid_label,
+                        'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
+                    })
+            elif is_generator:
+                # Classic generator forecast in IDM delta rounds: negative = buy back
+                _gc_idx = hour_idx if hour_idx < len(device_forecast) else hour_offset
+                if not device_forecast or _gc_idx >= len(device_forecast):
+                    continue
+
+                quantity = float(device_forecast[_gc_idx])
+                if quantity < 0:
+                    price = (
+                        _get_single_bid_fallback_price(device, device_bids, _gc_idx, global_bidding_enabled)
+                        if use_single_bid_fallback
+                        else _get_default_device_market_price(device, quantity_hint=abs(quantity))
+                    )
+                    bid_label = bid_labels[0] if use_single_bid_fallback and bid_labels else 'CLASSIC'
+                    demand_bids.append({
+                        'price': price,
+                        'quantity': abs(quantity),
+                        'player_id': player_id,
+                        'device_id': device_id,
+                        'bid_label': bid_label,
+                        'is_buyback': True,
+                        'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
                     })
             elif is_battery:
                 # Classic battery forecast: negative = charging intent, positive = discharging
@@ -1391,7 +2070,8 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
                             'player_id': player_id,
                             'device_id': device_id,
                             'bid_label': bid_label,
-                            'is_battery_charge': True
+                            'is_battery_charge': True,
+                            'zone_id': int((player_zone_map or {}).get(int(player_id), 1)),
                         })
     
     # Sort demand_bids by price (descending - highest WTP first)
@@ -1407,7 +2087,10 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
     
     # Add synthetic demand steps
     for price, quantity in synthetic_demand:
-        combined_demand.append((price, quantity))
+        quantity_value = float(quantity or 0.0)
+        if quantity_value <= 1e-9:
+            continue
+        combined_demand.append((price, quantity_value))
     
     # Add sorted player demand bids
     for bid in demand_bids:
@@ -1419,6 +2102,147 @@ def build_demand_from_bids(player_forecasts: Dict[int, dict], hour_idx: int,
     return combined_demand, demand_bids
 
 
+def apply_supply_capacity_limits_to_bids(supply_bids: List[dict],
+                                         devices_cfg: List[dict] = None,
+                                         da_dispatch_this_hour: Dict[str, float] = None,
+                                         round_events: list = None,
+                                         player_type_by_player: Dict[int, str] = None,
+                                         shared_market_capacity_scales: Dict[str, float] = None,
+                                         allow_dispatch_above_capacity: bool = True) -> List[dict]:
+    """Annotate supply bids with `effective_quantity` after device-level capacity caps."""
+    if not isinstance(supply_bids, list) or not supply_bids:
+        return []
+
+    normalized_bids = []
+    devices_by_id = {
+        str(device.get('id')): device
+        for device in (devices_cfg or [])
+        if isinstance(device, dict) and device.get('id')
+    }
+    da_dispatch_map = da_dispatch_this_hour or {}
+    committed_by_device = {}
+    sorted_bids = sorted(supply_bids, key=lambda bid: float((bid or {}).get('price', 0.0) or 0.0))
+
+    def _player_key(player_id, device_id):
+        return (int(player_id), str(device_id))
+
+    def _lookup_da_dispatch(player_id, device_id):
+        device_key = str(device_id)
+        player_key = int(player_id)
+
+        nested = da_dispatch_map.get(player_key)
+        if isinstance(nested, dict):
+            return float(nested.get(device_key) or nested.get(str(device_key)) or 0.0)
+
+        tuple_value = da_dispatch_map.get((player_key, device_key))
+        if tuple_value is not None:
+            return float(tuple_value or 0.0)
+
+        return float(
+            da_dispatch_map.get(device_key)
+            or da_dispatch_map.get(str(device_key))
+            or 0.0
+        )
+
+    def _get_device_remaining_capacity(player_id, device_id):
+        if allow_dispatch_above_capacity or player_id is None or not device_id:
+            return None
+
+        device_key = str(device_id)
+        device = devices_by_id.get(device_key)
+        if not device:
+            return None
+
+        base_capacity = _get_scaled_device_capacity_mw(
+            device,
+            player_id=player_id,
+            player_type_by_player=player_type_by_player,
+            shared_market_capacity_scales=shared_market_capacity_scales,
+            fallback=float('inf'),
+        )
+
+        event_mult, event_add = get_device_event_modifiers(
+            device,
+            device.get('type', ''),
+            round_events,
+            player_id,
+            (player_type_by_player or {}).get(int(player_id))
+        )
+        max_capacity = max(0.0, (base_capacity * event_mult) + event_add)
+
+        if event_mult != 1.0 or event_add != 0.0:
+            print(f"[EVENT_CAPACITY] Device {device_key}: Base={base_capacity:.1f} MW, Event mult={event_mult}, add={event_add} → Available={max_capacity:.1f} MW")
+
+        available_capacity = max_capacity - _lookup_da_dispatch(player_id, device_key)
+        already_committed = float(committed_by_device.get(_player_key(player_id, device_key), 0.0) or 0.0)
+        return max(0.0, available_capacity - already_committed)
+
+    idx = 0
+    while idx < len(sorted_bids):
+        price = float((sorted_bids[idx] or {}).get('price', 0.0) or 0.0)
+        group_end = idx + 1
+        while group_end < len(sorted_bids) and abs(float((sorted_bids[group_end] or {}).get('price', 0.0) or 0.0) - price) < 1e-9:
+            group_end += 1
+
+        group_entries = sorted_bids[idx:group_end]
+        prepared_entries = []
+        raw_quantity_by_device = {}
+        remaining_capacity_by_device = {}
+
+        for bid in group_entries:
+            raw_quantity = max(0.0, float((bid or {}).get('quantity', 0.0) or 0.0))
+            entry = dict(bid or {})
+            entry['effective_quantity'] = raw_quantity
+            prepared_entries.append(entry)
+
+            player_id = entry.get('player_id')
+            device_id = entry.get('device_id')
+            if player_id is None or allow_dispatch_above_capacity or not device_id:
+                continue
+
+            key = _player_key(player_id, device_id)
+            raw_quantity_by_device[key] = float(raw_quantity_by_device.get(key, 0.0) or 0.0) + raw_quantity
+            if key not in remaining_capacity_by_device:
+                remaining_capacity_by_device[key] = _get_device_remaining_capacity(player_id, device_id)
+
+        if not allow_dispatch_above_capacity:
+            for key, total_raw_quantity in raw_quantity_by_device.items():
+                remaining_capacity = remaining_capacity_by_device.get(key)
+                if remaining_capacity is None or total_raw_quantity <= remaining_capacity + 1e-9:
+                    continue
+
+                _player_id, device_key = key
+                print(
+                    f"[CAPACITY_CAP] Device {device_key}: same-price offer group {total_raw_quantity:.1f} MW exceeds remaining capacity {remaining_capacity:.1f} MW, scaling tied bids pro-rata within the device"
+                )
+
+                effective_total = max(0.0, remaining_capacity)
+                device_entries = [
+                    entry for entry in prepared_entries
+                    if entry.get('player_id') is not None
+                    and _player_key(entry.get('player_id'), entry.get('device_id')) == key
+                ]
+                if not device_entries or total_raw_quantity <= 1e-9:
+                    continue
+
+                for entry in device_entries:
+                    raw_quantity = max(0.0, float(entry.get('quantity', 0.0) or 0.0))
+                    entry['effective_quantity'] = effective_total * (raw_quantity / total_raw_quantity)
+
+        normalized_bids.extend(prepared_entries)
+        for entry in prepared_entries:
+            player_id = entry.get('player_id')
+            device_id = entry.get('device_id')
+            if player_id is None or not device_id:
+                continue
+            key = _player_key(player_id, device_id)
+            committed_by_device[key] = float(committed_by_device.get(key, 0.0) or 0.0) + float(entry.get('effective_quantity', 0.0) or 0.0)
+
+        idx = group_end
+
+    return normalized_bids
+
+
 def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float, 
                        synthetic_supply: List[Tuple[float, float]], 
                        devices_cfg: List[dict] = None,
@@ -1426,7 +2250,7 @@ def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float,
                        round_events: list = None,
                        player_type_by_player: Dict[int, str] = None,
                        shared_market_capacity_scales: Dict[str, float] = None,
-                       allow_dispatch_above_capacity: bool = False,
+                       allow_dispatch_above_capacity: bool = True,
                        use_synthetic: bool = True) -> Dict[int, Dict[str, Dict[str, dict]]]:
     """
     Track which player bids were dispatched during market clearing.
@@ -1448,13 +2272,22 @@ def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float,
     """
     # Sort all supply (synthetic + bids) by price
     all_supply = []
+    effective_supply_bids = apply_supply_capacity_limits_to_bids(
+        supply_bids,
+        devices_cfg,
+        da_dispatch_this_hour,
+        round_events=round_events,
+        player_type_by_player=player_type_by_player,
+        shared_market_capacity_scales=shared_market_capacity_scales,
+        allow_dispatch_above_capacity=allow_dispatch_above_capacity,
+    )
     
     # Only add synthetic supply if explicitly requested (must match clearing behavior)
     if use_synthetic:
         all_supply = [(p, q, None, None, None) for p, q in synthetic_supply]  # (price, qty, player, device, label)
     
-    for bid in supply_bids:
-        all_supply.append((bid['price'], bid['quantity'], bid['player_id'], bid['device_id'], bid['bid_label']))
+    for bid in effective_supply_bids:
+        all_supply.append((bid['price'], bid.get('effective_quantity', bid['quantity']), bid['player_id'], bid['device_id'], bid['bid_label']))
     
     all_supply = sorted(all_supply, key=lambda x: x[0])
     
@@ -1477,81 +2310,72 @@ def track_bid_dispatch(supply_bids: List[dict], smp: float, volume: float,
             'smp': smp
         }
     
-    # Simulate dispatch
-    remaining_demand = volume
-    
-    # Track cumulative dispatch per device (across all lots) for capacity enforcement
-    device_cumulative_dispatch = {}
-    
-    for price, quantity, player_id, device_id, bid_label in all_supply:
-        if remaining_demand <= 0:
+    # Simulate dispatch using the same pro-rata price-group logic as clear_market.
+    remaining_demand = float(volume or 0.0)
+
+    idx = 0
+    while idx < len(all_supply):
+        if remaining_demand <= 1e-9:
             break
-        
+
+        price = float(all_supply[idx][0] or 0.0)
         if price > smp:
-            break  # Too expensive
-        
-        if player_id is None:
-            # Synthetic supply, skip tracking
-            dispatched = min(quantity, remaining_demand)
-            remaining_demand -= dispatched
+            break
+
+        group_end = idx + 1
+        while group_end < len(all_supply) and abs(float(all_supply[group_end][0] or 0.0) - price) < 1e-9:
+            group_end += 1
+
+        group_entries = all_supply[idx:group_end]
+        prepared_entries = []
+
+        for entry_idx, (_price, quantity, player_id, device_id, bid_label) in enumerate(group_entries):
+            raw_quantity = max(0.0, float(quantity or 0.0))
+            entry = {
+                'group_idx': entry_idx,
+                'price': price,
+                'player_id': player_id,
+                'device_id': device_id,
+                'bid_label': bid_label,
+                'raw_quantity': raw_quantity,
+                'effective_quantity': raw_quantity,
+            }
+            prepared_entries.append(entry)
+
+        group_total_effective = sum(float(entry['effective_quantity'] or 0.0) for entry in prepared_entries)
+        if group_total_effective <= 1e-9:
+            idx = group_end
             continue
-        
-        # Player bid - validate against device capacity before dispatch
-        effective_quantity = quantity
-        if devices_cfg:
-            device = next((d for d in devices_cfg if d.get('id') == device_id), None)
-            if device:
-                base_capacity = _get_scaled_device_capacity_mw(
-                    device,
-                    player_id=player_id,
-                    player_type_by_player=player_type_by_player,
-                    shared_market_capacity_scales=shared_market_capacity_scales,
-                    fallback=float('inf'),
-                )
-                
-                # Apply events to modify capacity (e.g. plant outage reduces capacity)
-                device_type = device.get('type', '')
-                event_mult, event_add = get_device_event_modifiers(
-                    device,
-                    device_type,
-                    round_events,
-                    player_id,
-                    (player_type_by_player or {}).get(int(player_id))
-                )
-                max_capacity = (base_capacity * event_mult) + event_add
-                max_capacity = max(0.0, max_capacity)  # Capacity can't be negative
-                
-                if event_mult != 1.0 or event_add != 0.0:
-                    print(f"[EVENT_CAPACITY] Device {device_id}: Base={base_capacity:.1f} MW, Event mult={event_mult}, add={event_add} → Available={max_capacity:.1f} MW")
-                
-                # NEW: Cross-round capacity check (DA + ID <= capacity)
-                da_dispatched = 0.0
-                if da_dispatch_this_hour and device_id in da_dispatch_this_hour:
-                    da_dispatched = da_dispatch_this_hour[device_id]
-                
-                # Available capacity for ID = total capacity - DA dispatch
-                available_capacity = max_capacity - da_dispatched
-                
-                # BUGFIX: Track cumulative dispatch for this device across all lots
-                already_dispatched_this_hour = device_cumulative_dispatch.get(device_id, 0.0)
-                remaining_capacity = available_capacity - already_dispatched_this_hour
-                
-                if (not allow_dispatch_above_capacity) and quantity > remaining_capacity:
-                    if already_dispatched_this_hour > 0:
-                        print(f"[CAPACITY_CAP] Device {device_id} Lot {bid_label}: Bid {quantity:.1f} MW + already dispatched {already_dispatched_this_hour:.1f} MW exceeds available capacity {available_capacity:.1f} MW, capping to {remaining_capacity:.1f} MW")
-                    else:
-                        print(f"[CAPACITY_CAP] Device {device_id} Lot {bid_label}: Bid {quantity:.1f} MW exceeds available capacity {available_capacity:.1f} MW (Total: {max_capacity:.1f}, DA: {da_dispatched:.1f}), capping to available")
-                    effective_quantity = max(0, remaining_capacity)  # Can't dispatch negative
-        
-        dispatched = min(effective_quantity, remaining_demand)
-        remaining_demand -= dispatched
-        
-        # Update cumulative dispatch tracking for this device
-        if device_id not in device_cumulative_dispatch:
-            device_cumulative_dispatch[device_id] = 0.0
-        device_cumulative_dispatch[device_id] += dispatched
-        
-        dispatch_tracking[player_id][device_id][bid_label]['mw_dispatched'] = round(dispatched, 3)
+
+        if group_total_effective <= remaining_demand + 1e-9:
+            dispatch_scale = 1.0
+            group_dispatched_total = group_total_effective
+        else:
+            dispatch_scale = remaining_demand / group_total_effective
+            group_dispatched_total = remaining_demand
+
+        dispatch_by_device = {}
+        dispatched_so_far = 0.0
+        for entry_idx, entry in enumerate(prepared_entries):
+            dispatched = float(entry['effective_quantity'] or 0.0) * dispatch_scale
+            if entry_idx == len(prepared_entries) - 1:
+                dispatched = max(0.0, group_dispatched_total - dispatched_so_far)
+            entry['dispatched'] = max(0.0, dispatched)
+            dispatched_so_far += entry['dispatched']
+
+            if entry['player_id'] is None:
+                continue
+
+            dispatch_tracking[entry['player_id']][entry['device_id']][entry['bid_label']]['mw_dispatched'] = round(entry['dispatched'], 3)
+            if entry['device_id']:
+                dispatch_by_device[entry['device_id']] = float(dispatch_by_device.get(entry['device_id'], 0.0) or 0.0) + entry['dispatched']
+
+        remaining_demand = max(
+            0.0,
+            remaining_demand - sum(float(entry.get('dispatched', 0.0) or 0.0) for entry in prepared_entries)
+        )
+
+        idx = group_end
     
     return dispatch_tracking
 
@@ -1894,6 +2718,7 @@ def _get_mix_zone_shares(mix: dict | None, zones: int) -> List[float]:
 
 def _build_player_zone_and_role_maps(config: dict, players: List[int], player_type_by_player: Dict[int, str]) -> Tuple[Dict[int, int], Dict[int, str]]:
     zones = max(1, int((config.get("grid") or {}).get("zones", 1) or 1))
+    zonal_v1_enabled = _is_zonal_pricing_v1_enabled(config)
     legacy_zone = int((config.get("general") or {}).get("player_zone", 1) or 1)
     player_types = {str(pt.get("id")): pt for pt in (config.get("player_types") or []) if isinstance(pt, dict) and pt.get("id") is not None}
     device_map = {str(d.get("id")): d for d in (config.get("devices") or []) if isinstance(d, dict) and d.get("id") is not None}
@@ -1901,12 +2726,12 @@ def _build_player_zone_and_role_maps(config: dict, players: List[int], player_ty
     role_map: Dict[int, str] = {}
     for pid in players:
         pt = player_types.get(str(player_type_by_player.get(pid)))
-        zone = legacy_zone
+        zone = 1 if zonal_v1_enabled else legacy_zone
         if isinstance(pt, dict) and pt.get("zone") is not None:
             try:
                 zone = int(pt.get("zone"))
             except Exception:
-                zone = legacy_zone
+                zone = 1 if zonal_v1_enabled else legacy_zone
         zone = max(1, min(zones, zone))
         zone_map[int(pid)] = zone
 
@@ -1993,6 +2818,181 @@ def _allocate_zone_curtailment(zone_producers: Dict[int, float], required_curtai
 
 def _compute_interzonal_round_outputs(hourly_results: List[dict], per_player: Dict[int, dict], config: dict, players: List[int], player_type_by_player: Dict[int, str]) -> Tuple[List[dict], List[dict], Dict[int, dict], Dict[int, float], Dict[int, float], Dict[int, float], List[List[float]], List[List[float]]]:
     zones = max(1, int((config.get("grid") or {}).get("zones", 1) or 1))
+    if _is_zonal_pricing_v1_enabled(config) and zones > 1:
+        settlement = (config.get("grid") or {}).get("network_settlement") or {}
+        shortfall_mode = str(settlement.get("shortfall_price_mode") or "smp_multiplier").strip().lower()
+        shortfall_value = float(settlement.get("shortfall_price_value", 2.0) or 2.0)
+        player_zone_map, _player_role_map = _build_player_zone_and_role_maps(config, players, player_type_by_player)
+
+        zone_agg = {
+            idx: {
+                "zone_id": idx + 1,
+                "local_generation_mwh": 0.0,
+                "local_demand_mwh": 0.0,
+                "imports_mwh": 0.0,
+                "exports_mwh": 0.0,
+                "losses_mwh": 0.0,
+                "unserved_demand_mwh": 0.0,
+                "extra_cost_total_zar": 0.0,
+                "imports_needed": False,
+                "had_shortfall": False,
+            }
+            for idx in range(zones)
+        }
+        link_agg: Dict[Tuple[int, int], dict] = {}
+        per_player_grid_cost = {int(pid): 0.0 for pid in players}
+        per_player_curtailed_mwh = {int(pid): 0.0 for pid in players}
+        per_player_lost_revenue = {int(pid): 0.0 for pid in players}
+        zone_shortfall_by_hour: List[List[float]] = []
+        zone_shortfall_price_by_hour: List[List[float]] = []
+
+        for hour_result in hourly_results or []:
+            zone_supply = list(hour_result.get("zone_supply_volume_mwh") or hour_result.get("zone_cleared_supply_mwh") or [0.0] * zones)
+            zone_demand = list(hour_result.get("zone_demand_volume_mwh") or hour_result.get("zone_cleared_demand_mwh") or [0.0] * zones)
+            zone_net = list(hour_result.get("zone_net_position_mwh") or [0.0] * zones)
+            zone_shortfalls = list(hour_result.get("residual_unserved_demand_by_zone") or [0.0] * zones)
+            hour_links = list(hour_result.get("hourly_link_results") or [])
+            system_price = float(hour_result.get("system_price_zar_per_mwh", hour_result.get("smp", 0.0)) or 0.0)
+
+            if shortfall_mode in {"fixed_price", "value_of_lost_load"}:
+                shortfall_price = shortfall_value
+            else:
+                shortfall_price = system_price * shortfall_value
+
+            zone_shortfall_by_hour.append([round(float(value or 0.0), 3) for value in zone_shortfalls])
+            zone_shortfall_price_by_hour.append([
+                round(shortfall_price if float(zone_shortfalls[idx] or 0.0) > 1e-9 else 0.0, 2)
+                for idx in range(zones)
+            ])
+
+            for zone_idx in range(zones):
+                local_generation = max(0.0, float(zone_supply[zone_idx] if zone_idx < len(zone_supply) else 0.0) or 0.0)
+                local_demand = max(0.0, float(zone_demand[zone_idx] if zone_idx < len(zone_demand) else 0.0) or 0.0)
+                net_position = float(zone_net[zone_idx] if zone_idx < len(zone_net) else 0.0) or 0.0
+                shortage = max(0.0, float(zone_shortfalls[zone_idx] if zone_idx < len(zone_shortfalls) else 0.0) or 0.0)
+                extra_cost = shortage * shortfall_price
+
+                zone_agg[zone_idx]["local_generation_mwh"] += local_generation
+                zone_agg[zone_idx]["local_demand_mwh"] += local_demand
+                zone_agg[zone_idx]["imports_mwh"] += max(0.0, -net_position)
+                zone_agg[zone_idx]["exports_mwh"] += max(0.0, net_position)
+                zone_agg[zone_idx]["unserved_demand_mwh"] += shortage
+                zone_agg[zone_idx]["extra_cost_total_zar"] += extra_cost
+                zone_agg[zone_idx]["imports_needed"] = zone_agg[zone_idx]["imports_needed"] or (net_position < -1e-9)
+                zone_agg[zone_idx]["had_shortfall"] = zone_agg[zone_idx]["had_shortfall"] or (shortage > 1e-9)
+
+            for link_entry in hour_links:
+                try:
+                    from_zone = int(link_entry.get("from_zone", 0))
+                    to_zone = int(link_entry.get("to_zone", 0))
+                except Exception:
+                    continue
+                if from_zone <= 0 or to_zone <= 0:
+                    continue
+                key = (from_zone, to_zone)
+                aggregate = link_agg.setdefault(key, {
+                    "from_zone": from_zone,
+                    "to_zone": to_zone,
+                    "atc_mwh": float(link_entry.get("atc_mwh", 0.0) or 0.0),
+                    "flow_mwh": 0.0,
+                    "flow_received_mwh": 0.0,
+                    "losses_mwh": 0.0,
+                    "congestion_rent_zar": 0.0,
+                    "losses_value_zar": 0.0,
+                    "binding": False,
+                    "max_utilization_pct": 0.0,
+                })
+                aggregate["flow_mwh"] += float(link_entry.get("flow_mwh", 0.0) or 0.0)
+                aggregate["flow_received_mwh"] += float(link_entry.get("flow_received_mwh", 0.0) or 0.0)
+                aggregate["losses_mwh"] += float(link_entry.get("losses_mwh", 0.0) or 0.0)
+                aggregate["congestion_rent_zar"] += float(link_entry.get("congestion_rent_zar", 0.0) or 0.0)
+                aggregate["losses_value_zar"] += float(link_entry.get("losses_value_zar", 0.0) or 0.0)
+                aggregate["binding"] = aggregate["binding"] or bool(link_entry.get("binding", False))
+                aggregate["max_utilization_pct"] = max(aggregate["max_utilization_pct"], float(link_entry.get("utilization_pct", 0.0) or 0.0))
+                if 1 <= from_zone <= zones:
+                    zone_agg[from_zone - 1]["losses_mwh"] += float(link_entry.get("losses_mwh", 0.0) or 0.0)
+
+        zone_results = []
+        for zone_idx in range(zones):
+            aggregate = zone_agg[zone_idx]
+            demand = aggregate["local_demand_mwh"]
+            coverage_local_pct = (aggregate["local_generation_mwh"] / demand * 100.0) if demand > 1e-9 else 100.0
+            coverage_total_pct = ((demand - aggregate["unserved_demand_mwh"]) / demand * 100.0) if demand > 1e-9 else 100.0
+            if aggregate["had_shortfall"]:
+                status = "supply_shortfall"
+            elif aggregate["imports_needed"]:
+                status = "grid_supported_supply"
+            else:
+                status = "local_supply_sufficient"
+            zone_results.append({
+                "zone_id": zone_idx + 1,
+                "status": status,
+                "local_generation_mwh": round(aggregate["local_generation_mwh"], 3),
+                "local_demand_mwh": round(aggregate["local_demand_mwh"], 3),
+                "imports_mwh": round(aggregate["imports_mwh"], 3),
+                "exports_mwh": round(aggregate["exports_mwh"], 3),
+                "losses_mwh": round(aggregate["losses_mwh"], 3),
+                "unserved_demand_mwh": round(aggregate["unserved_demand_mwh"], 3),
+                "extra_cost_total_zar": round(aggregate["extra_cost_total_zar"], 0),
+                "extra_cost_per_mwh_zar": round((aggregate["extra_cost_total_zar"] / demand) if demand > 1e-9 else 0.0, 2),
+                "coverage_local_pct": round(coverage_local_pct, 1),
+                "coverage_total_pct": round(coverage_total_pct, 1),
+            })
+
+        link_results = []
+        for (_from_zone, _to_zone), link_entry in sorted(link_agg.items()):
+            link_results.append({
+                "from_zone": link_entry["from_zone"],
+                "to_zone": link_entry["to_zone"],
+                "atc_mwh": round(link_entry["atc_mwh"], 3),
+                "flow_mwh": round(link_entry["flow_mwh"], 3),
+                "flow_received_mwh": round(link_entry["flow_received_mwh"], 3),
+                "utilization_pct": round(link_entry["max_utilization_pct"], 1),
+                "losses_mwh": round(link_entry["losses_mwh"], 3),
+                "binding": bool(link_entry["binding"]),
+                "congestion_rent_zar": round(link_entry["congestion_rent_zar"], 2),
+                "losses_value_zar": round(link_entry["losses_value_zar"], 2),
+            })
+
+        zone_result_map = {entry["zone_id"]: entry for entry in zone_results}
+        player_zone_info_by_player: Dict[int, dict] = {}
+        for pid in players:
+            zone_id = int(player_zone_map.get(pid, 1))
+            zone_info = zone_result_map.get(zone_id, {})
+            related_links = []
+            for link in link_results:
+                if int(link.get("from_zone", 0)) == zone_id:
+                    related_links.append({
+                        "peer_zone": int(link.get("to_zone", 0)),
+                        "flow_mwh": round(float(link.get("flow_mwh", 0.0) or 0.0), 3),
+                        "atc_mwh": round(float(link.get("atc_mwh", 0.0) or 0.0), 3),
+                        "utilization_pct": round(float(link.get("utilization_pct", 0.0) or 0.0), 1),
+                        "direction": "out",
+                    })
+                elif int(link.get("to_zone", 0)) == zone_id:
+                    related_links.append({
+                        "peer_zone": int(link.get("from_zone", 0)),
+                        "flow_mwh": round(float(link.get("flow_mwh", 0.0) or 0.0), 3),
+                        "atc_mwh": round(float(link.get("atc_mwh", 0.0) or 0.0), 3),
+                        "utilization_pct": round(float(link.get("utilization_pct", 0.0) or 0.0), 1),
+                        "direction": "in",
+                    })
+            player_zone_info_by_player[int(pid)] = {
+                "zone_id": zone_id,
+                "zone_status": zone_info.get("status", "local_supply_sufficient"),
+                "zone_local_generation_mwh": zone_info.get("local_generation_mwh", 0.0),
+                "zone_local_demand_mwh": zone_info.get("local_demand_mwh", 0.0),
+                "zone_imports_mwh": zone_info.get("imports_mwh", 0.0),
+                "zone_exports_mwh": zone_info.get("exports_mwh", 0.0),
+                "zone_unserved_demand_mwh": zone_info.get("unserved_demand_mwh", 0.0),
+                "zone_extra_cost_total_zar": zone_info.get("extra_cost_total_zar", 0.0),
+                "zone_extra_cost_per_mwh_zar": zone_info.get("extra_cost_per_mwh_zar", 0.0),
+                "zone_coverage_total_pct": zone_info.get("coverage_total_pct", 100.0),
+                "zone_links": related_links,
+            }
+
+        return zone_results, link_results, player_zone_info_by_player, per_player_grid_cost, per_player_curtailed_mwh, per_player_lost_revenue, zone_shortfall_by_hour, zone_shortfall_price_by_hour
+
     atc = (config.get("grid") or {}).get("atc") or []
     if not atc or len(atc) != zones:
         atc = [[0.0 if i == j else 0.0 for j in range(zones)] for i in range(zones)]
@@ -2066,8 +3066,17 @@ def _compute_interzonal_round_outputs(hourly_results: List[dict], per_player: Di
                 zone_player_generation[zone_idx] += dispatched
                 zone_player_producers[zone_idx][int(pid)] = dispatched
 
-        synthetic_generation_total = max(0.0, total_volume - sum(zone_player_generation))
-        synthetic_demand_total = max(0.0, total_volume - sum(zone_player_demand))
+        # In later IDM rounds player-side hourly dispatch can already include the DA baseline,
+        # while hour_result.volume only carries the current-round traded slice. Balance the
+        # network model against the physically effective total so DA baseline positions do not
+        # show up as artificial grid curtailment.
+        physical_total_volume = max(
+            total_volume,
+            sum(zone_player_generation),
+            sum(zone_player_demand),
+        )
+        synthetic_generation_total = max(0.0, physical_total_volume - sum(zone_player_generation))
+        synthetic_demand_total = max(0.0, physical_total_volume - sum(zone_player_demand))
 
         zone_generation = [zone_player_generation[idx] + synthetic_generation_total * gen_shares[idx] for idx in range(zones)]
         zone_demand = [zone_player_demand[idx] + synthetic_demand_total * demand_shares[idx] for idx in range(zones)]
@@ -2328,7 +3337,7 @@ def generate_device_baseline(device: dict, player_count: int, hour: int, start_t
     return 0.0
 
 
-def run_round(session_id: int, round_num: int, players: List[int], forecasts: Dict[int, dict], config: dict, mode: str = "isolated_per_player", seed: Optional[str] = None) -> dict:
+def run_round(session_id: int, round_num: int, players: List[int], forecasts: Dict[int, dict], config: dict, mode: str = "isolated_per_player", seed: Optional[str] = None, execution_phase: str = "single", intra_round_baseline: Optional[dict] = None, seed_battery_soc_state: Optional[dict] = None) -> dict:
     """
     Compute basic market results for a round with hourly market clearing.
     
@@ -2338,22 +3347,37 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     - Round 2+: DAM and/or IDM clear round hours (6-11, 12-17, etc.) based on markets config
     - Each clearing uses ABSOLUTE bid values (not deltas)
     - Results stored separately: dam_bid_dispatch (DAM) + bid_dispatch (IDM)
-    
+
+    Two-phase rounds (execution_phase != "single"):
+    - "dam": absolute DAM clearing for this round's span; events and IDM forecast
+      changes are suppressed; Tag-1 expansion is bypassed. Result is provisional.
+    - "idm": delta clearing against the SAME round's DAM phase. The baseline
+      (forecasts/bids/result) is supplied via ``intra_round_baseline`` and the
+      battery SoC is seeded from ``seed_battery_soc_state`` (DAM phase end state),
+      so the round consumes one shared battery budget across both phases.
+    - "single" (default): legacy behaviour, byte-for-byte unchanged.
+
     Args:
         forecasts: Dict of {player_id: forecast_data}
                   forecast_data can be:
                     - List[float] (legacy: quantity-only)
                     - Dict with 'hours' and optional 'bids' keys
-    
+
     Returns:
         Dict with smp, volume, round_kpis, hourly_results, and optionally:
         - dam_bid_dispatch, dam_hourly_results, dam_device_hourly_details (DAM)
         - bid_dispatch, hourly_results, device_hourly_details (IDM)
     """
+    # Two-phase execution phase: normalize defensively. Unknown -> "single" (legacy).
+    execution_phase = str(execution_phase or "single").strip().lower()
+    if execution_phase not in ("single", "dam", "idm"):
+        execution_phase = "single"
+    is_dam_phase = execution_phase == "dam"
+    is_idm_phase = execution_phase == "idm"
     general_cfg = config.get("general", {})
     allow_dispatch_above_capacity = _normalize_boolean_flag(
         general_cfg.get("allow_dispatch_above_capacity"),
-        False,
+        True,
     )
     balancing_cfg = config.get("balancing") or {}
     balancing_price_mode = str(balancing_cfg.get("price_mode", "absolute") or "absolute").strip().lower()
@@ -2386,6 +3410,11 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 player_type_by_player[int(sel.user_id)] = str(sel.type_id)
     except Exception:
         player_type_by_player = {}
+    zonal_pricing_v1_enabled = _is_zonal_pricing_v1_enabled(config)
+    configured_zones = max(1, int((config.get("grid") or {}).get("zones", 1) or 1))
+    player_zone_map_for_round, _player_role_map_for_round = _build_player_zone_and_role_maps(config, players, player_type_by_player)
+    generator_zone_shares = _get_mix_zone_shares((config.get("environment") or {}).get("groups") or (config.get("market") or {}).get("generator_mix"), configured_zones)
+    demand_zone_shares = _get_mix_zone_shares((config.get("market") or {}).get("consumer_mix"), configured_zones)
     shared_market_capacity_scales = _load_shared_market_capacity_scales(session_id, mode)
     span = int(general_cfg.get("round_span_hours", 6))
     round_span = span  # Save original round_span for display
@@ -2491,7 +3520,16 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     display_span = round_span
     
     # TAG 1 SONDERREGEL: Round 1 behavior depends on day_1_baseline setting
-    if round_num == 1:
+    if execution_phase != "single":
+        # Two-phase rounds: each phase clears over the round's own span.
+        # No Tag-1 expansion and no gate-window remapping; DAM and IDM phases
+        # both operate on the same display hours for this round.
+        display_base_idx = (round_num - 1) * round_span
+        display_span = round_span
+        clearing_base_idx = display_base_idx
+        clearing_span = round_span
+        print(f"[TWO_PHASE] Round {round_num} phase={execution_phase}: clearing/display hours {display_base_idx}-{display_base_idx+display_span-1}")
+    elif round_num == 1:
         # Calculate hours until end of day 1 (24:00)
         hours_in_day_1 = 24 - start_hour
         
@@ -2594,6 +3632,21 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         or (round_num > 1 and dam_market_status == "on" and idm_market_status == "off")
     )
     id_delta_round = not absolute_clearing_round
+
+    # Two-phase override: the phase, not round heuristics, decides the clearing kind.
+    # DAM phase = absolute clearing; IDM phase = delta clearing vs the same round's DAM.
+    if is_dam_phase:
+        absolute_clearing_round = True
+        id_delta_round = False
+    elif is_idm_phase:
+        absolute_clearing_round = False
+        id_delta_round = True
+
+    # Delta-settlement context: a round that settles incremental IDM trades against a
+    # DA baseline. Legacy proxy is `round_num > 1 and id_delta_round`; the two-phase IDM
+    # phase qualifies even in round 1. For execution_phase=="single" this reduces exactly
+    # to the legacy condition, so single-phase behaviour is unchanged.
+    emit_idm_settlement = id_delta_round and (round_num > 1 or is_idm_phase)
     
     # SAWEM Delta-based Clearing: Load DA baseline for ID rounds
     # Also needed for Round 1 if day_1_baseline is Zero or Preset
@@ -2603,6 +3656,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     baseline_lookup_trace = None
     da_smp = None
     da_result_data = None
+    da_hourly_results = []
+    synthetic_demand_carryover_by_hour = {}
     
     # Day 1 Baseline: Zero or Preset modes require baseline before Round 1
     if round_num == 1 and baseline_mode in ["zero", "preset"]:
@@ -2656,7 +3711,40 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             da_smp = 400.0  # Placeholder
             print(f"[DAM_BASELINE] Preset baseline: Generated DAM offerings from device capacities")
     
-    if round_num > 1 and Forecast is not None:
+    if is_idm_phase and isinstance(intra_round_baseline, dict):
+        # TWO-PHASE IDM: the DA baseline is the SAME round's DAM phase, injected by
+        # the scheduler from the DAM PhaseResult. No previous-round DB lookup.
+        da_baseline_forecasts = dict(intra_round_baseline.get('forecasts') or {})
+        da_baseline_bids = dict(intra_round_baseline.get('bids') or {})
+        da_baseline_dispatch = dict(intra_round_baseline.get('dispatch') or {})
+        synthetic_demand_carryover_by_hour = dict(intra_round_baseline.get('synthetic_demand_carryover_by_hour') or {})
+        da_result_data = intra_round_baseline.get('result_data') or None
+        _injected_smp = intra_round_baseline.get('smp')
+        da_smp = float(_injected_smp) if _injected_smp is not None else None
+        da_hourly_results = intra_round_baseline.get('hourly_results') or (
+            (da_result_data or {}).get('dam_hourly_results', (da_result_data or {}).get('hourly_results', []))
+            if isinstance(da_result_data, dict) else []
+        )
+        if not synthetic_demand_carryover_by_hour and isinstance(da_hourly_results, list):
+            for hour_row in da_hourly_results:
+                if not isinstance(hour_row, dict):
+                    continue
+                curve = hour_row.get('unserved_synthetic_demand_curve') or []
+                curve_by_zone = hour_row.get('unserved_synthetic_demand_curve_by_zone') or []
+                if curve or any(zone_curve for zone_curve in curve_by_zone):
+                    scenario_hour_idx = int(hour_row.get('scenario_hour_idx', hour_row.get('hour_idx', 0)) or 0)
+                    synthetic_demand_carryover_by_hour[scenario_hour_idx] = {
+                        'curve': curve,
+                        'curve_by_zone': curve_by_zone,
+                    }
+        baseline_lookup_trace = {
+            'source_round': round_num,
+            'source_session_id': session_id,
+            'players_found': list(da_baseline_dispatch.keys()),
+            'lookup_method': 'intra_round_dam_phase',
+        }
+        print(f"[TWO_PHASE] IDM phase round {round_num}: using intra-round DAM baseline for {len(da_baseline_forecasts)} players, DA SMP={da_smp}")
+    elif round_num > 1 and Forecast is not None:
         # Load DA baseline deterministically per player (latest marked baseline)
         try:
             da_forecasts = Forecast.query.filter_by(
@@ -2834,6 +3922,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 if latest_result and latest_result.data:
                     da_result_data = latest_result.data or {}
                     da_smp = float(da_result_data.get('smp', 0))
+                    da_hourly_results = da_result_data.get('dam_hourly_results', da_result_data.get('hourly_results', [])) or []
                     baseline_lookup_trace = {
                         'source_round': latest_baseline_round,
                         'source_session_id': session_id,
@@ -3166,6 +4255,27 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
 
         return None
 
+    def _get_da_delivery_price_for_player(pid, target_hour_idx, target_hour_offset):
+        row = _find_dispatch_row(da_hourly_results, target_hour_idx, target_hour_offset)
+        if isinstance(row, dict):
+            zone_prices = row.get('zone_prices') or []
+            zone_id = int(player_zone_map_for_round.get(int(pid), 1) or 1)
+            zone_idx = max(0, zone_id - 1)
+            if zone_idx < len(zone_prices):
+                try:
+                    return float(zone_prices[zone_idx] or 0.0)
+                except Exception:
+                    pass
+            for key in ('system_price_zar_per_mwh', 'smp'):
+                try:
+                    if row.get(key) is not None:
+                        return float(row.get(key) or 0.0)
+                except Exception:
+                    continue
+        if da_smp is not None:
+            return float(da_smp or 0.0)
+        return 0.0
+
     def _find_device_hour_row(rows, target_hour_idx, target_hour_offset):
         if not isinstance(rows, list):
             return None
@@ -3279,7 +4389,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             'dispatch_row': row,
                         })
 
-                if round_num > 1 and id_delta_round:
+                if emit_idm_settlement:
                     da_dispatch = _get_da_player_dispatch_map(pid)
                     for device_id, lots in da_dispatch.items():
                         device_cfg = device_map_local.get(str(device_id)) or {}
@@ -3523,7 +4633,11 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     print(f"[HOURLY_DEBUG] Engine started: enable_bidding={enable_bidding}")
     
     # Apply only events active for this round
-    round_events = select_events_for_round(config.get("events", []), round_num)
+    # Two-phase rounds: events act ONLY in the IDM phase; the DAM phase is event-free.
+    if is_dam_phase:
+        round_events = []
+    else:
+        round_events = select_events_for_round(config.get("events", []), round_num)
 
     def _is_load_device(device_cfg: dict) -> bool:
         device_type = (device_cfg.get('type') or '').lower()
@@ -3581,8 +4695,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     
     # NEW: Per-device hourly tracking for deep dive
     per_device_hourly_bids = {}  # {device_id: [{hour, lot_a_offered, lot_a_dispatched, ...}]}
-    per_device_hourly_co2 = {}  # {device_id: [co2_kg per hour]}
-    per_device_hourly_balancing = {}  # {device_id: [{hour, imbalance_mwh, cost}]}
+    per_device_hourly_co2 = {}  # {device_id: [{player_id, co2_kg, ...}]}
+    per_device_hourly_balancing = {}  # {device_id: [{player_id, hour, imbalance_mwh, cost}]}
     
     # Per-player aggregators
     per_player_planned = {pid: 0.0 for pid in players}
@@ -3694,7 +4808,20 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
 
     # P1.3: Load final SoC from previous round so energy carries across rounds.
     # We try to find any result stored for round (round_num - 1) in this session.
-    if round_num > 1 and battery_soc_state:
+    #
+    # Two-phase rounds share ONE battery budget across both phases:
+    # - IDM phase seeds from the DAM phase end SoC of the SAME round (injected via
+    #   seed_battery_soc_state), so the round never consumes the battery twice.
+    # - DAM phase (and single-phase) seed from the previous round's final Result.
+    if is_idm_phase and isinstance(seed_battery_soc_state, dict) and battery_soc_state:
+        for _dev_id, _end in seed_battery_soc_state.items():
+            if _dev_id in battery_soc_state and isinstance(_end, dict):
+                _soc_prev = float(_end.get('soc_mwh', battery_soc_state[_dev_id]['soc_mwh']))
+                _cap = battery_soc_state[_dev_id]['capacity_mwh']
+                _min_soc = battery_soc_state[_dev_id]['min_soc_mwh']
+                battery_soc_state[_dev_id]['soc_mwh'] = max(_min_soc, min(_cap, _soc_prev))
+                print(f"[BATTERY_SOC] Round {round_num} IDM phase: device {_dev_id} seeded from DAM phase SoC: {_soc_prev:.1f} MWh ({_soc_prev/_cap*100:.1f}%)")
+    elif round_num > 1 and battery_soc_state:
         try:
             from app.models import Result as _Result
             _prev = _Result.query.filter_by(
@@ -3717,6 +4844,17 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     except Exception:
         noise_pct = 5.0
     frac = max(0.0, min(1.0, noise_pct / 100.0))
+
+    idm_synthetic_forecast_change = _compute_round_idm_synthetic_forecast_change_summary(
+        config,
+        session_id,
+        round_num,
+        # Two-phase: the IDM synthetic forecast change exists only in the IDM phase.
+        # Force "off" for the DAM phase so it produces a neutral (inactive) summary.
+        idm_market_status=("off" if is_dam_phase else idm_market_status),
+        seed_override=seed,
+        execution_phase=execution_phase,
+    )
     
     # FORENSIC: Initialize tracking structures
     hour_reconciliation_data = []  # Track supply/demand balance per hour
@@ -3740,15 +4878,11 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         }
         
         # Generate supply/demand curves with device-specific hourly and seasonal profiles
-        # Split capacity between DAM and IDM based on market config
+        # DAM uses the full baseline curves. IDM uses only the synthetic forecast delta.
         market_cfg = config.get("market", {})
-        dam_capacity_pct = float(market_cfg.get("dam_synthetic_capacity_pct", 90.0))
-        idm_capacity_pct = float(market_cfg.get("idm_synthetic_capacity_pct", 10.0))
-        idm_price_discount_producer = float(market_cfg.get("idm_price_discount_producer_pct", 10.0))
-        idm_price_markup_consumer = float(market_cfg.get("idm_price_markup_consumer_pct", 10.0))
         
         # Determine if this is DAM or IDM clearing
-        is_dam_clearing = absolute_clearing_round
+        is_dam_clearing = absolute_clearing_round or (round_num == 1 and execution_phase == "single")
         is_gate_window_hour = (clearing_base_idx <= hour_idx < clearing_base_idx + clearing_span)
         # Product rule: in active rounds, display hours are always cleared.
         # Gate window only determines which updated offers are accepted at gate close.
@@ -3762,29 +4896,63 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             month_of_year=month
         )
         
-        # Apply DAM/IDM split and price adjustment
+        # Apply DAM baseline or IDM synthetic forecast delta
         if is_dam_clearing:
-            # DAM clearing → use DAM capacity/prices
-            capacity_factor = dam_capacity_pct / 100.0
-            synthetic_supply = [(price, qty * capacity_factor) for price, qty in base_supply]
-            synthetic_demand = [(price, qty * capacity_factor) for price, qty in base_demand]
+            synthetic_supply = list(base_supply)
+            synthetic_demand = list(base_demand)
+            synthetic_change_hour = {
+                "baseline_supply_mwh": round(_curve_total_volume(base_supply), 3),
+                "baseline_demand_mwh": round(_curve_total_volume(base_demand), 3),
+                "production_delta_mwh": 0.0,
+                "consumption_delta_mwh": 0.0,
+                "delta_supply_mwh": 0.0,
+                "delta_demand_mwh": 0.0,
+            }
         else:
-            # IDM clearing for this hour → use IDM capacity with price adjustment
-            capacity_factor = idm_capacity_pct / 100.0
-            
-            # IDM Supply: Lower prices (discount for producers to incentivize sales)
-            price_factor_supply = 1.0 - (idm_price_discount_producer / 100.0)
-            synthetic_supply = [(price * price_factor_supply, qty * capacity_factor) for price, qty in base_supply]
-            
-            # IDM Demand: Higher prices (markup for consumers, more expensive)
-            price_factor_demand = 1.0 + (idm_price_markup_consumer / 100.0)
-            synthetic_demand = [(price * price_factor_demand, qty * capacity_factor) for price, qty in base_demand]
+            synthetic_supply, synthetic_demand, synthetic_change_hour = _build_idm_synthetic_delta_curves(
+                base_supply,
+                base_demand,
+                market_cfg,
+                idm_synthetic_forecast_change.get("production_change_pct", 0.0),
+                idm_synthetic_forecast_change.get("consumption_change_pct", 0.0),
+            )
+
+        carried_synthetic_demand_curve = []
+        carried_synthetic_demand_curve_by_zone = []
+        carryover_payload = synthetic_demand_carryover_by_hour.get(hour_idx)
+        if carryover_payload is None:
+            carryover_payload = synthetic_demand_carryover_by_hour.get(str(hour_idx))
+        if isinstance(carryover_payload, dict):
+            carried_synthetic_demand_curve = _deserialize_curve_steps(carryover_payload.get('curve') or [])
+            carried_synthetic_demand_curve_by_zone = [
+                _deserialize_curve_steps(zone_curve)
+                for zone_curve in (carryover_payload.get('curve_by_zone') or [])
+            ]
+
+        carried_synthetic_demand_aggregate = carried_synthetic_demand_curve or _merge_demand_curves(carried_synthetic_demand_curve_by_zone)
+        synthetic_demand_for_clearing = list(synthetic_demand)
+        if carried_synthetic_demand_aggregate:
+            synthetic_demand_for_clearing = _merge_demand_curves([
+                synthetic_demand_for_clearing,
+                carried_synthetic_demand_aggregate,
+            ])
+
+        hour_structure["synthetic_baseline_supply_mwh"] = synthetic_change_hour["baseline_supply_mwh"]
+        hour_structure["synthetic_baseline_demand_mwh"] = synthetic_change_hour["baseline_demand_mwh"]
+        hour_structure["synthetic_idm_delta_supply_mwh"] = synthetic_change_hour["delta_supply_mwh"]
+        hour_structure["synthetic_idm_delta_demand_mwh"] = synthetic_change_hour["delta_demand_mwh"]
+        hour_structure["synthetic_demand_carryover_mwh"] = round(_curve_total_volume(carried_synthetic_demand_aggregate), 3)
 
         battery_market_limits = _build_battery_market_limits(config, battery_soc_state)
         
         if hour_offset == 0:  # Log first hour
             market_type = "DAM" if is_dam_clearing else "IDM"
-            print(f"[SYNTHETIC_SPLIT] Hour {hour_idx}: {market_type}, capacity={capacity_factor*100:.0f}%, supply_steps={len(synthetic_supply)}, demand_steps={len(synthetic_demand)}")
+            print(
+                f"[SYNTHETIC_SPLIT] Hour {hour_idx}: {market_type}, "
+                f"prod_change={idm_synthetic_forecast_change.get('production_change_pct', 0.0):.2f}%, "
+                f"cons_change={idm_synthetic_forecast_change.get('consumption_change_pct', 0.0):.2f}%, "
+                f"supply_steps={len(synthetic_supply)}, demand_steps={len(synthetic_demand)}"
+            )
             if id_delta_round:
                 print(f"[IDM_GATE] Hour {hour_idx}: gate_window_match={is_gate_window_hour}")
         
@@ -3805,15 +4973,17 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             round_events,
             battery_market_limits=battery_market_limits,
             hour_offset=hour_offset,
+            player_zone_map=player_zone_map_for_round,
         )
         demand, demand_bids = build_demand_from_bids(
             normalized_forecasts,
             hour_idx,
-            synthetic_demand,
+            synthetic_demand_for_clearing,
             config,
             round_events,
             battery_market_limits=battery_market_limits,
             hour_offset=hour_offset,
+            player_zone_map=player_zone_map_for_round,
         )
 
         # Fallback for empty supply curves:
@@ -3853,16 +5023,104 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 else:
                     supply_metadata.append(None)
         
-        prefer_demand_upper_bound = not (
-            mode == "isolated_per_player"
-            and not synthetic_supply
-            and bool(supply_bids)
+        clearing_price_floor = config.get("market", {}).get("price_floor", -500)
+        clearing_price_cap = config.get("market", {}).get("price_cap", 5000)
+        reference_price, reference_vol = clear_market(
+            supply,
+            demand,
+            price_floor=clearing_price_floor,
+            price_cap=clearing_price_cap,
+            supply_metadata=supply_metadata,
         )
-        price, vol = clear_market(supply, demand,
-                                  price_floor=config.get("market", {}).get("price_floor", -500),
-                                  price_cap=config.get("market", {}).get("price_cap", 5000),
-                                  supply_metadata=supply_metadata,
-                                  prefer_demand_upper_bound=prefer_demand_upper_bound)
+        price = reference_price
+        vol = reference_vol
+        zonal_coupling_result = None
+        zonal_pricing_active = False
+        zone_prices_for_hour = [round(reference_price, 2) for _ in range(configured_zones)]
+        zone_supply_volume_for_hour = [0.0] * configured_zones
+        zone_demand_volume_for_hour = [0.0] * configured_zones
+        zone_net_position_for_hour = [0.0] * configured_zones
+        residual_unserved_by_zone_for_hour = [0.0] * configured_zones
+        hourly_link_results = []
+        zone_demand_curves = []
+        if zonal_pricing_v1_enabled and configured_zones > 1:
+            zone_supply_curves = _split_curve_by_zone(synthetic_supply, generator_zone_shares)
+            zone_demand_curves = _split_curve_by_zone(synthetic_demand, demand_zone_shares)
+            if carried_synthetic_demand_curve_by_zone:
+                for zone_idx in range(min(configured_zones, len(carried_synthetic_demand_curve_by_zone))):
+                    zone_demand_curves[zone_idx].extend(carried_synthetic_demand_curve_by_zone[zone_idx])
+                    zone_demand_curves[zone_idx] = sorted(zone_demand_curves[zone_idx], key=lambda item: item[0], reverse=True)
+            elif carried_synthetic_demand_aggregate:
+                split_carryover = _split_curve_by_zone(carried_synthetic_demand_aggregate, demand_zone_shares)
+                for zone_idx in range(min(configured_zones, len(split_carryover))):
+                    zone_demand_curves[zone_idx].extend(split_carryover[zone_idx])
+                    zone_demand_curves[zone_idx] = sorted(zone_demand_curves[zone_idx], key=lambda item: item[0], reverse=True)
+            for bid in supply_bids:
+                zone_idx = max(0, min(configured_zones - 1, int(bid.get("zone_id", 1)) - 1))
+                zone_supply_curves[zone_idx].append((float(bid.get("price", 0.0) or 0.0), float(bid.get("quantity", 0.0) or 0.0)))
+            for bid in demand_bids:
+                zone_idx = max(0, min(configured_zones - 1, int(bid.get("zone_id", 1)) - 1))
+                zone_demand_curves[zone_idx].append((float(bid.get("price", 0.0) or 0.0), float(bid.get("quantity", 0.0) or 0.0)))
+
+            zonal_coupling_result = clear_market_coupled_atc(
+                zone_supply_curves,
+                zone_demand_curves,
+                (config.get("grid") or {}).get("atc") or [],
+                losses_pct_per_link=float((config.get("grid") or {}).get("losses_pct_per_link", (config.get("grid") or {}).get("losses_pct", 0.0)) or 0.0),
+                price_floor=clearing_price_floor,
+                price_cap=clearing_price_cap,
+            )
+            zonal_pricing_active = bool(zonal_coupling_result.get("zonal_pricing_active", False))
+            zone_prices_for_hour = list(zonal_coupling_result.get("zone_prices") or zone_prices_for_hour)
+            zone_supply_volume_for_hour = list(zonal_coupling_result.get("zone_supply_volume_mwh") or zone_supply_volume_for_hour)
+            zone_demand_volume_for_hour = list(zonal_coupling_result.get("zone_demand_volume_mwh") or zone_demand_volume_for_hour)
+            zone_net_position_for_hour = list(zonal_coupling_result.get("zone_net_position_mwh") or zone_net_position_for_hour)
+            residual_unserved_by_zone_for_hour = list(zonal_coupling_result.get("residual_unserved_demand_by_zone") or residual_unserved_by_zone_for_hour)
+            if zonal_pricing_active:
+                price = float(zonal_coupling_result.get("system_price", reference_price) or reference_price)
+                vol = round(sum(float(value or 0.0) for value in zone_demand_volume_for_hour), 3)
+
+            for (from_zone, to_zone), flow in sorted((zonal_coupling_result.get("interzonal_flows") or {}).items()):
+                congestion_info = (zonal_coupling_result.get("congestion_rents") or {}).get((from_zone, to_zone), {})
+                atc_value = float(flow.get("atc_mwh", 0.0) or 0.0)
+                flow_value = float(flow.get("flow_mwh", 0.0) or 0.0)
+                hourly_link_results.append({
+                    "from_zone": int(from_zone),
+                    "to_zone": int(to_zone),
+                    "atc_mwh": round(atc_value, 3),
+                    "flow_mwh": round(flow_value, 3),
+                    "flow_received_mwh": round(float(flow.get("flow_received_mwh", 0.0) or 0.0), 3),
+                    "losses_mwh": round(float(flow.get("losses_mwh", 0.0) or 0.0), 3),
+                    "utilization_pct": round((flow_value / atc_value * 100.0), 1) if atc_value > 1e-9 else 0.0,
+                    "binding": bool(flow.get("binding", False)),
+                    "congestion_rent_zar": round(float(congestion_info.get("congestion_rent_zar", 0.0) or 0.0), 2),
+                    "losses_value_zar": round(float(congestion_info.get("losses_value_zar", 0.0) or 0.0), 2),
+                })
+
+        if is_dam_phase and not demand_bids:
+            if zone_demand_curves:
+                remaining_by_zone = []
+                for zone_idx in range(configured_zones):
+                    served_zone_volume = float(zone_demand_volume_for_hour[zone_idx] if zone_idx < len(zone_demand_volume_for_hour) else 0.0)
+                    remaining_by_zone.append(_remaining_demand_curve_after_served(
+                        zone_demand_curves[zone_idx] if zone_idx < len(zone_demand_curves) else [],
+                        served_zone_volume,
+                    ))
+                remaining_aggregate = _merge_demand_curves(remaining_by_zone)
+                hour_structure["unserved_synthetic_demand_curve_by_zone"] = [
+                    _serialize_curve_steps(zone_curve)
+                    for zone_curve in remaining_by_zone
+                ]
+            else:
+                remaining_aggregate = _remaining_demand_curve_after_served(synthetic_demand_for_clearing, vol)
+                hour_structure["unserved_synthetic_demand_curve_by_zone"] = []
+
+            hour_structure["unserved_synthetic_demand_curve"] = _serialize_curve_steps(remaining_aggregate)
+            hour_structure["unserved_synthetic_demand_mwh"] = round(_curve_total_volume(remaining_aggregate), 3)
+        else:
+            hour_structure["unserved_synthetic_demand_curve"] = []
+            hour_structure["unserved_synthetic_demand_curve_by_zone"] = []
+            hour_structure["unserved_synthetic_demand_mwh"] = 0.0
         
         # FORENSIC: Track reconciliation data for this hour
         supply_offered_total = sum(q for _, q in supply) if supply else 0.0
@@ -3927,31 +5185,73 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                     da_dispatch_this_hour[device_id] = 0.0
                                 da_dispatch_this_hour[device_id] += dispatched
             
-            hour_bid_dispatch = track_bid_dispatch(
-                supply_bids,
-                price,
-                vol,
-                synthetic_supply,
-                devices_cfg_for_clearing,
-                # In absolute_clearing_round each round clears independently with fresh capacity.
-                # The DA baseline from round 1 must not constrain the current round's capacity.
-                {} if absolute_clearing_round else da_dispatch_this_hour,
-                round_events,
-                player_type_by_player,
-                shared_market_capacity_scales,
-                allow_dispatch_above_capacity,
-                use_synthetic_in_dispatch
-            )
-            demand_dispatch = track_demand_dispatch(demand_bids, price, vol, synthetic_demand)
-            
-            # Merge demand dispatch
-            for player_id, devices in demand_dispatch.items():
-                if player_id not in hour_bid_dispatch:
-                    hour_bid_dispatch[player_id] = {}
-                for device_id, lots in devices.items():
-                    if device_id not in hour_bid_dispatch[player_id]:
-                        hour_bid_dispatch[player_id][device_id] = {}
-                    hour_bid_dispatch[player_id][device_id].update(lots)
+            if zonal_pricing_active and zonal_coupling_result is not None:
+                zone_supply_curves_for_dispatch = _split_curve_by_zone(synthetic_supply, generator_zone_shares)
+                zone_demand_curves_for_dispatch = _split_curve_by_zone(synthetic_demand, demand_zone_shares)
+                if carried_synthetic_demand_curve_by_zone:
+                    for zone_idx in range(min(configured_zones, len(carried_synthetic_demand_curve_by_zone))):
+                        zone_demand_curves_for_dispatch[zone_idx].extend(carried_synthetic_demand_curve_by_zone[zone_idx])
+                        zone_demand_curves_for_dispatch[zone_idx] = sorted(zone_demand_curves_for_dispatch[zone_idx], key=lambda item: item[0], reverse=True)
+                elif carried_synthetic_demand_aggregate:
+                    split_carryover = _split_curve_by_zone(carried_synthetic_demand_aggregate, demand_zone_shares)
+                    for zone_idx in range(min(configured_zones, len(split_carryover))):
+                        zone_demand_curves_for_dispatch[zone_idx].extend(split_carryover[zone_idx])
+                        zone_demand_curves_for_dispatch[zone_idx] = sorted(zone_demand_curves_for_dispatch[zone_idx], key=lambda item: item[0], reverse=True)
+                for zone_idx in range(configured_zones):
+                    zone_id = zone_idx + 1
+                    zone_supply_bids = [bid for bid in supply_bids if int(bid.get("zone_id", 1)) == zone_id]
+                    zone_demand_bids = [bid for bid in demand_bids if int(bid.get("zone_id", 1)) == zone_id]
+                    zone_price = float(zone_prices_for_hour[zone_idx] if zone_idx < len(zone_prices_for_hour) else price)
+                    zone_supply_volume = float(zone_supply_volume_for_hour[zone_idx] if zone_idx < len(zone_supply_volume_for_hour) else 0.0)
+                    zone_demand_volume = float(zone_demand_volume_for_hour[zone_idx] if zone_idx < len(zone_demand_volume_for_hour) else 0.0)
+
+                    zone_supply_dispatch = track_bid_dispatch(
+                        zone_supply_bids,
+                        zone_price,
+                        zone_supply_volume,
+                        zone_supply_curves_for_dispatch[zone_idx] if zone_idx < len(zone_supply_curves_for_dispatch) else [],
+                        devices_cfg_for_clearing,
+                        {} if absolute_clearing_round else da_dispatch_this_hour,
+                        round_events,
+                        player_type_by_player,
+                        shared_market_capacity_scales,
+                        allow_dispatch_above_capacity,
+                        use_synthetic_in_dispatch,
+                    )
+                    zone_demand_dispatch = track_demand_dispatch(
+                        zone_demand_bids,
+                        zone_price,
+                        zone_demand_volume,
+                        zone_demand_curves_for_dispatch[zone_idx] if zone_idx < len(zone_demand_curves_for_dispatch) else [],
+                    )
+                    _merge_dispatch_maps(hour_bid_dispatch, zone_supply_dispatch, zone_id=zone_id, zone_price=zone_price, system_price=price, zonal_pricing_active=True)
+                    _merge_dispatch_maps(hour_bid_dispatch, zone_demand_dispatch, zone_id=zone_id, zone_price=zone_price, system_price=price, zonal_pricing_active=True)
+            else:
+                hour_bid_dispatch = track_bid_dispatch(
+                    supply_bids,
+                    price,
+                    vol,
+                    synthetic_supply,
+                    devices_cfg_for_clearing,
+                    # In absolute_clearing_round each round clears independently with fresh capacity.
+                    # The DA baseline from round 1 must not constrain the current round's capacity.
+                    {} if absolute_clearing_round else da_dispatch_this_hour,
+                    round_events,
+                    player_type_by_player,
+                    shared_market_capacity_scales,
+                    allow_dispatch_above_capacity,
+                    use_synthetic_in_dispatch
+                )
+                demand_dispatch = track_demand_dispatch(demand_bids, price, vol, synthetic_demand_for_clearing)
+                
+                # Merge demand dispatch
+                for player_id, devices in demand_dispatch.items():
+                    if player_id not in hour_bid_dispatch:
+                        hour_bid_dispatch[player_id] = {}
+                    for device_id, lots in devices.items():
+                        if device_id not in hour_bid_dispatch[player_id]:
+                            hour_bid_dispatch[player_id][device_id] = {}
+                        hour_bid_dispatch[player_id][device_id].update(lots)
             
             # Accumulate bid dispatch for all hours (for KPIs storage)
             for player_id, devices in hour_bid_dispatch.items():
@@ -4050,6 +5350,12 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             if hour_offset == 0 and pid == players[0] and devices_cfg:
                 first_dev = devices_cfg[0]
                 print(f"[CO2_DEBUG] First device: type={first_dev.get('type')}, co2_rate={first_dev.get('co2_emissions_kg_per_mwh', 'MISSING')}")
+
+            tracked_hour_device_dispatch = (
+                hour_bid_dispatch.get(pid)
+                if isinstance(hour_bid_dispatch.get(pid), dict)
+                else {}
+            )
             
             # Track per-device planned/dispatched/actual for detailed breakdown
             # For bid-based dispatch, calculate planned and dispatched per device
@@ -4107,7 +5413,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                     if _bh2_idx < len(bid_hours):
                                         device_planned_h += float(bid_hours[_bh2_idx])
 
-                        # Cap planned at device max_power (over-bidding allowed but capped)
+                        # Planned should represent the submitted commercial quantity.
+                        # Physical feasibility is enforced later via dispatch/actual capping,
+                        # overbid diagnostics, and imbalance settlement.
                         if device_cfg:
                             if str(device_cfg.get('type', '')).lower() == 'battery':
                                 max_power = _get_scaled_device_capacity_mw(
@@ -4121,18 +5429,6 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                     if hour_offset == 0:
                                         print(f"[CAPACITY_CAP] Battery {device_id}: planned {device_planned_h:.1f} MW capped to power {max_power:.1f} MW")
                                     device_planned_h = math.copysign(max_power, device_planned_h)
-                            else:
-                                max_power = _get_scaled_device_capacity_mw(
-                                    device_cfg,
-                                    player_id=pid,
-                                    player_type_by_player=player_type_by_player,
-                                    shared_market_capacity_scales=shared_market_capacity_scales,
-                                    fallback=float('inf'),
-                                )
-                                if device_planned_h > max_power:
-                                    if hour_offset == 0:  # Log once
-                                        print(f"[CAPACITY_CAP] Device {device_id}: planned {device_planned_h:.1f} MW capped to max_power {max_power:.1f} MW")
-                                    device_planned_h = max_power
                         
                         per_device_hourly_planned[device_id][hour_offset] = device_planned_h
                         if hour_offset == 0:  # Log first hour
@@ -4288,7 +5584,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             # Otherwise KPI cards (net) and device details (DAM + IDM) diverge by design.
             da_committed_by_device = {}
             da_committed_total = 0.0
-            if round_num > 1 and id_delta_round:
+            if emit_idm_settlement:
                 da_committed_by_device = _get_da_delivery_dispatch_by_device(pid, hour_idx, hour_offset) or {}
                 da_committed_total = float(sum(da_committed_by_device.values())) if da_committed_by_device else 0.0
 
@@ -4319,8 +5615,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             
             # Get player's device IDs from bid dispatch or forecasts
             player_device_ids = set()
-            if enable_bidding and pid in hour_bid_dispatch:
-                player_device_ids = set(hour_bid_dispatch[pid].keys())
+            if tracked_hour_device_dispatch:
+                player_device_ids = set(tracked_hour_device_dispatch.keys())
             elif pid in normalized_forecasts:
                 forecast_data = normalized_forecasts[pid]
                 if isinstance(forecast_data, dict):
@@ -4347,7 +5643,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     break
 
             # Ensure DA baseline devices are included in classification/allocations
-            if round_num > 1 and id_delta_round and da_committed_by_device:
+            if emit_idm_settlement and da_committed_by_device:
                 player_device_ids.update(da_committed_by_device.keys())
 
             # Delivery-time fallback for ID delta rounds:
@@ -4391,13 +5687,12 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 if dispatched <= 0:
                     actual = 0.0
                 else:
-                    # Apply events to consumer demand (e.g. heatwave increases consumption)
+                    # Apply events per device where available
                     event_mult = 1.0
                     event_add = 0.0
-                    
-                    if enable_bidding and pid in hour_bid_dispatch:
-                        # Apply events per device
-                        for device_id in hour_bid_dispatch[pid].keys():
+
+                    if tracked_hour_device_dispatch:
+                        for device_id in tracked_hour_device_dispatch.keys():
                             device = next((d for d in devices_cfg if d.get('id') == device_id), None)
                             if device:
                                 device_type = device.get('type', '')
@@ -4410,34 +5705,28 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                 )
                                 event_mult *= dev_mult
                                 event_add += dev_add
-                    
-                    # Events modify the actual consumption (not the bid)
+
                     base_actual = dispatched
                     actual_with_events = (base_actual * event_mult) + event_add
-                    
-                    # Add noise on top of event-modified actual
                     noise = random.uniform(-frac, frac) * max(1.0, actual_with_events)
                     actual = max(0.0, actual_with_events + noise)
-                    
+
                     if event_mult != 1.0 or event_add != 0.0:
                         print(f"[EVENT_DEMAND] Consumer {pid}: Dispatched={dispatched:.1f}, Event mult={event_mult}, add={event_add} → Actual={actual:.1f} MW")
-                
+
                 # Track consumer actual per device for hourly breakdown.
-                # In classic/shared scenarios there may be no explicit bid dispatch,
-                # but per-device dispatched volumes were already populated above.
                 device_ids_for_distribution = set()
-                if enable_bidding and pid in hour_bid_dispatch:
-                    device_ids_for_distribution.update(hour_bid_dispatch[pid].keys())
+                if tracked_hour_device_dispatch:
+                    device_ids_for_distribution.update(tracked_hour_device_dispatch.keys())
                 else:
                     device_ids_for_distribution.update(
                         device_id for device_id in player_device_ids
                         if device_id in per_device_hourly_dispatched
                     )
-                if round_num > 1 and id_delta_round and da_committed_by_device:
+                if emit_idm_settlement and da_committed_by_device:
                     device_ids_for_distribution.update(da_committed_by_device.keys())
 
                 if device_ids_for_distribution:
-                    # Distribute actual proportionally to each consumer device
                     consumer_total_dispatched = dispatched
 
                     for device_id in device_ids_for_distribution:
@@ -4451,44 +5740,39 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             device_actual = actual * (device_dispatched / consumer_total_dispatched)
                         else:
                             device_actual = 0.0
-                        
-                        # Track device actual
+
                         if device_id in per_device_hourly_actual:
                             per_device_hourly_actual[device_id][hour_offset] = device_actual
-                            
-                            # NEW: Track balancing (imbalance) per consumer device per hour
+
                             # For ID delta rounds, imbalance is against DA + ID total dispatch
                             if absolute_clearing_round:
-                                # Absolute-clearing rounds: pure DAM-style dispatch in this round
                                 da_dispatched_for_device = device_dispatched
                                 id_dispatched_for_device = 0.0
                             else:
-                                # ID delta rounds: DA baseline (committed) + ID delta (net minus baseline)
                                 da_dispatched_for_device = float((da_committed_by_device or {}).get(device_id, 0.0) or 0.0)
                                 id_dispatched_for_device = float(device_dispatched) - da_dispatched_for_device
-                                # Safety: avoid tiny negative due to float noise
                                 if abs(id_dispatched_for_device) < 0.000001:
                                     id_dispatched_for_device = 0.0
-                            
-                            # Total committed = DA (Round 1) + ID (current round)
+
                             total_dispatched = da_dispatched_for_device + id_dispatched_for_device
                             device_imbalance_mwh = device_actual - total_dispatched
-                            
+
                             if balancing_price_mode == 'smp_multiplier':
                                 _eff_up = max(0.0, float(price or 0.0) * balancing_up_smp_pct / 100.0)
                                 _eff_down = max(0.0, float(price or 0.0) * balancing_down_smp_pct / 100.0)
                             else:
                                 _eff_up, _eff_down = balancing_up_price, balancing_down_price
-                            if device_imbalance_mwh > 0:  # Over-consumption
+                            if device_imbalance_mwh > 0:
                                 device_imbalance_cost = device_imbalance_mwh * _eff_up
-                            elif device_imbalance_mwh < 0:  # Under-consumption
+                            elif device_imbalance_mwh < 0:
                                 device_imbalance_cost = abs(device_imbalance_mwh) * _eff_down
                             else:
                                 device_imbalance_cost = 0.0
-                            
+
                             if device_id not in per_device_hourly_balancing:
                                 per_device_hourly_balancing[device_id] = []
                             per_device_hourly_balancing[device_id].append({
+                                'player_id': pid,
                                 'scenario_hour_idx': hour_idx,
                                 'hour_idx': hour_idx,
                                 'hour_offset': hour_offset,
@@ -4503,33 +5787,11 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                 'balancing_cost_zar': round(device_imbalance_cost, 2),
                                 'balancing_price': balancing_up_price if device_imbalance_mwh > 0 else (balancing_down_price if device_imbalance_mwh < 0 else 0)
                             })
-            elif enable_bidding and pid in hour_bid_dispatch:
-                # Generators: Per-device envelope enforcement for multi-bid mode
-                device_ids_for_envelope = set(hour_bid_dispatch[pid].keys())
-                if round_num > 1 and id_delta_round and da_committed_by_device:
-                    device_ids_for_envelope.update(da_committed_by_device.keys())
-
-                for device_id in device_ids_for_envelope:
-                    device = next((d for d in devices_cfg if d.get("id") == device_id), None)
-                    if device:
-                        device_dispatched = 0.0
-                        if device_id in per_device_hourly_dispatched:
-                            try:
-                                device_dispatched = float(per_device_hourly_dispatched[device_id][hour_offset] or 0.0)
-                            except Exception:
-                                device_dispatched = 0.0
-                        device_actual = _get_generator_actual_cap(device, device_dispatched, hour_of_day, pid)
-                        
-                        device_actual_caps[device_id] = device_actual
-                        actual_constrained += device_actual
-                actual = actual_constrained
-                device_ids_for_noise = set(device_ids_for_envelope)
-            elif round_num > 1 and id_delta_round:
-                # ID-delta carry-over edge case:
-                # If player has committed per-device dispatch (DA baseline and/or device-level dispatched)
-                # but no hour_bid_dispatch entry for this hour, do NOT use global min-availability fallback.
-                # Compute actual from player's committed devices with device-level availability.
-                device_ids_for_envelope = set(da_committed_by_device.keys())
+            else:
+                # Generators: whenever we already know per-device committed dispatch for this player,
+                # enforce the physical envelope per device. This covers explicit bids, classic/single-bid
+                # fallback, and ID carry-over with DA commitments.
+                device_ids_for_envelope = set(da_committed_by_device.keys()) if emit_idm_settlement else set()
                 for device_id in player_device_ids:
                     try:
                         dispatched_h = float(per_device_hourly_dispatched.get(device_id, [0.0] * display_span)[hour_offset] or 0.0)
@@ -4563,17 +5825,39 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             min_availability = avail
                     max_available = dispatched * min_availability
                     actual = min(dispatched, max_available)
-            else:
-                # Generators: For aggregate mode, apply weighted average availability
-                # (Conservative: use minimum availability of any renewable in config)
-                min_availability = 1.0
-                for device in devices_cfg:
-                    avail = calculate_realistic_availability(device, hour_of_day, config)
-                    if avail < min_availability:
-                        min_availability = avail
-                max_available = dispatched * min_availability
-                actual = min(dispatched, max_available)
             
+            if not is_consumer and tracked_hour_device_dispatch:
+                # Generators with tracked per-device market awards must settle against those
+                # device-level commitments, even when the surrounding run is in classic/single-bid
+                # compatibility mode. Rebuild the physical envelope from the tracked device dispatch
+                # here so commercial over-awards consistently become balancing exposure.
+                tracked_device_ids_for_envelope = set(tracked_hour_device_dispatch.keys())
+                if emit_idm_settlement and da_committed_by_device:
+                    tracked_device_ids_for_envelope.update(da_committed_by_device.keys())
+
+                tracked_actual_constrained = 0.0
+                tracked_actual_caps = {}
+                for device_id in tracked_device_ids_for_envelope:
+                    try:
+                        device_dispatched = float(per_device_hourly_dispatched.get(device_id, [0.0] * display_span)[hour_offset] or 0.0)
+                    except Exception:
+                        device_dispatched = 0.0
+                    if device_dispatched <= 0.0:
+                        continue
+
+                    device = next((d for d in devices_cfg if d.get("id") == device_id), None)
+                    if not device:
+                        continue
+
+                    device_actual = _get_generator_actual_cap(device, device_dispatched, hour_of_day, pid)
+                    tracked_actual_caps[device_id] = device_actual
+                    tracked_actual_constrained += device_actual
+
+                if tracked_actual_caps:
+                    actual = tracked_actual_constrained
+                    device_actual_caps = tracked_actual_caps
+                    device_ids_for_noise = set(tracked_actual_caps.keys())
+
             # NOTE: Events are now applied at capacity level in track_bid_dispatch,
             # not here at actual delivery. Actual follows dispatched with noise only.
             
@@ -4660,6 +5944,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         if device_id not in per_device_hourly_balancing:
                             per_device_hourly_balancing[device_id] = []
                         per_device_hourly_balancing[device_id].append({
+                            'player_id': pid,
                             'hour_idx': hour_idx,
                             'hour_offset': hour_offset,
                             'da_dispatched_mwh': round(da_dispatched_for_device, 3),
@@ -4697,21 +5982,25 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             # Settlement mode:
             # - absolute_clearing_round: normal revenue at current price
             # - id_delta_round: DA portion @ DA_SMP + ID delta @ current price
+            player_zone_id = int(player_zone_map_for_round.get(pid, 1))
+            player_zone_idx = max(0, min(configured_zones - 1, player_zone_id - 1))
+            player_market_price = float(zone_prices_for_hour[player_zone_idx] if player_zone_idx < len(zone_prices_for_hour) else price)
             if is_consumer:
                 # Consumers pay (negative revenue)
                 if absolute_clearing_round:
                     # DA: Simple calculation
-                    revenue = -round(dispatched * price, 0)
+                    revenue = -round(dispatched * player_market_price, 0)
                     # Track for metadata
                     per_player_da_volume[pid] += dispatched
                     per_player_da_revenue[pid] += revenue
                 else:
                     # ID: Split settlement (use cleared DAM dispatch as baseline when available)
-                    da_volume = float(da_committed_total or 0.0) if (round_num > 1 and id_delta_round) else 0.0
+                    da_volume = float(da_committed_total or 0.0) if emit_idm_settlement else 0.0
+                    da_market_price = _get_da_delivery_price_for_player(pid, hour_idx, hour_offset)
 
                     id_delta = float(id_dispatched_only or 0.0)
-                    da_revenue = -round(da_volume * (da_smp or price), 0)
-                    id_revenue = -round(id_delta * price, 0)
+                    da_revenue = -round(da_volume * da_market_price, 0)
+                    id_revenue = -round(id_delta * player_market_price, 0)
                     revenue = da_revenue + id_revenue
 
                     per_player_da_volume[pid] += da_volume
@@ -4720,22 +6009,23 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     per_player_id_revenue[pid] += id_revenue
 
                     if hour_offset == 0:  # Log first hour
-                        print(f"[DELTA_SETTLEMENT] Consumer {pid}, h={hour_idx}: DA={da_volume:.1f}@{da_smp or price:.1f}={da_revenue:.0f}, Delta={id_delta:.1f}@{price:.1f}={id_revenue:.0f}, Total={revenue:.0f}")
+                        print(f"[DELTA_SETTLEMENT] Consumer {pid}, h={hour_idx}: DA={da_volume:.1f}@{da_market_price:.1f}={da_revenue:.0f}, Delta={id_delta:.1f}@{player_market_price:.1f}={id_revenue:.0f}, Total={revenue:.0f}")
             else:
                 # Generators earn (positive revenue)
                 if absolute_clearing_round:
                     # DA: Simple calculation
-                    revenue = round(dispatched * price, 0)
+                    revenue = round(dispatched * player_market_price, 0)
                     # Track for metadata
                     per_player_da_volume[pid] += dispatched
                     per_player_da_revenue[pid] += revenue
                 else:
                     # ID: Split settlement (use cleared DAM dispatch as baseline when available)
-                    da_volume = float(da_committed_total or 0.0) if (round_num > 1 and id_delta_round) else 0.0
+                    da_volume = float(da_committed_total or 0.0) if emit_idm_settlement else 0.0
+                    da_market_price = _get_da_delivery_price_for_player(pid, hour_idx, hour_offset)
 
                     id_delta = float(id_dispatched_only or 0.0)
-                    da_revenue = round(da_volume * (da_smp or price), 0)
-                    id_revenue = round(id_delta * price, 0)
+                    da_revenue = round(da_volume * da_market_price, 0)
+                    id_revenue = round(id_delta * player_market_price, 0)
                     revenue = da_revenue + id_revenue
 
                     per_player_da_volume[pid] += da_volume
@@ -4744,7 +6034,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     per_player_id_revenue[pid] += id_revenue
 
                     if hour_offset == 0:  # Log first hour
-                        print(f"[DELTA_SETTLEMENT] Generator {pid}, h={hour_idx}: DA={da_volume:.1f}@{da_smp or price:.1f}={da_revenue:.0f}, Delta={id_delta:.1f}@{price:.1f}={id_revenue:.0f}, Total={revenue:.0f}")
+                        print(f"[DELTA_SETTLEMENT] Generator {pid}, h={hour_idx}: DA={da_volume:.1f}@{da_market_price:.1f}={da_revenue:.0f}, Delta={id_delta:.1f}@{player_market_price:.1f}={id_revenue:.0f}, Total={revenue:.0f}")
             
             # Variable costs and fixed costs: Calculate fuel/operational costs for generators
             variable_cost = 0.0
@@ -4758,8 +6048,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         forecast_data = normalized_forecasts[pid]
                         if isinstance(forecast_data, dict) and forecast_data.get('bids'):
                             fixed_device_ids.update(forecast_data['bids'].keys())
-                    if enable_bidding and pid in hour_bid_dispatch:
-                        fixed_device_ids.update(hour_bid_dispatch[pid].keys())
+                    if tracked_hour_device_dispatch:
+                        fixed_device_ids.update(tracked_hour_device_dispatch.keys())
                     if not fixed_device_ids:
                         fixed_device_ids = {
                             d.get('id') for d in devices_cfg
@@ -4816,6 +6106,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         if device_id not in per_device_hourly_co2:
                             per_device_hourly_co2[device_id] = []
                         per_device_hourly_co2[device_id].append({
+                            'player_id': pid,
                             'scenario_hour_idx': hour_idx,
                             'hour_idx': hour_idx,
                             'hour_offset': hour_offset,
@@ -4843,6 +6134,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         if device_id not in per_device_hourly_co2:
                             per_device_hourly_co2[device_id] = []
                         per_device_hourly_co2[device_id].append({
+                            'player_id': pid,
                             'scenario_hour_idx': hour_idx,
                             'hour_idx': hour_idx,
                             'hour_offset': hour_offset,
@@ -4926,8 +6218,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             
             # Check if this player has must-run devices
             has_must_run = False
-            if enable_bidding and pid in hour_bid_dispatch:
-                for device_id in hour_bid_dispatch[pid].keys():
+            if tracked_hour_device_dispatch:
+                for device_id in tracked_hour_device_dispatch.keys():
                     device = next((d for d in devices_cfg if d.get("id") == device_id), None)
                     if device and device.get('must_run', False):
                         has_must_run = True
@@ -4952,8 +6244,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 curtailment_amount = max(0.0, planned - dispatched)
                 devices = config.get("devices", [])
                 curtailed, cong_signal = apply_grid(dispatched, config.get("grid", {}).get("atc", []), devices=devices)
-                curtailment_cost = round((curtailment_amount + curtailed) * price, 0)
-                congestion_revenue = round(dispatched * price * cong_signal, 0)
+                curtailment_cost = round((curtailment_amount + curtailed) * player_market_price, 0)
+                congestion_revenue = 0 if zonal_pricing_active else round(dispatched * player_market_price * cong_signal, 0)
             
             # Accumulate hour results to player totals
             per_player_planned[pid] += planned
@@ -4976,8 +6268,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             if is_consumer:
                 hour_consumer_dispatched[pid] = max(0.0, float(dispatched))
                 consumer_device_dispatch = {}
-                if enable_bidding and pid in hour_bid_dispatch:
-                    for device_id, device_dispatch in hour_bid_dispatch[pid].items():
+                if tracked_hour_device_dispatch:
+                    for device_id, device_dispatch in tracked_hour_device_dispatch.items():
                         device_dispatched = sum(bid_info.get('mw_dispatched', 0.0) for bid_info in device_dispatch.values())
                         if device_dispatched > 0:
                             consumer_device_dispatch[device_id] = float(device_dispatched)
@@ -5011,6 +6303,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         if device_id not in per_device_hourly_co2:
                             per_device_hourly_co2[device_id] = []
                         per_device_hourly_co2[device_id].append({
+                            'player_id': pid,
                             'scenario_hour_idx': hour_idx,
                             'hour_idx': hour_idx,
                             'hour_offset': hour_offset,
@@ -5048,7 +6341,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         hour_reconciliation_data.append(reconciliation_entry)
         
         # Store hourly result with unified hour structure
-        include_intraday_metadata = round_num > 1 and id_delta_round
+        include_intraday_metadata = emit_idm_settlement
         hour_idp = round(price, 1) if include_intraday_metadata else None
         hour_id_trade_count = 0
         hour_id_volume_mwh = 0.0
@@ -5099,6 +6392,15 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             "is_clearing_hour": bool(is_clearing_hour),
             "smp": round(price, 1),
             "volume": round(vol, 3),
+            "system_price_zar_per_mwh": round(price, 1),
+            "zone_prices": [round(float(zone_price), 2) for zone_price in zone_prices_for_hour],
+            "zonal_pricing_active": bool(zonal_pricing_active),
+            "price_source": "shortfall_separate" if any(float(value or 0.0) > 1e-9 for value in residual_unserved_by_zone_for_hour) else ("zonal_split" if zonal_pricing_active else "uniform"),
+            "zone_supply_volume_mwh": [round(float(value), 3) for value in zone_supply_volume_for_hour],
+            "zone_demand_volume_mwh": [round(float(value), 3) for value in zone_demand_volume_for_hour],
+            "zone_net_position_mwh": [round(float(value), 3) for value in zone_net_position_for_hour],
+            "residual_unserved_demand_by_zone": [round(float(value), 3) for value in residual_unserved_by_zone_for_hour],
+            "hourly_link_results": hourly_link_results,
         }
         if include_intraday_metadata:
             hourly_result.update({
@@ -5130,6 +6432,10 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         'mw_dispatched_signed': round(bid_info.get('mw_dispatched_signed', bid_info.get('mw_dispatched', 0.0)), 3),
                         'price_bid': round(bid_info.get('price_bid', 0.0), 2),
                         'smp': round(price, 1),
+                        'zone_id': int(bid_info.get('zone_id', 1) or 1),
+                        'zone_price_zar_per_mwh': round(float(bid_info.get('zone_price_zar_per_mwh', price) or price), 2),
+                        'system_price_zar_per_mwh': round(float(bid_info.get('system_price_zar_per_mwh', price) or price), 2),
+                        'zonal_pricing_active': bool(bid_info.get('zonal_pricing_active', False)),
                         'acceptance_ratio': round(bid_info.get('mw_dispatched', 0.0) / bid_info.get('mw_offered', 1.0) if bid_info.get('mw_offered', 0.0) > 0 else 0.0, 3),
                         'is_buyback': bool(bid_info.get('is_buyback', False))
                     })
@@ -5158,9 +6464,15 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         hourly_breakdown = []
         for h_idx, hour_result in enumerate(hourly_results):
             hour_idx = hour_result.get("scenario_hour_idx", hour_result.get("hour_idx", hour_result.get("hour_offset", hour_result.get("hour", h_idx))))
+            player_zone_id = int(player_zone_map_for_round.get(pid, 1))
+            player_zone_idx = max(0, min(configured_zones - 1, player_zone_id - 1))
+            hour_zone_prices = list(hour_result.get("zone_prices") or [])
+            zone_price_for_player = float(hour_zone_prices[player_zone_idx] if player_zone_idx < len(hour_zone_prices) else hour_result["smp"])
             hour_detail = {
                 "hour": hour_idx,
                 "smp": hour_result["smp"],
+                "system_price_zar_per_mwh": hour_result.get("system_price_zar_per_mwh", hour_result["smp"]),
+                "zone_price_zar_per_mwh": zone_price_for_player,
                 "planned_mw": 0.0,
                 "dispatched_mw": 0.0,
                 "actual_mw": 0.0,
@@ -5324,8 +6636,54 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             print(f"[DEVICE_BREAKDOWN_DEBUG] Device {dev_id}: balancing_len={len(device_balancing)}, hourly_results_len={len(hourly_results)}")
             
             for h_idx, hour_result in enumerate(hourly_results):
-                planned_h = per_device_hourly_planned.get(dev_id, [0] * span)[h_idx]
-                dispatched_h = per_device_hourly_dispatched.get(dev_id, [0] * span)[h_idx]
+                # hour_result may carry a round-local hour_offset in IDM rounds; use it
+                # before single-bid fallback checks so hour_idx and round-local arrays stay aligned.
+                current_hour_idx = hour_result.get("scenario_hour_idx", hour_result.get("hour_idx", hour_result.get("hour_offset", hour_result.get("hour", h_idx))))
+                current_hour_offset = hour_result.get("hour_offset", h_idx)
+
+                # For bid-based sessions re-derive planned/dispatched per player directly
+                # from the player's own bid/forecast data instead of the shared per-device
+                # hourly arrays. The shared arrays use device_id as key so the last player
+                # processed overwrites earlier players' values when multiple players share
+                # the same device_id in shared_market mode.
+                if enable_bidding:
+                    _p_bids = (normalized_forecasts.get(pid) or {}).get('bids') or {}
+                    _dev_bids = _p_bids.get(dev_id) or {}
+                    _use_fc = (
+                        _should_use_single_bid_forecast_fallback(
+                            device_cfg, _dev_bids, current_hour_idx, legacy_global_enabled,
+                            hour_offset=current_hour_offset
+                        )
+                        or (
+                            _get_device_bid_count(device_cfg, legacy_global_enabled) == 0
+                            and not _has_explicit_bid_hours(_dev_bids, device_cfg, current_hour_idx, legacy_global_enabled)
+                        )
+                    )
+                    if _use_fc:
+                        _fc_hours = _get_device_forecast_hours(
+                            (normalized_forecasts.get(pid) or {}).get('devices', []), dev_id
+                        )
+                        _fc_idx = current_hour_idx if current_hour_idx < len(_fc_hours) else current_hour_offset
+                        planned_h = float(_fc_hours[_fc_idx]) if _fc_idx < len(_fc_hours) else 0.0
+                    else:
+                        planned_h = 0.0
+                        for _bl in _get_bid_labels(_dev_bids, device_cfg, legacy_global_enabled):
+                            if _bl in _dev_bids:
+                                _bh = _dev_bids[_bl].get('hours', [])
+                                _bi = current_hour_idx if current_hour_idx < len(_bh) else current_hour_offset
+                                if _bi < len(_bh):
+                                    planned_h += float(_bh[_bi])
+                    dispatched_h = 0.0
+                    for _lot_label, _lot_list in ((all_bid_dispatch.get(pid) or {}).get(dev_id) or {}).items():
+                        if _lot_label.endswith('_CHG'):
+                            continue
+                        for _lot_data in (_lot_list or []):
+                            if _lot_data.get('hour_offset') == current_hour_offset:
+                                dispatched_h += float(_lot_data.get('mw_dispatched', 0.0) or 0.0)
+                                break
+                else:
+                    planned_h = per_device_hourly_planned.get(dev_id, [0] * span)[h_idx]
+                    dispatched_h = per_device_hourly_dispatched.get(dev_id, [0] * span)[h_idx]
                 actual_h = per_device_hourly_actual.get(dev_id, [0] * span)[h_idx]
 
                 total_qty = 0.0
@@ -5334,9 +6692,12 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 legacy_global_enabled = _normalize_boolean_flag(config.get('market', {}).get('enable_player_bidding', False), False)
                 for bid_label in _get_bid_labels(device_bids, device_cfg, legacy_global_enabled):
                     bid = device_bids.get(bid_label, {}) if isinstance(device_bids, dict) else {}
-                    price = _extract_bid_price(bid, h_idx, 0.0)
+                    bid_hour_ref = current_hour_idx
                     hours = bid.get("hours", []) if isinstance(bid, dict) else []
-                    qty = float(hours[h_idx]) if h_idx < len(hours) else 0.0
+                    if bid_hour_ref >= len(hours):
+                        bid_hour_ref = current_hour_offset
+                    price = _extract_bid_price(bid, bid_hour_ref, 0.0)
+                    qty = float(hours[bid_hour_ref]) if bid_hour_ref < len(hours) else 0.0
                     if qty != 0:
                         qty_abs = abs(qty)
                         total_qty += qty_abs
@@ -5350,34 +6711,46 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         _bc = _get_device_bid_count(device_cfg, legacy_global_enabled)
                         if _bc == 1 and _should_use_single_bid_forecast_fallback(device_cfg, device_bids, h_idx, legacy_global_enabled, hour_offset=current_hour_offset):
                             # bid_count=1: use player-configured price from default_bids / bids
-                            offer_price = _get_single_bid_fallback_price(device_cfg, device_bids, h_idx, legacy_global_enabled)
+                            offer_price = _get_single_bid_fallback_price(device_cfg, device_bids, current_hour_idx, legacy_global_enabled, hour_offset=current_hour_offset)
                         else:
                             # bid_count=0 (classic) and all other cases: automatic variable-cost price
                             offer_price = _get_default_device_market_price(device_cfg, is_consumer='load' in device_cfg.get('type', '').lower())
 
-                # Get DA/ID breakdown from balancing data if available
-                # Must match by hour_idx, not array position!
+                # Get DA/ID breakdown from balancing data if available.
+                # Must match by hour_idx AND player_id to avoid cross-player contamination
+                # when multiple players share the same device_id (shared_market mode).
                 balancing_entry = None
-                current_hour_idx = hour_result.get("scenario_hour_idx", hour_result.get("hour_idx", hour_result.get("hour_offset", hour_result.get("hour", h_idx))))
                 if device_balancing:
                     for bal_entry in device_balancing:
-                        if bal_entry.get("hour_idx") == current_hour_idx:
+                        if (bal_entry.get("hour_idx") == current_hour_idx
+                                and bal_entry.get("player_id", pid) == pid):
                             balancing_entry = bal_entry
                             break
 
-                # Get CO2 entry for this hour (match by hour_idx)
+                if balancing_entry is not None:
+                    try:
+                        actual_h = float(balancing_entry.get('actual_mwh', actual_h) or 0.0)
+                    except Exception:
+                        actual_h = float(actual_h or 0.0)
+                elif enable_bidding and abs(float(dispatched_h or 0.0)) < 0.000001:
+                    # Shared-market sessions can map multiple players to the same device_id.
+                    # When this player has no own dispatch and no player-scoped balancing row,
+                    # falling back to the global per_device_hourly_actual leaks another player's
+                    # physical actual into this row and creates phantom imbalance costs.
+                    actual_h = 0.0
+
+                # Get CO2 entry for this hour (match by hour_idx and player_id when present)
                 co2_entry = None
                 if device_co2_rows:
                     for co2_row in device_co2_rows:
                         if not isinstance(co2_row, dict):
                             continue
-                        if co2_row.get("hour_idx", co2_row.get("scenario_hour_idx")) == current_hour_idx:
+                        if (
+                            co2_row.get("hour_idx", co2_row.get("scenario_hour_idx")) == current_hour_idx
+                            and co2_row.get("player_id", pid) == pid
+                        ):
                             co2_entry = co2_row
                             break
-                
-                # Extract hour_offset from hour_result for bid_dispatch lookup
-                # Note: hour_result may not have hour_offset in older sessions, fallback to h_idx
-                current_hour_offset = hour_result.get("hour_offset", h_idx)
                 
                 # Calculate device capacity (base and with profiles/events)
                 base_capacity = 0.0
@@ -5488,8 +6861,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                                 total_offered_h += lot_data.get('mw_offered', 0.0)
                                 break
                 
-                # Calculate overbid and capacity_violation
-                overbid_mw = max(0.0, total_offered_h - effective_capacity)
+                # Keep the submitted offer for diagnostics, but treat overbid as the
+                # commercially awarded volume above physical capability.
+                overbid_mw = max(0.0, float(dispatched_h or 0.0) - effective_capacity)
                 capacity_violation = overbid_mw > 0.001  # Small epsilon for floating point
                 
                 # Build hour entry with DA/ID fields and capacity info
@@ -5538,7 +6912,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     fallback_da_dispatched = 0.0
                     fallback_id_dispatched = 0.0
 
-                    if round_num > 1 and id_delta_round:
+                    if emit_idm_settlement:
                         da_by_device = _get_da_delivery_dispatch_by_device(pid, current_hour_idx, current_hour_offset) or {}
                         try:
                             fallback_da_dispatched = float(da_by_device.get(dev_id, 0.0) or 0.0)
@@ -5580,10 +6954,18 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
 
                 da_mwh = float(hour_entry.get('da_dispatched_mwh', 0.0) or 0.0)
                 id_mwh = float(hour_entry.get('id_dispatched_mwh', 0.0) or 0.0)
+                player_zone_id = int(player_zone_map_for_round.get(pid, 1))
+                player_zone_idx = max(0, min(configured_zones - 1, player_zone_id - 1))
+                hour_zone_prices = list(hour_result.get('zone_prices') or [])
+                current_zone_price = float(hour_zone_prices[player_zone_idx] if player_zone_idx < len(hour_zone_prices) else hour_result.get('smp', 0.0))
 
-                # Prices: DA uses da_smp when available, otherwise hour smp; ID uses hour smp (engine settlement basis)
-                da_price = float((da_smp if da_smp is not None else hour_result.get('smp', 0.0)) or 0.0)
-                id_price = float(hour_result.get('smp', 0.0) or 0.0)
+                # Prices: only true IDM delta rounds should reference the historic DA SMP.
+                # Absolute DAM rounds settle entirely at the current hour SMP.
+                if emit_idm_settlement:
+                    da_price = _get_da_delivery_price_for_player(pid, current_hour_idx, current_hour_offset)
+                else:
+                    da_price = current_zone_price
+                id_price = current_zone_price
 
                 sign = -1.0 if is_load else 1.0
                 da_revenue = sign * da_mwh * da_price
@@ -5682,6 +7064,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 profit_device = revenue_total - device_variable_cost - device_fixed_cost - float(hour_entry.get('imbalance_cost_zar', 0.0) or 0.0) + congestion_alloc - battery_charge_cost
 
                 hour_entry.update({
+                    'zone_id': player_zone_id,
+                    'system_price_zar_per_mwh': round(float(hour_result.get('system_price_zar_per_mwh', hour_result.get('smp', 0.0)) or 0.0), 2),
+                    'zone_price_zar_per_mwh': round(current_zone_price, 2),
                     'da_price_zar': round(da_price, 2),
                     'id_price_zar': round(id_price, 2),
                     'da_revenue_zar': round(da_revenue, 2),
@@ -5839,6 +7224,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     result = {
         "smp": round(avg_mcp, 1),
         "volume": round(total_volume, 3),
+        "zonal_pricing_active": any(bool(hour.get("zonal_pricing_active", False)) for hour in hourly_results),
         "round_kpis": per_player,
         "hourly_results": hourly_results,
     }
@@ -5896,6 +7282,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         player_zone_info_by_player[pid]["zone_extra_cost_per_mwh_zar"] = zone_info.get("extra_cost_per_mwh_zar", 0.0)
         player_zone_info_by_player[pid]["zone_coverage_total_pct"] = zone_info.get("coverage_total_pct", 100.0)
         player_zone_info_by_player[pid]["zone_balancing_support_mwh"] = zone_info.get("balancing_support_mwh", 0.0)
+        if pid in per_player:
+            per_player[pid]["zone_id"] = zone_id
+            per_player[pid]["player_zone_split_active"] = any(bool(hour.get("zonal_pricing_active", False)) for hour in hourly_results)
 
     result["player_zone_info_by_player"] = player_zone_info_by_player
     for pid, shortfall_cost in consumer_shortfall_cost_by_player.items():
@@ -6034,12 +7423,15 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 _validate_player_rollups(pid, per_player[pid])
     
     # SAWEM Phase 2B: Add delta metadata for ID rounds
-    if round_num > 1:
+    # Two-phase: the IDM phase emits delta metadata even in round 1; the DAM phase
+    # never does. For execution_phase=="single" this is exactly the legacy `round_num > 1`.
+    if (round_num > 1 and execution_phase == "single") or is_idm_phase:
         # Add DA baseline and delta information to result
         result["da_baseline_metadata"] = {
             "da_smp": da_smp if 'da_smp' in locals() else None,
             "players": {}
         }
+        result["idm_forecast_change"] = idm_synthetic_forecast_change
         
         # Add per-player delta information
         for pid in players:
@@ -6053,6 +7445,8 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     "da_volume_mwh": round(da_volume, 3),
                     "id_delta_mwh": round(id_delta, 3),
                     "total_volume_mwh": round(da_volume + id_delta, 3),
+                    "da_price_zar": round((abs(da_revenue) / abs(da_volume)), 2) if abs(da_volume) > 1e-9 else None,
+                    "id_price_zar": round((abs(id_revenue) / abs(id_delta)), 2) if abs(id_delta) > 1e-9 else None,
                     "da_revenue_zar": round(da_revenue, 0),
                     "id_revenue_zar": round(id_revenue, 0),
                     "total_revenue_zar": round(da_revenue + id_revenue, 0)
@@ -6065,7 +7459,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             result["dam_hourly_results"] = da_result_data.get("dam_hourly_results", da_result_data.get("hourly_results", []))
     
     # SAWEM Phase 2A: Calculate IDP only for actual intraday/delta rounds.
-    if round_num > 1 and id_delta_round:
+    if emit_idm_settlement:
         traded_hours = [m for m in idp_hourly_metrics if m.get('id_trade_count', 0) > 0]
         total_id_trade_count = sum(int(m.get('id_trade_count', 0)) for m in traded_hours)
         total_id_volume = sum(float(m.get('id_volume_mwh', 0.0)) for m in traded_hours)
@@ -6085,7 +7479,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     # DUAL MARKET: 
     # - Absolute clearing rounds (DAM) → save as dam_bid_dispatch
     # - Delta clearing rounds (IDM) → save as bid_dispatch
-    if enable_bidding and bid_dispatch_tracking:
+    if bid_dispatch_tracking:
         is_dam_clearing = absolute_clearing_round
         
         if is_dam_clearing:
@@ -6145,7 +7539,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
 
     # FORENSIC: Add reconciliation and tracing data
     result["hour_reconciliation"] = hour_reconciliation_data
-    if round_num > 1 and baseline_lookup_trace is not None:
+    if ((round_num > 1 and execution_phase == "single") or is_idm_phase) and baseline_lookup_trace is not None:
         result["baseline_lookup_trace"] = baseline_lookup_trace
     
     # FORENSIC: Create machine-readable audit payload
@@ -6251,6 +7645,8 @@ def evaluate_challenges(
     cumulative_kpis = {}
     if all_round_kpis:
         # Sum up all rounds
+        total_planned_mwh = sum(r.get("planned_mwh", 0) for r in all_round_kpis)
+        total_dispatched_mwh = sum(r.get("dispatched_mwh", 0) for r in all_round_kpis)
         cumulative_kpis = {
             "total_profit": sum(r.get("profit_zar", 0) for r in all_round_kpis),
             "total_revenue": sum(r.get("revenue_zar", 0) for r in all_round_kpis),
@@ -6258,6 +7654,7 @@ def evaluate_challenges(
             "total_imbalance": sum(r.get("imbalance_mwh", 0) for r in all_round_kpis),
             "total_curtailment": sum(r.get("curtailment_mwh", 0) for r in all_round_kpis),
             "total_dispatched": sum(r.get("dispatched_mwh", 0) for r in all_round_kpis),
+            "total_curtailment_rate": max(0, (total_planned_mwh - total_dispatched_mwh) / total_planned_mwh * 100) if total_planned_mwh > 0 else 0,
             "total_co2_emissions": sum(r.get("co2_emissions_kg", 0) for r in all_round_kpis),  # Total CO2 in kg
             "avg_profit_per_round": sum(r.get("profit_zar", 0) for r in all_round_kpis) / len(all_round_kpis) if all_round_kpis else 0,
             "avg_co2_per_round": sum(r.get("co2_emissions_kg", 0) for r in all_round_kpis) / len(all_round_kpis) if all_round_kpis else 0,

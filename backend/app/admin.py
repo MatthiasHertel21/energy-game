@@ -24,6 +24,7 @@ from .models import (
     CampaignScenario,
     CohortCampaign,
     PlayerProgress,
+    PhaseResult,
 )
 from . import mailer
 from .utils import role_required
@@ -331,6 +332,7 @@ class UserItem(Resource):
             for session in Session.query.filter_by(cohort_id=cohort.id).all():
                 # Delete session-related data
                 Forecast.query.filter_by(session_id=session.id).delete()
+                PhaseResult.query.filter_by(session_id=session.id).delete()
                 Result.query.filter_by(session_id=session.id).delete()
                 SessionPlayerType.query.filter_by(session_id=session.id).delete()
                 SessionAllowedType.query.filter_by(session_id=session.id).delete()

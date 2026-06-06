@@ -71,6 +71,28 @@ GRID_SHORTFALL_PRICE_MODES = {"fixed_price", "smp_multiplier", "value_of_lost_lo
 GRID_CURTAILMENT_MODES = {"pro_rata", "reverse_merit_order", "renewables_first", "renewables_last"}
 
 
+def _normalize_boolean_flag(value, fallback: bool = False) -> bool:
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"false", "0", "no", "off", "disabled", ""}:
+            return False
+    return bool(value)
+
+
+def _is_zonal_pricing_v1_enabled(cfg: dict | None) -> bool:
+    zones = max(1, int((cfg or {}).get("grid", {}).get("zones", 1) or 1))
+    general_cfg = (cfg or {}).get("general", {}) or {}
+    return zones > 1 and _normalize_boolean_flag(general_cfg.get("zonal_pricing_v1_enabled"), False)
+
+
 def _get_mix_blocks(entry) -> float:
     if isinstance(entry, dict):
         return float(entry.get("blocks", entry.get("share_pct", 0)) or 0)
@@ -230,6 +252,16 @@ def validate_config(cfg: dict) -> list[str]:
     _validate_mix_with_zone_distribution("environment.groups", cfg.get("environment", {}).get("groups"), int(zones), errors)
     _validate_mix_with_zone_distribution("market.generator_mix", cfg.get("market", {}).get("generator_mix"), int(zones), errors)
     _validate_mix_with_zone_distribution("market.consumer_mix", cfg.get("market", {}).get("consumer_mix"), int(zones), errors)
+    market_cfg = cfg.get("market") or {}
+    if isinstance(market_cfg, dict):
+        for key in ("idm_production_forecast_change_max_pct", "idm_consumption_forecast_change_max_pct"):
+            raw_value = market_cfg.get(key, 0)
+            try:
+                numeric_value = float(raw_value or 0)
+                if numeric_value < 0 or numeric_value > 100:
+                    errors.append(f"market.{key} must be within [0, 100]")
+            except Exception:
+                errors.append(f"market.{key} must be numeric")
     balancing = cfg.get("balancing") or {}
     if not isinstance(balancing, dict):
         errors.append("balancing must be an object")
@@ -397,11 +429,18 @@ def validate_config(cfg: dict) -> list[str]:
                         if role == 'unknown':
                             errors.append(f"player_types[{tid}]: No valid devices or all devices are storage only.")
 
-            if int(zones) > 1:
-                has_player_type_zones = any(isinstance(pt, dict) and pt.get("zone") is not None for pt in player_types)
-                has_legacy_player_zone = cfg.get("general", {}).get("player_zone") is not None
-                if not has_player_type_zones and not has_legacy_player_zone:
-                    errors.append("Multi-zone scenarios require player_types[].zone or legacy general.player_zone")
+            if int(zones) > 1 and _is_zonal_pricing_v1_enabled(cfg):
+                missing_zones = [
+                    str(pt.get("name") or pt.get("id") or "unknown")
+                    for pt in player_types
+                    if isinstance(pt, dict)
+                    and (pt.get("devices") or [])
+                    and pt.get("zone") in (None, "")
+                ]
+                if missing_zones:
+                    errors.append("V1 multi-zone scenarios require player_types[].zone for every configured player type")
+                if cfg.get("general", {}).get("player_zone") not in (None, ""):
+                    errors.append("general.player_zone is not allowed when zonal_pricing_v1_enabled is true")
 
     
     # Optional storage block: not used by engine anymore, but validate if present to catch config errors in legacy scenarios
@@ -423,7 +462,7 @@ def validate_config(cfg: dict) -> list[str]:
     
     # Player Zone (all players in one zone)
     pz = cfg.get("general", {}).get("player_zone")
-    if pz is not None:
+    if pz is not None and not _is_zonal_pricing_v1_enabled(cfg):
         try:
             if not (1 <= int(pz) <= int(zones)):
                 errors.append("general.player_zone must be within [1, zones]")

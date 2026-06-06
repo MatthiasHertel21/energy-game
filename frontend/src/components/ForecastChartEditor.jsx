@@ -18,6 +18,7 @@ import * as d3 from 'd3'
  * - startTime: string (HH:MM) used to annotate the current clock time
  * - daBaseline: number[] (optional: Day-Ahead baseline for comparison)
  * - committedPosition: number[] (optional: Current committed position for ID area visualization)
+ * - idmTradingStatus: string (optional: current-round IDM trading status: on/off/market_code)
  * - hourStatus: string[] (optional: per-hour status: "locked", "da", "id", "future")
  * - daCommittedStart: number (optional: first hour of DA committed range)
  * - daCommittedEnd: number (optional: last hour+1 of DA committed range)
@@ -41,6 +42,7 @@ export default function ForecastChartEditor({
   fakeDate = '',
   daBaseline = null,
   committedPosition = null,
+  idmTradingStatus = 'market_code',
   prevDispatch = null,
   hourStatus = [],
   totalRounds = null,
@@ -664,19 +666,10 @@ export default function ForecastChartEditor({
         ? [...baselineData, { i: baselineData[baselineData.length - 1].i + 1, v: baselineData[baselineData.length - 1].v }]
         : baselineData
       
-      // 1. Fill area from X-axis to DA baseline (grey) - DA Position
-      const daAreaPath = d3.area()
-        .x(d => getHourStartX(d.i))
-        .y0(ih) // Bottom (X-axis)
-        .y1(d => y(d.v))
-        .curve(d3.curveStepAfter)
-      
-      g.append('path')
-        .datum(extendedBaseline)
-        .attr('fill', '#9e9e9e')
-        .attr('opacity', 0.15)
-        .attr('d', daAreaPath)
-      
+      // 1. DA baseline is shown as a line only (no filled area). The shaded
+      // region below is intentionally omitted so the chart only highlights the
+      // green/red DA-vs-forecast difference band drawn next.
+
       // 2. Fill area between DA baseline and current forecast
       // Green = ID buy (current > DA), Red = ID sell (current < DA)
       // IMPORTANT: Use committedPosition for hours before ID gate, hours for forecast hours
@@ -712,7 +705,10 @@ export default function ForecastChartEditor({
 
           // For hours before ID gate: use committedPosition if available (shows actual committed ID position)
           // For hours after ID gate: use current editable forecast (shows planned position)
-          const useCommitted = i < nextIdGateHour && Array.isArray(committedPosition) && i < committedPosition.length
+          const useCommitted = idmTradingStatus !== 'on'
+            && i < nextIdGateHour
+            && Array.isArray(committedPosition)
+            && i < committedPosition.length
           const currentValue = useCommitted ? Number(committedPosition[i]) || 0 : Number(hours[i]) || 0
           
           combinedData.push({
@@ -735,6 +731,23 @@ export default function ForecastChartEditor({
             ]
           : combinedData
         
+        // 0. Grey floor area below the active position (the kept / committed
+        //    volume). Everything below the baseline (and below the forecast when
+        //    selling) is rendered grey; the green/red band drawn next highlights the
+        //    DA-vs-forecast difference (green = buy at IDM, red = sell at IDM).
+        const baselineFloorArea = d3.area()
+          .x(d => getHourStartX(d.i))
+          .y0(ih)
+          .y1(d => y(Math.min(d.current, d.da)))
+          .curve(d3.curveStepAfter)
+
+        g.append('path')
+          .datum(extendedCombined)
+          .attr('fill', '#9e9e9e')
+          .attr('opacity', 0.18)
+          .attr('d', baselineFloorArea)
+          .style('pointer-events', 'none')
+
         // ID Buy area (current > DA) - Green
         const idBuyArea = d3.area()
           .x(d => getHourStartX(d.i))

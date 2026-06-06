@@ -10,6 +10,7 @@ from .extensions import db, socketio
 from .models import Forecast, Session, Scenario, CohortMember, SessionPlayerType, SessionStatus
 from .models import CampaignScenario, Campaign, PlayerProgress, PlayerProgressStatus, Cohort
 from .models import SessionAllowedType, Result, ActivityLog, User, Role
+from .models import PhaseResult
 from .utils import log_activity
 
 # Import baseline generation from engine
@@ -118,6 +119,13 @@ def _normalize_bid_count(value, fallback: int = 0) -> int:
     return max(0, min(len(BID_LABELS), normalized))
 
 
+def _market_config_requests_explicit_bids(config: dict | None) -> bool:
+    market_cfg = (config or {}).get("market", {}) or {}
+    if not _normalize_boolean_flag(market_cfg.get("enable_player_bidding", False), False):
+        return False
+    return _normalize_bid_count(market_cfg.get("bid_count"), 0) > 0
+
+
 def _get_device_bid_count(device: dict | None, legacy_global_enabled: bool = False) -> int:
     device = device or {}
     if device.get("bid_count") is not None:
@@ -145,6 +153,9 @@ def _get_bid_labels(device_bids: dict | None = None, device: dict | None = None,
 
 
 def _config_uses_explicit_bids(config: dict, bids_payload=None) -> bool:
+    if _market_config_requests_explicit_bids(config):
+        return True
+
     legacy_global_enabled = _normalize_boolean_flag((config or {}).get("market", {}).get("enable_player_bidding", False), False)
     for device in (config or {}).get("devices", []) or []:
         if _get_device_bid_count(device, legacy_global_enabled) > 0:
@@ -966,17 +977,55 @@ class MarketStructureAPI(Resource):
             return {"error": "Scenario not found"}, HTTPStatus.NOT_FOUND
         
         cfg = scenario.config or {}
+        markets_cfg = cfg.get("markets", {}) or {}
+
+        def get_market_status(market_key: str) -> str:
+            round_idx = max(0, int(round_num) - 1)
+            market_data = markets_cfg.get(market_key, [])
+            if isinstance(market_data, list):
+                raw = market_data[round_idx] if round_idx < len(market_data) else "market_code"
+                return _normalize_market_status(raw)
+            if isinstance(market_data, dict):
+                trading = market_data.get("trading", [])
+                raw = trading[round_idx] if round_idx < len(trading) else "market_code"
+                return _normalize_market_status(raw)
+            return _normalize_market_status("market_code")
         
         # Import engine functions
         from .engine import (
+            _build_scaled_curve,
+            _build_idm_synthetic_delta_curves,
+            _compute_round_idm_synthetic_forecast_change_summary,
+            _deserialize_curve_steps,
+            _merge_demand_curves,
+            _safe_market_percentage,
             generate_curves_from_config,
             clear_market,
+            clear_market_coupled_atc,
             extract_hour_of_day,
             extract_month,
             build_supply_from_bids,
             build_demand_from_bids,
+            apply_supply_capacity_limits_to_bids,
+            select_events_for_round,
+            _load_shared_market_capacity_scales,
+            _normalize_boolean_flag,
+            _build_player_zone_and_role_maps,
+            _get_mix_zone_shares,
+            _is_zonal_pricing_v1_enabled,
+            _split_curve_by_zone,
         )
         from datetime import date
+
+        historical_mode = _normalize_boolean_flag(request.args.get("historical"), False)
+        # Two-phase rounds clear DAM and IDM under the SAME round_num. Allow the client
+        # (Market Insights DAM/IDM tabs / overview scope) to explicitly request which
+        # phase's curve to build, overriding the legacy "round_num==1 => DAM" heuristic.
+        from .phases import is_two_phase_round as _is_two_phase_round
+        is_round_two_phase = _is_two_phase_round(cfg, int(round_num))
+        requested_phase = str(request.args.get("market_phase", "") or "").strip().lower()
+        if requested_phase not in ("dam", "idm"):
+            requested_phase = ""
         
         # Extract hour of day and month from session/scenario
         start_time = cfg.get("general", {}).get("start_time", "02:00")
@@ -985,17 +1034,189 @@ class MarketStructureAPI(Resource):
         
         hour_of_day = extract_hour_of_day(hour, start_time)
         month_of_year = extract_month(fake_date)
+
+        def _curve_total(curve):
+            return sum(max(0.0, float(quantity or 0.0)) for _price, quantity in (curve or []))
+
+        def _scale_curve_total(curve, target_total, descending=False):
+            target = max(0.0, float(target_total or 0.0))
+            if target <= 1e-9:
+                return []
+            current_total = _curve_total(curve)
+            if current_total <= 1e-9:
+                return []
+            factor = target / current_total
+            scaled = []
+            for price, quantity in curve or []:
+                next_quantity = max(0.0, float(quantity or 0.0) * factor)
+                if next_quantity <= 1e-9:
+                    continue
+                scaled.append((float(price or 0.0), next_quantity))
+            return sorted(scaled, key=lambda item: item[0], reverse=descending)
+
+        def _map_historical_idm_entry(entry):
+            if not isinstance(entry, dict):
+                return None
+            return {
+                "scenario_hour_idx": int(entry.get("scenario_hour_idx", hour) or hour),
+                "round_hour_offset": int(entry.get("round_hour_offset", 0) or 0),
+                "hour_of_day": int(entry.get("hour_of_day", hour_of_day) or hour_of_day),
+                "display_label": entry.get("display_label") or f"H{hour} ({hour_of_day:02d}:00)",
+                "baseline_supply_mwh": round(float(entry.get("synthetic_baseline_supply_mwh", entry.get("baseline_supply_mwh", 0.0)) or 0.0), 3),
+                "baseline_demand_mwh": round(float(entry.get("synthetic_baseline_demand_mwh", entry.get("baseline_demand_mwh", 0.0)) or 0.0), 3),
+                "delta_supply_mwh": round(float(entry.get("synthetic_idm_delta_supply_mwh", entry.get("delta_supply_mwh", 0.0)) or 0.0), 3),
+                "delta_demand_mwh": round(float(entry.get("synthetic_idm_delta_demand_mwh", entry.get("delta_demand_mwh", 0.0)) or 0.0), 3),
+            }
+
+        historical_results = []
+        historical_hour_entry = None
+        historical_idm_hourly = []
+        if historical_mode:
+            historical_results = Result.query.filter_by(session_id=session_id, round_num=round_num).all()
+            if is_round_two_phase and requested_phase:
+                hourly_payload_key = "dam_hourly_results" if requested_phase == "dam" else "idm_hourly_results"
+            else:
+                hourly_payload_key = "dam_hourly_results" if int(round_num) == 1 else "idm_hourly_results"
+            for result_row in historical_results:
+                if isinstance(result_row.data, dict):
+                    payload = result_row.data
+                else:
+                    try:
+                        payload = json.loads(result_row.data or "{}")
+                    except Exception:
+                        payload = {}
+                hourly_rows = payload.get(hourly_payload_key) or payload.get("hourly_results") or []
+                if not isinstance(hourly_rows, list) or not hourly_rows:
+                    continue
+                historical_idm_hourly = [_map_historical_idm_entry(item) for item in hourly_rows]
+                historical_idm_hourly = [item for item in historical_idm_hourly if item]
+                historical_hour_entry = next(
+                    (item for item in hourly_rows if int(item.get("scenario_hour_idx", -1)) == int(hour)),
+                    None,
+                )
+                if historical_idm_hourly:
+                    break
         
         # Get seed from scenario or use session-specific seed
         seed = cfg.get("environment", {}).get("seed") or f"session_{session_id}_round_{round_num}"
+        dam_market_status = get_market_status("dam")
+        idm_market_status = get_market_status("idm")
+        is_dam_clearing = (
+            int(round_num) == 1
+            or (int(round_num) > 1 and str(dam_market_status).lower() == "on" and str(idm_market_status).lower() == "off")
+        )
+        # In a two-phase round (DAM + IDM share the same round_num) both phases
+        # submit forecasts under this round. By default the DAM result is shown for
+        # round 1 and the IDM result for later rounds, but the client may request a
+        # specific phase (market_phase=dam|idm) so the Market Insights tabs / overview
+        # scope can render the correct merit-order curve for the current phase.
+        if is_round_two_phase and requested_phase:
+            is_dam_clearing = (requested_phase == "dam")
+        forecast_market_phase = (
+            ("dam" if is_dam_clearing else "idm") if is_round_two_phase else None
+        )
+        idm_forecast_change = _compute_round_idm_synthetic_forecast_change_summary(
+            cfg,
+            session_id,
+            round_num,
+            idm_market_status=idm_market_status,
+            seed_override=seed,
+            execution_phase=(forecast_market_phase if is_round_two_phase else "single"),
+        )
         
         # Generate hourly-specific synthetic base curves
-        synthetic_supply, synthetic_demand = generate_curves_from_config(
+        baseline_supply, baseline_demand = generate_curves_from_config(
             cfg, 
             seed=seed, 
             hour_of_day=hour_of_day, 
             month_of_year=month_of_year
         )
+        if is_dam_clearing:
+            synthetic_supply = list(baseline_supply)
+            synthetic_demand = list(baseline_demand)
+        else:
+            synthetic_supply, synthetic_demand, _ = _build_idm_synthetic_delta_curves(
+                baseline_supply,
+                baseline_demand,
+                cfg.get("market", {}) or {},
+                idm_forecast_change.get("production_change_pct", 0.0),
+                idm_forecast_change.get("consumption_change_pct", 0.0),
+            )
+
+        carried_synthetic_demand_curve = []
+        carried_synthetic_demand_curve_by_zone = []
+        if is_round_two_phase and not is_dam_clearing:
+            dam_phase_reference = PhaseResult.query.filter_by(
+                session_id=session_id,
+                round_num=round_num,
+                market_phase="dam",
+            ).first()
+            dam_phase_data = (dam_phase_reference.data or {}) if dam_phase_reference and isinstance(dam_phase_reference.data, dict) else {}
+            dam_hourly_rows = dam_phase_data.get("dam_hourly_results") or dam_phase_data.get("hourly_results") or []
+            if isinstance(dam_hourly_rows, list):
+                dam_hour_row = next(
+                    (item for item in dam_hourly_rows if int(item.get("scenario_hour_idx", -1)) == int(hour)),
+                    None,
+                )
+                if isinstance(dam_hour_row, dict):
+                    carried_synthetic_demand_curve = _deserialize_curve_steps(dam_hour_row.get("unserved_synthetic_demand_curve") or [])
+                    carried_synthetic_demand_curve_by_zone = [
+                        _deserialize_curve_steps(zone_curve)
+                        for zone_curve in (dam_hour_row.get("unserved_synthetic_demand_curve_by_zone") or [])
+                    ]
+
+        carried_synthetic_demand_aggregate = carried_synthetic_demand_curve or _merge_demand_curves(carried_synthetic_demand_curve_by_zone)
+        synthetic_demand_for_clearing = list(synthetic_demand)
+        if carried_synthetic_demand_aggregate:
+            synthetic_demand_for_clearing = _merge_demand_curves([
+                synthetic_demand_for_clearing,
+                carried_synthetic_demand_aggregate,
+            ])
+
+        if historical_mode and historical_idm_hourly and not is_dam_clearing:
+            historical_selected_hour = next(
+                (item for item in historical_idm_hourly if int(item.get("scenario_hour_idx", -1)) == int(hour)),
+                None,
+            )
+            historical_totals = {
+                "baseline_supply_mwh": round(sum(float(item.get("baseline_supply_mwh", 0.0) or 0.0) for item in historical_idm_hourly), 3),
+                "baseline_demand_mwh": round(sum(float(item.get("baseline_demand_mwh", 0.0) or 0.0) for item in historical_idm_hourly), 3),
+                "production_delta_mwh": round(float((idm_forecast_change.get("round_totals") or {}).get("production_delta_mwh", 0.0) or 0.0), 3),
+                "consumption_delta_mwh": round(float((idm_forecast_change.get("round_totals") or {}).get("consumption_delta_mwh", 0.0) or 0.0), 3),
+                "delta_supply_mwh": round(sum(float(item.get("delta_supply_mwh", 0.0) or 0.0) for item in historical_idm_hourly), 3),
+                "delta_demand_mwh": round(sum(float(item.get("delta_demand_mwh", 0.0) or 0.0) for item in historical_idm_hourly), 3),
+            }
+            idm_forecast_change = {
+                **idm_forecast_change,
+                "active": bool(historical_totals["delta_supply_mwh"] > 1e-9 or historical_totals["delta_demand_mwh"] > 1e-9),
+                "hourly": historical_idm_hourly,
+                "round_totals": historical_totals,
+                "selected_hour": historical_selected_hour,
+            }
+
+            supply_price_factor = max(0.0, 1.0 - (_safe_market_percentage((cfg.get("market", {}) or {}).get("idm_price_discount_producer_pct", 10.0), 10.0) / 100.0))
+            demand_price_factor = max(0.0, 1.0 + (_safe_market_percentage((cfg.get("market", {}) or {}).get("idm_price_markup_consumer_pct", 10.0), 10.0) / 100.0))
+
+            official_supply_total = float((historical_selected_hour or {}).get("delta_supply_mwh", 0.0) or 0.0)
+            official_demand_total = float((historical_selected_hour or {}).get("delta_demand_mwh", 0.0) or 0.0)
+
+            if official_supply_total > 1e-9:
+                supply_candidate = list(synthetic_supply)
+                if _curve_total(supply_candidate) <= 1e-9:
+                    supply_reference = baseline_supply if _curve_total(baseline_supply) > 1e-9 else baseline_demand
+                    supply_candidate = _build_scaled_curve(supply_reference, 1.0, supply_price_factor, descending=False)
+                synthetic_supply = _scale_curve_total(supply_candidate, official_supply_total, descending=False)
+            else:
+                synthetic_supply = []
+
+            if official_demand_total > 1e-9:
+                demand_candidate = list(synthetic_demand)
+                if _curve_total(demand_candidate) <= 1e-9:
+                    demand_reference = baseline_demand if _curve_total(baseline_demand) > 1e-9 else baseline_supply
+                    demand_candidate = _build_scaled_curve(demand_reference, 1.0, demand_price_factor, descending=True)
+                synthetic_demand = _scale_curve_total(demand_candidate, official_demand_total, descending=True)
+            else:
+                synthetic_demand = []
 
         # Build a live market snapshot from the latest submitted forecasts.
         # shared_market: aggregate all players anonymously.
@@ -1009,42 +1230,247 @@ class MarketStructureAPI(Resource):
             player_id,
             session.mode or "isolated_per_player",
             round_span,
+            market_phase=forecast_market_phase,
         )
+
+        # For IDM delta rounds, convert absolute forecasts to delta (vs DA baseline).
+        # Positive delta  → generator sells MORE than DA → green supply block.
+        # Negative delta  → generator sells LESS than DA → red demand block (buy-back).
+        if not is_dam_clearing and player_forecasts:
+            da_baseline_rows = (
+                Forecast.query
+                .filter_by(session_id=session_id, is_da_baseline=True)
+                .order_by(Forecast.player_id.asc(), Forecast.submitted_at.desc(), Forecast.id.desc())
+                .all()
+            )
+            da_by_player: dict = {}
+            for row in da_baseline_rows:
+                if row.player_id not in da_by_player:
+                    da_by_player[int(row.player_id)] = {
+                        'hours': (row.data or {}).get('hours', []) if isinstance(row.data, dict) else [],
+                        'bids': row.bids or {},
+                    }
+            for pid, forecast_data in list(player_forecasts.items()):
+                da_data = da_by_player.get(int(pid), {})
+                da_hours_full = da_data.get('hours', [])
+                da_bids_full = da_data.get('bids', {})
+
+                # Delta for hours array (absolute, full horizon)
+                current_hours = forecast_data.get('hours', [])
+                delta_hours = []
+                for i in range(len(current_hours)):
+                    da_val = float(da_hours_full[i]) if i < len(da_hours_full) else 0.0
+                    delta_hours.append(float(current_hours[i]) - da_val)
+
+                # Delta for bid lots (already sliced to round_span)
+                current_bids = forecast_data.get('bids') or {}
+                delta_bids: dict = {}
+                for device_id, device_bids in current_bids.items():
+                    if not isinstance(device_bids, dict):
+                        continue
+                    da_device_bids = da_bids_full.get(device_id, {}) if isinstance(da_bids_full, dict) else {}
+                    delta_bids[device_id] = {}
+                    for lot_name, lot in device_bids.items():
+                        if not isinstance(lot, dict):
+                            continue
+                        current_lot_hours = lot.get('hours', [])
+                        da_lot = da_device_bids.get(lot_name, {}) if isinstance(da_device_bids, dict) else {}
+                        da_lot_hours_full = da_lot.get('hours', []) if isinstance(da_lot, dict) else []
+                        delta_lot_hours = []
+                        for j in range(len(current_lot_hours)):
+                            da_h = float(da_lot_hours_full[round_start + j]) if (round_start + j) < len(da_lot_hours_full) else 0.0
+                            delta_lot_hours.append(float(current_lot_hours[j]) - da_h)
+                        delta_bids[device_id][lot_name] = {**lot, 'hours': delta_lot_hours}
+
+                player_forecasts[pid] = {
+                    **forecast_data,
+                    'hours': delta_hours,
+                    'bids': delta_bids if delta_bids else None,
+                }
+
+        configured_zones = max(1, int((cfg.get("grid") or {}).get("zones", 1) or 1))
+        zonal_pricing_enabled = _is_zonal_pricing_v1_enabled(cfg)
+        player_ids = [int(pid) for pid in player_forecasts.keys()]
+        player_type_by_player = {}
+        if player_ids:
+            selected_types = (
+                SessionPlayerType.query
+                .filter(SessionPlayerType.session_id == session_id, SessionPlayerType.user_id.in_(player_ids))
+                .all()
+            )
+            for selected in selected_types:
+                if selected and selected.user_id is not None and selected.type_id:
+                    player_type_by_player[int(selected.user_id)] = str(selected.type_id)
+
+        player_zone_map, _player_role_map = _build_player_zone_and_role_maps(cfg, player_ids, player_type_by_player)
+        generator_zone_shares = _get_mix_zone_shares((cfg.get("environment") or {}).get("groups") or (cfg.get("market") or {}).get("generator_mix"), configured_zones)
+        demand_zone_shares = _get_mix_zone_shares((cfg.get("market") or {}).get("consumer_mix"), configured_zones)
+        allow_dispatch_above_capacity = _normalize_boolean_flag((cfg.get("general") or {}).get("allow_dispatch_above_capacity"), True)
+        round_events = select_events_for_round((cfg.get("events") or []), round_num)
+        shared_market_capacity_scales = _load_shared_market_capacity_scales(session_id, session.mode or "isolated_per_player")
 
         used_live_snapshot = bool(player_forecasts)
         if used_live_snapshot:
-            supply, _supply_meta = build_supply_from_bids(
+            supply, supply_bids = build_supply_from_bids(
                 player_forecasts,
                 local_hour_idx,
                 synthetic_supply,
                 cfg,
+                player_zone_map=player_zone_map,
             )
-            demand, _demand_meta = build_demand_from_bids(
+            demand, demand_bids = build_demand_from_bids(
                 player_forecasts,
                 local_hour_idx,
-                synthetic_demand,
+                synthetic_demand_for_clearing,
                 cfg,
+                player_zone_map=player_zone_map,
             )
+            effective_supply_bids = apply_supply_capacity_limits_to_bids(
+                supply_bids,
+                cfg.get("devices", []),
+                {},
+                round_events=round_events,
+                player_type_by_player=player_type_by_player,
+                shared_market_capacity_scales=shared_market_capacity_scales,
+                allow_dispatch_above_capacity=allow_dispatch_above_capacity,
+            )
+            supply = [tuple(item) for item in synthetic_supply]
+            for bid in effective_supply_bids:
+                quantity = float(bid.get("effective_quantity", bid.get("quantity", 0.0)) or 0.0)
+                if quantity <= 1e-9:
+                    continue
+                supply.append((float(bid.get("price", 0.0) or 0.0), quantity))
+            supply = sorted(supply, key=lambda item: item[0])
+            supply_bids = effective_supply_bids
         else:
-            supply, demand = synthetic_supply, synthetic_demand
+            supply, demand = synthetic_supply, synthetic_demand_for_clearing
+            supply_bids = []
+            demand_bids = []
         
         # Clear market to get SMP
         price_floor = cfg.get("market", {}).get("price_floor", -500)
         price_cap = cfg.get("market", {}).get("price_cap", 5000)
         smp, volume = clear_market(supply, demand, price_floor=price_floor, price_cap=price_cap)
+        if historical_mode and isinstance(historical_hour_entry, dict):
+            smp = float(historical_hour_entry.get("smp", historical_hour_entry.get("system_price_zar_per_mwh", smp)) or smp)
+            volume = float(historical_hour_entry.get("volume", volume) or volume)
+
+        zonal_curves = []
+        zonal_pricing_active = False
+        interzonal_links = []
+        if configured_zones > 1:
+            zone_supply_curves = _split_curve_by_zone(synthetic_supply, generator_zone_shares)
+            zone_demand_curves = _split_curve_by_zone(synthetic_demand, demand_zone_shares)
+            if carried_synthetic_demand_curve_by_zone:
+                for zone_idx in range(min(configured_zones, len(carried_synthetic_demand_curve_by_zone))):
+                    zone_demand_curves[zone_idx].extend(carried_synthetic_demand_curve_by_zone[zone_idx])
+                    zone_demand_curves[zone_idx] = sorted(zone_demand_curves[zone_idx], key=lambda item: item[0], reverse=True)
+            elif carried_synthetic_demand_aggregate:
+                split_carryover = _split_curve_by_zone(carried_synthetic_demand_aggregate, demand_zone_shares)
+                for zone_idx in range(min(configured_zones, len(split_carryover))):
+                    zone_demand_curves[zone_idx].extend(split_carryover[zone_idx])
+                    zone_demand_curves[zone_idx] = sorted(zone_demand_curves[zone_idx], key=lambda item: item[0], reverse=True)
+
+            for bid in supply_bids:
+                zone_idx = max(0, min(configured_zones - 1, int(bid.get("zone_id", 1)) - 1))
+                zone_supply_curves[zone_idx].append((float(bid.get("price", 0.0) or 0.0), float(bid.get("quantity", 0.0) or 0.0)))
+            for bid in demand_bids:
+                zone_idx = max(0, min(configured_zones - 1, int(bid.get("zone_id", 1)) - 1))
+                zone_demand_curves[zone_idx].append((float(bid.get("price", 0.0) or 0.0), float(bid.get("quantity", 0.0) or 0.0)))
+
+            zone_local_prices = []
+            zone_cleared_volumes = []
+            zone_prices = []
+            for zone_idx in range(configured_zones):
+                zone_supply_curves[zone_idx] = sorted(zone_supply_curves[zone_idx], key=lambda item: item[0])
+                zone_demand_curves[zone_idx] = sorted(zone_demand_curves[zone_idx], key=lambda item: item[0], reverse=True)
+                local_price, local_volume = clear_market(
+                    zone_supply_curves[zone_idx],
+                    zone_demand_curves[zone_idx],
+                    price_floor=price_floor,
+                    price_cap=price_cap,
+                )
+                zone_local_prices.append(float(local_price or 0.0))
+                zone_cleared_volumes.append(float(local_volume or 0.0))
+                zone_prices.append(float(local_price or 0.0))
+
+            zone_supply_volume_mwh = list(zone_cleared_volumes)
+            zone_demand_volume_mwh = list(zone_cleared_volumes)
+            zone_net_position_mwh = [0.0] * configured_zones
+            residual_unserved_demand_by_zone = [0.0] * configured_zones
+
+            if zonal_pricing_enabled:
+                zonal_result = clear_market_coupled_atc(
+                    zone_supply_curves,
+                    zone_demand_curves,
+                    (cfg.get("grid") or {}).get("atc") or [],
+                    losses_pct_per_link=float((cfg.get("grid") or {}).get("losses_pct_per_link", (cfg.get("grid") or {}).get("losses_pct", 0.0)) or 0.0),
+                    price_floor=price_floor,
+                    price_cap=price_cap,
+                )
+                zonal_pricing_active = bool(zonal_result.get("zonal_pricing_active", False))
+                zone_prices = [float(value or 0.0) for value in (zonal_result.get("zone_prices") or zone_prices)]
+                zone_supply_volume_mwh = [float(value or 0.0) for value in (zonal_result.get("zone_supply_volume_mwh") or zone_supply_volume_mwh)]
+                zone_demand_volume_mwh = [float(value or 0.0) for value in (zonal_result.get("zone_demand_volume_mwh") or zone_demand_volume_mwh)]
+                zone_net_position_mwh = [float(value or 0.0) for value in (zonal_result.get("zone_net_position_mwh") or zone_net_position_mwh)]
+                residual_unserved_demand_by_zone = [float(value or 0.0) for value in (zonal_result.get("residual_unserved_demand_by_zone") or residual_unserved_demand_by_zone)]
+                smp = float(zonal_result.get("system_price", smp) or smp)
+                volume = float(zonal_result.get("system_volume", volume) or volume)
+
+                for (from_zone, to_zone), flow in sorted((zonal_result.get("interzonal_flows") or {}).items()):
+                    interzonal_links.append({
+                        "from_zone": int(from_zone),
+                        "to_zone": int(to_zone),
+                        "flow_mwh": round(float(flow.get("flow_mwh", 0.0) or 0.0), 3),
+                        "flow_received_mwh": round(float(flow.get("flow_received_mwh", 0.0) or 0.0), 3),
+                        "atc_mwh": round(float(flow.get("atc_mwh", 0.0) or 0.0), 3),
+                        "losses_mwh": round(float(flow.get("losses_mwh", 0.0) or 0.0), 3),
+                        "binding": bool(flow.get("binding", False)),
+                    })
+
+            zonal_curves = [
+                {
+                    "zone_id": zone_idx + 1,
+                    "supply": [{"price": float(price), "volume": float(quantity)} for price, quantity in zone_supply_curves[zone_idx]],
+                    "demand": [{"price": float(price), "volume": float(quantity)} for price, quantity in zone_demand_curves[zone_idx]],
+                    "local_clear_price": round(zone_local_prices[zone_idx], 2),
+                    "zone_price": round(zone_prices[zone_idx] if zone_idx < len(zone_prices) else zone_local_prices[zone_idx], 2),
+                    "cleared_volume_mwh": round(zone_demand_volume_mwh[zone_idx] if zone_idx < len(zone_demand_volume_mwh) else zone_cleared_volumes[zone_idx], 3),
+                    "net_position_mwh": round(zone_net_position_mwh[zone_idx] if zone_idx < len(zone_net_position_mwh) else 0.0, 3),
+                    "residual_unserved_demand_mwh": round(residual_unserved_demand_by_zone[zone_idx] if zone_idx < len(residual_unserved_demand_by_zone) else 0.0, 3),
+                }
+                for zone_idx in range(configured_zones)
+            ]
         
         # Return data in format expected by frontend
         return {
             "supply": [{"price": p, "volume": v} for p, v in supply],
             "demand": [{"price": p, "volume": v} for p, v in demand],
+            "baseline_supply": [{"price": p, "volume": v} for p, v in baseline_supply],
+            "baseline_demand": [{"price": p, "volume": v} for p, v in baseline_demand],
             "smp": smp,
             "volume": volume,
+            "zones": zonal_curves,
+            "grid_zone_count": configured_zones,
+            "zonal_chart_available": configured_zones > 1,
+            "zonal_pricing_enabled": zonal_pricing_enabled,
+            "zonal_pricing_active": zonal_pricing_active,
+            "interzonal_links": interzonal_links,
             "hour": hour,
             "hour_of_day": hour_of_day,
             "round_num": round_num,
+            "market_phase": "dam" if is_dam_clearing else "idm",
             "market_source": "submitted_market" if used_live_snapshot else "synthetic_preview",
             "submitted_players": len(player_forecasts),
             "session_mode": session.mode or "isolated_per_player",
+            "synthetic_demand_carryover_mwh": round(sum(quantity for _price, quantity in carried_synthetic_demand_aggregate), 3),
+            "idm_forecast_change": {
+                **idm_forecast_change,
+                "selected_hour": next(
+                    (entry for entry in (idm_forecast_change.get("hourly") or []) if int(entry.get("scenario_hour_idx", -1)) == int(hour)),
+                    None,
+                ),
+            },
         }, HTTPStatus.OK
 
 
@@ -1266,7 +1692,8 @@ class ForecastAPI(Resource):
             round_num=data["round_num"], 
             data=forecast_data,
             bids=bids_data,
-            is_da_baseline=is_da_baseline
+            is_da_baseline=is_da_baseline,
+            market_phase=(session.market_phase if session and session.market_phase else "single"),
         )
         
         # If this is a new DA baseline, store which hours it covers
@@ -1537,10 +1964,19 @@ def _get_latest_market_forecasts(
     viewer_player_id: int,
     mode: str,
     round_span: int,
+    market_phase: str | None = None,
 ) -> dict[int, dict]:
-    rows = (
+    query = (
         Forecast.query
         .filter_by(session_id=session_id, round_num=round_num)
+    )
+    # In two-phase rounds both DAM and IDM forecasts share the same round_num.
+    # Restrict to the phase being cleared so the merit-order curve matches the
+    # cleared volume/SMP (otherwise the latest = IDM forecast leaks into a DAM view).
+    if market_phase:
+        query = query.filter(Forecast.market_phase == market_phase)
+    rows = (
+        query
         .order_by(Forecast.player_id.asc(), Forecast.submitted_at.desc(), Forecast.id.desc())
         .all()
     )
@@ -1706,7 +2142,9 @@ class ActiveSession(Resource):
             "forecast_horizon_hours": general.get("forecast_horizon_hours", 48),
             "freeze_hours": general.get("freeze_hours", 6),
             "scenario_name": scenario.name,
-            "status": session.status.value
+            "status": session.status.value,
+            "market_phase": session.market_phase,
+            "phase_index": session.phase_index,
         }
 
 
@@ -1728,6 +2166,13 @@ class PlayerSessionItem(Resource):
         
         # Delete forecasts
         Forecast.query.filter_by(session_id=sid).delete()
+        PhaseResult.query.filter_by(session_id=sid).delete(synchronize_session=False)
+        
+        # Delete dependent session-scoped rows before deleting the session.
+        Result.query.filter_by(session_id=sid).delete(synchronize_session=False)
+        SessionPlayerType.query.filter_by(session_id=sid).delete(synchronize_session=False)
+        SessionAllowedType.query.filter_by(session_id=sid).delete(synchronize_session=False)
+        ActivityLog.query.filter_by(session_id=sid).delete(synchronize_session=False)
         
         # Delete session
         db.session.delete(session)
@@ -1801,6 +2246,20 @@ class DABaseline(Resource):
         
         dam_status = get_market_status("dam", "trading")
         idm_status = get_market_status("idm", "trading")
+        from .engine import _compute_round_idm_synthetic_forecast_change_summary
+        from .phases import is_two_phase_round as _is_two_phase_round
+        seed = ((scenario.config or {}).get("environment", {}) or {}).get("seed") or f"session_{session_id}_round_{current_round}"
+        # Two-phase rounds run a dedicated IDM phase every round (incl. round 1), so the
+        # synthetic forecast change applies whenever the round is two-phase.
+        da_baseline_phase = "idm" if _is_two_phase_round(scenario.config or {}, current_round) else "single"
+        idm_forecast_change = _compute_round_idm_synthetic_forecast_change_summary(
+            scenario.config or {},
+            session_id,
+            current_round,
+            idm_market_status=idm_status,
+            seed_override=seed,
+            execution_phase=da_baseline_phase,
+        )
         
         # Parse start time
         try:
@@ -1859,32 +2318,67 @@ class DABaseline(Resource):
             is_da_baseline=True
         ).order_by(Forecast.round_num).all()
         
-        if not da_forecasts:
+        # Two-phase rounds: when the current round's DAM phase has already cleared, the
+        # DAM baseline for the IDM phase comes from PhaseResult(round=current, 'dam')
+        # (intra-round). Players without a cross-round is_da_baseline forecast must still
+        # fall through to the main branch (which merges the DAM phase below) instead of
+        # the no-baseline early-return path.
+        from .phases import is_two_phase_round as _is_two_phase_round
+        two_phase_dam_phase = None
+        if _is_two_phase_round(scenario.config or {}, current_round):
+            two_phase_dam_phase = PhaseResult.query.filter_by(
+                session_id=session_id,
+                player_id=player_id,
+                round_num=current_round,
+                market_phase="dam",
+            ).first()
+        has_two_phase_dam = bool(
+            two_phase_dam_phase
+            and (two_phase_dam_phase.bid_dispatch or (two_phase_dam_phase.data or {}).get("dam_bid_dispatch"))
+        )
+        
+        if not da_forecasts and not has_two_phase_dam:
             # No DA baseline exists yet
             # Build hour status based on Day 1 Baseline mode
             day_one_baseline_mode = general_cfg.get("day_one_baseline_mode", 
                                                      general_cfg.get("first_round_baseline_mode", "preset"))  # Backward compat
             
-            hour_status = []
-            for h in range(horizon_hours):
-                if h < locked_until_hour:
-                    hour_status.append("locked")
-                elif current_round == 1 and h < hours_until_first_midnight:
-                    # Round 1, Day 1: Depends on mode
-                    if day_one_baseline_mode == "edit_round_one":
-                        hour_status.append("da_r1")  # Editable (special Round 1 Day 1)
-                    else:
-                        # "zero" or "preset": locked (not editable)
-                        hour_status.append("locked")
-                elif current_round == 1:
-                    # Round 1, beyond Day 1: Not yet tradeable
-                    hour_status.append("forecast")
-                elif da_committed_start <= h < da_committed_end:
-                    # DA-committed → ID market (cannot change DA position)
-                    hour_status.append("id")
+            # Two-phase rounds (DAM + IDM cleared within the same round, incl. round 1)
+            # must keep the current round's hours editable. The legacy "zero"/"preset"
+            # round-1 branch below would mark all Day-1 hours as "locked", which both
+            # disables forecast editing and paints every round grey ("Past") in the
+            # market overview. Reuse the timeline algorithm (phase/market aware) so the
+            # statuses stay consistent and editable. Legacy single-phase rounds are
+            # untouched.
+            from .phases import is_two_phase_round as _is_two_phase_round
+            if _is_two_phase_round(scenario.config or {}, current_round):
+                timeline_for_status = generate_market_timeline(session, current_round)
+                hour_status = list(timeline_for_status.get("hour_status") or [])
+                if len(hour_status) < horizon_hours:
+                    hour_status += ["forecast"] * (horizon_hours - len(hour_status))
                 else:
-                    # Beyond current trading horizon
-                    hour_status.append("forecast")
+                    hour_status = hour_status[:horizon_hours]
+            else:
+                hour_status = []
+                for h in range(horizon_hours):
+                    if h < locked_until_hour:
+                        hour_status.append("locked")
+                    elif current_round == 1 and h < hours_until_first_midnight:
+                        # Round 1, Day 1: Depends on mode
+                        if day_one_baseline_mode == "edit_round_one":
+                            hour_status.append("da_r1")  # Editable (special Round 1 Day 1)
+                        else:
+                            # "zero" or "preset": locked (not editable)
+                            hour_status.append("locked")
+                    elif current_round == 1:
+                        # Round 1, beyond Day 1: Not yet tradeable
+                        hour_status.append("forecast")
+                    elif da_committed_start <= h < da_committed_end:
+                        # DA-committed → ID market (cannot change DA position)
+                        hour_status.append("id")
+                    else:
+                        # Beyond current trading horizon
+                        hour_status.append("forecast")
             
             # FILTER hour_status based on markets config to prevent showing disabled markets
             if idm_status == "off":
@@ -1904,10 +2398,11 @@ class DABaseline(Resource):
                     for h in hour_status
                 ]
             
-            # Auto-generate baseline for Round 1 if configured
-            if current_round == 1 and day_one_baseline_mode in ["zero", "preset"]:
-                # Generate automatic baseline ONLY for Day 1 (DA market)
-                # Beyond Day 1, leave empty so players can plan ahead
+            # Auto-generate baseline for Round 1 — and for the DAM phase of any
+            # two-phase round (>1) that has no carried DA baseline yet — if configured.
+            is_two_phase_now = _is_two_phase_round(scenario.config or {}, current_round)
+            if (current_round == 1 or is_two_phase_now) and day_one_baseline_mode in ["zero", "preset"]:
+                # Generate automatic baseline for the currently tradeable DA window.
                 devices_config = scenario.config.get("devices", [])
                 start_time = general_cfg.get("start_time", "00:00")
                 
@@ -1920,8 +2415,16 @@ class DABaseline(Resource):
                 devices_by_id = {}
                 aggregate_hours = [0.0] * horizon_hours
                 
-                # Only generate baseline for Day 1 (up to first midnight)
-                baseline_end = hours_until_first_midnight
+                if current_round == 1:
+                    # Round 1: baseline for Day 1 (up to first midnight)
+                    baseline_start = 0
+                    baseline_end = hours_until_first_midnight
+                else:
+                    # Two-phase round (>1): baseline for this round's still-tradeable
+                    # DA hours so the DAM phase shows a baseline to bid around instead
+                    # of an empty chart.
+                    baseline_start = locked_until_hour
+                    baseline_end = da_committed_end
                 
                 for device in devices_config:
                     device_id = device.get("id")
@@ -1930,8 +2433,8 @@ class DABaseline(Resource):
                     
                     device_hours = []
                     for h in range(horizon_hours):
-                        if h < baseline_end:
-                            # Generate baseline for Day 1 only
+                        if baseline_start <= h < baseline_end:
+                            # Generate baseline for the tradeable DA window
                             if day_one_baseline_mode == "zero":
                                 # Zero baseline: all hours are 0
                                 value = 0.0
@@ -1939,7 +2442,7 @@ class DABaseline(Resource):
                                 # Preset: generate realistic baseline
                                 value = generate_device_baseline(device, player_count, h, start_time)
                         else:
-                            # Beyond Day 1: leave at 0 for player planning
+                            # Outside the tradeable window: leave at 0
                             value = 0.0
                         
                         device_hours.append(value)
@@ -1957,6 +2460,7 @@ class DABaseline(Resource):
                     "da_committed_end": da_committed_end if da_committed_end > 0 else -1,
                     "da_until_hour": da_until_hour,
                     "id_until_hour": id_until_hour,
+                    "idm_forecast_change": idm_forecast_change,
                     "auto_generated": True,
                     "baseline_mode": day_one_baseline_mode
                 }, HTTPStatus.OK
@@ -1970,7 +2474,8 @@ class DABaseline(Resource):
                 "da_committed_start": da_committed_start if da_committed_start < horizon_hours else -1,
                 "da_committed_end": da_committed_end if da_committed_end > 0 else -1,
                 "da_until_hour": da_until_hour,
-                "id_until_hour": id_until_hour
+                "id_until_hour": id_until_hour,
+                "idm_forecast_change": idm_forecast_change,
             }, HTTPStatus.OK
         
         # Combine DA baselines from multiple gates
@@ -2218,6 +2723,81 @@ class DABaseline(Resource):
 
                             prev_dispatched[str(device_id)][lot_name] = dispatched_hours
 
+        # ============================================================
+        # TWO-PHASE INTRA-ROUND DAM BASELINE
+        # ============================================================
+        # During the IDM phase of a two-phase round, the DAM "baseline" the player
+        # adjusts against is the DAM dispatch of the SAME round (intra-round baseline),
+        # persisted in PhaseResult(round=current, market_phase='dam') — NOT the previous
+        # round's Result. The legacy prev_dispatched above reads Result(current-1), which
+        # leaves the current round's hours empty, so no DAM baseline is drawn. Merge the
+        # same-round DAM phase dispatch into the baseline (grey "DA Position" area + the
+        # prev_dispatched reference line) for the current round's hours.
+        if has_two_phase_dam:
+            dam_dispatch_raw = two_phase_dam_phase.bid_dispatch or (two_phase_dam_phase.data or {}).get("dam_bid_dispatch")
+            if dam_dispatch_raw:
+                dam_dispatch = _normalize_player_dispatch_payload(dam_dispatch_raw)
+                round_start = max(0, (current_round - 1) * round_span)
+                for device_id, lots in (dam_dispatch or {}).items():
+                    sdid = str(device_id)
+                    if sdid not in devices_by_id:
+                        devices_by_id[sdid] = [0.0] * horizon_hours
+                    if sdid not in prev_dispatched:
+                        prev_dispatched[sdid] = {}
+                    for lot_name, hourly_rows in (lots or {}).items():
+                        if not isinstance(hourly_rows, list):
+                            continue
+                        dispatched_hours = [0.0] * horizon_hours
+                        for row in hourly_rows:
+                            if not isinstance(row, dict):
+                                continue
+                            row_hour_idx = row.get("scenario_hour_idx", row.get("hour_idx"))
+                            if row_hour_idx is None:
+                                row_offset = row.get("round_hour_offset", row.get("hour_offset", row.get("hour")))
+                                if row_offset is None:
+                                    continue
+                                row_hour_idx = round_start + int(row_offset)
+                            try:
+                                row_hour_idx = int(row_hour_idx)
+                            except (TypeError, ValueError):
+                                continue
+                            if 0 <= row_hour_idx < horizon_hours:
+                                mw = float(row.get("mw_dispatched", 0.0) or 0.0)
+                                dispatched_hours[row_hour_idx] = mw
+                                if row_hour_idx < len(devices_by_id[sdid]):
+                                    devices_by_id[sdid][row_hour_idx] = mw
+                        prev_dispatched[sdid][lot_name] = dispatched_hours
+                        if sdid not in bids_data:
+                            bids_data[sdid] = {}
+                        existing_price = bids_data.get(sdid, {}).get(lot_name, {}).get("price", 0)
+                        bids_data[sdid][lot_name] = {
+                            "price": existing_price,
+                            "hours": dispatched_hours[:len(devices_by_id[sdid])],
+                        }
+                # Rebuild aggregate from the merged per-device baseline so the
+                # aggregate chart's DA baseline reflects the DAM phase too.
+                agg_len = len(aggregate_hours) if aggregate_hours else horizon_hours
+                rebuilt_aggregate = [0.0] * agg_len
+                for sdid, hours_list in devices_by_id.items():
+                    for h in range(min(len(hours_list), agg_len)):
+                        rebuilt_aggregate[h] += float(hours_list[h] or 0.0)
+                aggregate_hours = rebuilt_aggregate
+
+        # Surface the cleared DAM phase price/volume of the current round so the
+        # IDM-phase UI (banner) can show the Day-Ahead reference price.
+        two_phase_dam_smp = None
+        two_phase_dam_volume = None
+        if has_two_phase_dam:
+            _dam_phase_data = two_phase_dam_phase.data or {}
+            try:
+                two_phase_dam_smp = float(_dam_phase_data.get("smp")) if _dam_phase_data.get("smp") is not None else None
+            except (TypeError, ValueError):
+                two_phase_dam_smp = None
+            try:
+                two_phase_dam_volume = float(_dam_phase_data.get("volume")) if _dam_phase_data.get("volume") is not None else None
+            except (TypeError, ValueError):
+                two_phase_dam_volume = None
+
         return {
             "devices": devices_by_id,
             "bids": bids_data,
@@ -2229,6 +2809,9 @@ class DABaseline(Resource):
             "da_until_hour": da_until_hour,
             "id_until_hour": id_until_hour,
             "market_timeline": timeline,
+            "idm_forecast_change": idm_forecast_change,
+            "dam_phase_smp": two_phase_dam_smp,
+            "dam_phase_volume": two_phase_dam_volume,
             # Current committed position (last saved forecast)
             "current_position": {
                 "devices": current_position_devices,
@@ -2344,6 +2927,7 @@ class ResetScenario(Resource):
             sid = s.id
             # Delete forecasts and results tied to session
             Forecast.query.filter_by(session_id=sid).delete(synchronize_session=False)
+            PhaseResult.query.filter_by(session_id=sid).delete(synchronize_session=False)
             Result.query.filter_by(session_id=sid).delete(synchronize_session=False)
             # Delete player type selections/allowed types (if any)
             SessionPlayerType.query.filter_by(session_id=sid).delete(synchronize_session=False)
@@ -2385,6 +2969,7 @@ class ResetScenario(Resource):
             sid = s.id
             # Remove this player's forecasts/results from the cohort session
             Forecast.query.filter_by(session_id=sid, player_id=uid).delete(synchronize_session=False)
+            PhaseResult.query.filter_by(session_id=sid, player_id=uid).delete(synchronize_session=False)
             Result.query.filter_by(session_id=sid, player_id=uid).delete(synchronize_session=False)
             # Remove type selection for this player (if any)
             SessionPlayerType.query.filter_by(session_id=sid, user_id=uid).delete(synchronize_session=False)

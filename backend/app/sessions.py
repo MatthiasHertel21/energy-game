@@ -9,6 +9,7 @@ from .models import Session, SessionStatus, Scenario, Campaign, SessionAllowedTy
 from .utils import role_required, log_activity
 from .kpi_schema import canonicalize_kpis
 from .engine import _summarize_battery_player_kpis
+from .phases import is_two_phase_round
 import os, json
 from datetime import datetime
 from typing import Any
@@ -303,6 +304,53 @@ def _merge_hourly_breakdown(existing_rows: Any, derived_rows: list[dict]):
         existing_by_hour[row["hour"]] = merged
 
     return [existing_by_hour[hour] for hour in sorted(existing_by_hour)]
+
+
+def _enrich_hourly_results_with_player_prices(rows: Any, hourly_breakdown: Any):
+    if not isinstance(rows, list):
+        return []
+
+    breakdown_by_hour = {}
+    if isinstance(hourly_breakdown, list):
+        for row in hourly_breakdown:
+            if not isinstance(row, dict):
+                continue
+            hour = row.get("hour")
+            if hour is None:
+                continue
+            try:
+                breakdown_by_hour[int(hour)] = row
+            except Exception:
+                continue
+
+    enriched_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            enriched_rows.append(row)
+            continue
+
+        merged = dict(row)
+        breakdown_row = None
+        for key in ("scenario_hour_idx", "hour_idx", "hour"):
+            value = row.get(key)
+            if value is None:
+                continue
+            try:
+                breakdown_row = breakdown_by_hour.get(int(value))
+            except Exception:
+                breakdown_row = None
+            if breakdown_row is not None:
+                break
+
+        if isinstance(breakdown_row, dict):
+            if merged.get("zone_price_zar_per_mwh") is None and breakdown_row.get("zone_price_zar_per_mwh") is not None:
+                merged["zone_price_zar_per_mwh"] = breakdown_row.get("zone_price_zar_per_mwh")
+            if merged.get("system_price_zar_per_mwh") is None and breakdown_row.get("system_price_zar_per_mwh") is not None:
+                merged["system_price_zar_per_mwh"] = breakdown_row.get("system_price_zar_per_mwh")
+
+        enriched_rows.append(merged)
+
+    return enriched_rows
 
 
 def _backfill_kpis_from_device_settlement(kpis: dict):
@@ -722,10 +770,20 @@ def _device_market_role(device: dict) -> str:
     return "unknown"
 
 
-def _compute_challenge_capacity_scale(config: dict, mode: str, player_type_id, role: str) -> float:
+def _compute_challenge_capacity_scale(config: dict, mode: str, player_type_id, role: str, session_id: int | None = None) -> float:
     normalized_role = _normalize_market_role(role)
     if mode != "shared_market" or normalized_role not in {"producer", "consumer"}:
         return 1.0
+
+    if session_id is not None and player_type_id:
+        try:
+            from .engine import _load_shared_market_capacity_scales
+            shared_market_capacity_scales = _load_shared_market_capacity_scales(session_id, mode)
+            slot_scale = shared_market_capacity_scales.get(str(player_type_id or ""))
+            if slot_scale is not None and slot_scale > 0:
+                return float(slot_scale)
+        except Exception:
+            pass
 
     devices_cfg = [device for device in (config.get("devices") or []) if isinstance(device, dict)]
     player_devices = _get_player_devices_for_type(config, player_type_id)
@@ -741,7 +799,27 @@ def _compute_challenge_capacity_scale(config: dict, mode: str, player_type_id, r
     return max(0.0, min(1.0, player_capacity / total_role_capacity))
 
 
-def _repair_challenge_result(config: dict, mode: str, player_type_id, role: str, round_num: int, current_kpis: dict, all_round_kpis: list[dict], stored_result):
+def _challenge_applies_to_player(challenge: dict, role: str, player_type_id) -> bool:
+    applicable_to = challenge.get("applicable_to", ["producer", "consumer"])
+    if isinstance(applicable_to, str):
+        applicable_to = [applicable_to]
+
+    applicable_scopes = {
+        str(item or "").strip().lower()
+        for item in applicable_to
+        if str(item or "").strip()
+    }
+    if not applicable_scopes or "all" in applicable_scopes:
+        return True
+
+    player_scopes = {_normalize_market_role(role)}
+    normalized_player_type_id = str(player_type_id or "").strip().lower()
+    if normalized_player_type_id:
+        player_scopes.add(normalized_player_type_id)
+    return not applicable_scopes.isdisjoint(player_scopes)
+
+
+def _repair_challenge_result(config: dict, mode: str, player_type_id, role: str, round_num: int, current_kpis: dict, all_round_kpis: list[dict], stored_result, session_id: int | None = None):
     challenges = config.get("challenges") or []
     normalized_role = _normalize_market_role(role)
     if not challenges or normalized_role not in {"producer", "consumer"}:
@@ -750,7 +828,18 @@ def _repair_challenge_result(config: dict, mode: str, player_type_id, role: str,
     if isinstance(stored_result, dict):
         stored_rows = stored_result.get("results")
         if isinstance(stored_rows, list) and stored_rows:
-            return stored_result
+            expected_ids = {
+                str(challenge.get("id") or "").strip()
+                for challenge in challenges
+                if isinstance(challenge, dict) and _challenge_applies_to_player(challenge, normalized_role, player_type_id)
+            }
+            stored_ids = {
+                str(row.get("challenge_id") or "").strip()
+                for row in stored_rows
+                if isinstance(row, dict)
+            }
+            if expected_ids and stored_ids == expected_ids:
+                return stored_result
 
     try:
         from .engine import evaluate_challenges
@@ -770,7 +859,7 @@ def _repair_challenge_result(config: dict, mode: str, player_type_id, role: str,
         role=normalized_role,
         round_num=round_num,
         all_round_kpis=round_kpis,
-        capacity_scale=_compute_challenge_capacity_scale(config, mode, player_type_id, normalized_role),
+        capacity_scale=_compute_challenge_capacity_scale(config, mode, player_type_id, normalized_role, session_id=session_id),
         player_type_id=player_type_id,
     )
 
@@ -827,6 +916,67 @@ def _build_market_summary(total_volume_mwh, player_rows):
             "consumer_share_pct": pct(synthetic_consumer_volume),
         },
     }
+
+
+def _build_two_phase_phase_mix(session_id, round_num, role_by_player):
+    """Per-phase (DAM/IDM) real-vs-synthetic cleared-volume breakdown for two-phase rounds.
+
+    The legacy market summary sums each player's round-level dispatched_mwh, which heavily
+    over-counts in shared markets (every player sees the same market). Here we instead use
+    each player's INDIVIDUAL per-phase dispatch (which sums to the single cleared phase
+    volume) and treat the remainder of the cleared volume as synthetic.
+    """
+    from .models import PhaseResult
+
+    def _disp_total(bid_dispatch):
+        total = 0.0
+        if not isinstance(bid_dispatch, dict):
+            return total
+        for _device_id, lots in bid_dispatch.items():
+            for _lot_name, rows in (lots or {}).items():
+                if isinstance(rows, list):
+                    for row in rows:
+                        if isinstance(row, dict):
+                            total += max(0.0, float(row.get("mw_dispatched", 0.0) or 0.0))
+        return total
+
+    phase_results = PhaseResult.query.filter_by(session_id=session_id, round_num=round_num).all()
+    phase_mix = {}
+    for phase in ("dam", "idm"):
+        rows = [p for p in phase_results if str(getattr(p, "market_phase", "") or "").lower() == phase]
+        if not rows:
+            continue
+        cleared_volume = 0.0
+        real_producer = 0.0
+        real_consumer = 0.0
+        for p in rows:
+            data = p.data if isinstance(p.data, dict) else {}
+            cleared_volume = max(cleared_volume, _safe_market_number(data.get("volume")))
+            bid_dispatch = p.bid_dispatch or data.get(f"{phase}_bid_dispatch")
+            dispatched = _disp_total(bid_dispatch)
+            role = role_by_player.get(p.player_id) or _normalize_market_role(data.get("player_role"))
+            if role == "consumer":
+                real_consumer += dispatched
+            else:
+                real_producer += dispatched
+        synthetic_producer = max(0.0, cleared_volume - real_producer)
+        synthetic_consumer = max(0.0, cleared_volume - real_consumer)
+
+        def pct(value):
+            return round((value / cleared_volume * 100.0), 1) if cleared_volume > 1e-9 else 0.0
+
+        phase_mix[phase] = {
+            "cleared_volume_mwh": round(cleared_volume, 3),
+            "real_producer_mwh": round(real_producer, 3),
+            "synthetic_producer_mwh": round(synthetic_producer, 3),
+            "real_consumer_mwh": round(real_consumer, 3),
+            "synthetic_consumer_mwh": round(synthetic_consumer, 3),
+            "real_producer_share_pct": pct(real_producer),
+            "synthetic_producer_share_pct": pct(synthetic_producer),
+            "real_consumer_share_pct": pct(real_consumer),
+            "synthetic_consumer_share_pct": pct(synthetic_consumer),
+        }
+    return phase_mix
 
 
 def _infer_zone_from_player_type(config: dict, player_type_id):
@@ -1020,10 +1170,78 @@ def _build_zone_breakdown(zone_entries, link_entries, player_rows):
     return zone_breakdown
 
 
+def _build_zone_mix_breakdown(zone_entries, player_rows):
+    zone_map = {}
+
+    def ensure_zone(zone_id):
+        return zone_map.setdefault(zone_id, {
+            "total_production_mwh": 0.0,
+            "total_consumption_mwh": 0.0,
+            "real_production_mwh": 0.0,
+            "real_consumption_mwh": 0.0,
+        })
+
+    for zone_entry in zone_entries or []:
+        if not isinstance(zone_entry, dict):
+            continue
+        try:
+            zone_id = int(zone_entry.get("zone_id", 0) or 0)
+        except Exception:
+            zone_id = 0
+        if zone_id <= 0:
+            continue
+
+        bucket = ensure_zone(zone_id)
+        bucket["total_production_mwh"] += max(0.0, _safe_market_number(zone_entry.get("local_generation_mwh")))
+        bucket["total_consumption_mwh"] += max(0.0, _safe_market_number(zone_entry.get("local_demand_mwh")))
+
+    for player_row in player_rows or []:
+        if not isinstance(player_row, dict):
+            continue
+        try:
+            zone_id = int(player_row.get("zone_id", 0) or 0)
+        except Exception:
+            zone_id = 0
+        if zone_id <= 0:
+            continue
+
+        dispatched_mwh = max(0.0, _safe_market_number(player_row.get("dispatched_mwh")))
+        role = _normalize_market_role(player_row.get("player_role"))
+        bucket = ensure_zone(zone_id)
+
+        if role == "consumer":
+            bucket["real_consumption_mwh"] += dispatched_mwh
+        else:
+            bucket["real_production_mwh"] += dispatched_mwh
+
+    zone_mix_breakdown = []
+    for zone_id in sorted(zone_map.keys()):
+        bucket = zone_map[zone_id]
+        total_production_mwh = max(bucket["total_production_mwh"], bucket["real_production_mwh"])
+        total_consumption_mwh = max(bucket["total_consumption_mwh"], bucket["real_consumption_mwh"])
+        real_production_mwh = bucket["real_production_mwh"]
+        real_consumption_mwh = bucket["real_consumption_mwh"]
+        synthetic_production_mwh = max(0.0, total_production_mwh - real_production_mwh)
+        synthetic_consumption_mwh = max(0.0, total_consumption_mwh - real_consumption_mwh)
+
+        zone_mix_breakdown.append({
+            "zone_id": zone_id,
+            "total_production_mwh": round(total_production_mwh, 3),
+            "real_production_mwh": round(real_production_mwh, 3),
+            "synthetic_production_mwh": round(synthetic_production_mwh, 3),
+            "total_consumption_mwh": round(total_consumption_mwh, 3),
+            "real_consumption_mwh": round(real_consumption_mwh, 3),
+            "synthetic_consumption_mwh": round(synthetic_consumption_mwh, 3),
+        })
+
+    return zone_mix_breakdown
+
+
 def _enrich_market_summary(summary, price_points=None, zone_entries=None, link_entries=None, player_rows=None):
     enriched = dict(summary or {})
     enriched["price_stats"] = _build_price_stats(price_points or [])
     enriched["zone_breakdown"] = _build_zone_breakdown(zone_entries or [], link_entries or [], player_rows or [])
+    enriched["zone_mix_breakdown"] = _build_zone_mix_breakdown(zone_entries or [], player_rows or [])
     return enriched
 
 
@@ -1116,6 +1334,8 @@ class ActiveSession(Resource):
                 "campaign_name": campaign.name if campaign else None,
                 "status": row.status.value if row.status else None,
                 "mode": row.mode,
+                "market_phase": row.market_phase,
+                "phase_index": row.phase_index,
                 "started_at": row.started_at.isoformat() + "Z" if row.started_at else None,
             }
         }
@@ -1137,6 +1357,8 @@ class SessionItem(Resource):
             "status": s.status.value,
             "scenario_id": s.scenario_id,
             "current_round": s.current_round,
+            "market_phase": s.market_phase,
+            "phase_index": s.phase_index,
             "general": general,
             "market": market,
             "markets": markets,
@@ -1515,7 +1737,9 @@ class RoundResults(Resource):
         scenario = Scenario.query.get(session.scenario_id)
         config = scenario.config or {}
         weights = config.get("scoring", {}).get("weights", {"profit": 0.6, "imbalance": 0.3, "curtailment": 0.1})
-        idm_trading_enabled = round_num > 1 and _get_market_status_for_round(config, "idm", round_num) != "off"
+        idm_trading_enabled = (
+            round_num > 1 and _get_market_status_for_round(config, "idm", round_num) != "off"
+        ) or is_two_phase_round(config, round_num)
         
         # Get DA baseline forecasts for DA/ID breakdown
         from .models import Forecast
@@ -1925,7 +2149,7 @@ class RoundResults(Resource):
                 current_device_hourly_breakdown,
                 r.round_num,
             )
-            if r.round_num > 1 and (scoped_device_hourly_details or raw_idm_device_hourly_details):
+            if (r.round_num > 1 or is_two_phase_round(config, r.round_num)) and (scoped_device_hourly_details or raw_idm_device_hourly_details):
                 scoped_dam_device_hourly_details = {}
             if scoped_device_hourly_details:
                 scoped_idm_device_hourly_details = {}
@@ -1949,10 +2173,18 @@ class RoundResults(Resource):
                 kpis,
                 all_round_kpis,
                 r.data.get("challenge_result"),
+                session_id=sid,
             )
 
-            player_hourly_results = r.data.get("hourly_results", [])
-            player_idm_hourly_results = r.data.get("idm_hourly_results", r.data.get("hourly_results", []))
+            player_hourly_breakdown = kpis.get("hourly_breakdown", [])
+            player_hourly_results = _enrich_hourly_results_with_player_prices(
+                r.data.get("hourly_results", []),
+                player_hourly_breakdown,
+            )
+            player_idm_hourly_results = _enrich_hourly_results_with_player_prices(
+                r.data.get("idm_hourly_results", r.data.get("hourly_results", [])),
+                player_hourly_breakdown,
+            )
             if not idm_trading_enabled:
                 player_hourly_results = _strip_intraday_hourly_metadata(player_hourly_results)
                 player_idm_hourly_results = []
@@ -1961,6 +2193,7 @@ class RoundResults(Resource):
                 "player_id": r.player_id,
                 "email": player_email,
                 "type": player_type,
+                "idm_forecast_change": (r.data or {}).get("idm_forecast_change"),
                 "kpis": kpis,
                 "profit": profit,
                 "variable_cost": float(kpis.get("variable_cost_zar", 0)),
@@ -1973,9 +2206,12 @@ class RoundResults(Resource):
                 "dam_bid_dispatch": r.data.get("dam_bid_dispatch", {}),
                 "idm_bid_dispatch": r.data.get("idm_bid_dispatch", raw_bid_dispatch),
                 "hourly_results": player_hourly_results,
-                "dam_hourly_results": r.data.get("dam_hourly_results", []),
+                "dam_hourly_results": _enrich_hourly_results_with_player_prices(
+                    r.data.get("dam_hourly_results", []),
+                    player_hourly_breakdown,
+                ),
                 "idm_hourly_results": player_idm_hourly_results,
-                "hourly_breakdown": kpis.get("hourly_breakdown", []),  # Include detailed hourly breakdown
+                "hourly_breakdown": player_hourly_breakdown,  # Include detailed hourly breakdown
                 "device_hourly_breakdown": kpis.get("device_hourly_breakdown", {}),  # Per-device hourly breakdown
                 "device_hourly_details": scoped_device_hourly_details,  # NEW: Device-level CO2/balancing
                 "dam_device_hourly_details": scoped_dam_device_hourly_details,
@@ -1986,6 +2222,7 @@ class RoundResults(Resource):
                 "no_clearing_reason": r.data.get("reason"),
                 "zone_results": r.data.get("zone_results", []),
                 "link_results": r.data.get("link_results", []),
+                "player_zone_split_active": bool(kpis.get("player_zone_split_active", False)),
                 "player_zone_info": (r.data.get("player_zone_info_by_player", {}) or {}).get(r.player_id) or (r.data.get("player_zone_info_by_player", {}) or {}).get(str(r.player_id)) or {},
                 "balancing_settings": {
                     "up_price_zar_per_mwh": float((config.get("balancing") or {}).get("up_price_zar_per_mwh", 1200.0) or 1200.0),
@@ -2146,6 +2383,35 @@ class RoundResults(Resource):
         )
         market_summary["active_events_count"] = len(active_events)
         
+        # Two-phase rounds: replace the over-counted shared-market totals with a per-phase
+        # (DAM/IDM) real-vs-synthetic breakdown derived from individual cleared dispatch.
+        if is_two_phase_round(config, round_num):
+            role_by_player = {
+                row.get("player_id"): _normalize_market_role(row.get("player_role"))
+                for row in round_market_rows
+            }
+            phase_mix = _build_two_phase_phase_mix(sid, round_num, role_by_player)
+            if phase_mix:
+                market_summary["phase_mix"] = phase_mix
+                total_vol = sum(p["cleared_volume_mwh"] for p in phase_mix.values())
+                total_real_prod = sum(p["real_producer_mwh"] for p in phase_mix.values())
+                total_syn_prod = sum(p["synthetic_producer_mwh"] for p in phase_mix.values())
+                total_real_cons = sum(p["real_consumer_mwh"] for p in phase_mix.values())
+                total_syn_cons = sum(p["synthetic_consumer_mwh"] for p in phase_mix.values())
+
+                def _phase_pct(value):
+                    return round((value / total_vol * 100.0), 1) if total_vol > 1e-9 else 0.0
+
+                market_summary["total_volume_mwh"] = round(total_vol, 3)
+                market_summary["real_players"]["producer_dispatched_mwh"] = round(total_real_prod, 3)
+                market_summary["real_players"]["consumer_dispatched_mwh"] = round(total_real_cons, 3)
+                market_summary["real_players"]["producer_share_pct"] = _phase_pct(total_real_prod)
+                market_summary["real_players"]["consumer_share_pct"] = _phase_pct(total_real_cons)
+                market_summary["synthetic_market"]["producer_dispatched_mwh"] = round(total_syn_prod, 3)
+                market_summary["synthetic_market"]["consumer_dispatched_mwh"] = round(total_syn_cons, 3)
+                market_summary["synthetic_market"]["producer_share_pct"] = _phase_pct(total_syn_prod)
+                market_summary["synthetic_market"]["consumer_share_pct"] = _phase_pct(total_syn_cons)
+        
         return {
             "round": round_num,
             "my_result": my_result,
@@ -2203,6 +2469,11 @@ class FinalResults(Resource):
         round_market_totals = {}
         for r in results:
             pid = r.player_id
+            result_round_num = int(r.round_num or 0)
+            use_da_baseline_settlement = (
+                result_round_num > 1
+                and _get_market_status_for_round(config, "idm", result_round_num) != "off"
+            ) or is_two_phase_round(config, result_round_num)
             if pid not in player_totals:
                 player_totals[pid] = {
                     "profit": 0,
@@ -2254,7 +2525,7 @@ class FinalResults(Resource):
                 cfg_devices=cfg_devices,
                 player_device_ids=player_device_ids,
                 da_smp=((r.data or {}).get("da_baseline_metadata") or {}).get("da_smp"),
-                use_da_baseline_settlement=idm_trading_enabled,
+                use_da_baseline_settlement=use_da_baseline_settlement,
             )
             resolved_role = _resolve_market_role(config, player_type, r.data.get("player_role"), kpis.get("revenue_zar", 0))
             player_totals[pid]["player_role"] = player_totals[pid]["player_role"] or resolved_role
@@ -2316,6 +2587,7 @@ class FinalResults(Resource):
                 kpis,
                 challenge_round_kpis,
                 r.data.get("challenge_result"),
+                session_id=sid,
             )
             if challenge_result:
                 player_totals[pid]["challenge_history"].append({
@@ -2463,6 +2735,11 @@ class FinalResults(Resource):
         round_history = []
         player_results = Result.query.filter_by(session_id=sid, player_id=player_id).order_by(Result.round_num).all()
         for r in player_results:
+            result_round_num = int(r.round_num or 0)
+            use_da_baseline_settlement = (
+                result_round_num > 1
+                and _get_market_status_for_round(config, "idm", result_round_num) != "off"
+            ) or is_two_phase_round(config, result_round_num)
             player_type = None
             if _redis_client:
                 try:
@@ -2492,7 +2769,7 @@ class FinalResults(Resource):
                 cfg_devices=cfg_devices,
                 player_device_ids=player_device_ids,
                 da_smp=((r.data or {}).get("da_baseline_metadata") or {}).get("da_smp"),
-                use_da_baseline_settlement=idm_trading_enabled,
+                use_da_baseline_settlement=use_da_baseline_settlement,
             )
             # BUG FIX P1-2: Use MWh quantities consistently (not costs) for scoring
             _imb3 = kpis.get("imbalance_mwh")

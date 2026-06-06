@@ -198,7 +198,31 @@ export default function DeviceCard({
   const bidCount = getBidCountValue(device)
 
   const handleFieldChange = (field, value) => {
-    onChange({ ...device, [field]: value });
+    const nextDevice = { ...device, [field]: value }
+
+    if (
+      field === 'capacity_mw'
+      && !isLoad
+      && typeKey !== 'battery'
+    ) {
+      const currentCapacity = Number(device?.capacity_mw)
+      const currentMaxPower = Number(device?.max_power_mw)
+      const maxPowerUnset = device?.max_power_mw == null
+      const maxPowerWasMirroringCapacity = Number.isFinite(currentCapacity)
+        && Number.isFinite(currentMaxPower)
+        && Math.abs(currentMaxPower - currentCapacity) <= 0.001
+
+      if (maxPowerUnset || maxPowerWasMirroringCapacity) {
+        nextDevice.max_power_mw = value
+      }
+    }
+
+    if (field === 'power_rating_mw' && typeKey === 'battery') {
+      nextDevice.max_power_mw = value
+      nextDevice.power_mw = value
+    }
+
+    onChange(nextDevice);
   };
 
   const handleBidCountChange = (value) => {
@@ -402,6 +426,16 @@ export default function DeviceCard({
                   unit="MW"
                   tooltip="Installed generation capacity of this device in MW. Upper bound for hourly dispatch."
                 />
+                <NumberInput
+                  label="Initial Max Power"
+                  value={device.max_power_mw ?? device.capacity_mw ?? 0}
+                  onChange={(val) => handleFieldChange('max_power_mw', val)}
+                  min={0}
+                  max={10000}
+                  step={10}
+                  unit="MW"
+                  tooltip="Initial technical max power in MW used when the scenario/session starts. Defaults to capacity, but can be set separately."
+                />
                 {isCoalOrGas ? (
                   /* ── Variable Cost Tiers (coal / gas) ─────────────────── */
                   <Box sx={{ mt: 0.5, p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, bgcolor: 'grey.50' }}>
@@ -524,15 +558,15 @@ export default function DeviceCard({
                   tooltip="Typical continuous consumption level of this load in MW during non-peak hours."
                 />
                 <NumberInput
-                  label="Peak Load"
+                  label="Initial Max Power"
                   value={device.peak_load_mw || 0}
                   onChange={(val) => handleFieldChange('peak_load_mw', val)}
                   min={0}
                   max={3000}
                   step={10}
                   unit="MW"
-                  helperText="UI only, no gameplay effect."
-                  tooltip="Maximum expected consumption of this load in MW during peak hours. Must be ≥ baseline."
+                  helperText="Maps to the device peak load / maximum demand."
+                  tooltip="Maximum expected consumption of this load in MW during peak hours. Must be greater than or equal to baseline load."
                   sx={inactiveFieldSx}
                 />
                 <NumberInput
@@ -606,13 +640,14 @@ export default function DeviceCard({
             {device.type?.toLowerCase() === 'battery' && (
               <>
                 <NumberInput
-                  label="Power Rating"
+                  label="Initial Max Power"
                   value={device.power_rating_mw ?? device.power_mw ?? 0}
                   onChange={(val) => handleFieldChange('power_rating_mw', val)}
                   min={0}
                   max={1000}
                   step={10}
                   unit="MW"
+                  tooltip="Initial battery max charge/discharge power in MW. Stored as the battery power rating and mirrored to max power."
                 />
                 <RangeInput
                   label="Initial State of Charge"

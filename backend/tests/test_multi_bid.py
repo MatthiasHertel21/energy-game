@@ -2,7 +2,14 @@
 Unit tests for multi-bid pricing feature
 """
 import pytest
-from app.engine import build_supply_from_bids, build_demand_from_bids, track_bid_dispatch, clear_market
+from app.engine import (
+    _config_uses_explicit_bids as engine_config_uses_explicit_bids,
+    build_supply_from_bids,
+    build_demand_from_bids,
+    track_bid_dispatch,
+    clear_market,
+)
+from app.player import _config_uses_explicit_bids as player_config_uses_explicit_bids
 
 
 class TestBuildSupplyFromBids:
@@ -257,6 +264,24 @@ class TestBuildSupplyFromBids:
         assert bids_meta[0]["bid_label"] == "CLASSIC"
         assert bids_meta[0]["price"] == 500.0
         assert bids_meta[0]["quantity"] == 3200.0
+
+
+class TestExplicitBidModeDetection:
+    def test_engine_recognizes_market_level_single_bid_mode(self):
+        config = {
+            "market": {"enable_player_bidding": True, "bid_count": 1},
+            "devices": [{"id": "device_1", "type": "coal", "bid_count": 0, "enable_multi_bid": False}],
+        }
+
+        assert engine_config_uses_explicit_bids(config, forecasts={1: {"bids": None}}) is True
+
+    def test_player_recognizes_market_level_single_bid_mode(self):
+        config = {
+            "market": {"enable_player_bidding": True, "bid_count": 1},
+            "devices": [{"id": "device_1", "type": "coal", "bid_count": 0, "enable_multi_bid": False}],
+        }
+
+        assert player_config_uses_explicit_bids(config, bids_payload=None) is True
 
 
 class TestBuildDemandFromBids:

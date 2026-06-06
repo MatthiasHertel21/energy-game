@@ -51,6 +51,11 @@ const buildEqualDistribution = (zones) => {
   return values
 }
 
+const isZonalPricingV1Enabled = (cfg) => {
+  const zones = Math.max(1, Number(cfg?.grid?.zones || 1))
+  return zones > 1 && normalizeBooleanFlag(cfg?.general?.zonal_pricing_v1_enabled, false)
+}
+
 const normalizeMixEntry = (entry, zones, fallbackBlocks = 0) => {
   const normalized = (entry && typeof entry === 'object' && !Array.isArray(entry))
     ? { ...entry }
@@ -513,7 +518,7 @@ const formatInt = (value) => {
 const defaultConfig = {
   version: '1.0.0',
   objectives: '',
-  general: { horizon_hours: 24, forecast_horizon_hours: 48, freeze_hours: 2, day_ahead_gate_hour: 12, id_gate_interval_hours: 4, id_gate_base_hour: 0, day_one_baseline_mode: 'preset', round_span_hours: 6, rounds: 4, round_duration_seconds: 300, disable_ramp_validation: true },
+  general: { horizon_hours: 24, forecast_horizon_hours: 48, freeze_hours: 2, day_ahead_gate_hour: 12, id_gate_interval_hours: 4, id_gate_base_hour: 0, day_one_baseline_mode: 'preset', round_span_hours: 6, rounds: 4, round_duration_seconds: 300, disable_ramp_validation: true, two_phase_rounds: [] },
     market: {
       base_price: 1000,
       base_volume_mwh: 20000,
@@ -533,6 +538,8 @@ const defaultConfig = {
         household: { blocks: 500, zone_distribution_pct: [50, 50] },
         agriculture: { blocks: 100, zone_distribution_pct: [50, 50] },
       },
+      idm_production_forecast_change_max_pct: 0,
+      idm_consumption_forecast_change_max_pct: 0,
       random_capacity_pct: 10,
       random_price_pct: 10,
     },
@@ -1188,6 +1195,16 @@ export default function KSE(){
     // Removed scoring.weights validation (replaced by challenges)
     const h = cfg.general.horizon_hours, sp = cfg.general.round_span_hours, r = cfg.general.rounds
     if(sp<=0 || Math.floor(h/sp)!==r) errs.push('horizon ÷ round_span must equal rounds')
+    // Two-phase rounds require both DAM and IDM Trading = Enabled ('on') for that round.
+    if (Array.isArray(cfg?.general?.two_phase_rounds)) {
+      const damTrading = Array.isArray(cfg?.markets?.dam?.trading) ? cfg.markets.dam.trading : []
+      const idmTrading = Array.isArray(cfg?.markets?.idm?.trading) ? cfg.markets.idm.trading : []
+      cfg.general.two_phase_rounds.forEach((flag, idx) => {
+        if (flag && !(damTrading[idx] === 'on' && idmTrading[idx] === 'on')) {
+          errs.push(`Round ${idx + 1}: two-phase requires both DAM and IDM Trading set to Enabled`)
+        }
+      })
+    }
     const inputMode = String(cfg?.player_input?.mode || 'all_hours')
     const customOffsets = Array.isArray(cfg?.player_input?.editable_offsets) ? cfg.player_input.editable_offsets : []
     if (inputMode === 'custom_offsets') {
@@ -1202,8 +1219,11 @@ export default function KSE(){
     if (Number(zones) > 1) {
       const playerTypes = Array.isArray(cfg.player_types) ? cfg.player_types : []
       const missingZones = playerTypes.filter((pt) => pt?.devices?.length && (pt?.zone == null || pt?.zone === ''))
-      if (missingZones.length > 0 && (cfg?.general?.player_zone == null || cfg?.general?.player_zone === '')) {
-        errs.push('Multi-zone scenarios require player type zones or legacy player zone')
+      if (isZonalPricingV1Enabled(cfg) && missingZones.length > 0) {
+        errs.push('V1 multi-zone scenarios require player_types[].zone for every configured player type')
+      }
+      if (isZonalPricingV1Enabled(cfg) && cfg?.general?.player_zone != null && cfg?.general?.player_zone !== '') {
+        errs.push('general.player_zone is not allowed when zonal_pricing_v1_enabled is true')
       }
       playerTypes.forEach((pt) => {
         if (pt?.zone != null && pt?.zone !== '' && (Number(pt.zone) < 1 || Number(pt.zone) > Number(zones))) {
@@ -1255,129 +1275,149 @@ export default function KSE(){
     previewTimer.current = setTimeout(doPreviewNow, 300)
   }
 
+  const persistScenarioConfig = async (configSource, { silent = false } = {})=>{
+    // ensure schema version on save
+    let normSource = structuredClone(configSource || cfg)
+    if (!normSource.version) {
+      normSource.version = '1.0.0'
+    }
+    // ensure horizon stays consistent on save
+    try {
+      const r = Number(normSource?.general?.rounds || 0)
+      const sp = Number(normSource?.general?.round_span_hours || 0)
+      if (r > 0 && sp > 0) normSource.general.horizon_hours = r * sp
+    } catch(_) {}
+    // Normalize player type IDs (required by backend)
+    const norm = normalizeScenarioConfig(normSource)
+    // Trading-only market config: drop deprecated clearing arrays
+    try {
+      const markets = norm.markets || {}
+      const sanitizeMarketEntry = (entry) => {
+        if (Array.isArray(entry)) {
+          return { trading: [...entry] }
+        }
+        if (entry && typeof entry === 'object') {
+          const trading = Array.isArray(entry.trading)
+            ? [...entry.trading]
+            : (Array.isArray(entry.clearing) ? [...entry.clearing] : [])
+          return { trading }
+        }
+        return { trading: [] }
+      }
+      norm.markets = {
+        dam: sanitizeMarketEntry(markets.dam),
+        idm: sanitizeMarketEntry(markets.idm)
+      }
+    } catch (_) { /* ignore */ }
+    try {
+      const roundSpan = Number(norm?.general?.round_span_hours || 6)
+      const playerInput = norm.player_input || {}
+      const rawMode = String(playerInput.mode || 'all_hours').trim().toLowerCase()
+      const allowedModes = new Set(['all_hours', 'first_hour', 'first_two_hours', 'first_three_hours', 'custom_offsets'])
+      const mode = allowedModes.has(rawMode) ? rawMode : 'all_hours'
+      const editableOffsets = Array.isArray(playerInput.editable_offsets)
+        ? [...new Set(playerInput.editable_offsets
+            .map((value) => Number(value))
+            .filter((value) => Number.isInteger(value) && value >= 0 && value < roundSpan)
+          )].sort((a, b) => a - b)
+        : []
+      norm.player_input = {
+        mode,
+        editable_offsets: editableOffsets,
+        hide_non_editable_hours: Boolean(playerInput.hide_non_editable_hours),
+        allow_other_rounds_editing: playerInput.allow_other_rounds_editing !== false,
+        enable_smooth_drag: playerInput.enable_smooth_drag !== false
+      }
+    } catch (_) { /* ignore */ }
+    // Convert frontend device shape -> backend schema
+    try{
+      if (Array.isArray(norm.devices)){
+        norm.devices = norm.devices.map(d => {
+          const t = (d.type||'').toLowerCase()
+          const out = { ...d, type: t }
+          if (out.co2_emissions_kg_per_mwh == null && out.co2_kg_per_mwh != null) {
+            out.co2_emissions_kg_per_mwh = out.co2_kg_per_mwh
+          }
+          if (out.co2_emissions_kg_per_mwh == null && DEFAULT_CO2_KG_PER_MWH[t] != null) {
+            out.co2_emissions_kg_per_mwh = DEFAULT_CO2_KG_PER_MWH[t]
+          }
+          if ([ 'coal','gas','hydro','nuclear' ].includes(t)){
+            out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
+            out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
+            out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
+            if (out.min_load_pct == null) out.min_load_pct = 0
+            if (out.ramp_rate_mw_per_min == null) out.ramp_rate_mw_per_min = DEFAULT_RAMP_RATE_MW_PER_MIN[t] ?? 5
+          } else if ([ 'solar','wind' ].includes(t)){
+            out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
+            out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
+            out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
+            if (out.capacity_factor_pct == null) out.capacity_factor_pct = DEFAULT_CAPACITY_FACTOR_PCT[t] ?? 30
+          } else if (t === 'battery'){
+            out.capacity_mwh = out.capacity_mwh ?? out.capacity_mw ?? 100
+            out.power_mw = out.power_mw ?? out.power_rating_mw ?? DEFAULT_BATTERY_POWER_MW
+            out.power_rating_mw = out.power_rating_mw ?? out.power_mw
+            out.efficiency_pct = out.efficiency_pct ?? DEFAULT_BATTERY_EFFICIENCY_PCT
+            out.initial_soc_pct = out.initial_soc_pct ?? DEFAULT_BATTERY_INITIAL_SOC_PCT
+            out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
+          } else if (t.endsWith('_load')){
+            out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
+            out.value_of_lost_load = out.value_of_lost_load ?? DEFAULT_LOAD_VALUE_OF_LOST_LOAD
+          }
+          return out
+        })
+      }
+    }catch(_){ /* ignore */ }
+    try{
+      const seen = new Set()
+      if (Array.isArray(norm.player_types)){
+        norm.player_types = norm.player_types.map((pt)=>{
+          let id = (pt.id||'').trim()
+          if(!id){
+            id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
+          }
+          while(seen.has(id)){
+            id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
+          }
+          seen.add(id)
+          return { ...pt, id }
+        })
+      }
+    }catch(_){ /* ignore */ }
+    if (scenarioId) {
+      await api.put(`/api/kse/scenarios/${scenarioId}`, { name, config: norm })
+      if (!silent) alert('Saved changes')
+    } else {
+      const { data } = await api.post('/api/kse/scenarios', { name, config: norm })
+      setScenarioId(data?.id)
+      if (!silent) alert(`Saved as #${data?.id || ''}`)
+    }
+    return norm
+  }
+
+  const applyEventMutation = async (mutateEvents, { silent = true } = {}) => {
+    const nextConfig = structuredClone(cfg)
+    if (!nextConfig.events) nextConfig.events = []
+    mutateEvents(nextConfig.events)
+    setCfg(nextConfig)
+    if (scenarioId) {
+      try {
+        await persistScenarioConfig(nextConfig, { silent })
+      } catch (err) {
+        console.error('Event auto-save error:', err)
+        const errData = err?.response?.data
+        if (errData?.errors && Array.isArray(errData.errors)) {
+          alert(`Validation errors:\n${errData.errors.join('\n')}`)
+        } else {
+          alert(`Save failed: ${err?.response?.data?.message || err?.message || 'Unknown error'}`)
+        }
+      }
+    }
+  }
+
   const save = async ()=>{
     try {
       if(!validate()) return
-      // ensure schema version on save
-      if (!cfg.version) {
-        setCfg(prev => ({ ...prev, version: '1.0.0' }))
-      }
-      // ensure horizon stays consistent on save
-      try {
-        setCfg(prev => {
-          const n = structuredClone(prev)
-          const r = Number(n?.general?.rounds || 0)
-          const sp = Number(n?.general?.round_span_hours || 0)
-          if (r > 0 && sp > 0) n.general.horizon_hours = r * sp
-          return n
-        })
-      } catch(_) {}
-      // Normalize player type IDs (required by backend)
-      const norm = normalizeScenarioConfig(cfg)
-      // Trading-only market config: drop deprecated clearing arrays
-      try {
-        const markets = norm.markets || {}
-        const sanitizeMarketEntry = (entry) => {
-          if (Array.isArray(entry)) {
-            return { trading: [...entry] }
-          }
-          if (entry && typeof entry === 'object') {
-            const trading = Array.isArray(entry.trading)
-              ? [...entry.trading]
-              : (Array.isArray(entry.clearing) ? [...entry.clearing] : [])
-            return { trading }
-          }
-          return { trading: [] }
-        }
-        norm.markets = {
-          dam: sanitizeMarketEntry(markets.dam),
-          idm: sanitizeMarketEntry(markets.idm)
-        }
-      } catch (_) { /* ignore */ }
-      try {
-        const roundSpan = Number(norm?.general?.round_span_hours || 6)
-        const playerInput = norm.player_input || {}
-        const rawMode = String(playerInput.mode || 'all_hours').trim().toLowerCase()
-        const allowedModes = new Set(['all_hours', 'first_hour', 'first_two_hours', 'first_three_hours', 'custom_offsets'])
-        const mode = allowedModes.has(rawMode) ? rawMode : 'all_hours'
-        const editableOffsets = Array.isArray(playerInput.editable_offsets)
-          ? [...new Set(playerInput.editable_offsets
-              .map((value) => Number(value))
-              .filter((value) => Number.isInteger(value) && value >= 0 && value < roundSpan)
-            )].sort((a, b) => a - b)
-          : []
-        norm.player_input = {
-          mode,
-          editable_offsets: editableOffsets,
-          hide_non_editable_hours: Boolean(playerInput.hide_non_editable_hours),
-          allow_other_rounds_editing: playerInput.allow_other_rounds_editing !== false,
-          enable_smooth_drag: playerInput.enable_smooth_drag !== false
-        }
-      } catch (_) { /* ignore */ }
-      // Convert frontend device shape -> backend schema
-      try{
-        if (Array.isArray(norm.devices)){
-          norm.devices = norm.devices.map(d => {
-            const t = (d.type||'').toLowerCase()
-            const out = { ...d, type: t }
-            if (out.co2_emissions_kg_per_mwh == null && out.co2_kg_per_mwh != null) {
-              out.co2_emissions_kg_per_mwh = out.co2_kg_per_mwh
-            }
-            if (out.co2_emissions_kg_per_mwh == null && DEFAULT_CO2_KG_PER_MWH[t] != null) {
-              out.co2_emissions_kg_per_mwh = DEFAULT_CO2_KG_PER_MWH[t]
-            }
-            if ([ 'coal','gas','hydro','nuclear' ].includes(t)){
-              out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
-              out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
-              out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
-              if (out.min_load_pct == null) out.min_load_pct = 0
-              if (out.ramp_rate_mw_per_min == null) out.ramp_rate_mw_per_min = DEFAULT_RAMP_RATE_MW_PER_MIN[t] ?? 5
-            } else if ([ 'solar','wind' ].includes(t)){
-              out.max_power_mw = out.max_power_mw ?? out.capacity_mw ?? 0
-              out.variable_cost_zar_per_mwh = out.variable_cost_zar_per_mwh ?? out.cost_per_mwh_zar ?? 0
-              out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
-              if (out.capacity_factor_pct == null) out.capacity_factor_pct = DEFAULT_CAPACITY_FACTOR_PCT[t] ?? 30
-            } else if (t === 'battery'){
-              out.capacity_mwh = out.capacity_mwh ?? out.capacity_mw ?? 100
-              out.power_mw = out.power_mw ?? out.power_rating_mw ?? DEFAULT_BATTERY_POWER_MW
-              out.power_rating_mw = out.power_rating_mw ?? out.power_mw
-              out.efficiency_pct = out.efficiency_pct ?? DEFAULT_BATTERY_EFFICIENCY_PCT
-              out.initial_soc_pct = out.initial_soc_pct ?? DEFAULT_BATTERY_INITIAL_SOC_PCT
-              out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
-            } else if (t.endsWith('_load')){
-              // baseline_load_mw / peak_load_mw already present from UI
-              out.fixed_cost_zar_per_hour = out.fixed_cost_zar_per_hour ?? 0
-              out.value_of_lost_load = out.value_of_lost_load ?? DEFAULT_LOAD_VALUE_OF_LOST_LOAD
-            }
-            return out
-          })
-        }
-      }catch(_){ /* ignore */ }
-      try{
-        const seen = new Set()
-        if (Array.isArray(norm.player_types)){
-          norm.player_types = norm.player_types.map((pt)=>{
-            let id = (pt.id||'').trim()
-            if(!id){
-              id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
-            }
-            // ensure unique
-            while(seen.has(id)){
-              id = `ptype_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
-            }
-            seen.add(id)
-            return { ...pt, id }
-          })
-        }
-      }catch(_){ /* ignore */ }
-      if (scenarioId) {
-        await api.put(`/api/kse/scenarios/${scenarioId}`, { name, config: norm })
-        alert('Saved changes')
-      } else {
-        const { data } = await api.post('/api/kse/scenarios', { name, config: norm })
-        setScenarioId(data?.id)
-        alert(`Saved as #${data?.id || ''}`)
-      }
+      await persistScenarioConfig(cfg)
     } catch (err) {
       console.error('Save error:', err)
       const errData = err?.response?.data
@@ -1406,20 +1446,19 @@ export default function KSE(){
       .style('z-index','9999')
     // SMP
     if(smpRef.current && data?.smp){
-      const svg = d3.select(smpRef.current); svg.selectAll('*').remove()
+      const svg = d3.select(smpRef.current)
+      svg.selectAll('*').remove()
       const M = {top:10,right:10,bottom:24,left:40}, W=360-M.left-M.right, H=120-M.top-M.bottom
-  const g = svg.attr('width', 360).attr('height', 120).append('g').attr('transform',`translate(${M.left},${M.top})`)
+      const g = svg.attr('width', 360).attr('height', 120).append('g').attr('transform',`translate(${M.left},${M.top})`)
       const x = d3.scaleLinear().domain([1, h||1]).range([0,W])
       const y = d3.scaleLinear().domain([d3.min(data.smp)||0, d3.max(data.smp)||1]).nice().range([H,0])
       const line = d3.line().x((_,i)=> x(i+1)).y((d)=> y(d))
-  // gridlines
-  if (showHourlyGrid) {
-    g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
-  }
+      if (showHourlyGrid) {
+        g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
+      }
       g.append('path').datum(data.smp).attr('fill','none').attr('stroke','#2e7d32').attr('stroke-width',2).attr('d', line)
-  g.append('g').attr('transform',`translate(0,${H})`).call(d3.axisBottom(x).ticks(Math.min(h,12)))
-  g.append('g').call(d3.axisLeft(y).ticks(4))
-      // points + tooltips
+      g.append('g').attr('transform',`translate(0,${H})`).call(d3.axisBottom(x).ticks(Math.min(h,12)))
+      g.append('g').call(d3.axisLeft(y).ticks(4))
       if (showHourlyPoints) {
         g.selectAll('circle.point')
           .data((data.smp||[]).map((v,i)=> ({ x:i+1, y:v })))
@@ -1434,26 +1473,24 @@ export default function KSE(){
           .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
           .on('mouseleave', ()=> { tooltip.style('display','none') })
       }
-  // axis labels
-  g.append('text').attr('x', W/2).attr('y', H+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Hour')
-  g.append('text').attr('transform','rotate(-90)').attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('SMP (ZAR/MWh)')
+      g.append('text').attr('x', W/2).attr('y', H+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Hour')
+      g.append('text').attr('transform','rotate(-90)').attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('SMP (ZAR/MWh)')
     }
     // Volume
     if(volRef.current && data?.volume){
-      const svg = d3.select(volRef.current); svg.selectAll('*').remove()
+      const svg = d3.select(volRef.current)
+      svg.selectAll('*').remove()
       const M = {top:10,right:10,bottom:24,left:40}, W=360-M.left-M.right, H=120-M.top-M.bottom
-  const g = svg.attr('width', 360).attr('height', 120).append('g').attr('transform',`translate(${M.left},${M.top})`)
+      const g = svg.attr('width', 360).attr('height', 120).append('g').attr('transform',`translate(${M.left},${M.top})`)
       const x = d3.scaleLinear().domain([1, h||1]).range([0,W])
-      const y = d3.scaleLinear().domain([0, d3.max(data.volume)||1]).nice().range([H,0])
+      const y = d3.scaleLinear().domain([d3.min(data.volume)||0, d3.max(data.volume)||1]).nice().range([H,0])
       const line = d3.line().x((_,i)=> x(i+1)).y((d)=> y(d))
-  // gridlines
-  if (showHourlyGrid) {
-    g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
-  }
+      if (showHourlyGrid) {
+        g.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-W).tickFormat('')).selectAll('line').attr('stroke','#ddd').attr('stroke-opacity',0.6)
+      }
       g.append('path').datum(data.volume).attr('fill','none').attr('stroke','#1976d2').attr('stroke-width',2).attr('d', line)
-  g.append('g').attr('transform',`translate(0,${H})`).call(d3.axisBottom(x).ticks(Math.min(h,12)))
-  g.append('g').call(d3.axisLeft(y).ticks(4))
-      // points + tooltips
+      g.append('g').attr('transform',`translate(0,${H})`).call(d3.axisBottom(x).ticks(Math.min(h,12)))
+      g.append('g').call(d3.axisLeft(y).ticks(4))
       if (showHourlyPoints) {
         g.selectAll('circle.point')
           .data((data.volume||[]).map((v,i)=> ({ x:i+1, y:v })))
@@ -1468,9 +1505,8 @@ export default function KSE(){
           .on('mousemove', (event)=> { tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px') })
           .on('mouseleave', ()=> { tooltip.style('display','none') })
       }
-  // axis labels
-  g.append('text').attr('x', W/2).attr('y', H+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Hour')
-  g.append('text').attr('transform','rotate(-90)').attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Volume (MWh)')
+      g.append('text').attr('x', W/2).attr('y', H+24).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Hour')
+      g.append('text').attr('transform','rotate(-90)').attr('x', -H/2).attr('y', -34).attr('text-anchor','middle').attr('fill','#666').attr('font-size','10px').text('Volume (MWh)')
     }
   }
 
@@ -2013,18 +2049,18 @@ export default function KSE(){
                   </Stack>
                 </Stack>
 
-                <Typography variant="subtitle2" sx={{ mt: 2 }}>DAM / IDM Market Split</Typography>
+                <Typography variant="subtitle2" sx={{ mt: 2 }}>IDM Forecast Change</Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                  Configure how synthetic supply/demand capacity is split between Day-Ahead Market (DAM) and Intraday Market (IDM).
+                  DAM always uses the full synthetic baseline. In IDM rounds, a single random forecast change is drawn once per round in the range from minus x percent to plus x percent and then applied equally across all hours of that round.
                 </Typography>
                 <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                   <Stack spacing={0.5} sx={{ minWidth: 180 }}>
-                    <InfoLabel title="DAM Capacity (%)" tooltip="Percentage of synthetic supply/demand capacity available in DAM clearing. Default: 90%." showTitle={false} />
-                    <NumberInput label="DAM Capacity" value={cfg.market.dam_synthetic_capacity_pct ?? 90} onChange={(val)=>update(['market','dam_synthetic_capacity_pct'], Number(val)||0)} min={0} max={100} step={5} unit="%" />
+                    <InfoLabel title="Max Production Forecast Change in IDM (%)" tooltip="Maximum random synthetic production forecast change relative to the DAM baseline. Each IDM round draws one value in the range from minus x percent to plus x percent and applies it to all hours of the round. Default: 0%." showTitle={false} />
+                    <NumberInput label="Production Forecast Change in IDM" value={cfg.market.idm_production_forecast_change_max_pct ?? 0} onChange={(val)=>update(['market','idm_production_forecast_change_max_pct'], Number(val)||0)} min={0} max={100} step={5} unit="%" />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 180 }}>
-                    <InfoLabel title="IDM Capacity (%)" tooltip="Percentage of synthetic supply/demand capacity available in IDM clearing. Default: 10%." showTitle={false} />
-                    <NumberInput label="IDM Capacity" value={cfg.market.idm_synthetic_capacity_pct ?? 10} onChange={(val)=>update(['market','idm_synthetic_capacity_pct'], Number(val)||0)} min={0} max={100} step={5} unit="%" />
+                    <InfoLabel title="Max Consumption Forecast Change in IDM (%)" tooltip="Maximum random synthetic consumption forecast change relative to the DAM baseline. Each IDM round draws one value in the range from minus x percent to plus x percent and applies it to all hours of the round. Default: 0%." showTitle={false} />
+                    <NumberInput label="Consumption Forecast Change in IDM" value={cfg.market.idm_consumption_forecast_change_max_pct ?? 0} onChange={(val)=>update(['market','idm_consumption_forecast_change_max_pct'], Number(val)||0)} min={0} max={100} step={5} unit="%" />
                   </Stack>
                   <Stack spacing={0.5} sx={{ minWidth: 180 }}>
                     <InfoLabel title="IDM Producer Discount (%)" tooltip="Price discount for producers in IDM (lower prices to incentivize sales). Default: 10%." showTitle={false} />
@@ -2292,10 +2328,10 @@ export default function KSE(){
                           onChange={(e) => update(['general', 'disable_ramp_validation'], e.target.checked)}
                         />
                       )}
-                      label="Ramp-Rate-Validierung deaktivieren"
+                      label="Disable ramp-rate validation"
                     />
                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                      Wenn aktiviert, wird die Ramp-Rate-Prüfung bei der Forecast-Eingabe übersprungen. Min-Load-Validierung bleibt aktiv. Sinnvoll für vereinfachte Szenarien ohne Anlaufbeschränkungen.
+                      When enabled, ramp-rate checks are skipped during forecast entry. Minimum-load validation remains active. Useful for simplified scenarios without startup constraints.
                     </Typography>
                   </Grid>
                 </Grid>
@@ -2308,6 +2344,7 @@ export default function KSE(){
                   <br/>• <strong>Gated</strong> (default): Follows SAWEM rules (gate hours, DA cutoff, ID gates)
                   <br/>• <strong>enabled</strong>: Always trading-active, ignoring gate hours
                   <br/>• <strong>disabled</strong>: Trading disabled (no bids accepted)
+                  <br/><strong>Two-Phase</strong> (default off): When DAM and IDM are both Enabled, run the round in two sequential phases — DAM clears first, then IDM clears using the DAM dispatch as its baseline. The round result is produced only after the IDM phase.
                 </Typography>
                 <Box sx={{ overflowX: 'auto' }}>
                   {(() => {
@@ -2346,7 +2383,16 @@ export default function KSE(){
                     
                     const damTrading = ensureLength(normalizedMarkets.dam?.trading, rounds)
                     const idmTrading = ensureLength(normalizedMarkets.idm?.trading, rounds)
-                    
+
+                    const twoPhaseRounds = (() => {
+                      const arr = Array.isArray(cfg.general?.two_phase_rounds) ? [...cfg.general.two_phase_rounds] : []
+                      while (arr.length < rounds) arr.push(false)
+                      return arr.slice(0, rounds).map(Boolean)
+                    })()
+
+                    const isTwoPhaseEligible = (roundIdx) =>
+                      damTrading[roundIdx] === 'on' && idmTrading[roundIdx] === 'on'
+
                     const updateMarket = (marketType, roundIdx, value) => {
                       setCfg(prev => {
                         const n = structuredClone(prev)
@@ -2368,6 +2414,30 @@ export default function KSE(){
                         }
                         
                         n.markets[marketType].trading[roundIdx] = value
+
+                        // Two-phase requires BOTH DAM and IDM = 'on'. If this change breaks
+                        // that condition, force the round's two-phase flag back to false.
+                        if (!n.general) n.general = {}
+                        const tp = Array.isArray(n.general.two_phase_rounds) ? [...n.general.two_phase_rounds] : []
+                        while (tp.length < r) tp.push(false)
+                        const otherType = marketType === 'dam' ? 'idm' : 'dam'
+                        const otherTrading = Array.isArray(n.markets[otherType]?.trading) ? n.markets[otherType].trading : []
+                        const bothOn = value === 'on' && otherTrading[roundIdx] === 'on'
+                        if (!bothOn) tp[roundIdx] = false
+                        n.general.two_phase_rounds = tp
+                        return n
+                      })
+                    }
+
+                    const updateTwoPhase = (roundIdx, value) => {
+                      setCfg(prev => {
+                        const n = structuredClone(prev)
+                        if (!n.general) n.general = {}
+                        const r = Number(prev.general.rounds || 4)
+                        const tp = Array.isArray(n.general.two_phase_rounds) ? [...n.general.two_phase_rounds] : []
+                        while (tp.length < r) tp.push(false)
+                        tp[roundIdx] = Boolean(value)
+                        n.general.two_phase_rounds = tp
                         return n
                       })
                     }
@@ -2395,6 +2465,7 @@ export default function KSE(){
                             <th style={{ width: 80, padding: 8, textAlign: 'left', borderBottom: '2px solid #ddd' }}>Round</th>
                             <th style={{ padding: 8, textAlign: 'center', borderBottom: '2px solid #ddd' }}>DAM Trading</th>
                             <th style={{ padding: 8, textAlign: 'center', borderBottom: '2px solid #ddd' }}>IDM Trading</th>
+                            <th style={{ padding: 8, textAlign: 'center', borderBottom: '2px solid #ddd' }}>Two-Phase</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -2427,6 +2498,21 @@ export default function KSE(){
                                   </Select>
                                 </td>
                               ))}
+                              <td style={{ padding: 4, borderBottom: '1px solid #eee', textAlign: 'center' }}>
+                                <Tooltip title={isTwoPhaseEligible(roundIdx)
+                                  ? 'Run DAM and IDM as two sequential phases within this round (DAM clears first, then IDM uses the DAM dispatch as baseline).'
+                                  : 'Available only when both DAM and IDM Trading are set to Enabled for this round.'}>
+                                  <span>
+                                    <Switch
+                                      size="small"
+                                      checked={isTwoPhaseEligible(roundIdx) && Boolean(twoPhaseRounds[roundIdx])}
+                                      disabled={!isTwoPhaseEligible(roundIdx)}
+                                      onChange={(e) => updateTwoPhase(roundIdx, e.target.checked)}
+                                      inputProps={{ 'aria-label': `Two-phase round ${roundIdx + 1}` }}
+                                    />
+                                  </span>
+                                </Tooltip>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -2468,7 +2554,7 @@ export default function KSE(){
                     min={1}
                     max={cfg.grid.zones||1}
                     step={1}
-                    tooltip="Legacy fallback for older scenarios that do not assign zones per player type. In new multi-zone scenarios, physical location should come from player_types[].zone instead. This fallback is only used when a player type has no explicit zone configured."
+                    tooltip="Legacy fallback for older scenarios that do not assign zones per player type. When zonal_pricing_v1_enabled is true, physical location must come from player_types[].zone and this fallback must stay empty."
                   />
                 </Box>
                 <Box sx={{ minWidth: 220 }}>
@@ -2568,12 +2654,12 @@ export default function KSE(){
                   <Typography variant="subtitle2">Player Zone Source</Typography>
                   <InfoLabel
                     title="Player Zone Source"
-                    tooltip="Explains which configuration entry determines the physical location of player assets in the grid model. In Phase 1, player_types[].zone is the authoritative source. The legacy general.player_zone setting only exists as a backward-compatible fallback for scenarios that predate explicit player-type zones."
+                    tooltip="Explains which configuration entry determines the physical location of player assets in the grid model. In zonal pricing V1, player_types[].zone is the authoritative source. The legacy general.player_zone setting only exists as a backward-compatible fallback when the V1 path is disabled."
                     showTitle={false}
                   />
                 </Stack>
                 <Typography variant="body2" color="text.secondary">
-                  In Phase 1, physical player location comes from <strong>player type zones</strong>. The legacy player zone above is only a fallback for older scenarios.
+                  In zonal pricing V1, physical player location comes from <strong>player type zones</strong>. The legacy player zone above is only a fallback for older scenarios with the V1 path disabled.
                 </Typography>
               </Paper>
               <Box>
@@ -2773,19 +2859,15 @@ export default function KSE(){
                   setEventEditorOpen(true)
                 }}
                 onDelete={(index) => {
-                  setCfg((prev) => {
-                    const n = structuredClone(prev)
-                    n.events.splice(index, 1)
-                    return n
+                  applyEventMutation((events) => {
+                    events.splice(index, 1)
                   })
                 }}
                 onDuplicate={(index) => {
-                  setCfg((prev) => {
-                    const n = structuredClone(prev)
-                    const duplicated = structuredClone(n.events[index])
+                  applyEventMutation((events) => {
+                    const duplicated = structuredClone(events[index])
                     duplicated.name = (duplicated.name || `Event ${index + 1}`) + ' (Copy)'
-                    n.events.splice(index + 1, 0, duplicated)
-                    return n
+                    events.splice(index + 1, 0, duplicated)
                   })
                 }}
               />
@@ -3020,19 +3102,12 @@ export default function KSE(){
         playerTypes={cfg.player_types || []}
         devices={cfg.devices || []}
         onSave={(eventData) => {
-          setCfg((prev) => {
-            const n = structuredClone(prev)
-            if (!n.events) n.events = []
-            
+          applyEventMutation((events) => {
             if (editingEventIndex !== null) {
-              // Editing existing event
-              n.events[editingEventIndex] = eventData
+              events[editingEventIndex] = eventData
             } else {
-              // Creating new event
-              n.events.push(eventData)
+              events.push(eventData)
             }
-            
-            return n
           })
         }}
       />

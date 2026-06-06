@@ -49,7 +49,41 @@ const normalizeZoneBreakdown = (zones = []) => {
   })).filter((zone) => zone.zoneId > 0)
 }
 
-const finalizeSummary = ({ totalVolumeMwh = 0, realPlayers = {}, syntheticMarket = {}, priceStats = {}, zoneBreakdown = [], activeEventsCount = 0, roundsCount = 0 }) => {
+const normalizeZoneMixBreakdown = (zones = []) => {
+  if (!Array.isArray(zones)) return []
+  return zones.map((zone) => ({
+    zoneId: Math.max(0, Math.round(normalizeNumber(zone?.zoneId ?? zone?.zone_id))),
+    totalProductionMwh: normalizeNumber(zone?.totalProductionMwh ?? zone?.total_production_mwh),
+    realProductionMwh: normalizeNumber(zone?.realProductionMwh ?? zone?.real_production_mwh),
+    syntheticProductionMwh: normalizeNumber(zone?.syntheticProductionMwh ?? zone?.synthetic_production_mwh),
+    totalConsumptionMwh: normalizeNumber(zone?.totalConsumptionMwh ?? zone?.total_consumption_mwh),
+    realConsumptionMwh: normalizeNumber(zone?.realConsumptionMwh ?? zone?.real_consumption_mwh),
+    syntheticConsumptionMwh: normalizeNumber(zone?.syntheticConsumptionMwh ?? zone?.synthetic_consumption_mwh),
+  })).filter((zone) => zone.zoneId > 0)
+}
+
+const normalizePhaseMix = (phaseMix) => {
+  if (!phaseMix || typeof phaseMix !== 'object') return null
+  const out = {}
+  ;['dam', 'idm'].forEach((phase) => {
+    const p = phaseMix[phase]
+    if (!p || typeof p !== 'object') return
+    out[phase] = {
+      clearedVolumeMwh: normalizeNumber(p.clearedVolumeMwh ?? p.cleared_volume_mwh),
+      realProducerMwh: normalizeNumber(p.realProducerMwh ?? p.real_producer_mwh),
+      syntheticProducerMwh: normalizeNumber(p.syntheticProducerMwh ?? p.synthetic_producer_mwh),
+      realConsumerMwh: normalizeNumber(p.realConsumerMwh ?? p.real_consumer_mwh),
+      syntheticConsumerMwh: normalizeNumber(p.syntheticConsumerMwh ?? p.synthetic_consumer_mwh),
+      realProducerSharePct: normalizeNumber(p.realProducerSharePct ?? p.real_producer_share_pct),
+      syntheticProducerSharePct: normalizeNumber(p.syntheticProducerSharePct ?? p.synthetic_producer_share_pct),
+      realConsumerSharePct: normalizeNumber(p.realConsumerSharePct ?? p.real_consumer_share_pct),
+      syntheticConsumerSharePct: normalizeNumber(p.syntheticConsumerSharePct ?? p.synthetic_consumer_share_pct),
+    }
+  })
+  return Object.keys(out).length > 0 ? out : null
+}
+
+const finalizeSummary = ({ totalVolumeMwh = 0, realPlayers = {}, syntheticMarket = {}, priceStats = {}, zoneBreakdown = [], zoneMixBreakdown = [], activeEventsCount = 0, roundsCount = 0, phaseMix = null }) => {
   const realProducerVolume = normalizeNumber(realPlayers.producerDispatchedMwh ?? realPlayers.producer_dispatched_mwh)
   const realConsumerVolume = normalizeNumber(realPlayers.consumerDispatchedMwh ?? realPlayers.consumer_dispatched_mwh)
   const normalizedTotalVolume = Math.max(
@@ -89,8 +123,10 @@ const finalizeSummary = ({ totalVolumeMwh = 0, realPlayers = {}, syntheticMarket
     },
     priceStats: normalizePriceStats(priceStats),
     zoneBreakdown: normalizeZoneBreakdown(zoneBreakdown),
+    zoneMixBreakdown: normalizeZoneMixBreakdown(zoneMixBreakdown),
     activeEventsCount: Math.max(0, Math.round(normalizeNumber(activeEventsCount))),
     roundsCount: Math.max(0, Math.round(normalizeNumber(roundsCount))),
+    phaseMix: normalizePhaseMix(phaseMix),
   }
 }
 
@@ -100,8 +136,10 @@ export const normalizeMarketSummary = (summary) => finalizeSummary({
   syntheticMarket: summary?.syntheticMarket ?? summary?.synthetic_market ?? {},
   priceStats: summary?.priceStats ?? summary?.price_stats ?? {},
   zoneBreakdown: summary?.zoneBreakdown ?? summary?.zone_breakdown ?? [],
+  zoneMixBreakdown: summary?.zoneMixBreakdown ?? summary?.zone_mix_breakdown ?? [],
   activeEventsCount: summary?.activeEventsCount ?? summary?.active_events_count,
   roundsCount: summary?.roundsCount ?? summary?.rounds_count,
+  phaseMix: summary?.phaseMix ?? summary?.phase_mix ?? null,
 })
 
 export const summarizeMarketFromRanking = ({
@@ -199,6 +237,102 @@ export const buildCompositionSection = (summary, formatInt) => ({
   ],
 })
 
+export const buildPhaseMixSections = (summary, formatInt) => {
+  const phaseMix = summary?.phaseMix
+  if (!phaseMix || typeof phaseMix !== 'object') return []
+
+  const phaseLabels = {
+    dam: 'Day-Ahead market (Phase 1)',
+    idm: 'Intraday market (Phase 2)',
+  }
+
+  return ['dam', 'idm']
+    .filter((phase) => phaseMix[phase])
+    .map((phase) => {
+      const p = phaseMix[phase]
+      const cleared = normalizeNumber(p.clearedVolumeMwh)
+      return {
+        title: `${phaseLabels[phase]} — real vs synthetic`,
+        caption: `Cleared volume: ${formatInt(cleared)} MWh`,
+        rows: [
+          {
+            label: 'Real producer volume',
+            value: formatVolumeShare(p.realProducerMwh, p.realProducerSharePct, formatInt),
+          },
+          {
+            label: 'Synthetic producer volume',
+            value: formatVolumeShare(p.syntheticProducerMwh, p.syntheticProducerSharePct, formatInt),
+          },
+          {
+            label: 'Real consumer volume',
+            value: formatVolumeShare(p.realConsumerMwh, p.realConsumerSharePct, formatInt),
+          },
+          {
+            label: 'Synthetic consumer volume',
+            value: formatVolumeShare(p.syntheticConsumerMwh, p.syntheticConsumerSharePct, formatInt),
+          },
+        ],
+      }
+    })
+}
+
+export const buildZoneMixMatrixSection = (summary, formatInt) => {
+  if (!Array.isArray(summary?.zoneMixBreakdown) || summary.zoneMixBreakdown.length === 0) return null
+
+  const totalColumnSx = {
+    backgroundColor: 'action.hover',
+    fontWeight: 700,
+  }
+
+  const summaryRowSx = {
+    backgroundColor: 'action.hover',
+    '& .MuiTableCell-root': {
+      fontWeight: 700,
+    },
+  }
+
+  const zoneColumns = summary.zoneMixBreakdown.map((zone) => ({
+    key: `zone_${zone.zoneId}`,
+    label: `Zone ${zone.zoneId}`,
+    align: 'right',
+  }))
+
+  const buildRow = (key, label, valueKey, rowSx = null) => {
+    const row = {
+      key,
+      metric: label,
+      total: `${formatInt(summary.zoneMixBreakdown.reduce((sum, zone) => sum + normalizeNumber(zone?.[valueKey]), 0))} MWh`,
+    }
+
+    if (rowSx) {
+      row.sx = rowSx
+    }
+
+    summary.zoneMixBreakdown.forEach((zone) => {
+      row[`zone_${zone.zoneId}`] = `${formatInt(zone?.[valueKey])} MWh`
+    })
+
+    return row
+  }
+
+  return {
+    title: 'Zonal real vs synthetic volume distribution',
+    columns: [
+      { key: 'metric', label: 'Volume' },
+      ...zoneColumns,
+      { key: 'total', label: 'Total', align: 'right', headerSx: totalColumnSx, cellSx: totalColumnSx },
+    ],
+    rows: [
+      buildRow('production-total', 'Production total', 'totalProductionMwh', summaryRowSx),
+      buildRow('production-real', 'Production real', 'realProductionMwh'),
+      buildRow('production-synthetic', 'Production synthetic', 'syntheticProductionMwh'),
+      buildRow('consumption-total', 'Consumption total', 'totalConsumptionMwh', summaryRowSx),
+      buildRow('consumption-real', 'Consumption real', 'realConsumptionMwh'),
+      buildRow('consumption-synthetic', 'Consumption synthetic', 'syntheticConsumptionMwh'),
+    ],
+  }
+}
+
 export const buildZoneSection = (summary, formatCurrency, formatInt) => {
   if (!Array.isArray(summary?.zoneBreakdown) || summary.zoneBreakdown.length === 0) return null
 
@@ -253,6 +387,7 @@ export const buildGroupedRankingSections = ({
   title = 'Ranking',
   scoreLabel = 'Score',
   valueLabel = 'Profit',
+  actionLabel = 'Action',
 }) => {
   const rows = Array.isArray(entries)
     ? entries.filter((entry) => entry && typeof entry === 'object')
@@ -265,12 +400,15 @@ export const buildGroupedRankingSections = ({
     }]
   }
 
+  const includeAction = rows.some((entry) => entry.action != null)
+
   const columns = [
     { key: 'rank', label: 'Rank' },
     { key: 'player', label: 'Player' },
     { key: 'type', label: 'Type' },
     { key: 'score', label: scoreLabel, align: 'right' },
     { key: 'primaryValue', label: valueLabel, align: 'right' },
+    ...(includeAction ? [{ key: 'action', label: actionLabel, cellSx: { whiteSpace: 'nowrap' } }] : []),
   ]
 
   const overallRows = rows.map((entry, index) => ({
@@ -280,6 +418,7 @@ export const buildGroupedRankingSections = ({
     type: entry.type || '-',
     score: entry.score ?? '-',
     primaryValue: entry.primaryValue ?? '-',
+    ...(includeAction ? { action: entry.action ?? null } : {}),
   }))
 
   const sections = [{

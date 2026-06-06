@@ -16,12 +16,8 @@ import {
   Breadcrumbs,
   Button,
   Divider,
-  FormControl,
   IconButton,
-  InputLabel,
   FormControlLabel,
-  MenuItem,
-  Select,
   Switch,
   Tooltip,
   Dialog,
@@ -54,8 +50,10 @@ import {
   buildActiveEventsSection,
   buildGroupedRankingSections,
   buildParticipantsCard,
+  buildPhaseMixSections,
   buildPriceCard,
   buildVolumeCard,
+  buildZoneMixMatrixSection,
   buildZoneSection,
   normalizeMarketSummary,
   summarizeMarketFromRanking,
@@ -71,7 +69,6 @@ import MarketStructureChartPanel from './MarketStructureChartPanel'
 export default function RoundResultsScreenSimple({ sessionId, round, mode = 'shared_market', scenario, campaignName, onAdvance, initialBreakdownKey = null }) {
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [refreshTick, setRefreshTick] = useState(0)
   const [advancing, setAdvancing] = useState(false)
   const [breakdownKey, setBreakdownKey] = useState(initialBreakdownKey)
   const [showCumulative, setShowCumulative] = useState(false)
@@ -81,9 +78,6 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
   const [marketOverviewTrendRounds, setMarketOverviewTrendRounds] = useState([])
   const [marketOverviewTrendLoading, setMarketOverviewTrendLoading] = useState(false)
   const [marketOverviewTrendLoaded, setMarketOverviewTrendLoaded] = useState(false)
-  const [marketOverviewSelectedRound, setMarketOverviewSelectedRound] = useState(Number(round || 1))
-  const [marketOverviewRoundResults, setMarketOverviewRoundResults] = useState({})
-  const [marketOverviewRoundLoading, setMarketOverviewRoundLoading] = useState(false)
 
   const normalizeNumber = (value) => {
     const num = Number(value ?? 0)
@@ -167,30 +161,6 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     }
 
     fetchData()
-  }, [sessionId, round, refreshTick])
-
-  useEffect(() => {
-    if (!sessionId || !round) return () => {}
-
-    const triggerRefresh = () => {
-      setRefreshTick((prev) => prev + 1)
-    }
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        triggerRefresh()
-      }
-    }
-
-    const refreshIntervalId = window.setInterval(triggerRefresh, 15000)
-    window.addEventListener('focus', triggerRefresh)
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-
-    return () => {
-      window.clearInterval(refreshIntervalId)
-      window.removeEventListener('focus', triggerRefresh)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-    }
   }, [sessionId, round])
 
   useEffect(() => {
@@ -198,25 +168,6 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     setMarketOverviewTrendLoading(false)
     setMarketOverviewTrendLoaded(false)
   }, [sessionId])
-
-  useEffect(() => {
-    setMarketOverviewRoundResults({})
-    setMarketOverviewRoundLoading(false)
-  }, [sessionId])
-
-  useEffect(() => {
-    if (!results || !sessionId || !round) return
-    setMarketOverviewRoundResults((prev) => ({
-      ...prev,
-      [Number(round)]: results,
-    }))
-  }, [results, round, sessionId])
-
-  useEffect(() => {
-    if (marketOverviewOpen) {
-      setMarketOverviewSelectedRound(Number(round || 1))
-    }
-  }, [marketOverviewOpen, round])
 
   useEffect(() => {
     let isCancelled = false
@@ -251,40 +202,6 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [marketOverviewOpen, marketOverviewTrendLoaded, sessionId])
-
-  useEffect(() => {
-    let isCancelled = false
-
-    const selectedRound = Number(marketOverviewSelectedRound || 0)
-    const currentRound = Number(round || 0)
-    if (!marketOverviewOpen || !sessionId || selectedRound <= 0 || selectedRound === currentRound || marketOverviewRoundResults[selectedRound]) {
-      return () => {}
-    }
-
-    const fetchSelectedRoundResults = async () => {
-      setMarketOverviewRoundLoading(true)
-      try {
-        const { data } = await api.get(`/api/sessions/${sessionId}/round-results/${selectedRound}`)
-        if (!isCancelled) {
-          setMarketOverviewRoundResults((prev) => ({
-            ...prev,
-            [selectedRound]: data,
-          }))
-        }
-      } catch (error) {
-        console.error(`Failed to load market overview round ${selectedRound}:`, error)
-      } finally {
-        if (!isCancelled) {
-          setMarketOverviewRoundLoading(false)
-        }
-      }
-    }
-
-    fetchSelectedRoundResults()
-    return () => {
-      isCancelled = true
-    }
-  }, [marketOverviewOpen, marketOverviewRoundResults, marketOverviewSelectedRound, round, sessionId])
   
   const handleAdvance = async () => {
     if (!onAdvance) return
@@ -303,8 +220,16 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
   const currentKpis = normalizeKpis(my_result?.kpis || {})
   const kpis = showCumulative && cumulativeKpis ? cumulativeKpis : currentKpis
   const playerZoneInfo = my_result?.player_zone_info || {}
-  const gridZoneCount = Math.max(1, Number(scenario?.config?.grid?.zones || 1) || 1)
-  const showZoneAndNetworkSection = gridZoneCount > 1 && !!playerZoneInfo?.zone_id
+  const rawZoneResults = Array.isArray(my_result?.zone_results) ? my_result.zone_results : []
+  const rawLinkResults = Array.isArray(my_result?.link_results) ? my_result.link_results : []
+  const configuredZones = Math.max(1, Number(
+    scenario?.config?.grid?.zones
+    ?? scenario?.grid?.zones
+    ?? results?.market_summary?.zone_breakdown?.length
+    ?? rawZoneResults.length
+    ?? 1
+  ))
+  const isMultiZone = configuredZones > 1
   const balancingSettings = my_result?.balancing_settings || {}
   const balancingUpPrice = Number(balancingSettings?.up_price_zar_per_mwh || 1200)
   const balancingDownPrice = Number(balancingSettings?.down_price_zar_per_mwh || 800)
@@ -350,16 +275,9 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     || normalizeNumber(entry?.smp) > 0
     || normalizeNumber(entry?.id_volume_mwh) > 0
   ))
-  const challengeSummaryText = `Round ${round}: ${passedPerRoundChallengeCount}/${perRoundChallengeItems.length} round goals achieved. Points: ${totalPerRoundChallengePoints}/${maxPerRoundChallengePoints}.`
+  const showBaselineOnlyNotice = Number(round) > 1 && hasDamHistory && !hasCurrentRoundIdmDispatch && !hasCurrentRoundClearing
 
-  const marketOverviewActiveRound = Number(marketOverviewSelectedRound || round || 1)
-  const marketOverviewResultsData = marketOverviewActiveRound === Number(round || 1)
-    ? results
-    : (marketOverviewRoundResults[marketOverviewActiveRound] || null)
-  const marketOverviewDataLoading = marketOverviewActiveRound !== Number(round || 1)
-    && marketOverviewRoundLoading
-    && !marketOverviewResultsData
-  const marketOverviewRanking = Array.isArray(marketOverviewResultsData?.ranking) ? marketOverviewResultsData.ranking : []
+  const challengeSummaryText = `Round ${round}: ${passedPerRoundChallengeCount}/${perRoundChallengeItems.length} round goals achieved. Points: ${totalPerRoundChallengePoints}/${maxPerRoundChallengePoints}.`
 
   const getTradingStatusForRound = (marketKey) => {
     const marketsCfg = scenario?.config?.markets || {}
@@ -378,13 +296,14 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     return 'market_code'
   }
 
-  const hasIdmTradingThisRound = Number(round) > 1 && getTradingStatusForRound('idm') !== 'off'
-  const hasExplicitIdmTradingConfig = (() => {
-    const marketData = scenario?.config?.markets?.idm
-    return Array.isArray(marketData) || (marketData && typeof marketData === 'object' && Array.isArray(marketData?.trading))
+  const hasIdmTradingThisRound = (Number(round) > 1 && getTradingStatusForRound('idm') !== 'off') || (() => {
+    // Two-phase rounds clear IDM within the same round (incl. round 1).
+    const tpr = scenario?.config?.general?.two_phase_rounds
+    const roundIdx = Math.max(0, Number(round || 1) - 1)
+    return Array.isArray(tpr) && Boolean(tpr[roundIdx])
+      && getTradingStatusForRound('dam') === 'on'
+      && getTradingStatusForRound('idm') === 'on'
   })()
-  const visibleSettlementMarkets = hasIdmTradingThisRound ? ['da', 'id'] : ['da']
-  const showBaselineOnlyNotice = Number(round) > 1 && hasIdmTradingThisRound && hasDamHistory && !hasCurrentRoundIdmDispatch && !hasCurrentRoundClearing
   
   // Get player name from email
   const playerEmail = my_result?.email || 'Player'
@@ -518,26 +437,6 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     return rows[hourOffset] || null
   }
 
-  const findDeviceHourEntry = (rows, hourValue, hourOffset) => {
-    if (!Array.isArray(rows) || rows.length === 0) return null
-    const byScenarioHour = rows.find((entry) => {
-      if (!entry || typeof entry !== 'object') return false
-      return Number(entry.hour ?? entry.hour_idx) === Number(hourValue)
-    })
-    if (byScenarioHour) return byScenarioHour
-
-    return rows[hourOffset] || null
-  }
-
-  const formatOfferedDispatchCell = (dispatchedValue, offeredValue) => {
-    const dispatched = Math.abs(Number(dispatchedValue ?? 0))
-    const offered = Math.abs(Number(offeredValue ?? 0))
-    if (!Number.isFinite(offered) || offered <= 0) return '—'
-
-    const pct = Number.isFinite(dispatched) ? (dispatched / offered) * 100 : 0
-    return `${formatDecimal(dispatched, 1)} / ${formatDecimal(offered, 1)} MWh (${formatPct(pct)})`
-  }
-
   const findHourlyBreakdownEntry = (rows, hourValue, hourOffset) => {
     if (!Array.isArray(rows) || rows.length === 0) return null
     const byHour = rows.find((entry) => {
@@ -660,7 +559,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         notes.push(`Demand coverage is above 100% (${demandCoveragePct.toFixed(1)}%): delivered volume exceeded planned demand in this round (e.g., additional intraday procurement or balancing effects).`)
       }
       if (profit < 0) {
-        notes.push('Net profit is negative: procurement, imbalance, and possible redispatch cost (ATC), net of any congestion revenue, exceeded positive settlement effects in this round.')
+        notes.push('Net result is negative: procurement, imbalance, and possible redispatch cost (ATC), net of any congestion revenue, exceeded positive settlement effects in this round.')
       }
     }
 
@@ -787,27 +686,107 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
   }
 
   const roundMarketSummary = normalizeMarketSummary(
-    marketOverviewResultsData?.market_summary || summarizeMarketFromRanking({
-      ranking: marketOverviewRanking,
-      totalVolumeMwh: marketOverviewRanking.reduce((maxVolume, row) => Math.max(maxVolume, normalizeNumber(row?.volume)), 0),
+    results?.market_summary || summarizeMarketFromRanking({
+      ranking,
+      totalVolumeMwh: ranking.reduce((maxVolume, row) => Math.max(maxVolume, normalizeNumber(row?.volume)), 0),
       dispatchedAccessor: (row) => row?.kpis?.dispatched_mwh,
       roleAccessor: (row) => row?.player_role,
       revenueAccessor: (row) => row?.kpis?.revenue_zar,
     })
   )
 
+  const gridOverviewSections = (() => {
+    if (!isMultiZone) return []
+
+    const sections = []
+    const zoneImpactSection = buildZoneSection(roundMarketSummary, formatCurrency, formatInt)
+
+    if (zoneImpactSection) {
+      sections.push(zoneImpactSection)
+    }
+
+    if (rawZoneResults.length > 0) {
+      sections.push({
+        title: 'Physical zone balances',
+        columns: [
+          { key: 'zone', label: 'Zone' },
+          { key: 'status', label: 'Status' },
+          { key: 'localGeneration', label: 'Local Gen', align: 'right' },
+          { key: 'localDemand', label: 'Local Demand', align: 'right' },
+          { key: 'imports', label: 'Imports', align: 'right' },
+          { key: 'exports', label: 'Exports', align: 'right' },
+          { key: 'losses', label: 'Losses', align: 'right' },
+          { key: 'unserved', label: 'Unserved', align: 'right' },
+          { key: 'coverage', label: 'Coverage' },
+          { key: 'balancing', label: 'Balancing', align: 'right' },
+        ],
+        rows: rawZoneResults.map((zone) => ({
+          key: `raw-zone-${zone?.zone_id ?? 'x'}`,
+          zone: `Zone ${zone?.zone_id ?? '-'}`,
+          status: String(zone?.status || '-').replaceAll('_', ' '),
+          localGeneration: `${formatInt(zone?.local_generation_mwh || 0)} MWh`,
+          localDemand: `${formatInt(zone?.local_demand_mwh || 0)} MWh`,
+          imports: `${formatInt(zone?.imports_mwh || 0)} MWh`,
+          exports: `${formatInt(zone?.exports_mwh || 0)} MWh`,
+          losses: `${formatInt(zone?.losses_mwh || 0)} MWh`,
+          unserved: `${formatInt(zone?.unserved_demand_mwh || 0)} MWh`,
+          coverage: `${formatPct(zone?.coverage_local_pct || 0)} local · ${formatPct(zone?.coverage_total_pct || 0)} total`,
+          balancing: `${formatInt(zone?.balancing_support_mwh || 0)} MWh · ${formatCurrency(zone?.extra_cost_total_zar || 0)}`,
+        })),
+      })
+    }
+
+    if (rawLinkResults.length > 0) {
+      sections.push({
+        title: 'Interzonal links',
+        columns: [
+          { key: 'route', label: 'Link' },
+          { key: 'atc', label: 'ATC', align: 'right' },
+          { key: 'sent', label: 'Sent', align: 'right' },
+          { key: 'received', label: 'Received', align: 'right' },
+          { key: 'utilization', label: 'Utilization', align: 'right' },
+          { key: 'losses', label: 'Losses', align: 'right' },
+          { key: 'binding', label: 'Binding' },
+          { key: 'rent', label: 'Congestion Rent', align: 'right' },
+        ],
+        rows: rawLinkResults.map((link, index) => ({
+          key: `raw-link-${link?.from_zone ?? 'x'}-${link?.to_zone ?? 'x'}-${index}`,
+          route: `Zone ${link?.from_zone ?? '-'} -> Zone ${link?.to_zone ?? '-'}`,
+          atc: `${formatInt(link?.atc_mwh || 0)} MWh`,
+          sent: `${formatInt(link?.flow_mwh || 0)} MWh`,
+          received: `${formatInt(link?.flow_received_mwh || 0)} MWh`,
+          utilization: formatPct(link?.utilization_pct || 0),
+          losses: `${formatInt(link?.losses_mwh || 0)} MWh`,
+          binding: link?.binding ? 'Yes' : 'No',
+          rent: formatCurrency(link?.congestion_rent_zar || 0),
+        })),
+      })
+    }
+
+    if (sections.length > 0) {
+      sections.unshift({
+        title: 'Grid context',
+        items: [{
+          text: 'This tab shows the physical network state from the stored round result: one row per zone plus one row per interzonal link. Zone economics come from visible player outcomes; imports, exports, losses and shortfalls come from the raw grid result.'
+        }],
+      })
+    }
+
+    return sections
+  })()
+
   const roundMarketOverview = (() => {
     const sumBy = (rows, key) => rows.reduce((sum, row) => sum + normalizeNumber(row?.kpis?.[key]), 0)
-    const totalPlayers = marketOverviewRanking.length
-    const totalProfit = sumBy(marketOverviewRanking, 'profit_zar')
-    const totalRevenue = sumBy(marketOverviewRanking, 'revenue_zar')
-    const totalImbalance = sumBy(marketOverviewRanking, 'imbalance_cost_zar')
-    const totalAtc = marketOverviewRanking.reduce((sum, row) => sum + normalizeNumber(row?.kpis?.atc_dispatch_cost_zar ?? row?.kpis?.grid_constraint_cost_zar), 0)
-    const totalCo2 = sumBy(marketOverviewRanking, 'co2_emissions_kg')
+    const totalPlayers = ranking.length
+    const totalProfit = sumBy(ranking, 'profit_zar')
+    const totalRevenue = sumBy(ranking, 'revenue_zar')
+    const totalImbalance = sumBy(ranking, 'imbalance_cost_zar')
+    const totalAtc = ranking.reduce((sum, row) => sum + normalizeNumber(row?.kpis?.atc_dispatch_cost_zar ?? row?.kpis?.grid_constraint_cost_zar), 0)
+    const totalCo2 = sumBy(ranking, 'co2_emissions_kg')
     const avgScore = totalPlayers > 0
-      ? marketOverviewRanking.reduce((sum, row) => sum + normalizeNumber(row?.total_score), 0) / totalPlayers
+      ? ranking.reduce((sum, row) => sum + normalizeNumber(row?.total_score), 0) / totalPlayers
       : 0
-    const topRows = marketOverviewRanking.slice(0, 5).map((row) => ({
+    const topRows = ranking.slice(0, 5).map((row) => ({
       key: row?.player_id || row?.email || row?.rank,
       rank: `#${row?.rank || '-'}`,
       player: row?.email || `Player ${row?.player_id || '-'}`,
@@ -816,18 +795,20 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       profit: formatCurrency(row?.kpis?.profit_zar || 0),
     }))
     const compositionSection = buildCompositionSection(roundMarketSummary, formatInt)
+    const phaseMixSections = buildPhaseMixSections(roundMarketSummary, formatInt)
+    const zoneMixSection = buildZoneMixMatrixSection(roundMarketSummary, formatInt)
     const zoneSection = buildZoneSection(roundMarketSummary, formatCurrency, formatInt)
     const summarySection = {
       title: 'Round-wide market summary',
       rows: [
         { label: 'Total profit across real players', value: formatCurrency(totalProfit) },
         { label: 'Total settlement revenue across real players', value: formatCurrency(totalRevenue) },
-        { label: 'Active events', value: String(marketOverviewResultsData?.market_summary?.active_events_count ?? (Array.isArray(marketOverviewResultsData?.active_events) ? marketOverviewResultsData.active_events.length : 0)) },
+        { label: 'Active events', value: String(results?.market_summary?.active_events_count ?? (Array.isArray(results?.active_events) ? results.active_events.length : 0)) },
         { label: 'Real player share of producer side', value: `${roundMarketSummary.realPlayers.producerSharePct.toFixed(1)}%` },
         { label: 'Real player share of consumer side', value: `${roundMarketSummary.realPlayers.consumerSharePct.toFixed(1)}%` },
       ],
     }
-    const activeEventsSection = buildActiveEventsSection(marketOverviewResultsData?.active_events)
+    const activeEventsSection = buildActiveEventsSection(results?.active_events)
     const topPlayersSection = {
       title: 'Top players this round',
       columns: [
@@ -839,7 +820,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       ],
       rows: topRows,
     }
-    const rankingEntries = marketOverviewRanking.map((row, index) => ({
+    const rankingEntries = ranking.map((row, index) => ({
       key: row?.player_id || row?.email || index,
       rank: `#${row?.rank || index + 1}`,
       player: row?.email || `Player ${row?.player_id || '-'}`,
@@ -858,7 +839,9 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       ].filter(Boolean),
       sections: [compositionSection, zoneSection, summarySection, activeEventsSection].filter(Boolean),
       overviewSections: [summarySection, activeEventsSection].filter(Boolean),
-      marketMixSections: [compositionSection, zoneSection].filter(Boolean),
+      marketMixSections: (phaseMixSections.length > 0
+        ? [...phaseMixSections, zoneMixSection]
+        : [compositionSection, zoneMixSection]).filter(Boolean),
       rankingEntries,
     };
   })()
@@ -877,6 +860,13 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         ? roundMarketOverview.marketMixSections
         : [{ title: 'Market mix', items: [{ text: 'No market composition data available for this round.' }] }],
     },
+    ...(isMultiZone ? [{
+      id: 'grids',
+      label: 'Grids',
+      sections: gridOverviewSections.length > 0
+        ? gridOverviewSections
+        : [{ title: 'Grids', items: [{ text: 'No zonal grid data available for this round.' }] }],
+    }] : []),
     {
       id: 'ranking',
       label: 'Ranking',
@@ -897,7 +887,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
       ) : (
         <MarketOverviewTrendPanel
           rounds={marketOverviewTrendRounds}
-          selectedRound={marketOverviewActiveRound || null}
+          selectedRound={Number(round) || null}
           formatPrice={(value) => `${normalizeNumber(value).toFixed(1)} ZAR/MWh`}
           formatVolume={(value) => `${formatInt(value)} MWh`}
         />
@@ -906,60 +896,52 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     {
       id: 'merit-order',
       label: 'Merit Order',
-      content: (
-        <MarketStructureChartPanel
-          sessionId={sessionId}
-          roundNum={marketOverviewActiveRound || 1}
-          roundSpan={Number(scenario?.config?.general?.round_span_hours || 6)}
-          startTime={scenario?.config?.general?.start_time || '00:00'}
-        />
-      ),
+      content: (() => {
+        const meritRoundNum = Number(round) || 1
+        const meritRoundSpan = Number(scenario?.config?.general?.round_span_hours || 6)
+        const meritStartTime = scenario?.config?.general?.start_time || '00:00'
+        const twoPhaseRounds = scenario?.config?.general?.two_phase_rounds
+        const isTwoPhaseRound = Array.isArray(twoPhaseRounds) && Boolean(twoPhaseRounds[meritRoundNum - 1])
+        if (!isTwoPhaseRound) {
+          return (
+            <MarketStructureChartPanel
+              sessionId={sessionId}
+              roundNum={meritRoundNum}
+              roundSpan={meritRoundSpan}
+              startTime={meritStartTime}
+              historicalMode
+            />
+          )
+        }
+        return (
+          <Stack spacing={3}>
+            <Box>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Day-Ahead market (Phase 1)</Typography>
+              <MarketStructureChartPanel
+                sessionId={sessionId}
+                roundNum={meritRoundNum}
+                roundSpan={meritRoundSpan}
+                startTime={meritStartTime}
+                historicalMode
+                forcePhase="dam"
+              />
+            </Box>
+            <Box>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Intraday market (Phase 2)</Typography>
+              <MarketStructureChartPanel
+                sessionId={sessionId}
+                roundNum={meritRoundNum}
+                roundSpan={meritRoundSpan}
+                startTime={meritStartTime}
+                historicalMode
+                forcePhase="idm"
+              />
+            </Box>
+          </Stack>
+        )
+      })(),
     },
   ]
-
-  const marketOverviewRoundOptions = (() => {
-    const optionSet = new Set()
-    ;(Array.isArray(marketOverviewTrendRounds) ? marketOverviewTrendRounds : []).forEach((row) => {
-      const value = Number(row?.round || 0)
-      if (value > 0) optionSet.add(value)
-    })
-    ;(Array.isArray(roundHistoryKpis) ? roundHistoryKpis : []).forEach((row) => {
-      const value = Number(row?.round || 0)
-      if (value > 0) optionSet.add(value)
-    })
-    if (Number(round) > 0) optionSet.add(Number(round))
-    return [...optionSet].sort((a, b) => a - b)
-  })()
-
-  const marketOverviewHeaderControls = marketOverviewRoundOptions.length > 0 ? (
-    <FormControl size="small" sx={{ minWidth: 140 }}>
-      <InputLabel id="market-overview-round-select-label">Round</InputLabel>
-      <Select
-        labelId="market-overview-round-select-label"
-        value={marketOverviewActiveRound || ''}
-        label="Round"
-        onChange={(event) => setMarketOverviewSelectedRound(Number(event.target.value || round || 1))}
-      >
-        {marketOverviewRoundOptions.map((optionRound) => (
-          <MenuItem key={optionRound} value={optionRound}>
-            {`Round ${optionRound}`}
-          </MenuItem>
-        ))}
-      </Select>
-    </FormControl>
-  ) : null
-
-  const marketOverviewDialogTabs = marketOverviewDataLoading || !marketOverviewResultsData
-    ? [{
-        id: 'overview',
-        label: 'Overview',
-        content: (
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-            <CircularProgress size={24} />
-          </Box>
-        ),
-      }]
-    : roundMarketOverviewTabs
 
   const kpiCompositionNotes = (() => {
     const notes = []
@@ -996,7 +978,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const totalRevenue = Number(currentKpis.revenue_zar || 0)
     const revenueDelta = totalRevenue - (daRevenue + idRevenue)
 
-    if (hasIdmTradingThisRound && (Math.abs(daRevenue) > 0.5 || Math.abs(idRevenue) > 0.5)) {
+    if (Math.abs(daRevenue) > 0.5 || Math.abs(idRevenue) > 0.5) {
       if (isConsumer) {
         notes.push(`Cost settlement composition (signed): DAM ${formatCurrency(daRevenue)} + IDM ${formatCurrency(idRevenue)} = ${formatCurrency(daRevenue + idRevenue)}. KPI settlement value = ${formatCurrency(totalRevenue)} (Total Costs card shows absolute value: ${formatCurrency(Math.abs(totalRevenue))}).`)
       } else {
@@ -1031,7 +1013,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     const gridCurtailedMwh = Number(currentKpis.grid_curtailed_mwh || 0)
     const computedProfit = totalRevenue - variableCost - fixedCost - imbalanceCost - batteryChargeCost - gridConstraintCost + congestionRevenue
     if (isConsumer) {
-      notes.push(`Net-profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(batteryChargeCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Net profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
+      notes.push(`Net-result composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(batteryChargeCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Net result: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
     } else {
       notes.push(`Profit composition: ${formatCurrency(totalRevenue)} - ${formatCurrency(variableCost)} - ${formatCurrency(fixedCost)} - ${formatCurrency(imbalanceCost)} - ${formatCurrency(batteryChargeCost)} - ${formatCurrency(gridConstraintCost)} + ${formatCurrency(congestionRevenue)} = ${formatCurrency(computedProfit)} (KPI Profit: ${formatCurrency(currentKpis.profit_zar || 0)}).`)
     }
@@ -1222,7 +1204,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         const imbalanceMwh = Number(currentKpis.imbalance_mwh || 0)
         const imbalanceCost = Number(currentKpis.imbalance_cost_zar || 0)
         if (Math.abs(imbalanceMwh) > 0.001 || Math.abs(imbalanceCost) > 0.5) {
-          notes.push(`Event impact visible in detail rows: ${eventDrivenRows.length} device-hour entries carry event modifiers; average capacity reduction ≈ ${avgDropPct.toFixed(0)}%. This reduced deliverable volume and contributed to imbalance (${formatInt(imbalanceMwh)} MWh, ${formatCurrency(imbalanceCost)}) and lower ${isConsumer ? 'net profit' : 'profit'}.`)
+          notes.push(`Event impact visible in detail rows: ${eventDrivenRows.length} device-hour entries carry event modifiers; average capacity reduction ≈ ${avgDropPct.toFixed(0)}%. This reduced deliverable volume and contributed to imbalance (${formatInt(imbalanceMwh)} MWh, ${formatCurrency(imbalanceCost)}) and lower ${isConsumer ? 'net result' : 'profit'}.`)
         }
       } else if (shownEvents.some((evt) => String(evt?.type || '').toLowerCase() === 'systemic')) {
         notes.push('Systemic event(s) are active, but no explicit event modifier is present in the current device-hour rows. If this is unexpected, verify event target scope and round applicability.')
@@ -1378,70 +1360,81 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
 
           <Divider />
 
-          {showZoneAndNetworkSection && (
+          {rawZoneResults.length > 0 && isMultiZone && (
             <Box>
               <Typography variant="h6" fontWeight={600} gutterBottom>
                 Zone And Network
               </Typography>
               <Grid container spacing={3} sx={{ mt: 0.5 }}>
-                <Grid item xs={12} md={5}>
-                  <Card variant="outlined" sx={{ height: '100%' }}>
-                    <CardContent>
-                      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
-                        <Typography variant="subtitle1" fontWeight={600}>
-                          Zone {playerZoneInfo.zone_id}
-                        </Typography>
-                        <Chip
-                          size="small"
-                          label={String(playerZoneInfo.zone_status || 'local_supply_sufficient').replaceAll('_', ' ')}
-                          color={playerZoneInfo.zone_status === 'supply_shortfall' ? 'error' : playerZoneInfo.zone_status === 'grid_supported_supply' || playerZoneInfo.zone_status === 'balancing_supported_supply' ? 'warning' : 'success'}
-                        />
-                      </Stack>
-                      <Stack spacing={0.75}>
-                        <Typography variant="body2" color="text.secondary">
-                          Coverage: {formatPct(playerZoneInfo.zone_coverage_total_pct)}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          Local generation: {formatInt(playerZoneInfo.zone_local_generation_mwh)} MWh
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          Local demand: {formatInt(playerZoneInfo.zone_local_demand_mwh)} MWh
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          Imports / exports: {formatInt(playerZoneInfo.zone_imports_mwh)} / {formatInt(playerZoneInfo.zone_exports_mwh)} MWh
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          Zone shortfall: {formatInt(playerZoneInfo.zone_unserved_demand_mwh)} MWh
-                        </Typography>
-                        {Number(playerZoneInfo.zone_balancing_support_mwh || 0) > 0.001 && (
-                          <Typography variant="body2" color="text.secondary">
-                            Balancing support: {formatInt(playerZoneInfo.zone_balancing_support_mwh)} MWh
-                          </Typography>
-                        )}
-                        <Typography variant="body2" color="text.secondary">
-                          Redispatch cost (ATC): {formatCurrency(kpis.atc_dispatch_cost_zar ?? kpis.grid_constraint_cost_zar ?? 0)}
-                        </Typography>
-                      </Stack>
-                    </CardContent>
-                  </Card>
-                </Grid>
-                <Grid item xs={12} md={7}>
+                {rawZoneResults.map((zone) => {
+                  const zoneId = Number(zone?.zone_id || 0)
+                  const zoneStatus = String(zone?.status || 'local_supply_sufficient')
+                  const isPlayerZone = Number(playerZoneInfo?.zone_id || 0) === zoneId
+                  return (
+                    <Grid item xs={12} md={rawZoneResults.length <= 2 ? 6 : 4} key={`zone-summary-${zoneId}`}>
+                      <Card variant="outlined" sx={{ height: '100%' }}>
+                        <CardContent>
+                          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5, gap: 1, flexWrap: 'wrap' }}>
+                            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                              <Typography variant="subtitle1" fontWeight={600}>
+                                Zone {zoneId}
+                              </Typography>
+                              {isPlayerZone ? <Chip size="small" label="Your zone" color="primary" variant="outlined" /> : null}
+                            </Stack>
+                            <Chip
+                              size="small"
+                              label={zoneStatus.replaceAll('_', ' ')}
+                              color={zoneStatus === 'supply_shortfall' ? 'error' : zoneStatus === 'grid_supported_supply' || zoneStatus === 'balancing_supported_supply' ? 'warning' : 'success'}
+                            />
+                          </Stack>
+                          <Stack spacing={0.75}>
+                            <Typography variant="body2" color="text.secondary">
+                              Coverage: {formatPct(zone?.coverage_total_pct)} total · {formatPct(zone?.coverage_local_pct)} local
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Local generation: {formatInt(zone?.local_generation_mwh)} MWh
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Local demand: {formatInt(zone?.local_demand_mwh)} MWh
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Imports / exports: {formatInt(zone?.imports_mwh)} / {formatInt(zone?.exports_mwh)} MWh
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Losses: {formatInt(zone?.losses_mwh)} MWh
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Zone shortfall: {formatInt(zone?.unserved_demand_mwh)} MWh
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Balancing support: {formatInt(zone?.balancing_support_mwh)} MWh
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              Redispatch cost (ATC): {formatCurrency(zone?.extra_cost_total_zar || 0)}
+                            </Typography>
+                          </Stack>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  )
+                })}
+                <Grid item xs={12}>
                   <Card variant="outlined" sx={{ height: '100%' }}>
                     <CardContent>
                       <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 1.5 }}>
-                        Connected Links
+                        Interzonal Links
                       </Typography>
-                      {Array.isArray(playerZoneInfo.zone_links) && playerZoneInfo.zone_links.length > 0 ? (
+                      {rawLinkResults.length > 0 ? (
                         <Stack spacing={1}>
-                          {playerZoneInfo.zone_links.map((link) => (
-                            <Typography key={`${link.direction}-${link.peer_zone}`} variant="body2" color="text.secondary">
-                              Zone {link.peer_zone}: {formatInt(link.flow_mwh)} / {formatInt(link.atc_mwh)} MWh, utilization {formatPct(link.utilization_pct)} ({link.direction})
+                          {rawLinkResults.map((link, index) => (
+                            <Typography key={`interzonal-link-${index}`} variant="body2" color="text.secondary">
+                              Zone {link.from_zone} {'->'} Zone {link.to_zone}: {formatInt(link.flow_mwh)} / {formatInt(link.atc_mwh)} MWh, received {formatInt(link.flow_received_mwh)} MWh, utilization {formatPct(link.utilization_pct)}{link.binding ? ' · binding' : ''}
                             </Typography>
                           ))}
                         </Stack>
                       ) : (
                         <Typography variant="body2" color="text.secondary">
-                          No active interzonal flows for your zone in this round.
+                          No interzonal links were reported for this round.
                         </Typography>
                       )}
                     </CardContent>
@@ -1846,6 +1839,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
           <DeviceDeepDiveTabs 
             results={results}
             scenario={scenario}
+            mode={mode}
             roleType={isProducer ? 'producer' : 'consumer'}
           />
 
@@ -1961,7 +1955,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                             <TableCell align="right">+ {formatCurrency(kpis.congestion_revenue_zar || 0)}</TableCell>
                           </TableRow>
                           <TableRow sx={{ bgcolor: 'success.50' }}>
-                            <TableCell sx={{ fontWeight: 'bold' }}>{isConsumer ? 'Net Profit' : 'Profit'}</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>{isConsumer ? 'Net Result' : 'Profit'}</TableCell>
                             <TableCell align="right" sx={{ fontWeight: 'bold', color: (kpis.profit_zar || 0) >= 0 ? 'success.main' : 'error.main' }}>
                               = {formatCurrency(kpis.profit_zar || 0)}
                             </TableCell>
@@ -1972,12 +1966,9 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     {!showCumulative && (() => {
                       const currentHourlyBreakdown = Array.isArray(currentKpis?.hourly_breakdown) ? currentKpis.hourly_breakdown : []
                       const hourColumns = deriveHourColumns(currentHourlyBreakdown, {})
-                      const hasHourlyIntradayPrice = currentHourlyBreakdown.some((entry) => (
+                      const usesCurrentRoundPrice = hasIdmTradingThisRound || currentHourlyBreakdown.some((entry) => (
                         normalizeNumber(entry?.idp) > 0 || normalizeNumber(entry?.id_price_zar) > 0
                       ))
-                      const usesCurrentRoundPrice = hasExplicitIdmTradingConfig
-                        ? hasIdmTradingThisRound
-                        : (hasIdmTradingThisRound || hasHourlyIntradayPrice)
                       if (!hourColumns.length) return null
 
                       const profitInputRows = [
@@ -1985,9 +1976,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                           key: 'price',
                           label: usesCurrentRoundPrice ? 'Current Price / SMP (ZAR/MWh)' : 'SMP (ZAR/MWh)',
                           render: (entry) => {
-                            const price = usesCurrentRoundPrice
-                              ? (entry?.idp ?? entry?.id_price_zar ?? entry?.market_price_zar ?? entry?.da_price_zar ?? entry?.smp ?? 0)
-                              : (entry?.smp ?? entry?.market_price_zar ?? entry?.da_price_zar ?? entry?.idp ?? entry?.id_price_zar ?? 0)
+                            const price = entry?.idp ?? entry?.id_price_zar ?? entry?.market_price_zar ?? entry?.da_price_zar ?? entry?.smp ?? 0
                             return Number(price) > 0 ? formatDecimal(price, 1) : '—'
                           }
                         },
@@ -2033,7 +2022,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                         },
                         {
                           key: 'profit',
-                          label: isConsumer ? 'Net Profit (ZAR)' : 'Profit (ZAR)',
+                          label: isConsumer ? 'Net Result (ZAR)' : 'Profit (ZAR)',
                           render: (entry) => formatCurrency(entry?.profit_zar || 0)
                         },
                       ]
@@ -2127,12 +2116,10 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     {renderHourMatrixTable(
                       Object.keys(currentDeviceHourlyBreakdown || {}).sort().flatMap((devId) => {
                         const label = getDeviceLabel(devId)
-                        return visibleSettlementMarkets.map((market) => ({
-                          key: `${devId}:${market}`,
-                          label: `${label} — ${market === 'da' ? 'DAM' : 'IDM'}`,
-                          devId,
-                          market,
-                        }))
+                        return [
+                          { key: `${devId}:da`, label: `${label} — DAM`, devId, market: 'da' },
+                          { key: `${devId}:id`, label: `${label} — IDM`, devId, market: 'id' },
+                        ]
                       }),
                       hourColumns,
                       (row, hIdx) => {
@@ -2167,12 +2154,10 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     {renderHourMatrixTable(
                       Object.keys(currentDeviceHourlyBreakdown || {}).sort().flatMap((devId) => {
                         const label = getDeviceLabel(devId)
-                        return visibleSettlementMarkets.map((market) => ({
-                          key: `${devId}:${market}`,
-                          label: `${label} — ${market === 'da' ? 'DAM' : 'IDM'}`,
-                          devId,
-                          market,
-                        }))
+                        return [
+                          { key: `${devId}:da`, label: `${label} — DAM`, devId, market: 'da' },
+                          { key: `${devId}:id`, label: `${label} — IDM`, devId, market: 'id' },
+                        ]
                       }),
                       hourColumns,
                       (row, hIdx) => {
@@ -2200,12 +2185,12 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                   const damBidDispatch = hasDamHistory
                     ? (my_result?.dam_bid_dispatch || {})
                     : ((Number(round) === 1 || Number(round) === 0) ? (my_result?.bid_dispatch || {}) : {})
-                  const idmBidDispatch = hasIdmTradingThisRound && hasDamHistory ? (my_result?.bid_dispatch || {}) : {}
+                  const idmBidDispatch = hasDamHistory ? (my_result?.bid_dispatch || {}) : {}
 
                   const dispatchedRows = Object.keys(currentDeviceHourlyBreakdown || {}).sort().flatMap((devId) => {
                     const label = getDeviceLabel(devId)
                     const bidKeys = ['A', 'B', 'C']
-                    return visibleSettlementMarkets.flatMap((market) => bidKeys.map((bidKey) => ({
+                    return ['da', 'id'].flatMap((market) => bidKeys.map((bidKey) => ({
                       key: `${devId}:${market}:${bidKey}`,
                       label: `${label} — ${market.toUpperCase()} ${bidTierLabel(bidKey)}`,
                       devId,
@@ -2218,18 +2203,6 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     })
                   })
 
-                  const fallbackRows = Object.keys(currentDeviceHourlyBreakdown || {}).sort().map((devId) => ({
-                    key: `${devId}:total`,
-                    label: `${getDeviceLabel(devId)} — Total`,
-                    devId,
-                  })).filter((row) => {
-                    const deviceRows = currentDeviceHourlyBreakdown?.[row.devId] || []
-                    return deviceRows.some((entry) => Math.abs(Number(entry?.planned_mw ?? entry?.planned_mwh ?? 0)) > 0)
-                  })
-
-                  const hasBidLevelDispatch = dispatchedRows.length > 0
-                  const displayRows = hasBidLevelDispatch ? dispatchedRows : fallbackRows
-
                   return (
                   <>
                     <Typography variant="body2">
@@ -2238,32 +2211,19 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                     <Typography variant="body2">
                       {plannedVolumeLabel} volume: {formatInt(kpis.planned_mwh || 0)} MWh
                     </Typography>
-                    {!hasBidLevelDispatch && (
-                      <Typography variant="body2" color="text.secondary">
-                        Bid-level offer data is not available for this round. Showing per-device totals from the stored KPI breakdown instead.
-                      </Typography>
-                    )}
 
                     {renderHourMatrixTable(
-                      displayRows,
+                      dispatchedRows,
                       hourColumns,
                       (row, hIdx) => {
-                        if (!hasBidLevelDispatch) {
-                          const deviceRows = currentDeviceHourlyBreakdown?.[row.devId] || []
-                          const deviceEntry = findDeviceHourEntry(deviceRows, hourColumns[hIdx], hIdx)
-                          return formatOfferedDispatchCell(
-                            deviceEntry?.total_dispatched_mwh ?? deviceEntry?.dispatched_mw,
-                            deviceEntry?.planned_mw ?? deviceEntry?.planned_mwh,
-                          )
-                        }
-
                         const marketDispatch = row.market === 'da' ? damBidDispatch : idmBidDispatch
                         const lotRows = marketDispatch?.[row.devId]?.[row.bidKey] || []
                         const lotEntry = findBidHourEntry(lotRows, hourColumns[hIdx], hIdx)
-                        return formatOfferedDispatchCell(
-                          lotEntry?.mw_dispatched,
-                          lotEntry?.mw_offered_signed ?? lotEntry?.mw_offered,
-                        )
+                        const dispatched = Math.abs(Number(lotEntry?.mw_dispatched ?? 0))
+                        const offered = Math.abs(Number((lotEntry?.mw_offered_signed ?? lotEntry?.mw_offered) ?? 0))
+                        if (!Number.isFinite(offered) || offered <= 0) return '—'
+                        const pct = (dispatched / offered) * 100
+                        return formatPct(pct)
                       },
                       'Device / Market / Bid'
                     )}
@@ -2323,10 +2283,9 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
             open={marketOverviewOpen}
             onClose={() => setMarketOverviewOpen(false)}
             title="Overall Market Overview"
-            subtitle={`Round ${marketOverviewActiveRound} · ${displayCampaignName} · ${scenarioName}`}
-            tabs={marketOverviewDialogTabs}
+            subtitle={`Round ${round} · ${displayCampaignName} · ${scenarioName}`}
+            tabs={roundMarketOverviewTabs}
             defaultTabId="overview"
-            headerControls={marketOverviewHeaderControls}
           />
         </Stack>
       </Paper>

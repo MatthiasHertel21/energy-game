@@ -1,6 +1,6 @@
 import unittest
 
-from app.engine import _compute_interzonal_round_outputs
+from app.engine import _build_player_zone_and_role_maps, _compute_interzonal_round_outputs, clear_market_coupled_atc
 from app.kse import validate_config
 
 
@@ -78,6 +78,37 @@ class TestInterzonalPhase1(unittest.TestCase):
         self.assertTrue(any("environment.groups.solar.zone_distribution_pct must have length = zones" in error for error in errors))
         self.assertTrue(any("market.consumer_mix.residential.zone_distribution_pct must sum to 100" in error for error in errors))
         self.assertTrue(any("player_types[producer].zone must be within [1, zones]" in error for error in errors))
+
+    def test_validate_config_requires_player_type_zones_in_v1_and_rejects_legacy_player_zone(self):
+        cfg = _base_config(zones=2)
+        cfg["general"]["zonal_pricing_v1_enabled"] = True
+        cfg["devices"] = [
+            {"id": "gen", "type": "SOLAR", "max_power_mw": 100},
+        ]
+        cfg["player_types"] = [
+            {"id": "producer", "name": "Producer", "devices": ["gen"]},
+        ]
+
+        errors = validate_config(cfg)
+
+        self.assertTrue(any("V1 multi-zone scenarios require player_types[].zone" in error for error in errors))
+        self.assertTrue(any("general.player_zone is not allowed" in error for error in errors))
+
+    def test_build_player_zone_map_ignores_legacy_player_zone_when_v1_enabled(self):
+        cfg = _base_config(zones=2)
+        cfg["general"]["player_zone"] = 2
+        cfg["general"]["zonal_pricing_v1_enabled"] = True
+        cfg["devices"] = [
+            {"id": "gen", "type": "SOLAR", "max_power_mw": 100},
+        ]
+        cfg["player_types"] = [
+            {"id": "producer", "name": "Producer", "zone": 1, "devices": ["gen"]},
+        ]
+
+        zone_map, role_map = _build_player_zone_and_role_maps(cfg, [1], {1: "producer"})
+
+        self.assertEqual(zone_map[1], 1)
+        self.assertEqual(role_map[1], "producer")
 
     def test_validate_config_rejects_unimplemented_extra_cost_modes(self):
         cfg = _base_config(zones=2)
@@ -205,6 +236,86 @@ class TestInterzonalPhase1(unittest.TestCase):
         self.assertEqual(len(player_zone_info[2]["zone_links"]), 1)
         self.assertAlmostEqual(per_player_curtailed_mwh[1], 10.0)
         self.assertAlmostEqual(per_player_lost_revenue[1], 1000.0)
+
+    def test_clear_market_coupled_atc_keeps_uniform_prices_without_binding_link(self):
+        zone_supply = [
+            [(100.0, 100.0)],
+            [(200.0, 100.0)],
+        ]
+        zone_demand = [
+            [(1000.0, 40.0)],
+            [(1000.0, 60.0)],
+        ]
+
+        result = clear_market_coupled_atc(
+            zone_supply,
+            zone_demand,
+            atc=[[0.0, 100.0], [100.0, 0.0]],
+            losses_pct_per_link=0.0,
+            price_floor=-500.0,
+            price_cap=5000.0,
+        )
+
+        self.assertFalse(result["zonal_pricing_active"])
+        self.assertEqual(result["zone_prices"], [100.0, 100.0])
+        self.assertAlmostEqual(result["zone_supply_volume_mwh"][0], 100.0)
+        self.assertAlmostEqual(result["zone_demand_volume_mwh"][1], 60.0)
+        self.assertAlmostEqual(result["interzonal_flows"][(1, 2)]["flow_mwh"], 60.0)
+        self.assertAlmostEqual(result["congestion_rents"][(1, 2)]["congestion_rent_zar"], 0.0)
+
+    def test_clear_market_coupled_atc_splits_prices_when_atc_binds(self):
+        zone_supply = [
+            [(100.0, 100.0)],
+            [(400.0, 100.0)],
+        ]
+        zone_demand = [
+            [(1000.0, 20.0)],
+            [(1000.0, 100.0)],
+        ]
+
+        result = clear_market_coupled_atc(
+            zone_supply,
+            zone_demand,
+            atc=[[0.0, 40.0], [40.0, 0.0]],
+            losses_pct_per_link=0.0,
+            price_floor=-500.0,
+            price_cap=5000.0,
+        )
+
+        self.assertTrue(result["zonal_pricing_active"])
+        self.assertLess(result["zone_prices"][0], result["zone_prices"][1])
+        self.assertAlmostEqual(result["interzonal_flows"][(1, 2)]["flow_mwh"], 40.0)
+        self.assertIn((1, 2), result["binding_links"])
+        self.assertGreater(result["congestion_rents"][(1, 2)]["congestion_rent_zar"], 0.0)
+
+    def test_clear_market_coupled_atc_tracks_multi_hop_losses(self):
+        zone_supply = [
+            [(100.0, 120.0)],
+            [],
+            [(500.0, 20.0)],
+        ]
+        zone_demand = [
+            [(1000.0, 20.0)],
+            [(1000.0, 20.0)],
+            [(1000.0, 80.0)],
+        ]
+
+        result = clear_market_coupled_atc(
+            zone_supply,
+            zone_demand,
+            atc=[
+                [0.0, 60.0, 0.0],
+                [60.0, 0.0, 60.0],
+                [0.0, 60.0, 0.0],
+            ],
+            losses_pct_per_link=10.0,
+            price_floor=-500.0,
+            price_cap=5000.0,
+        )
+
+        self.assertGreater(result["interzonal_flows"][(1, 2)]["losses_mwh"], 0.0)
+        self.assertGreater(result["interzonal_flows"][(2, 3)]["losses_mwh"], 0.0)
+        self.assertGreater(result["congestion_rents"][(1, 2)]["losses_value_zar"], 0.0)
 
     def test_shortfall_cost_allocation_uses_chargeable_player_consumption(self):
         config = _base_config(zones=2)

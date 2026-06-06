@@ -678,6 +678,7 @@ def _build_level2b() -> dict:
         "grid location and market power directly affect outcomes. Every round should compare the system view with the "
         "zonal view so players can see whether cost or location is driving the outcome."
     )
+    config["general"]["zonal_pricing_v1_enabled"] = True
     config["devices"][0]["zone"] = 1
     config["devices"][1]["zone"] = 1
     config["devices"][2]["zone"] = 2

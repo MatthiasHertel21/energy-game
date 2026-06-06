@@ -291,6 +291,7 @@ def _validate_scenario_specifics(round_data: dict, config: dict, scenario_name: 
     role = my_result.get("player_role")
     kpis = (my_result.get("kpis") or {})
     markets = config.get("markets") or {}
+    general = config.get("general") or {}
     idm_trading = ((markets.get("idm") or {}).get("trading") or [])
     idm_enabled = False
     if round_num - 1 < len(idm_trading):
@@ -330,6 +331,25 @@ def _validate_scenario_specifics(round_data: dict, config: dict, scenario_name: 
     elif scenario_name == "Level 2b - Grid constraints and market power":
         assert len(config.get("player_types") or []) == 3
         assert int((config.get("grid") or {}).get("zones", 1) or 1) == 2
+        assert bool(general.get("zonal_pricing_v1_enabled", False)) is True, (
+            f"scenario={scenario_name} type={type_id} round={round_num}: zonal pricing v1 must be enabled"
+        )
+        assert my_result.get("player_zone_split_active") in (True, False), (
+            f"scenario={scenario_name} type={type_id} round={round_num}: missing player zone split flag in round results"
+        )
+        assert bool(my_result.get("player_zone_split_active")) == bool(kpis.get("player_zone_split_active", False)), (
+            f"scenario={scenario_name} type={type_id} round={round_num}: round-results split flag must match KPI payload"
+        )
+        for hour in (my_result.get("hourly_results") or []):
+            assert hour.get("price_source") in {"uniform", "zonal_split", "islanded", "shortfall_separate"}, (
+                f"scenario={scenario_name} type={type_id} round={round_num}: invalid price_source in hourly results"
+            )
+            assert hour.get("system_price_zar_per_mwh") is not None, (
+                f"scenario={scenario_name} type={type_id} round={round_num}: missing system price in hourly results"
+            )
+            assert hour.get("zone_price_zar_per_mwh") is not None, (
+                f"scenario={scenario_name} type={type_id} round={round_num}: missing zone price in hourly results"
+            )
     elif scenario_name == "Level 3a - Forecating and information":
         assert int((config.get("general") or {}).get("rounds", 0) or 0) == 4
         assert (my_result.get("da_id_breakdown") or {}).get("has_baseline") is True

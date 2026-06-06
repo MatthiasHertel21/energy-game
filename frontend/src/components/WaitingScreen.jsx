@@ -20,11 +20,17 @@ import api from '../services/api';
  * WaitingScreen - Shows submit status or calculating message
  * Displayed after player submits while waiting for others (shared) or during calculation (solo)
  */
-export default function WaitingScreen({ sessionId, round, mode = 'shared_market' }) {
+export default function WaitingScreen({ sessionId, round, mode = 'shared_market', marketPhase = null }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const isSolo = mode === 'isolated_per_player';
+
+  const phaseLabel = marketPhase === 'dam'
+    ? 'Day-Ahead (Phase 1 of 2)'
+    : marketPhase === 'idm'
+      ? 'Intraday (Phase 2 of 2)'
+      : null;
 
   useEffect(() => {
     if (!sessionId) return;
@@ -70,6 +76,9 @@ export default function WaitingScreen({ sessionId, round, mode = 'shared_market'
           <Typography variant="h5" gutterBottom>
             Calculating Your Results...
           </Typography>
+          {phaseLabel && (
+            <Chip label={`${phaseLabel} submitted`} color="primary" variant="outlined" />
+          )}
           
           <Typography variant="body2" color="text.secondary" textAlign="center">
             Please wait while your round results are being processed.
@@ -95,6 +104,12 @@ export default function WaitingScreen({ sessionId, round, mode = 'shared_market'
 
   return (
     <Paper sx={{ p: 2 }}>
+      {phaseLabel && (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+          <Typography variant="subtitle2" color="text.secondary">Submitted phase:</Typography>
+          <Chip label={phaseLabel} size="small" color="primary" variant="outlined" />
+        </Stack>
+      )}
       <TableContainer>
         <Table size="small">
           <TableHead>

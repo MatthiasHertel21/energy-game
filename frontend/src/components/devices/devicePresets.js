@@ -10,6 +10,17 @@ function nextDeviceId() {
   return `device_${t}_${c}`;
 }
 
+function withInitialMaxPower(device) {
+  const type = String(device?.type || '').toLowerCase();
+  if (!device || type.includes('load') || type === 'battery') {
+    return device;
+  }
+  if (device.max_power_mw == null && device.capacity_mw != null) {
+    return { ...device, max_power_mw: device.capacity_mw };
+  }
+  return device;
+}
+
 export const DEVICE_PRESETS = {
   coal: {
     type: 'coal',
@@ -108,10 +119,10 @@ export function createDeviceFromPreset(presetName) {
     throw new Error(`Unknown preset: ${presetName}`);
   }
   
-  return {
+  return withInitialMaxPower({
     ...preset,
     id: nextDeviceId(),
-  };
+  });
 }
 
 /**
@@ -121,10 +132,10 @@ export function createDeviceFromPreset(presetName) {
  */
 export function duplicateDevice(device) {
   const { id, ...rest } = device;
-  return {
+  return withInitialMaxPower({
     ...rest,
     id: nextDeviceId(),
-  };
+  });
 }
 
 /**
