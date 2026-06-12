@@ -139,12 +139,7 @@ export default function About() {
           and in close collaboration with the{' '}
           <a href="https://www.ntcsa.co.za" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
             National Transmission Company South Africa (NTCSA)
-          </a>{' '}
-          and the{' '}
-          <a href="https://www.gsb.uct.ac.za/power-futures-lab" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
-            Power Futures Lab (PFL)
-          </a>{' '}
-          at the University of Cape Town Graduate School of Business.
+          </a>.
         </Typography>
         <Typography variant="body1" paragraph sx={{ lineHeight: 1.8 }}>
           SAGEN is implemented by{' '}

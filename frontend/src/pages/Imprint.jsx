@@ -87,7 +87,7 @@ export default function Imprint() {
           </Typography>
           <Typography variant="body2">
             While every effort has been made to ensure the accuracy and relevance of the simulation,
-            neither GIZ, National Transmission Company South Africa, Power Futures Lab nor Fastbreak.One
+            neither GIZ, National Transmission Company South Africa nor Fastbreak.One
             assume liability for decisions taken on the basis of information generated through the game.
           </Typography>
         </Section>

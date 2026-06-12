@@ -57,12 +57,7 @@ export default function AboutDetails() {
           . The initiative was carried out in collaboration with the{' '}
           <a href="https://www.ntcsa.co.za" target="_blank" rel="noopener noreferrer" style={{ color: linkColor, fontWeight: 600 }}>
             National Transmission Company South Africa (NTCSA)
-          </a>{' '}
-          and the{' '}
-          <a href="https://www.gsb.uct.ac.za/power-futures-lab" target="_blank" rel="noopener noreferrer" style={{ color: linkColor, fontWeight: 600 }}>
-            Power Futures Lab (PFL)
-          </a>{' '}
-          at the University of Cape Town Graduate School of Business.
+          </a>.
         </Typography>
 
         <Box sx={{ mt: 4, p: 3, bgcolor: partnersBg, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
@@ -104,13 +99,7 @@ export default function AboutDetails() {
               </a>
             </strong> - Collaboration partner
           </Typography>
-          <Typography variant="body2">
-            <strong>
-              <a href="https://www.gsb.uct.ac.za/power-futures-lab" target="_blank" rel="noopener noreferrer" style={{ color: linkColor }}>
-                PFL (Power Futures Lab)
-              </a>
-            </strong> - UCT Graduate School of Business
-          </Typography>
+
         </Box>
       </Paper>
     </Container>
