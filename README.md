@@ -5,6 +5,22 @@
 
 EMSG is an open-source, web-based electricity market simulation platform for training and teaching. Players bid in configurable day-ahead and intraday markets, trainers run shared multi-player sessions, scenario designers build market configurations in the KSE editor, and admins manage users and operational data.
 
+## Background
+
+The Electricity Market Simulation Game is an interactive learning tool designed to help participants understand how competitive electricity markets operate in practice. Through a realistic market simulation, players take on the role of market participants and make decisions under conditions similar to those faced by generators, traders, utilities, system operators, and large electricity consumers.
+
+Rather than learning market concepts through theory alone, participants experience first-hand how electricity is bought and sold, how prices are formed, and how market participants respond to uncertainty and changing system conditions.
+
+**Learning objectives** include: electricity market design and operation, price formation and market signals, day-ahead and intraday trading, balancing and settlement mechanisms, risk management and trading strategies, system flexibility and security of supply.
+
+The simulation is particularly valuable for professionals working in electricity regulation, system operation, market operation, policy-making, utility management, and academia.
+
+### Background and Partners
+
+EMSG was developed in 2025 by [Fastbreak.One](https://fastbreak.one) under the [South African-German Energy Programme (SAGEN) | Capacities for the Energy Transition](https://www.sagen.org.za), in close collaboration with the [National Transmission Company South Africa (NTCSA)](https://www.ntcsa.co.za) and the [Power Futures Lab (PFL)](https://www.gsb.uct.ac.za/power-futures-lab) at the University of Cape Town Graduate School of Business.
+
+SAGEN is implemented by [Deutsche Gesellschaft für Internationale Zusammenarbeit (GIZ) GmbH](https://www.giz.de) on behalf of the [Federal Ministry for Economic Development and Cooperation (BMZ)](https://www.bmz.de).
+
 ## Current Product Areas
 
 ### Players
