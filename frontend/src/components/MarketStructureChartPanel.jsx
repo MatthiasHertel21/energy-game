@@ -514,6 +514,9 @@ export default function MarketStructureChartPanel({
               .attr('fill', smpColor)
               .attr('stroke', theme.palette.background.paper)
               .attr('stroke-width', 2)
+              .style('cursor', 'pointer')
+              .append('title')
+              .text(`Zone ${zone.zoneId} SMP\nPreis: ${zone.zonePrice.toFixed(1)} ZAR/MWh\nMenge: ${zone.clearedDemandVolumeMwh.toFixed(1)} MWh`)
           }
 
           g.append('text')
@@ -814,6 +817,14 @@ export default function MarketStructureChartPanel({
 
     const supply = (chartData.supply || []).slice().sort((a, b) => a.price - b.price)
     const demand = (chartData.demand || []).slice().sort((a, b) => b.price - a.price)
+    // Carry-over demand: unserved synthetic DAM demand carried into the IDM phase. It is
+    // already part of `demand` (and therefore sets the clearing price), but it is drawn
+    // again on top as a thicker line so players can see which demand block pins the SMP.
+    const carryoverDemand = (Array.isArray(chartData?.carryover_demand) ? chartData.carryover_demand : [])
+      .map((d) => ({ price: Number(d?.price), volume: Number(d?.volume || 0) }))
+      .filter((d) => Number.isFinite(d.price) && Number.isFinite(d.volume) && d.volume > 1e-9)
+      .sort((a, b) => b.price - a.price)
+    const hasCarryoverDemand = carryoverDemand.length > 0
     // Two-phase rounds: overlay the cleared DAM merit order (player DA bids + synthetic
     // demand) as a dashed reference next to the active IDM curves. The synthetic-only
     // baseline_supply/baseline_demand arrays are insufficient here (DAM supply comes from
@@ -959,6 +970,26 @@ export default function MarketStructureChartPanel({
       .attr('stroke', demandColor)
       .attr('stroke-width', 2.5)
 
+    // Carry-over demand overlay: thicker red segments highlighting the unserved DAM demand
+    // that was carried into the IDM phase. Each carry-over step is placed at its true
+    // position in the demand merit order (after all demand with strictly higher WTP).
+    if (hasCarryoverDemand) {
+      carryoverDemand.forEach(({ price, volume }) => {
+        const x0 = demand
+          .filter((d) => Number(d.price) > price + 1e-9)
+          .reduce((acc, d) => acc + Number(d.volume || 0), 0)
+        g.append('line')
+          .attr('x1', x(x0)).attr('x2', x(x0 + volume))
+          .attr('y1', y(price)).attr('y2', y(price))
+          .attr('stroke', demandColor)
+          .attr('stroke-width', 6)
+          .attr('stroke-linecap', 'round')
+          .attr('opacity', 0.85)
+          .append('title')
+          .text(`Carry-over demand\nUnserved DAM demand: ${volume.toFixed(1)} MWh @ ${price.toFixed(1)} ZAR/MWh`)
+      })
+    }
+
     // SMP dashed line + intersection marker
     if (smp > 0) {
       // Place the marker on the visible supply/demand crossing (offered curves), not the
@@ -993,6 +1024,9 @@ export default function MarketStructureChartPanel({
           .attr('fill', smpColor)
           .attr('stroke', 'white')
           .attr('stroke-width', 2)
+          .style('cursor', 'pointer')
+          .append('title')
+          .text(`SMP\nPreis: ${smp.toFixed(1)} ZAR/MWh\nMenge: ${clearedVol.toFixed(1)} MWh`)
       }
     }
 
@@ -1276,6 +1310,12 @@ export default function MarketStructureChartPanel({
             <Box component="span" sx={buildLineSwatchSx(chipDemandColor, null)} />
             <Typography variant="caption" color="text.secondary">Demand</Typography>
           </Stack>
+          {Array.isArray(chartData?.carryover_demand) && chartData.carryover_demand.some((d) => Number(d?.volume || 0) > 1e-9) ? (
+            <Stack direction="row" spacing={0.8} alignItems="center">
+              <Box component="span" sx={{ ...buildLineSwatchSx(chipDemandColor, null), height: 7 }} />
+              <Typography variant="caption" color="text.secondary">Carry-over demand (unserved DAM)</Typography>
+            </Stack>
+          ) : null}
           <Stack direction="row" spacing={0.8} alignItems="center">
             <Box component="span" sx={buildLineSwatchSx(chipPriceColor, '7,4')} />
             <Typography variant="caption" color="text.secondary">

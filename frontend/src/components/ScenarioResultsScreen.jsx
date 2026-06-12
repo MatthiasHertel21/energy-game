@@ -505,6 +505,7 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
     : (normalizeNumber(safeMyCumulative?.total_planned_mwh) > 0
       ? (normalizeNumber(safeMyCumulative?.total_dispatched_mwh) / normalizeNumber(safeMyCumulative?.total_planned_mwh)) * 100
       : 0);
+  const totalPlannedDisplay = hasHistory ? totalsFromHistory.planned : normalizeNumber(safeMyCumulative?.total_planned_mwh);
 
   // All available chart metrics with metadata
   const ALL_CHART_METRICS = useMemo(() => [
@@ -561,28 +562,38 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           title: 'Total Revenue',
           icon: <RevenueIcon sx={{ color: '#2196f3' }} />,
           color: '#2196f3',
-          value: formatCurrency(normalizeNumber(totalRevenueDisplay))
+          value: formatCurrency(normalizeNumber(totalRevenueDisplay)),
+          caption: normalizeNumber(totalDispatchedDisplay) > 0
+            ? `${formatCurrency(normalizeNumber(totalRevenueDisplay) / normalizeNumber(totalDispatchedDisplay))}/MWh`
+            : 'Revenue per MWh'
         },
         {
           key: 'profit',
           title: 'Total Profit',
           icon: <ProfitIcon sx={{ color: '#4caf50' }} />,
           color: '#4caf50',
-          value: formatCurrency(normalizeNumber(totalProfitDisplay))
+          value: formatCurrency(normalizeNumber(totalProfitDisplay)),
+          caption: normalizeNumber(totalDispatchedDisplay) > 0
+            ? `${formatCurrency(normalizeNumber(totalProfitDisplay) / normalizeNumber(totalDispatchedDisplay))}/MWh`
+            : 'Profit per MWh'
         },
         {
           key: 'co2',
           title: terms.totalCo2Label,
           icon: <CO2Icon sx={{ color: '#ff9800' }} />,
           color: '#ff9800',
-          value: `${formatInt(totalCo2Display)} kg`
+          value: `${formatInt(totalCo2Display)} kg`,
+          caption: normalizeNumber(totalDispatchedDisplay) > 0
+            ? `${(normalizeNumber(totalCo2Display) / 1000 / normalizeNumber(totalDispatchedDisplay)).toFixed(3)} t/MWh`
+            : 'Tonnes CO₂'
         },
         {
           key: 'dispatched',
           title: 'Total Dispatched',
           icon: <EnergyIcon sx={{ color: '#9c27b0' }} />,
           color: '#9c27b0',
-          value: formatMwh(totalDispatchedDisplay)
+          value: formatMwh(totalDispatchedDisplay),
+          caption: 'Cleared energy volume'
         }
       ]
     : [
@@ -591,28 +602,36 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
           title: 'Total Costs',
           icon: <ProfitIcon sx={{ color: '#2196f3' }} />,
           color: '#2196f3',
-          value: formatCurrency(normalizeNumber(totalCostsDisplay))
+          value: formatCurrency(normalizeNumber(totalCostsDisplay)),
+          caption: normalizeNumber(totalDispatchedDisplay) > 0
+            ? `${formatCurrency(Math.abs(normalizeNumber(totalCostsDisplay)) / normalizeNumber(totalDispatchedDisplay))}/MWh`
+            : 'Cost per MWh'
         },
         {
           key: 'coverage',
           title: 'Coverage',
           icon: <RevenueIcon sx={{ color: '#4caf50' }} />,
           color: '#4caf50',
-          value: `${normalizeNumber(totalCoverageDisplay).toFixed(1)}%`
+          value: `${normalizeNumber(totalCoverageDisplay).toFixed(1)}%`,
+          caption: `${terms.energyLabel} ${formatInt(totalDispatchedDisplay)} MWh / ${terms.plannedVolumeLabel} ${formatInt(totalPlannedDisplay)} MWh`
         },
         {
           key: 'co2',
           title: terms.totalCo2Label,
           icon: <CO2Icon sx={{ color: '#ff9800' }} />,
           color: '#ff9800',
-          value: `${formatInt(totalCo2Display)} kg`
+          value: `${formatInt(totalCo2Display)} kg`,
+          caption: normalizeNumber(totalDispatchedDisplay) > 0
+            ? `${(normalizeNumber(totalCo2Display) / 1000 / normalizeNumber(totalDispatchedDisplay)).toFixed(3)} t/MWh`
+            : 'Tonnes CO₂'
         },
         {
           key: 'dispatched',
           title: 'Total Consumed',
           icon: <EnergyIcon sx={{ color: '#9c27b0' }} />,
           color: '#9c27b0',
-          value: formatMwh(totalDispatchedDisplay)
+          value: formatMwh(totalDispatchedDisplay),
+          caption: 'Cleared energy volume'
         }
       ];
 
@@ -772,6 +791,11 @@ export default function ScenarioResultsScreen({ sessionId, onHome, scenario, pla
                     <Typography variant="h5" sx={{ fontWeight: 600, color: card.color }}>
                       {card.value}
                     </Typography>
+                    {card.caption && (
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                        {card.caption}
+                      </Typography>
+                    )}
                   </CardContent>
                 </Card>
               </Grid>

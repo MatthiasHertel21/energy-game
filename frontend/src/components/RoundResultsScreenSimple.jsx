@@ -128,7 +128,12 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                 history.push({ round: r, kpis: normalized })
               }
             } catch (err) {
-              console.warn(`Failed to fetch round ${r}:`, err)
+              // A round whose results are not computed yet returns 404; that is an
+              // expected transient state (e.g. during a round transition), so skip
+              // it silently instead of polluting the console.
+              if (err?.response?.status !== 404) {
+                console.warn(`Failed to fetch round ${r}:`, err)
+              }
             }
           }
           setRoundHistoryKpis(history)
@@ -154,7 +159,14 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
           setCumulativeKpis(cumulative)
         }
       } catch (error) {
-        console.error('Failed to load data:', error)
+        // 404 simply means the results for this round are not available yet
+        // (round still being computed, or the player navigated away). Render the
+        // graceful "No results available" empty state instead of logging an error.
+        if (error?.response?.status === 404) {
+          setResults(null)
+        } else {
+          console.error('Failed to load data:', error)
+        }
       } finally {
         setLoading(false)
       }
@@ -711,8 +723,11 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
         columns: [
           { key: 'zone', label: 'Zone' },
           { key: 'status', label: 'Status' },
+          ...(rawZoneResults.some((z) => z?.avg_zone_price_zar_per_mwh != null)
+            ? [{ key: 'zoneSmp', label: 'Zone SMP', align: 'right' }]
+            : []),
           { key: 'localGeneration', label: 'Local Gen', align: 'right' },
-          { key: 'localDemand', label: 'Local Demand', align: 'right' },
+          { key: 'localDemand', label: 'Local Demand (served)', align: 'right' },
           { key: 'imports', label: 'Imports', align: 'right' },
           { key: 'exports', label: 'Exports', align: 'right' },
           { key: 'losses', label: 'Losses', align: 'right' },
@@ -724,6 +739,9 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
           key: `raw-zone-${zone?.zone_id ?? 'x'}`,
           zone: `Zone ${zone?.zone_id ?? '-'}`,
           status: String(zone?.status || '-').replaceAll('_', ' '),
+          zoneSmp: zone?.avg_zone_price_zar_per_mwh != null
+            ? `${formatCurrency(zone.avg_zone_price_zar_per_mwh)}/MWh`
+            : '—',
           localGeneration: `${formatInt(zone?.local_generation_mwh || 0)} MWh`,
           localDemand: `${formatInt(zone?.local_demand_mwh || 0)} MWh`,
           imports: `${formatInt(zone?.imports_mwh || 0)} MWh`,
@@ -737,29 +755,64 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
     }
 
     if (rawLinkResults.length > 0) {
+      const totalEarnings = rawLinkResults.reduce((s, l) => s + (l?.congestion_earnings_zar || 0), 0)
+      const totalLossesValue = rawLinkResults.reduce((s, l) => s + (l?.losses_value_zar || 0), 0)
+      const anyBinding = rawLinkResults.some((l) => l?.binding)
+      const hasSmp = rawLinkResults.some((l) => l?.zone_from_smp_zar_per_mwh != null)
       sections.push({
         title: 'Interzonal links',
+        caption: anyBinding
+          ? 'Congestion Earnings = (SMP_to − SMP_from) × Flow. Binding links ⚡ cause zonal price divergence.'
+          : 'No binding links this round — all zones cleared at the same price.',
         columns: [
           { key: 'route', label: 'Link' },
           { key: 'atc', label: 'ATC', align: 'right' },
           { key: 'sent', label: 'Sent', align: 'right' },
           { key: 'received', label: 'Received', align: 'right' },
           { key: 'utilization', label: 'Utilization', align: 'right' },
-          { key: 'losses', label: 'Losses', align: 'right' },
-          { key: 'binding', label: 'Binding' },
-          { key: 'rent', label: 'Congestion Rent', align: 'right' },
+          ...(hasSmp ? [
+            { key: 'smpFrom', label: 'SMP Zone from', align: 'right' },
+            { key: 'smpTo', label: 'SMP Zone to', align: 'right' },
+          ] : []),
+          { key: 'losses', label: 'Losses (MWh)', align: 'right' },
+          { key: 'lossValue', label: 'Loss Value', align: 'right' },
+          { key: 'earnings', label: 'Congestion Earnings', align: 'right' },
         ],
-        rows: rawLinkResults.map((link, index) => ({
-          key: `raw-link-${link?.from_zone ?? 'x'}-${link?.to_zone ?? 'x'}-${index}`,
-          route: `Zone ${link?.from_zone ?? '-'} -> Zone ${link?.to_zone ?? '-'}`,
-          atc: `${formatInt(link?.atc_mwh || 0)} MWh`,
-          sent: `${formatInt(link?.flow_mwh || 0)} MWh`,
-          received: `${formatInt(link?.flow_received_mwh || 0)} MWh`,
-          utilization: formatPct(link?.utilization_pct || 0),
-          losses: `${formatInt(link?.losses_mwh || 0)} MWh`,
-          binding: link?.binding ? 'Yes' : 'No',
-          rent: formatCurrency(link?.congestion_rent_zar || 0),
-        })),
+        rows: [
+          ...rawLinkResults.map((link, index) => ({
+            key: `raw-link-${link?.from_zone ?? 'x'}-${link?.to_zone ?? 'x'}-${index}`,
+            route: `Zone ${link?.from_zone ?? '-'} → Zone ${link?.to_zone ?? '-'}`,
+            atc: `${formatInt(link?.atc_mwh || 0)} MWh`,
+            sent: `${formatInt(link?.flow_mwh || 0)} MWh`,
+            received: `${formatInt(link?.flow_received_mwh || 0)} MWh`,
+            utilization: link?.binding
+              ? `${formatPct(link?.utilization_pct || 0)} ⚡`
+              : formatPct(link?.utilization_pct || 0),
+            smpFrom: link?.zone_from_smp_zar_per_mwh != null
+              ? `${formatCurrency(link.zone_from_smp_zar_per_mwh)}/MWh`
+              : '—',
+            smpTo: link?.zone_to_smp_zar_per_mwh != null
+              ? `${formatCurrency(link.zone_to_smp_zar_per_mwh)}/MWh`
+              : '—',
+            losses: link?.losses_mwh > 0.001 ? `${formatInt(link.losses_mwh)} MWh` : '—',
+            lossValue: (link?.losses_value_zar || 0) > 0.01 ? formatCurrency(link.losses_value_zar) : '—',
+            earnings: formatCurrency(link?.congestion_earnings_zar || 0),
+            cellSxByKey: link?.binding
+              ? { route: { fontWeight: 600 }, utilization: { color: 'warning.dark', fontWeight: 600 }, earnings: { fontWeight: 600, color: 'success.dark' } }
+              : {},
+          })),
+          // Total row
+          {
+            key: 'link-total',
+            route: 'Total',
+            atc: '', sent: '', received: '', utilization: '',
+            smpFrom: '', smpTo: '',
+            losses: '',
+            lossValue: totalLossesValue > 0.01 ? formatCurrency(totalLossesValue) : '—',
+            earnings: formatCurrency(totalEarnings),
+            sx: { '& td': { fontWeight: 700, borderTop: '2px solid rgba(0,0,0,0.15)' } },
+          },
+        ],
       })
     }
 
@@ -1395,7 +1448,7 @@ export default function RoundResultsScreenSimple({ sessionId, round, mode = 'sha
                               Local generation: {formatInt(zone?.local_generation_mwh)} MWh
                             </Typography>
                             <Typography variant="body2" color="text.secondary">
-                              Local demand: {formatInt(zone?.local_demand_mwh)} MWh
+                              Local demand (served): {formatInt(zone?.local_demand_mwh)} MWh
                             </Typography>
                             <Typography variant="body2" color="text.secondary">
                               Imports / exports: {formatInt(zone?.imports_mwh)} / {formatInt(zone?.exports_mwh)} MWh

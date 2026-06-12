@@ -66,24 +66,51 @@ class TrainerPresence(Resource):
         # Preload users and cohorts maps
         user_map = {u.id: u for u in User.query.filter(User.id.in_([r.user_id for r in rows])).all()} if rows else {}
 
+        # Batch: latest ActivityLog per user (one query with window-function subquery)
+        all_user_ids = [int(r.user_id) for r in rows]
+        act_map: dict = {}
+        if all_user_ids:
+            act_sub = (
+                db.session.query(
+                    ActivityLog.user_id.label("user_id"),
+                    func.max(ActivityLog.id).label("max_id"),
+                )
+                .filter(ActivityLog.user_id.in_(all_user_ids))
+                .group_by(ActivityLog.user_id)
+                .subquery()
+            )
+            for act in (
+                db.session.query(ActivityLog)
+                .join(act_sub, ActivityLog.id == act_sub.c.max_id)
+                .all()
+            ):
+                act_map[act.user_id] = act
+
+        # Collect unique session/scenario/campaign/cohort IDs for batch loading.
+        session_ids_needed = {a.session_id for a in act_map.values() if a.session_id}
+        cohort_ids_needed  = {a.cohort_id  for a in act_map.values() if a.cohort_id}
+        session_by_id = {s.id: s for s in Session.query.filter(Session.id.in_(session_ids_needed)).all()} if session_ids_needed else {}
+        # Also collect cohort_ids from sessions whose act didn't carry one.
+        for s_obj in session_by_id.values():
+            if s_obj.cohort_id:
+                cohort_ids_needed.add(s_obj.cohort_id)
+        scenario_ids_needed = {s_obj.scenario_id for s_obj in session_by_id.values() if s_obj.scenario_id}
+        scenario_by_id = {sc.id: sc for sc in Scenario.query.filter(Scenario.id.in_(scenario_ids_needed)).all()} if scenario_ids_needed else {}
+        campaign_ids_needed = {sc.campaign_id for sc in scenario_by_id.values() if sc.campaign_id}
+        campaign_by_id = {c.id: c for c in Campaign.query.filter(Campaign.id.in_(campaign_ids_needed)).all()} if campaign_ids_needed else {}
+        cohort_by_id = {co.id: co for co in Cohort.query.filter(Cohort.id.in_(cohort_ids_needed)).all()} if cohort_ids_needed else {}
+
         for r in rows:
             uid = int(r.user_id)
             last_seen = r.last_seen
-            # Fetch latest activity record for richer context (session/cohort)
-            act = (
-                ActivityLog.query
-                .filter(ActivityLog.user_id == uid)
-                .order_by(ActivityLog.timestamp.desc())
-                .first()
-            )
-            # Context defaults
+            act = act_map.get(uid)
             c_id = act.cohort_id if act else None
             s_id = act.session_id if act else None
-            session = Session.query.get(s_id) if s_id else None
+            session = session_by_id.get(s_id) if s_id else None
             if session and not c_id:
                 c_id = session.cohort_id
-            scenario = Scenario.query.get(session.scenario_id) if session and session.scenario_id else None
-            campaign = Campaign.query.get(scenario.campaign_id) if scenario and scenario.campaign_id else None
+            scenario = scenario_by_id.get(session.scenario_id) if session and session.scenario_id else None
+            campaign = campaign_by_id.get(scenario.campaign_id) if scenario and scenario.campaign_id else None
 
             # Optional filter by cohort
             if cohort_id and c_id != cohort_id:
@@ -100,7 +127,7 @@ class TrainerPresence(Resource):
                 elif session.status == SessionStatus.ended:
                     status = "ended"
 
-            cohort = Cohort.query.get(c_id) if c_id else None
+            cohort = cohort_by_id.get(c_id) if c_id else None
             user = user_map.get(uid)
 
             result.append({

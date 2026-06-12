@@ -270,7 +270,20 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
     })
   const showDamBaselineNotice = isIdmRound && !isTwoPhaseRound && hasDam && !hasIdmActivity
 
-  // Get device list from all available sources
+  // Determine the set of device IDs this player is allowed to operate.
+  // In shared_market mode each player type maps to a specific subset of devices;
+  // only those devices should appear as tabs. Without this filter, spurious
+  // auto-submits (frontend or backend) that include other players' devices would
+  // cause extra tabs to appear (e.g. a "Coal Plant A" tab for a player who only
+  // operates "Coal Plant C").
+  const playerTypeCfg = allowedPlayerTypes.find(
+    (pt) => String(pt?.type_id || pt?.id || '') === String(playerTypeId || '')
+  )
+  const allowedDeviceIds = playerTypeCfg?.devices
+    ? new Set(playerTypeCfg.devices.map(String))
+    : null  // null = no restriction (solo mode or no player types configured)
+
+  // Get device list from all available sources, filtered to the player's type devices
   const deviceIdSet = new Set()
   Object.keys(damBidDispatch || {}).forEach((id) => deviceIdSet.add(id))
   Object.keys(idmBidDispatch || {}).forEach((id) => deviceIdSet.add(id))
@@ -278,7 +291,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
   addDeviceIdsFromDetails(idmDeviceHourlyDetails, deviceIdSet)
   Object.keys(my_result?.kpis?.device_hourly_breakdown || {}).forEach((id) => deviceIdSet.add(id))
 
-  const deviceIds = [...deviceIdSet]
+  const deviceIds = [...deviceIdSet].filter((id) => allowedDeviceIds === null || allowedDeviceIds.has(id))
   
   if (deviceIds.length === 0) {
     return (
@@ -534,18 +547,18 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
     // Calculate totals for DAM/IDM:
     // Prefer backend-provided canonical DA/ID split so KPI and details cannot diverge.
     const totalOffered_DAM_Lots = damLots.reduce((sum, lot) => sum + Number(lot?.mw_offered || 0), 0)
-    // In two-phase rounds the device_hourly_breakdown is built from the IDM-phase run,
-    // so its total_offered_mw reflects the IDM offer, not the DAM offer. Use the DAM
-    // bid-dispatch lots for the DAM "Offered" so it does not equal the IDM offered.
-    const totalOffered_DAM = isTwoPhaseRound
-      ? (totalOffered_DAM_Lots > 0
-        ? totalOffered_DAM_Lots
-        : (Number(totalOfferedFromBreakdown || 0) > 0
-          ? Number(totalOfferedFromBreakdown || 0)
-          : totalOfferedFromPlannedFallback))
+    // DAM lots always take priority over device_hourly_breakdown.total_offered_mw for the
+    // "DAM Offered" row. In two-phase rounds the breakdown is built from the IDM-phase run
+    // so its total_offered_mw reflects the IDM offer, not the DAM offer. Even outside
+    // two-phase rounds the lots (when present) represent the canonical DAM bid — and for
+    // non-two-phase IDM rounds where DAM lots belong to a different round window,
+    // damHasCoverageForWindow already sets totalOffered_DAM_Lots=0, so the fallback to
+    // total_offered_mw (the correct DA baseline there) still applies automatically.
+    const totalOffered_DAM = totalOffered_DAM_Lots > 0
+      ? totalOffered_DAM_Lots
       : (Number(totalOfferedFromBreakdown || 0) > 0
         ? Number(totalOfferedFromBreakdown || 0)
-        : (totalOffered_DAM_Lots > 0 ? totalOffered_DAM_Lots : totalOfferedFromPlannedFallback))
+        : totalOfferedFromPlannedFallback)
     const totalOffered_IDM = idmLots.reduce((sum, lot) => sum + getSignedOffered(lot), 0)
 
     const backendDaDispatched = parseOptionalNumber(deviceBreakdown.da_dispatched_mwh)
@@ -756,6 +769,9 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
       chargeCostZar: Number(deviceBreakdown.battery_charge_cost_zar ?? 0),
       marketAwardedMwh,
       awardPhysicalGapMwh,
+      // Physical generation actually delivered this hour (post availability/noise)
+      actualMw: Number(deviceBreakdown.actual_mw ?? 0),
+      hasActualMwValue: deviceBreakdown.actual_mw !== undefined && deviceBreakdown.actual_mw !== null,
       networkShortfallMwh: Number(deviceBreakdown.network_shortfall_mwh ?? 0),
       networkShortfallCostZar: Number(deviceBreakdown.network_shortfall_cost_zar ?? 0),
       congestionRevenueZar,
@@ -904,8 +920,9 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
     // Balancing - Summed for MWh and Cost
     totalImbalance: hourlyData.reduce((sum, h) => sum + h.imbalanceMwh, 0),
     totalBalancingCost: hourlyData.reduce((sum, h) => sum + h.imbalanceCostDisplay, 0),
+    totalActualMw: hourlyData.reduce((sum, h) => sum + (h.actualMw || 0), 0),
+    hasActualMw: hourlyData.some(h => h.hasActualMwValue),
     avgBalancingPrice: hourlyData.filter(h => h.balancingPrice !== 0).reduce((sum, h) => sum + h.balancingPrice, 0) / (hourlyData.filter(h => h.balancingPrice !== 0).length || 1),
-    // Totals - Summed
     totalNetMwh: hourlyData.reduce((sum, h) => sum + h.netMwh, 0),
     totalNetRevenue: hourlyData.reduce((sum, h) => sum + displayMoney(h.netRevenue), 0),
     totalNetResult: hourlyData.reduce((sum, h) => sum + Number(h.netResult || 0), 0),
@@ -1121,6 +1138,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
       battery_charged: 'Charged energy is the grid-side charging volume stored for the battery in the hour. It is a physical charging flow and does not itself mean positive market revenue; it usually creates a charge cost.\n\n' + rowVisibilityReason('battery_charged'),
       battery_discharged: 'Executed discharge is the physical battery energy actually delivered in the hour. Source priority: explicit backend battery_discharged_mwh; otherwise the UI derives it from battery SoC start/end, charge volume, and battery efficiency.\n\n' + rowVisibilityReason('battery_discharged'),
       battery_charge_cost: 'Charge Cost is the settlement cost caused by charging the battery in the hour. It is shown as a negative contribution because charging consumes market energy rather than selling it.\n\n' + rowVisibilityReason('battery_charge_cost'),
+      actual_generation: `${isConsumer ? 'Actual Demand is the physically realized consumption in the hour.' : 'Actual Generation is the energy the device physically produced in the hour, after the availability profile and the actual-vs-forecast noise are applied.'} It is independent of the market-cleared position: the difference between this value and the committed (dispatched) volume drives the imbalance and balancing settlement.\n\n${rowVisibilityReason('actual_generation')}`,
       imbalance: 'Imbalance is the difference between dispatched position and actual realized device outcome in the hour, based on backend balancing detail when available. A non-zero value leads to balancing settlement.\n\n' + rowVisibilityReason('imbalance'),
       imbalance_cost: 'Imbalance Cost is the monetary settlement of the imbalance using configured balancing prices rather than the market clearing price. Non-zero imbalance cost directly worsens profit or net profit.\n\n' + rowVisibilityReason('imbalance_cost'),
       balancing_price: 'Balancing Price is the effective price per MWh used to settle the imbalance in the hour. If the backend provides an explicit balancing price it is shown; otherwise it is inferred from imbalance cost divided by imbalance MWh.\n\n' + rowVisibilityReason('balancing_price'),
@@ -1154,7 +1172,7 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
         if (sharedMarketSlotScale !== 1) lines.push(`Shared-market display: the shown number is scaled to your per-slot share (factor ${tt(sharedMarketSlotScale)}).`)
         break
       case 'dam_offered':
-        lines.push(`Source priority: backend total_offered_mw = ${tt(hourData.totalOfferedFromBreakdown)} MWh; fallback lot sum = ${tt(hourData.lotA_DAM.mw_offered || 0)} + ${tt(hourData.lotB_DAM.mw_offered || 0)} + ${tt(hourData.lotC_DAM.mw_offered || 0)} = ${tt(hourData.totalOffered_DAM_Lots)} MWh; final fallback planned_mw = ${tt(hourData.totalOfferedFromPlannedFallback)} MWh.`)
+        lines.push(`Source priority: DAM lot sum = ${tt(hourData.lotA_DAM.mw_offered || 0)} + ${tt(hourData.lotB_DAM.mw_offered || 0)} + ${tt(hourData.lotC_DAM.mw_offered || 0)} = ${tt(hourData.totalOffered_DAM_Lots)} MWh (preferred); fallback backend total_offered_mw = ${tt(hourData.totalOfferedFromBreakdown)} MWh; final fallback planned_mw = ${tt(hourData.totalOfferedFromPlannedFallback)} MWh.`)
         lines.push(`Displayed value: ${tt(hourData.totalOffered_DAM)} MWh.`)
         break
       case 'dam_lot_a':
@@ -1253,6 +1271,11 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
         lines.push(`Displayed value: -${formatTooltipMoney(hourData.chargeCostZar)}.`)
         lines.push(`Source: battery_charge_cost_zar from backend device-hour breakdown.`)
         lines.push('This value is subtracted in profit / net-result calculations.')
+        break
+      case 'actual_generation':
+        lines.push(`Displayed value: ${tt(hourData.actualMw)} MWh ${isConsumer ? 'consumed' : 'generated'}.`)
+        lines.push('Source: actual_mw from backend device-hour breakdown (physical realization after availability profile and actual-vs-forecast noise).')
+        lines.push(`Committed (dispatched) position: ${tt(hourData.totalDispatched_DAM + hourData.totalDispatched_IDM)} MWh. The gap to this value is the imbalance.`)
         break
       case 'imbalance':
         lines.push(`Displayed value: ${tt(hourData.imbalanceMwh)} MWh.`)
@@ -1403,6 +1426,10 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
       case 'battery_charge_cost':
         lines.push(`Formula: sum of hourly battery charge costs = ${tti(roundTotals.totalChargeCostZar)} ZAR.`)
         lines.push('This feeds the battery_charge_cost_zar KPI and is subtracted in the round profit / net-result formula.')
+        break
+      case 'actual_generation':
+        lines.push(`Formula: sum of hourly actual ${isConsumer ? 'demand' : 'generation'} values = ${tt(roundTotals.totalActualMw)} MWh.`)
+        lines.push('This is the physically realized energy after availability and noise. Its gap to the committed (dispatched) volume drives the imbalance KPI.')
         break
       case 'imbalance':
         lines.push(`Formula: sum of hourly imbalance values = ${tt(roundTotals.totalImbalance)} MWh.`)
@@ -1981,6 +2008,19 @@ export default function DeviceDeepDiveTabs({ results, scenario, mode, roleType }
                 Balancing
               </TableCell>
             </TableRow>
+            {roundTotals.hasActualMw && (
+              <TableRow hover>
+                <TableCell><RowLabel title={getRowTooltip('actual_generation')}>{isConsumer ? 'Actual Demand (MWh)' : 'Actual Generation (MWh)'}</RowLabel></TableCell>
+                {hourlyData.map((h) => (
+                  <TableCell key={h.hourKey} align="right">
+                    <HourTip title={getHourTooltip('actual_generation', h)}>{h.hasActualMwValue ? formatNumber(h.actualMw, 1) : '-'}</HourTip>
+                  </TableCell>
+                ))}
+                <TableCell align="right" sx={{ fontWeight: 'bold', bgcolor: 'grey.50' }}>
+                  <TotalTip title={getTotalTooltip('actual_generation')}>{formatNumber(roundTotals.totalActualMw, 1)}</TotalTip>
+                </TableCell>
+              </TableRow>
+            )}
             <TableRow hover>
               <TableCell><RowLabel title={getRowTooltip('imbalance')}>Imbalance (MWh)</RowLabel></TableCell>
               {hourlyData.map((h) => (

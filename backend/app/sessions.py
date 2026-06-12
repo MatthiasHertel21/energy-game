@@ -4,7 +4,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 
 from .extensions import db, socketio
-from .scheduler import run_rounds
+from .scheduler import run_rounds, _running as _scheduler_running
 from .models import Session, SessionStatus, Scenario, Campaign, SessionAllowedType, SessionPlayerType, ActivityLog, User, CohortMember, Forecast
 from .utils import role_required, log_activity
 from .kpi_schema import canonicalize_kpis
@@ -21,6 +21,41 @@ except Exception:
 
 
 ns = Namespace("sessions", description="Trainer session control")
+
+# Heavy, per-player detail fields in a round-results ranking entry. These are only
+# needed for the requesting player's own row (my_result) or for trainer/admin/designer
+# inspection. For regular players they are stripped from OTHER players' ranking rows to
+# keep the round-results payload small under high concurrent polling (see RoundResults).
+_RR_HEAVY_RANKING_KEYS = frozenset({
+    "hourly_results",
+    "dam_hourly_results",
+    "idm_hourly_results",
+    "hourly_breakdown",
+    "device_hourly_breakdown",
+    "device_hourly_details",
+    "dam_device_hourly_details",
+    "idm_device_hourly_details",
+    "bid_dispatch",
+    "dam_bid_dispatch",
+    "idm_bid_dispatch",
+    "hourly_detail",
+    "daily_summary",
+    "zone_results",
+    "link_results",
+})
+
+# Heavy arrays nested *inside* each player's kpis dict. The leaderboard table and
+# market summary only read scalar kpis fields (profit_zar, dispatched_mwh,
+# revenue_zar, ...), never these big per-hour / per-device arrays, so they are
+# dropped from other players' ranking rows. These are the real payload driver
+# (~27 KB/player) — stripping them is what takes the response well under 1 MB.
+_RR_HEAVY_KPI_KEYS = frozenset({
+    "bid_dispatch",
+    "device_hourly_breakdown",
+    "hourly_breakdown",
+    "debug_info",
+})
+
 
 session_in = ns.model(
     "SessionCreate",
@@ -770,20 +805,27 @@ def _device_market_role(device: dict) -> str:
     return "unknown"
 
 
-def _compute_challenge_capacity_scale(config: dict, mode: str, player_type_id, role: str, session_id: int | None = None) -> float:
+def _compute_challenge_capacity_scale(config: dict, mode: str, player_type_id, role: str, session_id: int | None = None, capacity_scales: dict | None = None) -> float:
     normalized_role = _normalize_market_role(role)
     if mode != "shared_market" or normalized_role not in {"producer", "consumer"}:
         return 1.0
 
-    if session_id is not None and player_type_id:
-        try:
-            from .engine import _load_shared_market_capacity_scales
-            shared_market_capacity_scales = _load_shared_market_capacity_scales(session_id, mode)
-            slot_scale = shared_market_capacity_scales.get(str(player_type_id or ""))
+    if player_type_id:
+        # Prefer a precomputed scales dict (loaded ONCE by the caller) so this helper,
+        # which runs once per result row inside hot ranking loops, performs no DB query
+        # here (RULE 1: no per-row query in a loop over players/rounds). Fall back to a
+        # lazy load only when the caller did not precompute it.
+        scales = capacity_scales
+        if scales is None and session_id is not None:
+            try:
+                from .engine import _load_shared_market_capacity_scales
+                scales = _load_shared_market_capacity_scales(session_id, mode)
+            except Exception:
+                scales = None
+        if scales:
+            slot_scale = scales.get(str(player_type_id or ""))
             if slot_scale is not None and slot_scale > 0:
                 return float(slot_scale)
-        except Exception:
-            pass
 
     devices_cfg = [device for device in (config.get("devices") or []) if isinstance(device, dict)]
     player_devices = _get_player_devices_for_type(config, player_type_id)
@@ -819,7 +861,7 @@ def _challenge_applies_to_player(challenge: dict, role: str, player_type_id) -> 
     return not applicable_scopes.isdisjoint(player_scopes)
 
 
-def _repair_challenge_result(config: dict, mode: str, player_type_id, role: str, round_num: int, current_kpis: dict, all_round_kpis: list[dict], stored_result, session_id: int | None = None):
+def _repair_challenge_result(config: dict, mode: str, player_type_id, role: str, round_num: int, current_kpis: dict, all_round_kpis: list[dict], stored_result, session_id: int | None = None, capacity_scales: dict | None = None):
     challenges = config.get("challenges") or []
     normalized_role = _normalize_market_role(role)
     if not challenges or normalized_role not in {"producer", "consumer"}:
@@ -859,7 +901,7 @@ def _repair_challenge_result(config: dict, mode: str, player_type_id, role: str,
         role=normalized_role,
         round_num=round_num,
         all_round_kpis=round_kpis,
-        capacity_scale=_compute_challenge_capacity_scale(config, mode, player_type_id, normalized_role, session_id=session_id),
+        capacity_scale=_compute_challenge_capacity_scale(config, mode, player_type_id, normalized_role, session_id=session_id, capacity_scales=capacity_scales),
         player_type_id=player_type_id,
     )
 
@@ -886,12 +928,20 @@ def _build_market_summary(total_volume_mwh, player_rows):
             if player_id is not None:
                 producer_ids.add(player_id)
 
+    # The engine-reported volume is the demand-side clearing volume (= consumption).
+    # Only real_consumer_volume should raise the floor (consumer-player sessions);
+    # real_producer_volume must NOT override it — in producer-only sessions every
+    # player's dispatch sums to MORE than the single cleared demand volume.
     total_volume_mwh = max(
         0.0,
         _safe_market_number(total_volume_mwh),
-        real_producer_volume,
         real_consumer_volume,
     )
+    # In isolated_per_player mode every player clears against the same synthetic demand
+    # curve, so summing player KPI dispatched_mwh overcounts real production.
+    # Cap both sides at the actual clearing volume so shares stay in [0%, 100%].
+    real_producer_volume = min(real_producer_volume, total_volume_mwh)
+    real_consumer_volume = min(real_consumer_volume, total_volume_mwh)
     synthetic_producer_volume = max(0.0, total_volume_mwh - real_producer_volume)
     synthetic_consumer_volume = max(0.0, total_volume_mwh - real_consumer_volume)
 
@@ -1070,6 +1120,7 @@ def _build_zone_breakdown(zone_entries, link_entries, player_rows):
             "producer_ids": set(),
             "consumer_ids": set(),
             "binding_links": set(),
+            "zone_smp_zar_per_mwh": None,
         })
 
     for zone_entry in zone_entries or []:
@@ -1082,6 +1133,10 @@ def _build_zone_breakdown(zone_entries, link_entries, player_rows):
         if zone_id <= 0:
             continue
         bucket = ensure_zone(zone_id)
+        # Carry through avg zone SMP from engine output (added in zone_results).
+        _zone_smp = zone_entry.get("avg_zone_price_zar_per_mwh")
+        if _zone_smp is not None:
+            bucket["zone_smp_zar_per_mwh"] = _safe_market_number(_zone_smp)
         bucket["local_generation_mwh"] += _safe_market_number(zone_entry.get("local_generation_mwh"))
         bucket["local_demand_mwh"] += _safe_market_number(zone_entry.get("local_demand_mwh"))
         bucket["imports_mwh"] += _safe_market_number(zone_entry.get("imports_mwh"))
@@ -1165,12 +1220,13 @@ def _build_zone_breakdown(zone_entries, link_entries, player_rows):
             "losses_mwh": round(bucket["losses_mwh"], 3),
             "binding_link_count": len(bucket["binding_links"]),
             "binding_links": sorted(bucket["binding_links"]),
+            "zone_smp_zar_per_mwh": _safe_market_number(bucket.get("zone_smp_zar_per_mwh")),
         })
 
     return zone_breakdown
 
 
-def _build_zone_mix_breakdown(zone_entries, player_rows):
+def _build_zone_mix_breakdown(zone_entries, player_rows, clearing_volume_mwh=None):
     zone_map = {}
 
     def ensure_zone(zone_id):
@@ -1217,10 +1273,37 @@ def _build_zone_mix_breakdown(zone_entries, player_rows):
     zone_mix_breakdown = []
     for zone_id in sorted(zone_map.keys()):
         bucket = zone_map[zone_id]
-        total_production_mwh = max(bucket["total_production_mwh"], bucket["real_production_mwh"])
-        total_consumption_mwh = max(bucket["total_consumption_mwh"], bucket["real_consumption_mwh"])
+        # Use zone_entry totals as the authoritative clearing volume.
+        # In isolated_per_player mode the sum of player KPI dispatched_mwh exceeds
+        # the single cleared volume (every player clears against the same curve).
+        # Cap real_production/consumption at the zone-level total so shares are valid.
+        zone_total_production = bucket["total_production_mwh"]
+        zone_total_consumption = bucket["total_consumption_mwh"]
         real_production_mwh = bucket["real_production_mwh"]
         real_consumption_mwh = bucket["real_consumption_mwh"]
+
+        # Use clearing_volume_mwh (demand-side cleared total) as the authoritative cap
+        # when zone_entry totals are also over-counted (e.g. isolated_per_player mode).
+        cap = clearing_volume_mwh if clearing_volume_mwh and clearing_volume_mwh > 0 else None
+
+        if zone_total_production > 0:
+            if cap:
+                zone_total_production = min(zone_total_production, cap)
+            real_production_mwh = min(real_production_mwh, zone_total_production)
+        else:
+            zone_total_production = min(real_production_mwh, cap) if cap else real_production_mwh
+            real_production_mwh = zone_total_production
+
+        if zone_total_consumption > 0:
+            if cap:
+                zone_total_consumption = min(zone_total_consumption, cap)
+            real_consumption_mwh = min(real_consumption_mwh, zone_total_consumption)
+        else:
+            zone_total_consumption = min(real_consumption_mwh, cap) if cap else real_consumption_mwh
+            real_consumption_mwh = zone_total_consumption
+
+        total_production_mwh = zone_total_production
+        total_consumption_mwh = zone_total_consumption
         synthetic_production_mwh = max(0.0, total_production_mwh - real_production_mwh)
         synthetic_consumption_mwh = max(0.0, total_consumption_mwh - real_consumption_mwh)
 
@@ -1237,11 +1320,39 @@ def _build_zone_mix_breakdown(zone_entries, player_rows):
     return zone_mix_breakdown
 
 
+def _build_link_breakdown(link_entries):
+    """Normalize link_entries into a market_summary.link_breakdown list."""
+    breakdown = []
+    for entry in (link_entries or []):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            from_zone = int(entry.get("from_zone", 0) or 0)
+            to_zone = int(entry.get("to_zone", 0) or 0)
+        except Exception:
+            continue
+        if from_zone <= 0 or to_zone <= 0:
+            continue
+        breakdown.append({
+            "from_zone": from_zone,
+            "to_zone": to_zone,
+            "atc_mwh": _safe_market_number(entry.get("atc_mwh")),
+            "flow_mwh": _safe_market_number(entry.get("flow_mwh")),
+            "utilization_pct": _safe_market_number(entry.get("utilization_pct")),
+            "losses_mwh": _safe_market_number(entry.get("losses_mwh")),
+            "binding": bool(entry.get("binding")),
+            "congestion_rent_zar": _safe_market_number(entry.get("congestion_rent_zar")),
+            "losses_value_zar": _safe_market_number(entry.get("losses_value_zar")),
+        })
+    return breakdown
+
+
 def _enrich_market_summary(summary, price_points=None, zone_entries=None, link_entries=None, player_rows=None):
     enriched = dict(summary or {})
     enriched["price_stats"] = _build_price_stats(price_points or [])
     enriched["zone_breakdown"] = _build_zone_breakdown(zone_entries or [], link_entries or [], player_rows or [])
-    enriched["zone_mix_breakdown"] = _build_zone_mix_breakdown(zone_entries or [], player_rows or [])
+    enriched["zone_mix_breakdown"] = _build_zone_mix_breakdown(zone_entries or [], player_rows or [], clearing_volume_mwh=_safe_market_number((enriched or {}).get("total_volume_mwh")))
+    enriched["link_breakdown"] = _build_link_breakdown(link_entries or [])
     return enriched
 
 
@@ -1560,12 +1671,20 @@ class SessionStatusMatrix(Resource):
         # map selected types per player (if any)
         sel_rows = db.session.query(SessionPlayerType.user_id, SessionPlayerType.type_id).filter_by(session_id=sid).all()
         sel_map = {uid: tid for (uid, tid) in sel_rows}
+        # Batch: one query for all (player, round) combos instead of N×rounds individual queries
+        submitted_pairs = set(
+            db.session.query(Forecast.player_id, Forecast.round_num)
+            .filter(
+                Forecast.session_id == sid,
+                Forecast.round_num >= 1,
+                Forecast.round_num <= rounds,
+            )
+            .distinct()
+            .all()
+        )
         out_players = []
         for pid, email in players:
-            status = []
-            for r in range(1, rounds + 1):
-                exists = db.session.query(Forecast.id).filter_by(session_id=sid, player_id=pid, round_num=r).first() is not None
-                status.append({"round": r, "submitted": bool(exists)})
+            status = [{"round": r, "submitted": (pid, r) in submitted_pairs} for r in range(1, rounds + 1)]
             out_players.append({"player_id": pid, "email": email, "type": sel_map.get(pid), "status": status})
         return {"rounds": rounds, "players": out_players}
 
@@ -1660,6 +1779,12 @@ class ForceRoundEnd(Resource):
             db.session.add(s)
             db.session.commit()
 
+        # If no scheduler greenlet is running for this session, start one now.
+        # It will pick up the force_end_round Redis key and immediately exit the countdown.
+        if sid not in _scheduler_running:
+            socketio.start_background_task(run_rounds, sid, current_app._get_current_object())
+            forced_via = forced_via + "+scheduler_restart"
+
         emit_trainer("round_end", {"session_id": sid, "forced": True})
         socketio.emit("round_end", {"session_id": sid, "forced": True}, namespace="/game", to=f"session-{sid}")
         return {"status": "ok", "forced": True, "via": forced_via}
@@ -1721,10 +1846,18 @@ class RoundResults(Resource):
     def get(self, sid: int, round_num: int):
         """Get individual KPIs and ranking for a specific round."""
         from .models import Result
+        from sqlalchemy.orm import defer
         player_id = int(get_jwt_identity())
         
-        # Get all results for this round
-        results = Result.query.filter_by(session_id=sid, round_num=round_num).all()
+        # Get all results for this round.
+        # This endpoint is polled by every player at each round transition. It only
+        # reads r.data, never r.bid_dispatch, so defer that large JSON column to keep
+        # memory bounded under load (avoids loading ~N players worth of blobs).
+        results = (
+            Result.query.options(defer(Result.bid_dispatch))
+            .filter_by(session_id=sid, round_num=round_num)
+            .all()
+        )
         if not results:
             return {"error": "No results found for this round"}, HTTPStatus.NOT_FOUND
         
@@ -1789,28 +1922,80 @@ class RoundResults(Resource):
         # Calculate total score for each player (normalized to 0-100)
         ranking = []
         my_result = None
-        
+
+        # Batch-resolve player types and users for all results upfront (avoids N+1 queries)
+        _rr_pids = list({r.player_id for r in results})
+        _rr_ptype_map = {}
+        # RULE 2: always query DB for ALL players BEFORE any I/O that yields to other
+        # greenlets (Redis mget). A Redis yield can allow engine.run_round() to run
+        # CPU-bound for >15s, leaving this transaction idle and triggering Postgres'
+        # idle-in-transaction timeout, which then poisons the session for all subsequent
+        # queries in this request (PendingRollbackError cascade). DB queries complete
+        # synchronously; session is released below, before Redis and the compute loop.
+        if _rr_pids:
+            for _spt in SessionPlayerType.query.filter(
+                SessionPlayerType.session_id == sid,
+                SessionPlayerType.user_id.in_(_rr_pids)
+            ).all():
+                _rr_ptype_map[_spt.user_id] = _spt.type_id
+        _rr_users = {u.id: u for u in User.query.filter(User.id.in_(_rr_pids)).all()} if _rr_pids else {}
+
+        # Trainers/designers/admins use this same endpoint to inspect ANY player's full
+        # round detail (the ranking row is injected as my_result in the trainer modal),
+        # so they must receive the heavy per-player detail. Regular players only need
+        # their OWN detail plus a lightweight ranking table. Returning every player's
+        # full hourly/device/bid detail to all ~100 polling players produced a ~9 MB
+        # payload per request and blew the worker's memory (OOM). Gate the heavy fields.
+        _rr_role = (get_jwt().get("role") or "").lower()
+        _rr_full_detail_for_all = _rr_role in ("trainer", "designer", "admin")
+
+        # RULE 1: batch every player's historical KPIs (round <= round_num) in ONE query
+        # instead of querying inside the per-player loop (was an N+1 over all players).
+        # Select only the columns needed; never load the bid_dispatch blob here.
+        _rr_hist_kpis = {}
+        _rr_hist_rows = (
+            db.session.query(Result.player_id, Result.round_num, Result.data)
+            .filter(Result.session_id == sid, Result.round_num <= round_num)
+            .order_by(Result.player_id, Result.round_num)
+            .all()
+        )
+        for _hr in _rr_hist_rows:
+            if _hr.data:
+                _rr_hist_kpis.setdefault(_hr.player_id, []).append((_hr.data or {}).get("kpis") or {})
+
+        # RULE 1: load shared-market capacity scales ONCE here instead of querying
+        # SessionAllowedType once per result row inside the loop below (was an N+1
+        # over all players/rounds that held the read transaction open and tripped the
+        # idle-in-transaction timeout under concurrent polling).
+        from .engine import _load_shared_market_capacity_scales as _rr_load_scales
+        _rr_capacity_scales = _rr_load_scales(sid, session.mode or "isolated_per_player")
+
+        # RULE 2: release the connection BEFORE Redis I/O and the heavy computation loop.
+        # All DB reads are complete above. Releasing here prevents the idle-in-transaction
+        # timeout that occurs when engine.run_round() monopolises the single eventlet worker
+        # while this request's transaction is open, and eliminates the PendingRollbackError
+        # cascade that subsequently hit _build_two_phase_phase_mix (sessions.py:993).
+        db.session.remove()
+
+        # Redis override: more up-to-date player type (set during active selection) wins
+        # over the committed DB row. Runs AFTER session.remove() — no transaction held.
+        if _rr_pids and _redis_client:
+            try:
+                _rr_keys = [f"session:{sid}:selected:{pid}" for pid in _rr_pids]
+                _rr_vals = _redis_client.mget(_rr_keys)
+                for _pid, _val in zip(_rr_pids, _rr_vals):
+                    if _val:
+                        _rr_ptype_map[_pid] = _val.decode() if isinstance(_val, (bytes, bytearray)) else str(_val)
+            except Exception:
+                pass
+
         for r in results:
             # Resolve player type early so downstream KPI backfills can scope to the
             # player's configured device set.
-            player_type = None
-            if _redis_client:
-                try:
-                    sel_key = f"session:{sid}:selected:{r.player_id}"
-                    sel_raw = _redis_client.get(sel_key)
-                    if sel_raw:
-                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
-                except Exception:
-                    pass
-            if not player_type:
-                try:
-                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=r.player_id).first()
-                    if sel_db:
-                        player_type = sel_db.type_id
-                except Exception:
-                    pass
+            player_type = _rr_ptype_map.get(r.player_id)
 
-            kpis = canonicalize_kpis(r.data.get("kpis", {}))
+            _raw_kpis = r.data.get("kpis") if r.data.get("kpis") is not None else r.data
+            kpis = canonicalize_kpis(_raw_kpis)
             player_device_ids = set()
             device_settlement_summary = None
 
@@ -2115,10 +2300,10 @@ class RoundResults(Resource):
             # Map -5M → 0, 0 → 50, +5M → 100
             total_score = max(0, min(100, (raw_score + 5000000) / 100000))
             
-            # Get player info
-            user = User.query.get(r.player_id)
+            # Get player info (using pre-batched dict)
+            user = _rr_users.get(r.player_id)
             player_email = user.email if user else f"Player {r.player_id}"
-            
+
             # Get player type
             # player_type already resolved above
             
@@ -2156,14 +2341,8 @@ class RoundResults(Resource):
             elif _detail_maps_equal(scoped_idm_device_hourly_details, scoped_device_hourly_details):
                 scoped_idm_device_hourly_details = {}
 
-            player_round_results = (
-                Result.query
-                .filter_by(session_id=sid, player_id=r.player_id)
-                .filter(Result.round_num <= round_num)
-                .order_by(Result.round_num)
-                .all()
-            )
-            all_round_kpis = [((row.data or {}).get("kpis") or {}) for row in player_round_results if row.data]
+            # Historical KPIs were batched once before the loop (see _rr_hist_kpis).
+            all_round_kpis = _rr_hist_kpis.get(r.player_id, [])
             challenge_result = _repair_challenge_result(
                 config,
                 session.mode,
@@ -2174,6 +2353,7 @@ class RoundResults(Resource):
                 all_round_kpis,
                 r.data.get("challenge_result"),
                 session_id=sid,
+                capacity_scales=_rr_capacity_scales,
             )
 
             player_hourly_breakdown = kpis.get("hourly_breakdown", [])
@@ -2338,9 +2518,27 @@ class RoundResults(Resource):
                 "daily_summary": [{"day": d, **v} for d, v in sorted(daily_summary.items())]
             }
             
-            ranking.append(player_data)
-            if r.player_id == player_id:
-                my_result = player_data
+            if _rr_full_detail_for_all or r.player_id == player_id:
+                ranking.append(player_data)
+                if r.player_id == player_id:
+                    my_result = player_data
+            else:
+                # Lightweight ranking row for other players: keep only the scalar
+                # fields the leaderboard table + market summary read, drop the large
+                # backend-expanded detail arrays. This is what cuts the per-request
+                # payload from ~9 MB to well under 1 MB under 100-player load.
+                _slim = {
+                    k: v for k, v in player_data.items()
+                    if k not in _RR_HEAVY_RANKING_KEYS
+                }
+                _slim_kpis = _slim.get("kpis")
+                if isinstance(_slim_kpis, dict):
+                    _slim["kpis"] = {
+                        k: v for k, v in _slim_kpis.items()
+                        if k not in _RR_HEAVY_KPI_KEYS
+                    }
+                ranking.append(_slim)
+
         
         # Sort by total score descending
         ranking.sort(key=lambda x: x["total_score"], reverse=True)
@@ -2452,6 +2650,7 @@ class FinalResults(Resource):
     def get(self, sid: int):
         """Get cumulative KPIs and final ranking across all rounds."""
         from .models import Result
+        from sqlalchemy.orm import defer
         player_id = int(get_jwt_identity())
         
         # Get session config
@@ -2460,9 +2659,74 @@ class FinalResults(Resource):
         config = scenario.config or {}
         weights = config.get("scoring", {}).get("weights", {"profit": 0.6, "imbalance": 0.3, "curtailment": 0.1})
         
-        # Get all results for this session
-        results = Result.query.filter_by(session_id=sid).order_by(Result.player_id, Result.round_num).all()
+        # Get all results for this session.
+        # This is the heaviest hot endpoint: every player polls it at scenario end,
+        # and it loads N players x R rounds. Defer the large bid_dispatch JSON column
+        # so it is NOT loaded for every row; only the requesting player's rows access
+        # it below (lazy load), which keeps memory bounded under simultaneous load.
+        results = (
+            Result.query.options(defer(Result.bid_dispatch))
+            .filter_by(session_id=sid)
+            .order_by(Result.player_id, Result.round_num)
+            .all()
+        )
         
+        # Batch-resolve player types and users for all results upfront (avoids N+1 queries)
+        _fr_pids = list({r.player_id for r in results})
+        _fr_ptype_map = {}
+        # RULE 2: always query DB for ALL players BEFORE any I/O that yields to other
+        # greenlets (Redis mget). The engine.run_round() CPU burst can occupy the single
+        # eventlet worker during a Redis yield and leave this transaction idle for >15s,
+        # which makes Postgres terminate the connection (idle-in-transaction timeout).
+        # DB queries complete synchronously within the transaction; only then do we
+        # release the session (below) before doing any I/O.
+        if _fr_pids:
+            for _spt in SessionPlayerType.query.filter(
+                SessionPlayerType.session_id == sid,
+                SessionPlayerType.user_id.in_(_fr_pids)
+            ).all():
+                _fr_ptype_map[_spt.user_id] = _spt.type_id
+        _fr_users = {u.id: u for u in User.query.filter(User.id.in_(_fr_pids)).all()} if _fr_pids else {}
+
+        # RULE 1: load shared-market capacity scales ONCE up front instead of querying
+        # SessionAllowedType once per result row inside the aggregation loop below.
+        from .engine import _load_shared_market_capacity_scales as _fr_load_scales
+        _fr_capacity_scales = _fr_load_scales(sid, session.mode or "isolated_per_player")
+
+        # Pre-load ONLY the requesting player's deferred bid_dispatch column (keyed by
+        # round) so the heavy aggregation loop performs NO further DB access — neither a
+        # lazy load of the deferred column nor a per-row capacity query. This lets us
+        # release the DB connection before the long CPU compute.
+        _my_result_rows = [r for r in results if r.player_id == player_id]
+        _my_bid_dispatch_by_round = {}
+        if _my_result_rows:
+            for _bd in (
+                Result.query
+                .filter_by(session_id=sid, player_id=player_id)
+                .order_by(Result.round_num)
+                .all()
+            ):
+                _my_bid_dispatch_by_round[_bd.round_num] = _bd.bid_dispatch or {}
+
+        # RULE 2: release the connection BEFORE any I/O (Redis) and before the heavy
+        # CPU aggregation loop. All DB reads are done above; releasing here prevents the
+        # idle-in-transaction timeout (15s) that fires when the engine's CPU burst
+        # monopolises the single eventlet worker while this request's transaction is open.
+        db.session.remove()
+
+        # Redis override: more up-to-date selected type (set during active player
+        # selection) wins over the committed DB row. Runs AFTER session.remove() so no
+        # transaction is held during the Redis I/O yield.
+        if _fr_pids and _redis_client:
+            try:
+                _fr_keys = [f"session:{sid}:selected:{pid}" for pid in _fr_pids]
+                _fr_vals = _redis_client.mget(_fr_keys)
+                for _pid, _val in zip(_fr_pids, _fr_vals):
+                    if _val:
+                        _fr_ptype_map[_pid] = _val.decode() if isinstance(_val, (bytes, bytearray)) else str(_val)
+            except Exception:
+                pass
+
         # Aggregate by player
         player_totals = {}
         player_bid_aggregates = {}  # Aggregate bid dispatch across all rounds
@@ -2495,22 +2759,7 @@ class FinalResults(Resource):
                     "player_role": None,
                 }
 
-            player_type = None
-            if _redis_client:
-                try:
-                    sel_key = f"session:{sid}:selected:{pid}"
-                    sel_raw = _redis_client.get(sel_key)
-                    if sel_raw:
-                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
-                except Exception:
-                    pass
-            if not player_type:
-                try:
-                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=pid).first()
-                    if sel_db:
-                        player_type = sel_db.type_id
-                except Exception:
-                    pass
+            player_type = _fr_ptype_map.get(pid)
             
             cfg_devices = (config.get("devices") or []) if isinstance(config, dict) else []
             cfg_player_types = (config.get("player_types") or []) if isinstance(config, dict) else []
@@ -2519,8 +2768,9 @@ class FinalResults(Resource):
                 pt_cfg = next((pt for pt in cfg_player_types if isinstance(pt, dict) and pt.get("id") == player_type), None)
                 if pt_cfg and isinstance(pt_cfg.get("devices"), list):
                     player_device_ids.update({str(x) for x in pt_cfg.get("devices") if x})
+            _raw_kpis_r = r.data.get("kpis") if r.data.get("kpis") is not None else r.data
             kpis = _repair_device_settlement_kpis(
-                canonicalize_kpis(r.data.get("kpis", {})),
+                canonicalize_kpis(_raw_kpis_r),
                 (r.data or {}).get("device_hourly_details") or {},
                 cfg_devices=cfg_devices,
                 player_device_ids=player_device_ids,
@@ -2588,6 +2838,7 @@ class FinalResults(Resource):
                 challenge_round_kpis,
                 r.data.get("challenge_result"),
                 session_id=sid,
+                capacity_scales=_fr_capacity_scales,
             )
             if challenge_result:
                 player_totals[pid]["challenge_history"].append({
@@ -2597,10 +2848,18 @@ class FinalResults(Resource):
             
             # Aggregate bid dispatch data across rounds using the same source that
             # RoundResults exposes as my_result.bid_dispatch.
+            # Only the requesting player's aggregate is returned (see my_bid_aggregate
+            # below), so skip this for everyone else. Combined with deferring the
+            # bid_dispatch column on the query, the large column is only ever loaded
+            # for the requesting player's rows.
             raw_bid_dispatch = (
-                (r.data or {}).get("bid_dispatch")
-                or (r.data or {}).get("dam_bid_dispatch")
-                or (r.bid_dispatch or {})
+                (
+                    (r.data or {}).get("bid_dispatch")
+                    or (r.data or {}).get("dam_bid_dispatch")
+                    or (_my_bid_dispatch_by_round.get(r.round_num) or {})
+                )
+                if pid == player_id
+                else {}
             )
 
             if raw_bid_dispatch:
@@ -2672,28 +2931,13 @@ class FinalResults(Resource):
             avg_score = raw_score / max(1, totals["rounds"])
             total_score = max(0, min(100, (avg_score + 5000000) / 100000))
             
-            # Get player info
-            user = User.query.get(pid)
+            # Get player info (using pre-batched dict)
+            user = _fr_users.get(pid)
             player_email = user.email if user else f"Player {pid}"
-            
-            # Get player type
-            player_type = None
-            if _redis_client:
-                try:
-                    sel_key = f"session:{sid}:selected:{pid}"
-                    sel_raw = _redis_client.get(sel_key)
-                    if sel_raw:
-                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
-                except Exception:
-                    pass
-            if not player_type:
-                try:
-                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=pid).first()
-                    if sel_db:
-                        player_type = sel_db.type_id
-                except Exception:
-                    pass
-            
+
+            # Get player type (using pre-batched dict)
+            player_type = _fr_ptype_map.get(pid)
+
             player_data = {
                 "player_id": pid,
                 "email": player_email,
@@ -2731,9 +2975,11 @@ class FinalResults(Resource):
         for idx, p in enumerate(ranking):
             p["rank"] = idx + 1
         
-        # Build round history for the current player
+        # Build round history for the current player.
+        # Reuse the already-loaded rows for this player (subset of `results`) instead of
+        # re-querying, so this stays DB-free after the connection was released above.
         round_history = []
-        player_results = Result.query.filter_by(session_id=sid, player_id=player_id).order_by(Result.round_num).all()
+        player_results = _my_result_rows
         for r in player_results:
             result_round_num = int(r.round_num or 0)
             use_da_baseline_settlement = (
@@ -2741,21 +2987,9 @@ class FinalResults(Resource):
                 and _get_market_status_for_round(config, "idm", result_round_num) != "off"
             ) or is_two_phase_round(config, result_round_num)
             player_type = None
-            if _redis_client:
-                try:
-                    sel_key = f"session:{sid}:selected:{player_id}"
-                    sel_raw = _redis_client.get(sel_key)
-                    if sel_raw:
-                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
-                except Exception:
-                    pass
-            if not player_type:
-                try:
-                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=player_id).first()
-                    if sel_db:
-                        player_type = sel_db.type_id
-                except Exception:
-                    pass
+            # Player type was already resolved up front (redis-then-DB batch); reuse it
+            # so this loop performs no DB access after the connection was released.
+            player_type = _fr_ptype_map.get(player_id)
             cfg_devices = (config.get("devices") or []) if isinstance(config, dict) else []
             cfg_player_types = (config.get("player_types") or []) if isinstance(config, dict) else []
             player_device_ids = set()
@@ -2763,8 +2997,10 @@ class FinalResults(Resource):
                 pt_cfg = next((pt for pt in cfg_player_types if isinstance(pt, dict) and pt.get("id") == player_type), None)
                 if pt_cfg and isinstance(pt_cfg.get("devices"), list):
                     player_device_ids.update({str(x) for x in pt_cfg.get("devices") if x})
+            # BUG FIX P1-2: Use MWh quantities consistently (not costs) for scoring
+            _raw_kpis_r2 = r.data.get("kpis") if r.data.get("kpis") is not None else r.data
             kpis = _repair_device_settlement_kpis(
-                canonicalize_kpis(r.data.get("kpis", {})),
+                canonicalize_kpis(_raw_kpis_r2),
                 (r.data or {}).get("device_hourly_details") or {},
                 cfg_devices=cfg_devices,
                 player_device_ids=player_device_ids,
@@ -3068,47 +3304,54 @@ class SubmitStatus(Resource):
         users = User.query.filter(User.id.in_(member_ids)).all() if member_ids else []
         users_by_id = {u.id: u for u in users}
         
-        # Get player type selections
+        # Batch-resolve player types: Redis mget + single DB IN query for misses
         type_map = {}
-        for mid in member_ids:
-            player_type = None
-            if _redis_client:
-                try:
-                    sel_key = f"session:{sid}:selected:{mid}"
-                    sel_raw = _redis_client.get(sel_key)
-                    if sel_raw:
-                        player_type = sel_raw.decode() if isinstance(sel_raw, (bytes, bytearray)) else str(sel_raw)
-                except Exception:
-                    pass
-            if not player_type:
-                try:
-                    sel_db = SessionPlayerType.query.filter_by(session_id=sid, user_id=mid).first()
-                    if sel_db:
-                        player_type = sel_db.type_id
-                except Exception:
-                    pass
-            
-            if player_type:
-                type_map[mid] = player_type
-        
+        _ss_redis_miss = list(member_ids)
+        if member_ids and _redis_client:
+            try:
+                _ss_keys = [f"session:{sid}:selected:{mid}" for mid in member_ids]
+                _ss_vals = _redis_client.mget(_ss_keys)
+                _ss_redis_miss = []
+                for _mid, _val in zip(member_ids, _ss_vals):
+                    if _val:
+                        type_map[_mid] = _val.decode() if isinstance(_val, (bytes, bytearray)) else str(_val)
+                    else:
+                        _ss_redis_miss.append(_mid)
+            except Exception:
+                pass
+        if _ss_redis_miss:
+            for _spt in SessionPlayerType.query.filter(
+                SessionPlayerType.session_id == sid,
+                SessionPlayerType.user_id.in_(_ss_redis_miss)
+            ).all():
+                type_map[_spt.user_id] = _spt.type_id
+
+        # Batch-check submitted forecasts: single IN query, exclude auto-submitted placeholders
+        _submitted_ids = set()
+        if member_ids:
+            from sqlalchemy import cast, String
+            _all_fc = Forecast.query.filter(
+                Forecast.session_id == sid,
+                Forecast.round_num == current_round,
+                Forecast.player_id.in_(member_ids),
+            ).with_entities(Forecast.player_id, Forecast.data).all()
+            _submitted_ids = {
+                pid for pid, fdata in _all_fc
+                if not (isinstance(fdata, dict) and fdata.get("_auto"))
+            }
+
         # Count submits per type
         type_counts = {}
         for ptype in player_types:
             tid = ptype.get("id")
             type_counts[tid] = {"submitted": 0, "total": 0}
-        
+
         players = []
         for mid, ptype in type_map.items():
             if ptype in type_counts:
                 type_counts[ptype]["total"] += 1
-                # Check if submitted
-                forecast = Forecast.query.filter_by(
-                    session_id=sid,
-                    player_id=mid,
-                    round_num=current_round
-                ).first()
-                submitted = bool(forecast)
-                if forecast:
+                submitted = mid in _submitted_ids
+                if submitted:
                     type_counts[ptype]["submitted"] += 1
                 user = users_by_id.get(mid)
                 player_name = (user.name or "").strip() if user and user.name else None

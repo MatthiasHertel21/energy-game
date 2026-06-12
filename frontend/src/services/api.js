@@ -98,15 +98,18 @@ instance.interceptors.response.use(
       }
     }
 
-    // Show error message in snackbar for non-401 errors
+    // Show error message in snackbar for non-401 errors.
+    // Requests marked with { _silent: true } (background polls) skip the toast.
     try {
-      const msg = error?.response?.data?.message || error?.message || 'Request failed'
-      // Try both __snack and __showSnack (new alias)
-      if (typeof window !== 'undefined') {
-        if (typeof window.__showSnack === 'function') {
-          window.__showSnack(msg, 'error')
-        } else if (typeof window.__snack === 'function') {
-          window.__snack(msg, { severity: 'error' })
+      if (!error?.config?._silent) {
+        const msg = error?.response?.data?.message || error?.message || 'Request failed'
+        // Try both __snack and __showSnack (new alias)
+        if (typeof window !== 'undefined') {
+          if (typeof window.__showSnack === 'function') {
+            window.__showSnack(msg, 'error')
+          } else if (typeof window.__snack === 'function') {
+            window.__snack(msg, { severity: 'error' })
+          }
         }
       }
     } catch (_) {

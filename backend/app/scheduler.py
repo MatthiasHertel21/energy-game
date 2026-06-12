@@ -19,6 +19,18 @@ from .phases import is_two_phase_round, normalize_round_phase
 
 _running: Set[int] = set()
 
+# Debug logging gate. The [SCHEDULER]/[DEBUG] print(...) calls below are diagnostic
+# only and run per-player inside the round-processing loop. They are silenced by
+# default and re-enabled at runtime via EMSG_DEBUG_LOG=1, without changing any
+# scheduling or calculation behaviour.
+_DEBUG_LOG = os.getenv("EMSG_DEBUG_LOG", "").strip().lower() in ("1", "true", "yes", "on")
+_builtin_print = print
+
+
+def print(*args, **kwargs):  # noqa: A001 - intentional module-scoped debug gate
+    if _DEBUG_LOG:
+        _builtin_print(*args, **kwargs)
+
 
 def _force_nav(cohort_id: int, url: str):
     if not _redis_client or not cohort_id or not url:
@@ -33,33 +45,54 @@ def _force_nav(cohort_id: int, url: str):
 def _auto_submit_missing(session_id: int, round_num: int, hours_per_round: int, market_phase: str | None = None):
     players = db.session.query(CohortMember.user_id).filter_by(cohort_id=db.session.query(Session.cohort_id).filter_by(id=session_id).scalar()).all()
     player_ids = [uid for (uid,) in players]
-    for pid in player_ids:
-        _exists_q = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=round_num)
-        if market_phase is not None:
-            _exists_q = _exists_q.filter(Forecast.market_phase == market_phase)
-        exists = _exists_q.first()
-        if not exists:
-            # Copy auto_bid settings from most recent previous forecast for this player
-            prev = Forecast.query.filter_by(session_id=session_id, player_id=pid).order_by(Forecast.round_num.desc()).first()
-            prev_devices = (prev.data or {}).get('devices', []) if prev else []
-            devices_with_auto_bid = [
-                {'device_id': d['device_id'], 'hours': [0.0] * hours_per_round, 'auto_bid': d['auto_bid']}
-                for d in prev_devices
-                if isinstance(d, dict) and isinstance(d.get('auto_bid'), dict) and d['auto_bid'].get('enabled')
-            ]
-            forecast_data = {"hours": [0.0] * hours_per_round}
-            if devices_with_auto_bid:
-                forecast_data["devices"] = devices_with_auto_bid
-            f = Forecast(
-                session_id=session_id,
-                player_id=pid,
-                round_num=round_num,
-                data=forecast_data,
-                bids=None,
-                market_phase=(market_phase or "single"),
+    # Batch check which players have already submitted (avoids N individual queries)
+    _exists_q = Forecast.query.filter(
+        Forecast.session_id == session_id,
+        Forecast.player_id.in_(player_ids),
+        Forecast.round_num == round_num,
+    )
+    if market_phase is not None:
+        _exists_q = _exists_q.filter(Forecast.market_phase == market_phase)
+    already_submitted = {f.player_id for f in _exists_q.with_entities(Forecast.player_id).all()}
+    missing_ids = [pid for pid in player_ids if pid not in already_submitted]
+
+    # Batch load previous forecasts for auto_bid settings
+    prev_by_player = {}
+    if missing_ids:
+        _all_prev = (
+            Forecast.query.filter(
+                Forecast.session_id == session_id,
+                Forecast.player_id.in_(missing_ids),
+                Forecast.round_num > 0,
             )
-            db.session.add(f)
-            socketio.emit("player_submit", {"session_id": session_id, "player_id": pid}, namespace="/trainer")
+            .order_by(Forecast.round_num.desc())
+            .all()
+        )
+        for _pf in _all_prev:
+            if _pf.player_id not in prev_by_player:
+                prev_by_player[_pf.player_id] = _pf
+
+    for pid in missing_ids:
+        prev = prev_by_player.get(pid)
+        prev_devices = (prev.data or {}).get('devices', []) if prev else []
+        devices_with_auto_bid = [
+            {'device_id': d['device_id'], 'hours': [0.0] * hours_per_round, 'auto_bid': d['auto_bid']}
+            for d in prev_devices
+            if isinstance(d, dict) and isinstance(d.get('auto_bid'), dict) and d['auto_bid'].get('enabled')
+        ]
+        forecast_data = {"hours": [0.0] * hours_per_round, "_auto": True}
+        if devices_with_auto_bid:
+            forecast_data["devices"] = devices_with_auto_bid
+        f = Forecast(
+            session_id=session_id,
+            player_id=pid,
+            round_num=round_num,
+            data=forecast_data,
+            bids=None,
+            market_phase=(market_phase or "single"),
+        )
+        db.session.add(f)
+        socketio.emit("player_submit", {"session_id": session_id, "player_id": pid}, namespace="/trainer")
     db.session.commit()
 
 
@@ -70,13 +103,30 @@ def _collect_forecasts_base(session_id: int, players, rounds: int, hours_span: i
     single-phase behaviour is byte-for-byte unchanged. When ``market_phase`` is set
     (two-phase rounds), the current-round submission is filtered to that phase.
     """
+    # Batch load full-horizon (round_num=0) and current-round forecasts for all players
+    _full_forecasts = Forecast.query.filter(
+        Forecast.session_id == session_id,
+        Forecast.player_id.in_(players),
+        Forecast.round_num == 0,
+    ).all()
+    full_by_player = {f.player_id: f for f in _full_forecasts}
+
+    _cur_q = Forecast.query.filter(
+        Forecast.session_id == session_id,
+        Forecast.player_id.in_(players),
+        Forecast.round_num == current,
+    )
+    if market_phase is not None:
+        _cur_q = _cur_q.filter(Forecast.market_phase == market_phase)
+    _cur_forecasts_list = _cur_q.order_by(Forecast.id.desc()).all()
+    current_by_player = {}
+    for _cf in _cur_forecasts_list:
+        current_by_player.setdefault(_cf.player_id, []).append(_cf)
+
     forecasts = {}
     for pid in players:
-        full = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=0).first()
-        _round_q = Forecast.query.filter_by(session_id=session_id, player_id=pid, round_num=current)
-        if market_phase is not None:
-            _round_q = _round_q.filter(Forecast.market_phase == market_phase)
-        _all_round_forecasts = _round_q.order_by(Forecast.id.desc()).all()
+        full = full_by_player.get(pid)
+        _all_round_forecasts = current_by_player.get(pid, [])
         current_round_forecast = next(
             (f for f in _all_round_forecasts if f.bids is not None),
             _all_round_forecasts[0] if _all_round_forecasts else None
@@ -127,12 +177,25 @@ def _build_intra_round_baseline_from_dam(dam_res: dict, players) -> dict:
                 "curve": curve,
                 "curve_by_zone": curve_by_zone,
             }
+    synthetic_supply_carryover_by_hour = {}
+    for hour_row in dam_hourly_results:
+        if not isinstance(hour_row, dict):
+            continue
+        curve = hour_row.get("unserved_synthetic_supply_curve") or []
+        curve_by_zone = hour_row.get("unserved_synthetic_supply_curve_by_zone") or []
+        if curve or any(zone_curve for zone_curve in curve_by_zone):
+            scenario_hour_idx = int(hour_row.get("scenario_hour_idx", hour_row.get("hour_idx", 0)) or 0)
+            synthetic_supply_carryover_by_hour[scenario_hour_idx] = {
+                "curve": curve,
+                "curve_by_zone": curve_by_zone,
+            }
     baseline = {
         'forecasts': {},
         'bids': {},
         'dispatch': {},
         'smp': dam_res.get("smp", dam_res.get("mcp")),
         'synthetic_demand_carryover_by_hour': synthetic_demand_carryover_by_hour,
+        'synthetic_supply_carryover_by_hour': synthetic_supply_carryover_by_hour,
         'result_data': {
             'dam_bid_dispatch': dam_dispatch,
             'dam_hourly_results': dam_hourly_results,
@@ -169,18 +232,28 @@ def _run_active_window(s, current: int, timer_sec: int, hours_span: int, market_
     socketio.emit("round_start", {"session_id": s.id, "round": current, **phase_extra}, namespace="/trainer")
     socketio.emit("round_start", {"session_id": s.id, "round": current, **phase_extra}, namespace="/game", to=f"session-{s.id}")
 
-    # Clear stale timer extensions from prior rounds
+    # Clear stale timer extensions from prior rounds, but preserve force_end_round
+    # if it was set BEFORE this window started (e.g. trainer ended round while scheduler was dead).
+    _force_already_set = False
     if _redis_client is not None:
         try:
+            _force_already_set = bool(_redis_client.get(f"session:{s.id}:force_end_round"))
             _redis_client.delete(f"session:{s.id}:timer_extend_sec")
-            _redis_client.delete(f"session:{s.id}:force_end_round")
+            if not _force_already_set:
+                _redis_client.delete(f"session:{s.id}:force_end_round")
         except Exception:
             pass
 
     # countdown
-    remaining = timer_sec
+    remaining = 0 if _force_already_set else timer_sec
     while remaining > 0:
         time.sleep(1)
+        # Release DB connection before each reload so the sleep period does not
+        # leave a connection idle-in-transaction (would hit idle_in_transaction_session_timeout).
+        try:
+            db.session.remove()
+        except Exception:
+            pass
         s = Session.query.get(s.id)
         if s and s.status in [
             SessionStatus.round_closing,
@@ -192,8 +265,10 @@ def _run_active_window(s, current: int, timer_sec: int, hours_span: int, market_
             remaining = 0
             break
         if s and s.status == SessionStatus.paused:
+            db.session.remove()
             continue
         if s and s.frozen:
+            db.session.remove()
             continue
 
         if _redis_client is not None:
@@ -255,7 +330,14 @@ def _run_active_window(s, current: int, timer_sec: int, hours_span: int, market_
     # auto-submit for missing players (phase-aware)
     _auto_submit_missing(s.id, current, hours_span, market_phase=market_phase)
 
-    # Wait briefly for any last-second submits (grace period)
+    # Wait briefly for any last-second submits (grace period).
+    # Release the DB connection back to the pool during the sleep so we neither
+    # hold a connection idle nor risk an idle-in-transaction termination while
+    # waiting. The session is re-attached on the next add()/commit below.
+    try:
+        db.session.remove()
+    except Exception:
+        pass
     time.sleep(2)
 
     # Calculating phase
@@ -425,6 +507,14 @@ def run_rounds(session_id: int, app=None):
                         mode=s.mode or "isolated_per_player", seed=camp_seed,
                         execution_phase="dam",
                     )
+                    # Discard the engine's read connection (held open during the long
+                    # CPU computation) before persisting, so we never commit onto a
+                    # connection that Postgres may have terminated for being
+                    # idle-in-transaction during the compute.
+                    try:
+                        db.session.remove()
+                    except Exception:
+                        pass
                     _persist_dam_phase_results(s, current, players, dam_res)
                     intra_round_baseline = _build_intra_round_baseline_from_dam(dam_res, players)
                     seed_battery_soc_state = dam_res.get("battery_soc_end_state")
@@ -448,8 +538,6 @@ def run_rounds(session_id: int, app=None):
                 # Support both legacy (quantity-only) and new (multi-bid) formats
                 players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
                 print(f"[SCHEDULER] Session {s.id} Round {current}: {len(players)} players")
-                players = [uid for (uid,) in db.session.query(CohortMember.user_id).filter_by(cohort_id=s.cohort_id).all()]
-                print(f"[SCHEDULER] Session {s.id} Round {current}: {len(players)} players")
                 # Two-phase IDM phase uses phase-specific (absolute) submissions; the engine
                 # computes the delta against the same round's DAM phase via intra_round_baseline.
                 forecasts = _collect_forecasts_base(
@@ -461,9 +549,17 @@ def run_rounds(session_id: int, app=None):
                     # Two-phase: no cross-round DA snapshot/delta; baseline is the intra-round DAM phase.
                     pass
                 elif current == 1:
+                    # Batch-check which players already have a DA snapshot (round_num=-1).
+                    _existing_snaps = {
+                        f.player_id
+                        for f in Forecast.query.filter(
+                            Forecast.session_id == s.id,
+                            Forecast.player_id.in_(players),
+                            Forecast.round_num == -1,
+                        ).all()
+                    }
                     for pid in players:
-                        snap = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=-1).first()
-                        if not snap:
+                        if pid not in _existing_snaps:
                             forecast_entry = forecasts.get(pid, {})
                             snap = Forecast(
                                 session_id=s.id,
@@ -494,9 +590,18 @@ def run_rounds(session_id: int, app=None):
                     print(f"[SCHEDULER] Round {current}: IDM status={idm_status}, use_idm_delta={use_idm_delta}")
 
                     if use_idm_delta:
+                        # Batch-load all DA snapshots (round_num=-1) for this session in one query.
+                        _da_snaps = {
+                            f.player_id: f
+                            for f in Forecast.query.filter(
+                                Forecast.session_id == s.id,
+                                Forecast.player_id.in_(players),
+                                Forecast.round_num == -1,
+                            ).all()
+                        }
                         # apply IDM delta for current window vs DA snapshot
                         for pid in players:
-                            snap = Forecast.query.filter_by(session_id=s.id, player_id=pid, round_num=-1).first()
+                            snap = _da_snaps.get(pid)
                             if snap and snap.data and snap.data.get("hours"):
                                 da_hours = snap.data.get("hours")
                                 start = (current-1)*hours_span
@@ -527,6 +632,17 @@ def run_rounds(session_id: int, app=None):
                     intra_round_baseline=intra_round_baseline,
                     seed_battery_soc_state=seed_battery_soc_state,
                 )
+
+                # The engine performs all its DB reads up-front, then runs a long,
+                # CPU-bound computation while a read transaction stays open. For large
+                # sessions that computation can exceed idle_in_transaction_session_timeout
+                # (15s), which makes Postgres terminate the connection. Discard the engine's
+                # connection here so the result-persistence below checks out a fresh one
+                # instead of failing on a dead, idle-in-transaction connection.
+                try:
+                    db.session.remove()
+                except Exception:
+                    pass
                 
                 # Emit active events for this round
                 try:
@@ -565,6 +681,7 @@ def run_rounds(session_id: int, app=None):
                                 "duration_rounds": duration,
                                 "target": evt.get("target", "all"),
                                 "target_id": evt.get("target_id", ""),
+                                "market_phase": evt.get("market_phase"),
                                 "round": current
                             })
                     
@@ -616,15 +733,55 @@ def run_rounds(session_id: int, app=None):
 
                 shared_market_capacity_scales = _load_shared_market_capacity_scales(s.id, s.mode)
 
+                # --- Batch pre-loads to avoid N+1 queries inside the per-player loop ---
+                # (1) SessionPlayerType: one query for all players in this session.
+                from .models import SessionPlayerType
+                from .engine import detect_player_role
+                _spt_rows = SessionPlayerType.query.filter_by(session_id=s.id).all()
+                _spt_by_player = {row.user_id: row for row in _spt_rows}
+
+                # (2) Previous-round Results: one query for the entire session up to this round.
+                # Use column projection to avoid loading the large (non-deferred) bid_dispatch
+                # JSON blob for every player × every previous round.
+                _prev_kpis_by_player: dict = {}
+                for _player_id, _data in (
+                    db.session.query(Result.player_id, Result.data)
+                    .filter(Result.session_id == s.id, Result.round_num < current)
+                    .all()
+                ):
+                    _prev_kpis_by_player.setdefault(_player_id, []).append(
+                        _data.get("kpis", {}) if _data else {}
+                    )
+
+                # (3) Forecasts with debug_enabled: one query for all players in this round.
+                _debug_forecasts = (
+                    Forecast.query
+                    .filter_by(session_id=s.id, round_num=current)
+                    .all()
+                )
+                _debug_forecast_by_player = {f.player_id: f for f in _debug_forecasts}
+
+                # (4) Users for debug logging (only load when any forecast has debug_enabled).
+                _debug_player_ids = {
+                    f.player_id for f in _debug_forecasts
+                    if f.data and f.data.get("debug_enabled")
+                }
+                if _debug_player_ids:
+                    from .models import User
+                    _user_rows = User.query.filter(User.id.in_(_debug_player_ids)).all()
+                    _user_by_id = {u.id: u for u in _user_rows}
+                else:
+                    _user_by_id = {}
+                # --- end batch pre-loads ---
+
                 for pid, kp in (res.get("round_kpis") or {}).items():
                     # Determine player role based on their player type devices
                     player_role = 'unknown'
                     player_type_id = None
                     player_devices = []
+                    pt_cfg = None
                     try:
-                        # Find player's selected type
-                        from .models import SessionPlayerType
-                        spt = SessionPlayerType.query.filter_by(session_id=s.id, user_id=pid).first()
+                        spt = _spt_by_player.get(pid)
                         if spt and spt.type_id:
                             player_type_id = spt.type_id
                             # Find player type config
@@ -633,18 +790,12 @@ def run_rounds(session_id: int, app=None):
                                 # Get devices for this player type
                                 device_ids = pt_cfg.get("devices", [])
                                 player_devices = [d for d in devices_cfg if d.get("id") in device_ids]
-                                from .engine import detect_player_role
                                 player_role = detect_player_role(player_devices)
                     except Exception as e:
                         print(f"[SCHEDULER] Failed to detect role for player {pid}: {e}")
-                    
-                    # Get all previous round results for cumulative metrics
-                    previous_results = Result.query.filter_by(
-                        session_id=s.id, 
-                        player_id=pid
-                    ).filter(Result.round_num < current).all()
-                    
-                    all_round_kpis = [r.data.get("kpis", {}) for r in previous_results if r.data]
+
+                    # Build cumulative KPIs list from pre-loaded previous results.
+                    all_round_kpis = list(_prev_kpis_by_player.get(pid, []))
                     all_round_kpis.append(kp)  # Include current round
                     
                     # Compute capacity scaling for shared_market
@@ -749,15 +900,10 @@ def run_rounds(session_id: int, app=None):
                     
                     # Generate debug log if requested
                     try:
-                        forecast_for_player = Forecast.query.filter_by(
-                            session_id=s.id,
-                            player_id=pid,
-                            round_num=current
-                        ).first()
+                        forecast_for_player = _debug_forecast_by_player.get(pid)
                         if forecast_for_player and forecast_for_player.data and forecast_for_player.data.get("debug_enabled"):
                             from .debug_logger import get_debug_logger
-                            from .models import User
-                            player_user = User.query.get(pid)
+                            player_user = _user_by_id.get(pid)
                             player_email = player_user.email if player_user else "unknown"
                             player_type_name = pt_cfg.get("name", "unknown") if pt_cfg else "unknown"
                             

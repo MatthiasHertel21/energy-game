@@ -46,7 +46,32 @@ const normalizeZoneBreakdown = (zones = []) => {
     lossesMwh: normalizeNumber(zone?.lossesMwh ?? zone?.losses_mwh),
     bindingLinkCount: Math.max(0, Math.round(normalizeNumber(zone?.bindingLinkCount ?? zone?.binding_link_count))),
     bindingLinks: Array.isArray(zone?.bindingLinks ?? zone?.binding_links) ? (zone?.bindingLinks ?? zone?.binding_links) : [],
+    zoneSmpZarPerMwh: (zone?.zoneSmpZarPerMwh ?? zone?.zone_smp_zar_per_mwh) != null
+      ? normalizeNumber(zone?.zoneSmpZarPerMwh ?? zone?.zone_smp_zar_per_mwh)
+      : null,
   })).filter((zone) => zone.zoneId > 0)
+}
+
+const normalizeLinkBreakdown = (links = []) => {
+  if (!Array.isArray(links)) return []
+  return links.map((link) => ({
+    fromZone: Math.round(normalizeNumber(link?.fromZone ?? link?.from_zone)),
+    toZone: Math.round(normalizeNumber(link?.toZone ?? link?.to_zone)),
+    atcMwh: normalizeNumber(link?.atcMwh ?? link?.atc_mwh),
+    flowMwh: normalizeNumber(link?.flowMwh ?? link?.flow_mwh),
+    utilizationPct: normalizeNumber(link?.utilizationPct ?? link?.utilization_pct),
+    lossesMwh: normalizeNumber(link?.lossesMwh ?? link?.losses_mwh),
+    binding: Boolean(link?.binding),
+    congestionRentZar: normalizeNumber(link?.congestionRentZar ?? link?.congestion_rent_zar),
+    lossesValueZar: normalizeNumber(link?.lossesValueZar ?? link?.losses_value_zar),
+    congestionEarningsZar: normalizeNumber(link?.congestionEarningsZar ?? link?.congestion_earnings_zar),
+    zoneFromSmpZarPerMwh: (link?.zoneFromSmpZarPerMwh ?? link?.zone_from_smp_zar_per_mwh) != null
+      ? normalizeNumber(link?.zoneFromSmpZarPerMwh ?? link?.zone_from_smp_zar_per_mwh)
+      : null,
+    zoneToSmpZarPerMwh: (link?.zoneToSmpZarPerMwh ?? link?.zone_to_smp_zar_per_mwh) != null
+      ? normalizeNumber(link?.zoneToSmpZarPerMwh ?? link?.zone_to_smp_zar_per_mwh)
+      : null,
+  })).filter((link) => link.fromZone > 0 && link.toZone > 0)
 }
 
 const normalizeZoneMixBreakdown = (zones = []) => {
@@ -83,7 +108,7 @@ const normalizePhaseMix = (phaseMix) => {
   return Object.keys(out).length > 0 ? out : null
 }
 
-const finalizeSummary = ({ totalVolumeMwh = 0, realPlayers = {}, syntheticMarket = {}, priceStats = {}, zoneBreakdown = [], zoneMixBreakdown = [], activeEventsCount = 0, roundsCount = 0, phaseMix = null }) => {
+const finalizeSummary = ({ totalVolumeMwh = 0, realPlayers = {}, syntheticMarket = {}, priceStats = {}, zoneBreakdown = [], zoneMixBreakdown = [], linkBreakdown = [], activeEventsCount = 0, roundsCount = 0, phaseMix = null }) => {
   const realProducerVolume = normalizeNumber(realPlayers.producerDispatchedMwh ?? realPlayers.producer_dispatched_mwh)
   const realConsumerVolume = normalizeNumber(realPlayers.consumerDispatchedMwh ?? realPlayers.consumer_dispatched_mwh)
   const normalizedTotalVolume = Math.max(
@@ -124,6 +149,7 @@ const finalizeSummary = ({ totalVolumeMwh = 0, realPlayers = {}, syntheticMarket
     priceStats: normalizePriceStats(priceStats),
     zoneBreakdown: normalizeZoneBreakdown(zoneBreakdown),
     zoneMixBreakdown: normalizeZoneMixBreakdown(zoneMixBreakdown),
+    linkBreakdown: normalizeLinkBreakdown(linkBreakdown),
     activeEventsCount: Math.max(0, Math.round(normalizeNumber(activeEventsCount))),
     roundsCount: Math.max(0, Math.round(normalizeNumber(roundsCount))),
     phaseMix: normalizePhaseMix(phaseMix),
@@ -137,6 +163,7 @@ export const normalizeMarketSummary = (summary) => finalizeSummary({
   priceStats: summary?.priceStats ?? summary?.price_stats ?? {},
   zoneBreakdown: summary?.zoneBreakdown ?? summary?.zone_breakdown ?? [],
   zoneMixBreakdown: summary?.zoneMixBreakdown ?? summary?.zone_mix_breakdown ?? [],
+  linkBreakdown: summary?.linkBreakdown ?? summary?.link_breakdown ?? [],
   activeEventsCount: summary?.activeEventsCount ?? summary?.active_events_count,
   roundsCount: summary?.roundsCount ?? summary?.rounds_count,
   phaseMix: summary?.phaseMix ?? summary?.phase_mix ?? null,
@@ -336,21 +363,31 @@ export const buildZoneMixMatrixSection = (summary, formatInt) => {
 export const buildZoneSection = (summary, formatCurrency, formatInt) => {
   if (!Array.isArray(summary?.zoneBreakdown) || summary.zoneBreakdown.length === 0) return null
 
+  const hasSmp = summary.zoneBreakdown.some((zone) => zone.zoneSmpZarPerMwh != null)
+
+  const columns = [
+    { key: 'zone', label: 'Zone' },
+    ...(hasSmp ? [{ key: 'zoneSmp', label: 'Ø Zone SMP (ZAR/MWh)', align: 'right' }] : []),
+    { key: 'productionCost', label: 'Production Cost', align: 'right' },
+    { key: 'profit', label: 'Profit', align: 'right' },
+    { key: 'atcRestrictions', label: 'ATC Restrictions' },
+    { key: 'balancingCost', label: 'Balancing / Congestion Cost', align: 'right' },
+    { key: 'balancingAverages', label: 'Avg Cost' },
+    { key: 'notDelivered', label: 'Not Delivered', align: 'right' },
+    { key: 'notReceived', label: 'Not Received', align: 'right' },
+  ]
+
   return {
     title: 'Per-zone market and network impacts',
-    columns: [
-      { key: 'zone', label: 'Zone' },
-      { key: 'productionCost', label: 'Production Cost', align: 'right' },
-      { key: 'profit', label: 'Profit', align: 'right' },
-      { key: 'atcRestrictions', label: 'ATC Restrictions' },
-      { key: 'balancingCost', label: 'Balancing / Congestion Cost', align: 'right' },
-      { key: 'balancingAverages', label: 'Avg Cost' },
-      { key: 'notDelivered', label: 'Not Delivered', align: 'right' },
-      { key: 'notReceived', label: 'Not Received', align: 'right' },
-    ],
+    columns,
     rows: summary.zoneBreakdown.map((zone) => ({
       key: `zone-${zone.zoneId}`,
       zone: `Zone ${zone.zoneId}`,
+      ...(hasSmp ? {
+        zoneSmp: zone.zoneSmpZarPerMwh != null
+          ? formatSignedNumber(zone.zoneSmpZarPerMwh, 2)
+          : '—',
+      } : {}),
       productionCost: formatCurrency(zone.productionCostZar),
       profit: formatCurrency(zone.profitZar),
       atcRestrictions: zone.bindingLinkCount > 0
@@ -361,6 +398,76 @@ export const buildZoneSection = (summary, formatCurrency, formatInt) => {
       notDelivered: `${formatInt(zone.gridCurtailedMwh)} MWh`,
       notReceived: `${formatInt(zone.unservedDemandMwh)} MWh`,
     })),
+  }
+}
+
+export const buildLinkSection = (summary, formatCurrency, formatInt) => {
+  if (!Array.isArray(summary?.linkBreakdown) || summary.linkBreakdown.length === 0) return null
+
+  const anyBinding = summary.linkBreakdown.some((link) => link.binding)
+  const hasEarnings = summary.linkBreakdown.some((link) => link.congestionEarningsZar != null)
+  const hasSmpData = summary.linkBreakdown.some((link) => link.zoneFromSmpZarPerMwh != null)
+  const totalEarnings = summary.linkBreakdown.reduce((s, l) => s + (l.congestionEarningsZar || 0), 0)
+  const totalLossesValue = summary.linkBreakdown.reduce((s, l) => s + (l.lossesValueZar || 0), 0)
+
+  const columns = [
+    { key: 'link', label: 'Link' },
+    { key: 'atcMwh', label: 'ATC Limit (MWh)', align: 'right' },
+    { key: 'flowMwh', label: 'Flow (MWh)', align: 'right' },
+    { key: 'utilizationPct', label: 'Utilization', align: 'right' },
+    ...(hasSmpData ? [{ key: 'smpFrom', label: 'SMP Zone from', align: 'right' }, { key: 'smpTo', label: 'SMP Zone to', align: 'right' }] : []),
+    { key: 'lossesMwh', label: 'Losses (MWh)', align: 'right' },
+    { key: 'lossesValue', label: 'Loss Value', align: 'right' },
+    ...(hasEarnings ? [{ key: 'congestionEarnings', label: 'Congestion Earnings', align: 'right' }] : []),
+  ]
+
+  return {
+    title: 'Interconnector / ATC link results',
+    caption: anyBinding
+      ? 'Congestion Earnings = (SMP_to − SMP_from) × Flow. Binding links ⚡ cause zonal price divergence.'
+      : 'No binding links this round — all zones cleared at the same price.',
+    columns,
+    rows: [
+      ...summary.linkBreakdown.map((link) => {
+        const utilizationStr = `${formatSignedNumber(link.utilizationPct, 1)}%`
+        const earningsLabel = link.congestionEarningsZar > 0.01
+          ? formatCurrency(link.congestionEarningsZar)
+          : link.congestionEarningsZar < -0.01
+            ? formatCurrency(link.congestionEarningsZar)
+            : '—'
+        return {
+          key: `link-${link.fromZone}-${link.toZone}`,
+          link: `Zone ${link.fromZone} → Zone ${link.toZone}`,
+          atcMwh: `${formatInt(link.atcMwh)} MWh`,
+          flowMwh: `${formatInt(link.flowMwh)} MWh`,
+          utilizationPct: link.binding
+            ? `${utilizationStr} ⚡`
+            : utilizationStr,
+          smpFrom: link.zoneFromSmpZarPerMwh != null ? `${formatSignedNumber(link.zoneFromSmpZarPerMwh, 0)}/MWh` : '—',
+          smpTo: link.zoneToSmpZarPerMwh != null ? `${formatSignedNumber(link.zoneToSmpZarPerMwh, 0)}/MWh` : '—',
+          lossesMwh: link.lossesMwh > 0.001 ? `${formatInt(link.lossesMwh)} MWh` : '—',
+          lossesValue: (link.lossesValueZar || 0) > 0.01 ? formatCurrency(link.lossesValueZar) : '—',
+          congestionEarnings: earningsLabel,
+          cellSxByKey: link.binding
+            ? { link: { fontWeight: 600 }, utilizationPct: { color: 'warning.dark', fontWeight: 600 }, congestionEarnings: { fontWeight: 600, color: 'success.dark' } }
+            : {},
+        }
+      }),
+      // Total row
+      {
+        key: 'link-total',
+        link: 'Total',
+        atcMwh: '',
+        flowMwh: '',
+        utilizationPct: '',
+        smpFrom: '',
+        smpTo: '',
+        lossesMwh: '',
+        lossesValue: totalLossesValue > 0.01 ? formatCurrency(totalLossesValue) : '—',
+        congestionEarnings: formatCurrency(totalEarnings),
+        sx: { '& td': { fontWeight: 700, borderTop: '2px solid rgba(0,0,0,0.15)' } },
+      },
+    ],
   }
 }
 

@@ -378,6 +378,7 @@ forecast_in = ns.model(
         "devices": fields.List(fields.Raw, required=False, description="Per-device forecast payload including optional auto_bid metadata"),
         "bids": fields.Raw(required=False, description="Multi-bid pricing structure (optional)"),
         "debug": fields.Boolean(required=False, description="Enable debug logging for this forecast (admin only)"),
+        "auto_submit": fields.Boolean(required=False, description="Client-side timer auto-submit; create-only-if-absent (never overwrites an existing submission for this round/phase)"),
     },
 )
 
@@ -998,6 +999,7 @@ class MarketStructureAPI(Resource):
             _compute_round_idm_synthetic_forecast_change_summary,
             _deserialize_curve_steps,
             _merge_demand_curves,
+            _merge_supply_curves,
             _safe_market_percentage,
             generate_curves_from_config,
             clear_market,
@@ -1131,20 +1133,17 @@ class MarketStructureAPI(Resource):
             hour_of_day=hour_of_day, 
             month_of_year=month_of_year
         )
-        if is_dam_clearing:
-            synthetic_supply = list(baseline_supply)
-            synthetic_demand = list(baseline_demand)
-        else:
-            synthetic_supply, synthetic_demand, _ = _build_idm_synthetic_delta_curves(
-                baseline_supply,
-                baseline_demand,
-                cfg.get("market", {}) or {},
-                idm_forecast_change.get("production_change_pct", 0.0),
-                idm_forecast_change.get("consumption_change_pct", 0.0),
-            )
-
+        # Fetch the carried-over (unserved) synthetic demand AND the carried-over
+        # (undispatched) synthetic supply from the DAM phase BEFORE building the IDM delta
+        # curves, so an IDM consumption reduction nets against the unserved-demand carry-over
+        # and an IDM production reduction nets against the undispatched-supply carry-over
+        # (a withdrawal of a never-cleared position shrinks the matching carry-over rather
+        # than creating a phantom opposite-side trade). Mirrors engine.run_round.
         carried_synthetic_demand_curve = []
         carried_synthetic_demand_curve_by_zone = []
+        carried_synthetic_supply_curve = []
+        carried_synthetic_supply_curve_by_zone = []
+        dam_hour_row = None
         if is_round_two_phase and not is_dam_clearing:
             dam_phase_reference = PhaseResult.query.filter_by(
                 session_id=session_id,
@@ -1164,13 +1163,84 @@ class MarketStructureAPI(Resource):
                         _deserialize_curve_steps(zone_curve)
                         for zone_curve in (dam_hour_row.get("unserved_synthetic_demand_curve_by_zone") or [])
                     ]
+                    carried_synthetic_supply_curve = sorted(_deserialize_curve_steps(dam_hour_row.get("unserved_synthetic_supply_curve") or []), key=lambda item: item[0])
+                    carried_synthetic_supply_curve_by_zone = [
+                        sorted(_deserialize_curve_steps(zone_curve), key=lambda item: item[0])
+                        for zone_curve in (dam_hour_row.get("unserved_synthetic_supply_curve_by_zone") or [])
+                    ]
 
         carried_synthetic_demand_aggregate = carried_synthetic_demand_curve or _merge_demand_curves(carried_synthetic_demand_curve_by_zone)
+        carryover_total_before = sum(max(0.0, float(q or 0.0)) for _p, q in carried_synthetic_demand_aggregate)
+        carried_synthetic_supply_aggregate = carried_synthetic_supply_curve or _merge_supply_curves(carried_synthetic_supply_curve_by_zone)
+        supply_carryover_total_before = sum(max(0.0, float(q or 0.0)) for _p, q in carried_synthetic_supply_aggregate)
+
+        if is_dam_clearing:
+            synthetic_supply = list(baseline_supply)
+            synthetic_demand = list(baseline_demand)
+        elif historical_mode:
+            # Historical view: reproduce the SETTLED clearing. Do NOT re-net against a
+            # live-recomputed forecast change (which can diverge from the stored settlement
+            # — e.g. a tiny live consumption delta would shrink the carry-over even though
+            # the round was actually settled with the full block). Build the IDM delta
+            # curves without netting and take the carry-over that was actually folded into
+            # clearing from the stored result. Rounds settled before netting was introduced
+            # have no stored curve → fall back to the full DAM carry-over (which is exactly
+            # what the old engine folded in, so the historical view stays faithful).
+            synthetic_supply, synthetic_demand, _carryover_unused, _supply_carryover_unused, _ = _build_idm_synthetic_delta_curves(
+                baseline_supply,
+                baseline_demand,
+                cfg.get("market", {}) or {},
+                idm_forecast_change.get("production_change_pct", 0.0),
+                idm_forecast_change.get("consumption_change_pct", 0.0),
+                carryover_demand_curve=None,
+                carryover_supply_curve=None,
+            )
+            stored_carryover_field = (historical_hour_entry or {}).get("synthetic_demand_carryover_curve")
+            if stored_carryover_field is not None:
+                carried_synthetic_demand_aggregate = _deserialize_curve_steps(stored_carryover_field or [])
+            stored_supply_carryover_field = (historical_hour_entry or {}).get("synthetic_supply_carryover_curve")
+            if stored_supply_carryover_field is not None:
+                carried_synthetic_supply_aggregate = sorted(_deserialize_curve_steps(stored_supply_carryover_field or []), key=lambda item: item[0])
+        else:
+            synthetic_supply, synthetic_demand, carried_synthetic_demand_aggregate, carried_synthetic_supply_aggregate, _ = _build_idm_synthetic_delta_curves(
+                baseline_supply,
+                baseline_demand,
+                cfg.get("market", {}) or {},
+                idm_forecast_change.get("production_change_pct", 0.0),
+                idm_forecast_change.get("consumption_change_pct", 0.0),
+                carryover_demand_curve=carried_synthetic_demand_aggregate,
+                carryover_supply_curve=carried_synthetic_supply_aggregate,
+            )
+
+        # Keep the per-zone carry-over splits consistent with the netted aggregates.
+        carryover_total_after = sum(max(0.0, float(q or 0.0)) for _p, q in carried_synthetic_demand_aggregate)
+        if carried_synthetic_demand_curve_by_zone and carryover_total_before > 1e-9:
+            net_factor = max(0.0, min(1.0, carryover_total_after / carryover_total_before))
+            if net_factor < 1.0 - 1e-9:
+                carried_synthetic_demand_curve_by_zone = [
+                    [(float(p), round(float(q) * net_factor, 3)) for p, q in zone_curve]
+                    for zone_curve in carried_synthetic_demand_curve_by_zone
+                ]
+        supply_carryover_total_after = sum(max(0.0, float(q or 0.0)) for _p, q in carried_synthetic_supply_aggregate)
+        if carried_synthetic_supply_curve_by_zone and supply_carryover_total_before > 1e-9:
+            supply_net_factor = max(0.0, min(1.0, supply_carryover_total_after / supply_carryover_total_before))
+            if supply_net_factor < 1.0 - 1e-9:
+                carried_synthetic_supply_curve_by_zone = [
+                    [(float(p), round(float(q) * supply_net_factor, 3)) for p, q in zone_curve]
+                    for zone_curve in carried_synthetic_supply_curve_by_zone
+                ]
+
         synthetic_demand_for_clearing = list(synthetic_demand)
         if carried_synthetic_demand_aggregate:
             synthetic_demand_for_clearing = _merge_demand_curves([
                 synthetic_demand_for_clearing,
                 carried_synthetic_demand_aggregate,
+            ])
+        synthetic_supply_for_clearing = list(synthetic_supply)
+        if carried_synthetic_supply_aggregate:
+            synthetic_supply_for_clearing = _merge_supply_curves([
+                synthetic_supply_for_clearing,
+                carried_synthetic_supply_aggregate,
             ])
 
         if historical_mode and historical_idm_hourly and not is_dam_clearing:
@@ -1218,6 +1288,30 @@ class MarketStructureAPI(Resource):
             else:
                 synthetic_demand = []
 
+            # The historical rebuild above replaced synthetic_demand with the
+            # officially-cleared IDM delta demand. synthetic_demand_for_clearing was
+            # already assembled from the (live) pre-rebuild synthetic_demand, so it now
+            # drops the historical IDM delta and only carries the carry-over block. Re-fold
+            # the rebuilt synthetic_demand together with the carry-over so the displayed
+            # demand curve matches what the engine actually cleared — otherwise the chart
+            # omits the IDM delta demand and looks like oversupply even though the stored
+            # SMP reflects a scarcity (undersupply) clearing.
+            synthetic_demand_for_clearing = list(synthetic_demand)
+            if carried_synthetic_demand_aggregate:
+                synthetic_demand_for_clearing = _merge_demand_curves([
+                    synthetic_demand_for_clearing,
+                    carried_synthetic_demand_aggregate,
+                ])
+            # Mirror for supply: re-fold the rebuilt IDM delta supply together with the
+            # undispatched-supply carry-over so the displayed supply curve matches what the
+            # engine actually cleared.
+            synthetic_supply_for_clearing = list(synthetic_supply)
+            if carried_synthetic_supply_aggregate:
+                synthetic_supply_for_clearing = _merge_supply_curves([
+                    synthetic_supply_for_clearing,
+                    carried_synthetic_supply_aggregate,
+                ])
+
         # Build a live market snapshot from the latest submitted forecasts.
         # shared_market: aggregate all players anonymously.
         # isolated_per_player: include only the current player's submitted market.
@@ -1237,19 +1331,100 @@ class MarketStructureAPI(Resource):
         # Positive delta  → generator sells MORE than DA → green supply block.
         # Negative delta  → generator sells LESS than DA → red demand block (buy-back).
         if not is_dam_clearing and player_forecasts:
-            da_baseline_rows = (
-                Forecast.query
-                .filter_by(session_id=session_id, is_da_baseline=True)
-                .order_by(Forecast.player_id.asc(), Forecast.submitted_at.desc(), Forecast.id.desc())
-                .all()
-            )
             da_by_player: dict = {}
-            for row in da_baseline_rows:
-                if row.player_id not in da_by_player:
-                    da_by_player[int(row.player_id)] = {
-                        'hours': (row.data or {}).get('hours', []) if isinstance(row.data, dict) else [],
-                        'bids': row.bids or {},
+            # In a two-phase round the DA reference is the SAME round's DAM-phase
+            # submission (there are NO is_da_baseline forecasts for two-phase rounds —
+            # those only exist for single-phase cross-round IDM deltas). Pull the
+            # DAM-phase forecasts through the SAME loader as the IDM current bids so
+            # both go through identical round-window slicing (_slice_bid_hours). That
+            # guarantees the bid-hour arrays are index-aligned regardless of
+            # round_span (a direct query would skip slicing and misalign when
+            # round_span < stored horizon, e.g. round_span_hours=1).
+            da_ref_round_local = bool(is_round_two_phase)
+            if da_ref_round_local:
+                # The engine settles the IDM phase as a delta against the DAM
+                # *dispatched* (cleared) position, NOT the DAM submitted bid
+                # (engine.run_round: "ID-Delta = Forecast - DA_dispatched"). When a
+                # player's DAM bid only partially cleared (scarcity), using the bid as
+                # the reference understates the IDM delta by the unserved DAM volume,
+                # so the chart's demand/supply curve falls short of the volume that was
+                # actually cleared and the SMP marker no longer sits on the crossing.
+                # Mirror the engine: build the reference from the DAM PhaseResult's
+                # per-player dispatch (indexed by round-relative hour_offset, matching
+                # the round-window-sliced IDM current bids), falling back to the DAM
+                # submitted bid when no dispatch is available.
+                da_bid_by_player = {
+                    int(pid): data
+                    for pid, data in _get_latest_market_forecasts(
+                        session_id,
+                        round_num,
+                        player_id,
+                        session.mode or "isolated_per_player",
+                        round_span,
+                        market_phase="dam",
+                    ).items()
+                }
+                da_dispatch_rows = PhaseResult.query.filter_by(
+                    session_id=session_id, round_num=round_num, market_phase="dam"
+                ).all()
+                da_dispatch_by_player = {}
+                for dispatch_row in da_dispatch_rows:
+                    dispatch = dispatch_row.bid_dispatch
+                    if not isinstance(dispatch, dict):
+                        dispatch = (dispatch_row.data or {}).get("dam_bid_dispatch") if isinstance(dispatch_row.data, dict) else None
+                    if not isinstance(dispatch, dict):
+                        continue
+                    device_ref = {}
+                    player_total = {}
+                    for device_id, lots in dispatch.items():
+                        if not isinstance(lots, dict):
+                            continue
+                        device_ref[device_id] = {}
+                        for lot_name, hourly_rows in lots.items():
+                            if not isinstance(hourly_rows, list):
+                                continue
+                            lot_hour_map = {}
+                            for hourly_row in hourly_rows:
+                                if not isinstance(hourly_row, dict):
+                                    continue
+                                # Round-relative offset keeps the reference index-aligned
+                                # with the round-window-sliced IDM current bids.
+                                h = hourly_row.get("hour_offset")
+                                if h is None:
+                                    h = hourly_row.get("hour_idx", hourly_row.get("scenario_hour_idx", 0))
+                                h = int(h)
+                                mw = float(hourly_row.get("mw_dispatched", 0.0) or 0.0)
+                                lot_hour_map[h] = lot_hour_map.get(h, 0.0) + mw
+                                player_total[h] = player_total.get(h, 0.0) + mw
+                            if lot_hour_map:
+                                max_h = max(lot_hour_map.keys())
+                                device_ref[device_id][lot_name] = {
+                                    "hours": [lot_hour_map.get(i, 0.0) for i in range(max_h + 1)]
+                                }
+                    total_hours = []
+                    if player_total:
+                        max_h = max(player_total.keys())
+                        total_hours = [player_total.get(i, 0.0) for i in range(max_h + 1)]
+                    da_dispatch_by_player[int(dispatch_row.player_id)] = {
+                        "hours": total_hours,
+                        "bids": device_ref,
                     }
+                # Prefer the dispatched reference; fall back to the submitted DAM bid.
+                for pid in set(da_bid_by_player) | set(da_dispatch_by_player):
+                    da_by_player[pid] = da_dispatch_by_player.get(pid) or da_bid_by_player.get(pid)
+            else:
+                da_baseline_rows = (
+                    Forecast.query
+                    .filter_by(session_id=session_id, is_da_baseline=True)
+                    .order_by(Forecast.player_id.asc(), Forecast.submitted_at.desc(), Forecast.id.desc())
+                    .all()
+                )
+                for row in da_baseline_rows:
+                    if row.player_id not in da_by_player:
+                        da_by_player[int(row.player_id)] = {
+                            'hours': (row.data or {}).get('hours', []) if isinstance(row.data, dict) else [],
+                            'bids': row.bids or {},
+                        }
             for pid, forecast_data in list(player_forecasts.items()):
                 da_data = da_by_player.get(int(pid), {})
                 da_hours_full = da_data.get('hours', [])
@@ -1278,7 +1453,12 @@ class MarketStructureAPI(Resource):
                         da_lot_hours_full = da_lot.get('hours', []) if isinstance(da_lot, dict) else []
                         delta_lot_hours = []
                         for j in range(len(current_lot_hours)):
-                            da_h = float(da_lot_hours_full[round_start + j]) if (round_start + j) < len(da_lot_hours_full) else 0.0
+                            if da_ref_round_local:
+                                # DAM-phase bids went through the same round-window
+                                # slicing as the IDM current bids: align index directly.
+                                da_h = float(da_lot_hours_full[j]) if j < len(da_lot_hours_full) else 0.0
+                            else:
+                                da_h = float(da_lot_hours_full[round_start + j]) if (round_start + j) < len(da_lot_hours_full) else 0.0
                             delta_lot_hours.append(float(current_lot_hours[j]) - da_h)
                         delta_bids[device_id][lot_name] = {**lot, 'hours': delta_lot_hours}
 
@@ -1314,7 +1494,7 @@ class MarketStructureAPI(Resource):
             supply, supply_bids = build_supply_from_bids(
                 player_forecasts,
                 local_hour_idx,
-                synthetic_supply,
+                synthetic_supply_for_clearing,
                 cfg,
                 player_zone_map=player_zone_map,
             )
@@ -1334,7 +1514,7 @@ class MarketStructureAPI(Resource):
                 shared_market_capacity_scales=shared_market_capacity_scales,
                 allow_dispatch_above_capacity=allow_dispatch_above_capacity,
             )
-            supply = [tuple(item) for item in synthetic_supply]
+            supply = [tuple(item) for item in synthetic_supply_for_clearing]
             for bid in effective_supply_bids:
                 quantity = float(bid.get("effective_quantity", bid.get("quantity", 0.0)) or 0.0)
                 if quantity <= 1e-9:
@@ -1343,7 +1523,7 @@ class MarketStructureAPI(Resource):
             supply = sorted(supply, key=lambda item: item[0])
             supply_bids = effective_supply_bids
         else:
-            supply, demand = synthetic_supply, synthetic_demand_for_clearing
+            supply, demand = synthetic_supply_for_clearing, synthetic_demand_for_clearing
             supply_bids = []
             demand_bids = []
         
@@ -1370,6 +1550,15 @@ class MarketStructureAPI(Resource):
                 for zone_idx in range(min(configured_zones, len(split_carryover))):
                     zone_demand_curves[zone_idx].extend(split_carryover[zone_idx])
                     zone_demand_curves[zone_idx] = sorted(zone_demand_curves[zone_idx], key=lambda item: item[0], reverse=True)
+            if carried_synthetic_supply_curve_by_zone:
+                for zone_idx in range(min(configured_zones, len(carried_synthetic_supply_curve_by_zone))):
+                    zone_supply_curves[zone_idx].extend(carried_synthetic_supply_curve_by_zone[zone_idx])
+                    zone_supply_curves[zone_idx] = sorted(zone_supply_curves[zone_idx], key=lambda item: item[0])
+            elif carried_synthetic_supply_aggregate:
+                split_supply_carryover = _split_curve_by_zone(carried_synthetic_supply_aggregate, generator_zone_shares)
+                for zone_idx in range(min(configured_zones, len(split_supply_carryover))):
+                    zone_supply_curves[zone_idx].extend(split_supply_carryover[zone_idx])
+                    zone_supply_curves[zone_idx] = sorted(zone_supply_curves[zone_idx], key=lambda item: item[0])
 
             for bid in supply_bids:
                 zone_idx = max(0, min(configured_zones - 1, int(bid.get("zone_id", 1)) - 1))
@@ -1464,6 +1653,9 @@ class MarketStructureAPI(Resource):
             "submitted_players": len(player_forecasts),
             "session_mode": session.mode or "isolated_per_player",
             "synthetic_demand_carryover_mwh": round(sum(quantity for _price, quantity in carried_synthetic_demand_aggregate), 3),
+            "carryover_demand": [{"price": float(price), "volume": float(quantity)} for price, quantity in carried_synthetic_demand_aggregate],
+            "synthetic_supply_carryover_mwh": round(sum(quantity for _price, quantity in carried_synthetic_supply_aggregate), 3),
+            "carryover_supply": [{"price": float(price), "volume": float(quantity)} for price, quantity in carried_synthetic_supply_aggregate],
             "idm_forecast_change": {
                 **idm_forecast_change,
                 "selected_hour": next(
@@ -1485,6 +1677,27 @@ class ForecastAPI(Resource):
         
         # Validate forecast against device constraints if devices are defined
         session = Session.query.get(data["session_id"])
+
+        # Client-side timer auto-submits are a safety net for players who never
+        # submitted. They must NEVER overwrite a forecast the player already
+        # submitted for this round/phase. The frontend can reset the form to
+        # device defaults during a DAM->IDM phase transition, so without this
+        # guard a stray auto-submit can replace the player's intentional bid with
+        # default values (the engine picks the highest forecast id per phase).
+        if isinstance(data, dict) and data.get("auto_submit"):
+            target_phase = (session.market_phase if session and session.market_phase else "single")
+            existing = Forecast.query.filter_by(
+                session_id=data["session_id"],
+                player_id=player_id,
+                round_num=data["round_num"],
+                market_phase=target_phase,
+            ).first()
+            if existing is not None:
+                return {
+                    "status": "skipped",
+                    "reason": "forecast already submitted for this round/phase",
+                }, HTTPStatus.OK
+
         if session and session.scenario:
             config = session.scenario.config or {}
             if isinstance(data, dict):

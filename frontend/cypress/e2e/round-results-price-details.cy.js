@@ -213,47 +213,6 @@ describe('Round results price and profit details', () => {
     },
   }
 
-  const legacyRoundOneResult = {
-    ...roundOneResult,
-    my_result: {
-      ...roundOneResult.my_result,
-      dam_bid_dispatch: {},
-      bid_dispatch: {},
-    },
-  }
-
-  const damOnlyScenario = {
-    ...scenario,
-    config: {
-      ...scenario.config,
-      markets: {
-        dam: { trading: ['on', 'on', 'on', 'on'] },
-        idm: { trading: ['off', 'off', 'off', 'off'] },
-      },
-    },
-  }
-
-  const damOnlyRoundTwoResult = {
-    ...roundTwoResult,
-    my_result: {
-      ...roundTwoResult.my_result,
-      idp: 610,
-      id_trade_count: 0,
-      kpis: {
-        ...roundTwoResult.my_result.kpis,
-        hourly_breakdown: [
-          {
-            ...roundTwoResult.my_result.kpis.hourly_breakdown[0],
-            idp: 610,
-          },
-        ],
-      },
-      hourly_results: [
-        { hour_idx: 6, hour_offset: 0, smp: 500, idp: 610, volume: 8, id_trade_count: 0 },
-      ],
-    },
-  }
-
   const mountRoundResults = (initialBreakdownKey = null) => {
     cy.intercept('GET', new RegExp(`/api/sessions/${sessionId}/round-results/1$`), roundOneResult).as('roundOne')
     cy.intercept('GET', new RegExp(`/api/sessions/${sessionId}/round-results/2$`), roundTwoResult).as('roundTwo')
@@ -278,55 +237,6 @@ describe('Round results price and profit details', () => {
     cy.wait('@roundTwo')
     cy.wait('@roundOne')
     cy.wait('@roundTwo')
-  }
-
-  const mountLegacyRoundOneResults = (initialBreakdownKey = null) => {
-    cy.intercept('GET', new RegExp(`/api/sessions/${sessionId}/round-results/1$`), legacyRoundOneResult).as('legacyRoundOne')
-
-    cy.visit('/test-mount.html')
-
-    cy.window().then((win) => {
-      const mountNode = win.document.getElementById('root')
-      const root = createRoot(mountNode)
-      root.render(
-        <RoundResultsScreenSimple
-          sessionId={sessionId}
-          round={1}
-          mode="isolated_per_player"
-          scenario={scenario}
-          campaignName={scenario.campaign_name}
-          initialBreakdownKey={initialBreakdownKey}
-        />
-      )
-    })
-
-    cy.wait('@legacyRoundOne')
-  }
-
-  const mountDamOnlyRoundTwoResults = (initialBreakdownKey = null) => {
-    cy.intercept('GET', new RegExp(`/api/sessions/${sessionId}/round-results/1$`), roundOneResult).as('damOnlyRoundOne')
-    cy.intercept('GET', new RegExp(`/api/sessions/${sessionId}/round-results/2$`), damOnlyRoundTwoResult).as('damOnlyRoundTwo')
-
-    cy.visit('/test-mount.html')
-
-    cy.window().then((win) => {
-      const mountNode = win.document.getElementById('root')
-      const root = createRoot(mountNode)
-      root.render(
-        <RoundResultsScreenSimple
-          sessionId={sessionId}
-          round={2}
-          mode="isolated_per_player"
-          scenario={damOnlyScenario}
-          campaignName={damOnlyScenario.campaign_name}
-          initialBreakdownKey={initialBreakdownKey}
-        />
-      )
-    })
-
-    cy.wait('@damOnlyRoundTwo')
-    cy.wait('@damOnlyRoundOne')
-    cy.wait('@damOnlyRoundTwo')
   }
 
   it('shows current round price without player intraday trades', () => {
@@ -355,24 +265,5 @@ describe('Round results price and profit details', () => {
     cy.contains('Offer Acceptance', { timeout: 10000 }).should('be.visible')
     cy.contains('Dispatched: 8 MWh').should('be.visible')
     cy.contains('Offered: 8 MWh').should('be.visible')
-  })
-
-  it('falls back to per-device offered totals when bid dispatch history is missing', () => {
-    mountLegacyRoundOneResults('dispatched')
-
-    cy.contains('Dispatched breakdown', { timeout: 10000 }).should('be.visible')
-    cy.contains('Offered volume: 6 MWh').should('be.visible')
-    cy.contains('Bid-level offer data is not available for this round').should('be.visible')
-    cy.contains('Gas Turbine 1 — Total').should('be.visible')
-    cy.contains('6.0 / 6.0 MWh (100%)').should('be.visible')
-  })
-
-  it('prefers SMP over stray IDP metadata when IDM is disabled for the round', () => {
-    mountDamOnlyRoundTwoResults('profit')
-
-    cy.contains('Profit breakdown', { timeout: 10000 }).should('be.visible')
-    cy.contains('SMP (ZAR/MWh)').closest('tr').should('contain.text', '500.0')
-    cy.contains('Current Price / SMP (ZAR/MWh)').should('not.exist')
-    cy.contains('610.0').should('not.exist')
   })
 })

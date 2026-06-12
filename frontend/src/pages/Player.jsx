@@ -821,11 +821,40 @@ const getDeviceEffectiveLimit = (device = {}, cfg = {}, sharedMarketContext = {}
   return { limit, context: `${String(hourOfDay).padStart(2, '0')}:00` }
 }
 
-const getEffectiveDeviceMetric = (device = {}, cfg = {}, sharedMarketContext = {}) => {
+// Apply active capacity-event multipliers/additives to an effective-capacity
+// value, mirroring engine.py get_device_event_modifiers.  Only 'capacity'-type
+// events that target this device (by device id or device type) are applied.
+// activeEvents is the Player state array; executionPhase is 'dam'|'idm'|null.
+const applyCapacityEvents = (baseLimit, device = {}, activeEvents = [], executionPhase = null) => {
+  if (!Array.isArray(activeEvents) || activeEvents.length === 0) return baseLimit
+  const deviceId = String(device.id || '').toLowerCase()
+  const deviceType = String(device.type || '').toLowerCase()
+  let mult = 1.0
+  let add = 0.0
+  for (const evt of activeEvents) {
+    if (String(evt?.type || '').toLowerCase() !== 'capacity') continue
+    // Phase filter: if the event has a market_phase, only apply it when the
+    // current execution phase matches (same rule as backend select_events_for_round).
+    const evtPhase = String(evt?.market_phase || '').toLowerCase()
+    if (evtPhase && executionPhase && evtPhase !== executionPhase) continue
+    const target = String(evt?.target || 'all').toLowerCase()
+    const targetId = String(evt?.target_id || '').toLowerCase()
+    let applies = false
+    if (target === 'all') applies = true
+    else if (target === 'device') applies = targetId === deviceId || targetId === deviceType
+    if (!applies) continue
+    mult *= Number.isFinite(Number(evt.multiplier)) ? Number(evt.multiplier) : 1.0
+    add  += Number.isFinite(Number(evt.additive))   ? Number(evt.additive)   : 0.0
+  }
+  return Math.max(0, baseLimit * mult + add)
+}
+
+const getEffectiveDeviceMetric = (device = {}, cfg = {}, sharedMarketContext = {}, activeEvents = [], executionPhase = null) => {
   if (!device) return null
   const type = (device.type || '').toLowerCase()
-  const { limit, context } = getDeviceEffectiveLimit(device, cfg, sharedMarketContext)
-  if (!(limit > 0)) return null
+  const { limit: rawLimit, context } = getDeviceEffectiveLimit(device, cfg, sharedMarketContext)
+  if (!(rawLimit > 0)) return null
+  const limit = applyCapacityEvents(rawLimit, device, activeEvents, executionPhase)
   return {
     label: type.includes('load') ? 'Available demand now' : 'Available output now',
     value: limit,
@@ -1270,11 +1299,10 @@ export default function Player() {
   const [timeRemaining, setTimeRemaining] = useState(null)
   const [initialDuration, setInitialDuration] = useState(null)
   const [marketInsightsTab, setMarketInsightsTab] = useState('dam')
-  // In a two-phase round the Market Insights / overview scope must follow the active
-  // phase: during the DAM phase show Day-Ahead, during the IDM phase switch to Intraday.
+  // The Market Structure panel only exposes the Day-Ahead scope, so the insights
+  // tab is pinned to 'dam' regardless of the active two-phase market phase.
   useEffect(() => {
-    if (marketPhase === 'dam') setMarketInsightsTab('dam')
-    else if (marketPhase === 'idm') setMarketInsightsTab('idm')
+    setMarketInsightsTab('dam')
   }, [marketPhase])
   const [mode, setMode] = useState('isolated_per_player')
   const [typeDialogOpen, setTypeDialogOpen] = useState(false)
@@ -1721,6 +1749,7 @@ export default function Player() {
           scenario_id: sessionData.scenario_id,
           campaign_name: data.campaign_name,  // Explicitly set campaign name from briefing
           campaign_id: data.campaign_id,
+          allowed_player_types: data.player_types || [],  // expose for DeviceDeepDiveTabs filtering
           config: {
             general: data.general,
             grid: data.grid || {},
@@ -2097,6 +2126,13 @@ export default function Player() {
     s.on('dam_phase_cleared', async (p) => {
       if (Number(p?.session_id) !== Number(sessionId)) return
       setMarketPhase('idm')
+      // Reset the timer to null BEFORE resetting submitted/autoSubmitRef.
+      // If the player already submitted IDM manually (or the DAM timer expired with
+      // timeRemaining=0), resetting submitted without clearing timeRemaining would
+      // cause the auto-submit effect to fire immediately with stale data, overwriting
+      // the player's intentional IDM submission.
+      setTimeRemaining(null)
+      try { sessionStorage.removeItem(`emsg_timer_${sessionId}`) } catch (_) {}
       const kpis = p?.kpis || {}
       setDamPhaseFeedback({
         round: Number(p?.round || 0),
@@ -2106,7 +2142,11 @@ export default function Player() {
         profit_zar: kpis.profit_zar ?? null,
       })
       setSubmitted(false)
-      autoSubmitRef.current = false
+      // Do NOT reset autoSubmitRef here. If the player already submitted DAM manually,
+      // autoSubmitRef is true and must stay true until the IDM round_start resets it.
+      // Resetting it here (while timeRemaining may still be 0 from the DAM timer)
+      // would allow the auto-submit effect to fire a spurious IDM forecast.
+      // The IDM round_start event resets autoSubmitRef when the IDM phase properly begins.
       // Reload the DA baseline so the IDM phase shows the intra-round DAM position.
       try {
         const baselineRes = await api.get(`/api/player/da-baseline/${sessionId}`)
@@ -2128,6 +2168,12 @@ export default function Player() {
       } catch (err) {
         console.error('Failed to reload DA baseline on dam_phase_cleared:', err)
       }
+      // NOTE: activeEvents is NOT re-fetched here. round_start already pre-populated
+      // both DAM- and IDM-phase events for this round, and nothing clears activeEvents
+      // between the DAM and IDM phases (there is no round_start in between). Flipping
+      // marketPhase to 'idm' (above) is therefore enough for visibleEvents to switch the
+      // blue event card to the IDM-phase variant — no extra /briefing call per player,
+      // which keeps the phase transition O(1) for ~100 concurrent players.
     })
 
     s.on('market_cleared', (p) => {
@@ -2177,7 +2223,7 @@ export default function Player() {
       if (p && Number(p.session_id) === Number(sessionId)) {
         // Add new event to active events list
         const event = {
-          id: p.event_id || `event-${Date.now()}`,
+          id: p.id || p.event_id || `event-${Date.now()}`,
           type: p.type,
           name: p.name,
           description: p.description,
@@ -2185,6 +2231,8 @@ export default function Player() {
           additive: p.additive,
           duration_rounds: p.duration_rounds,
           target: p.target,
+          target_id: p.target_id,
+          market_phase: p.market_phase,
           round: p.round
         }
         setActiveEvents((prev) => {
@@ -2297,7 +2345,7 @@ export default function Player() {
       }
     })
     sLegacy.on('event_triggered', (p)=>{ if (p && Number(p.session_id)===Number(sessionId)){
-      const event = { id: p.event_id||`event-${Date.now()}`, type:p.type, name:p.name, description:p.description, multiplier:p.multiplier, additive:p.additive, duration_rounds:p.duration_rounds, target:p.target, round:p.round }
+      const event = { id: p.id||p.event_id||`event-${Date.now()}`, type:p.type, name:p.name, description:p.description, multiplier:p.multiplier, additive:p.additive, duration_rounds:p.duration_rounds, target:p.target, target_id:p.target_id, market_phase:p.market_phase, round:p.round }
       setActiveEvents(prev=> prev.some(e=>e.id===event.id)? prev : [...prev, event])
     }})
     sLegacy.on('trainer_message', (p)=>{ if (p && Number(p.session_id)===Number(sessionId)) showSnack(`Trainer: ${p.message}`, 'info') })
@@ -2940,14 +2988,21 @@ export default function Player() {
     if (submitted) return
     if (autoSubmitRef.current) return
     if (allowedTypes.length > 0 && !selectedType) return
+    // In two-phase rounds the DAM timer expiring does NOT mean the full round is
+    // over — the IDM phase is still coming.  Firing auto-submit here would create a
+    // spurious DAM-phase forecast that could overwrite the player's intentional DAM
+    // bid once the IDM phase opens and reloads the baseline data.
+    // The IDM phase auto-submit will fire naturally once the IDM timer runs down.
+    if (marketPhase === 'dam') return
 
     autoSubmitRef.current = true
     showSnack('Time is up. Auto-submitting your latest forecast.', 'info')
-    // Skip overcapacity confirmation on automatic submit
-    submitCurrent(true)
+    // Skip overcapacity confirmation on automatic submit; flag as auto-submit so
+    // the backend will not overwrite an existing manual submission for this phase.
+    submitCurrent(true, true)
     setStatus((prev) => (prev === 'running' || prev === 'round_active') ? 'round_closing' : prev)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeRemaining, status, submitted, sessionId, allowedTypes.length, selectedType, showSnack])
+  }, [timeRemaining, status, submitted, sessionId, allowedTypes.length, selectedType, marketPhase, showSnack])
 
   // Restore remaining time from storage on reload to avoid reset
   useEffect(()=>{
@@ -2976,7 +3031,7 @@ export default function Player() {
 
     const pollStatus = async () => {
       try {
-        const { data } = await api.get(`/api/sessions/${sessionId}`)
+        const { data } = await api.get(`/api/sessions/${sessionId}`, { _silent: true })
         if (cancelled) return
 
         const nextStatus = data?.status
@@ -3006,7 +3061,7 @@ export default function Player() {
 
     console.log(`[Player] Starting status polling for session ${sessionId} in status ${status}`)
     pollStatus()
-    const interval = setInterval(pollStatus, 2000)
+    const interval = setInterval(pollStatus, 5000)
     return () => {
       console.log(`[Player] Stopping status polling`)
       cancelled = true
@@ -3444,7 +3499,7 @@ export default function Player() {
     })
   }
 
-  const submitCurrent = async (skipCapacityWarnings = false) => {
+  const submitCurrent = async (skipCapacityWarnings = false, isAutoSubmit = false) => {
     const r = Number(cfg.current_round || 1)
     const span = Number(cfg.general.round_span_hours || 6)
     const start = (r - 1) * span
@@ -3495,13 +3550,17 @@ export default function Player() {
     }
     
     // Proceed with submission
-    await doSubmit(slice, r)
+    await doSubmit(slice, r, isAutoSubmit)
   }
   
-  const doSubmit = async (slice, r) => {
+  const doSubmit = async (slice, r, isAutoSubmit = false) => {
     try {
       setIsSubmitting(true)
       const payload = { session_id: Number(sessionId), round_num: r, hours: slice }
+      // Flag client-side timer auto-submits so the backend treats them as a
+      // create-only-if-absent safety net and never lets them overwrite a
+      // forecast the player already submitted for this round/phase.
+      if (isAutoSubmit) payload.auto_submit = true
       if(allowedTypes.length>0 && selectedType && typeDevices.length>0){
         const span = Number(cfg.general.round_span_hours || 6)
         const start = (r - 1) * span
@@ -3531,6 +3590,11 @@ export default function Player() {
       await api.post('/api/player/forecast', payload)
       showSnack(`Round ${r} submitted successfully!`, 'success')
       setSubmitted(true)
+      // Mark as submitted so the auto-submit effect cannot fire even if `submitted`
+      // state is reset during a two-phase DAM→IDM transition (dam_phase_cleared resets
+      // submitted to false for the IDM phase, but autoSubmitRef must stay true until
+      // the IDM round_start explicitly resets it for the new phase).
+      autoSubmitRef.current = true
       if (timeRemaining === 0) {
         setStatus((prev) => (prev === 'running' || prev === 'round_active') ? 'round_closing' : prev)
       }
@@ -3660,10 +3724,35 @@ export default function Player() {
     showSnack('Capacity filled automatically', 'success')
   }
 
-  // Visible events (exclude task events as they are shown in taskItems)
+  // Visible events (exclude task events as they are shown in taskItems).
+  // Device-targeted hints (e.g. PV/wind availability "weather" notices) must only
+  // reach players who actually own that device — a coal/consumer player should not
+  // see the PV/wind availability hints. Non-device events keep their prior scope.
+  // Phase filter: same rule as taskEvents — hide events authored for the other
+  // phase (e.g. the IDM capacity reduction must not appear during the DAM phase).
   const visibleEvents = activeEvents
     .filter(e => e.type !== 'task')
     .filter(e => isEventActive(e, Number(cfg.current_round || 1)))
+    .filter((e) => {
+      // Phase filter (mirrors taskEvents filter and backend select_events_for_round)
+      if (!marketPhase) return true
+      const evtPhase = String(e.market_phase || e.phase || '').toLowerCase()
+      if (evtPhase !== 'dam' && evtPhase !== 'idm') return true
+      return evtPhase === marketPhase
+    })
+    .filter((e) => {
+      const target = String(e?.target || 'all').toLowerCase()
+      const targetId = String(e?.target_id || '').toLowerCase()
+      if (target !== 'device' || !targetId) return true
+      const ownedIds = (selectedType && Array.isArray(typeDevices) && typeDevices.length > 0)
+        ? typeDevices
+        : (Array.isArray(scenarioDevices) ? scenarioDevices.map(d => d.id) : [])
+      return ownedIds.some((did) => {
+        if (String(did).toLowerCase() === targetId) return true
+        const dev = (scenarioDevices || []).find(d => d.id === did)
+        return String(dev?.type || '').toLowerCase() === targetId
+      })
+    })
   const playerRole = useMemo(() => {
     if (!selectedType || !Array.isArray(playerTypes) || playerTypes.length === 0) return null
     const type = playerTypes.find(pt => pt.id === selectedType)
@@ -3998,10 +4087,10 @@ export default function Player() {
   const effectiveDeviceMetrics = useMemo(() => {
     const byId = {}
     ;(scenarioDevices || []).forEach((device) => {
-      byId[device.id] = getEffectiveDeviceMetric(device, cfg, sharedMarketContext)
+      byId[device.id] = getEffectiveDeviceMetric(device, cfg, sharedMarketContext, activeEvents, marketPhase)
     })
     return byId
-  }, [scenarioDevices, cfg, sharedMarketContext])
+  }, [scenarioDevices, cfg, sharedMarketContext, activeEvents, marketPhase])
 
   if (loading) {
     return (
@@ -5364,7 +5453,6 @@ export default function Player() {
                   sx={{ mb: 1 }}
                 >
                   <Tab value="dam" label="Day-Ahead" />
-                  <Tab value="idm" label="Intraday" disabled={marketPhase === 'dam'} />
                 </Tabs>
 
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>

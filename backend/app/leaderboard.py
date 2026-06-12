@@ -115,9 +115,15 @@ class LeaderboardMarketBreakdown(Resource):
                     mcp_count += 1
         avg_mcp = avg_mcp / mcp_count if mcp_count > 0 else 450.0  # Default SMP
         
+        # Batch-load user emails for all players in the breakdown loop.
+        breakdown_player_ids = list(set(list(da_baseline.keys()) + list(final_position.keys())))
+        _breakdown_users = {
+            u.id: u for u in db.session.query(User).filter(User.id.in_(breakdown_player_ids)).all()
+        } if breakdown_player_ids else {}
+
         # Compute market breakdown per player
         breakdown = []
-        for pid in set(list(da_baseline.keys()) + list(final_position.keys())):
+        for pid in breakdown_player_ids:
             da_devices = da_baseline.get(pid, {})
             final_devices = final_position.get(pid, {})
             
@@ -150,8 +156,8 @@ class LeaderboardMarketBreakdown(Resource):
             id_revenue_zar = id_delta_mwh * avg_mcp
             total_revenue_zar = final_volume_mwh * avg_mcp
             
-            # Get user email
-            user = db.session.query(User).filter(User.id == pid).first()
+            # Get user email (from pre-loaded batch map)
+            user = _breakdown_users.get(pid)
             email = user.email if user else f"Player {pid}"
             
             breakdown.append({

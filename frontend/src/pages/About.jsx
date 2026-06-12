@@ -1,269 +1,181 @@
 import React from 'react'
-import { Container, Typography, Paper, Grid, Box, Button, Stack, Divider } from '@mui/material'
-import { GitHub as GitHubIcon, Info as InfoIcon, Email as EmailIcon, MenuBook as DocsIcon, School as TrainerIcon } from '@mui/icons-material'
+import { Container, Typography, Paper, Grid, Box, Divider, List, ListItem, ListItemIcon, ListItemText } from '@mui/material'
+import CircleIcon from '@mui/icons-material/Circle'
 import { alpha, useTheme } from '@mui/material/styles'
-import { useNavigate } from 'react-router-dom'
 
 export default function About() {
-  const navigate = useNavigate()
   const theme = useTheme()
   const isDark = theme.palette.mode === 'dark'
   const infoSurface = isDark ? alpha(theme.palette.info.main, 0.18) : '#e3f2fd'
   const successSurface = isDark ? alpha(theme.palette.success.main, 0.16) : '#e8f5e9'
-  const warnSurface = isDark ? alpha(theme.palette.warning.main, 0.16) : '#fff3e0'
   const accentLinkColor = isDark ? theme.palette.primary.light : theme.palette.primary.main
-  const highlightPillBg = isDark ? alpha(theme.palette.success.main, 0.35) : '#76ff03'
-  const highlightPillColor = isDark ? theme.palette.success.contrastText : '#000'
-  const githubBtnBg = isDark ? theme.palette.warning.main : '#ffd700'
-  const githubBtnHover = isDark ? theme.palette.warning.dark : '#ffed4e'
-  const githubBtnText = isDark ? theme.palette.getContrastText(theme.palette.warning.main) : '#000'
+
+  const bulletItems = (items) => (
+    <List dense disablePadding>
+      {items.map((item, i) => (
+        <ListItem key={i} sx={{ py: 0.25, alignItems: 'flex-start' }}>
+          <ListItemIcon sx={{ minWidth: 24, mt: '6px' }}>
+            <CircleIcon sx={{ fontSize: 7, color: 'text.secondary' }} />
+          </ListItemIcon>
+          <ListItemText primary={item} primaryTypographyProps={{ variant: 'body2' }} />
+        </ListItem>
+      ))}
+    </List>
+  )
 
   return (
-    <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-      <Typography variant="h4" gutterBottom sx={{ mb: 1, fontWeight: 600 }}>
-        About EMSG (Electricity Market Simulation Game)
+    <Container maxWidth="md" sx={{ mt: 4, mb: 6 }}>
+      <Typography variant="h4" gutterBottom sx={{ mb: 1, fontWeight: 700 }}>
+        About the Electricity Market Simulation Game (EMSG)
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 4 }}>
+      <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
         An interactive tool for understanding electricity markets
       </Typography>
 
-      {/* Welcome Section */}
-      <Paper 
-        sx={{ 
-          p: 4, 
-          mb: 4,
-          bgcolor: infoSurface,
-          borderRadius: 2,
-          textAlign: 'center'
-        }}
-      >
+      {/* Welcome Banner */}
+      <Paper sx={{ p: 4, mb: 4, bgcolor: infoSurface, borderRadius: 2, textAlign: 'center' }}>
         <Typography variant="h5" gutterBottom sx={{ fontWeight: 600 }}>
           Welcome to the EMSG!
         </Typography>
         <Typography variant="h6" sx={{ opacity: 0.9 }}>
-          Are you ready to trade electricity in the South African market?
+          Are you ready to trade electricity in the market?
         </Typography>
       </Paper>
 
-      <Grid container spacing={3} sx={{ mb: 4 }}>
-        {/* Open Source Section */}
-        <Grid item xs={12} md={6}>
-          <Paper 
-            sx={{ 
-              p: 3, 
-              height: '100%',
-              bgcolor: infoSurface,
-              borderRadius: 2
-            }}
-          >
-            <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-              Open Source
-            </Typography>
-            <Typography variant="body2" paragraph>
-              EMSG is a free and open-source tool. The source code is openly published for use and modification on GitHub.
-            </Typography>
-            <Button
-              variant="contained"
-              startIcon={<GitHubIcon />}
-              href="https://github.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              sx={{ mt: 2, bgcolor: githubBtnBg, color: githubBtnText, '&:hover': { bgcolor: githubBtnHover } }}
-            >
-              Click here to access GitHub
-            </Button>
-            <Typography 
-              variant="caption" 
-              sx={{ 
-                display: 'block', 
-                mt: 1, 
-                bgcolor: githubBtnBg, 
-                color: githubBtnText,
-                px: 1,
-                py: 0.5,
-                borderRadius: 1,
-                width: 'fit-content'
-              }}
-            >
-              Code uploaded
-            </Typography>
-          </Paper>
-        </Grid>
-
-        {/* About EMSG Section */}
-        <Grid item xs={12} md={6}>
-          <Paper 
-            sx={{ 
-              p: 3, 
-              height: '100%',
-              bgcolor: successSurface,
-              borderRadius: 2
-            }}
-          >
-            <Box
-              sx={{
-                bgcolor: highlightPillBg,
-                color: highlightPillColor,
-                px: 2,
-                py: 0.5,
-                borderRadius: 1,
-                display: 'inline-block',
-                mb: 2,
-                fontWeight: 600
-              }}
-            >
-              About EMSG
-            </Box>
-            <Typography variant="body2" paragraph>
-              EMSG's web interface and content was developed jointly by Fastbreak.One, GIZ, NTCSA and PFL.
-            </Typography>
-            <Button
-              variant="outlined"
-              startIcon={<InfoIcon />}
-              onClick={() => navigate('/about/details')}
-              sx={{ mt: 2 }}
-            >
-              Click here to learn more
-            </Button>
-          </Paper>
-        </Grid>
-      </Grid>
-
-      {/* Learn More Section */}
+      {/* Introduction */}
       <Paper sx={{ p: 4, mb: 4 }}>
-        <Typography variant="h5" gutterBottom sx={{ fontWeight: 600, mb: 3 }}>
-          Learn more about the EMSG
+        <Typography variant="body1" paragraph sx={{ lineHeight: 1.8 }}>
+          The Electricity Market Simulation Game (EMSG) is an interactive, web-based learning tool designed
+          to help participants understand how competitive electricity markets operate in practice. Through a
+          realistic market simulation, players take on the role of electricity market participants and make
+          decisions under conditions similar to those faced by generators, traders, utilities, system
+          operators and large electricity consumers.
         </Typography>
-        <Grid container spacing={2}>
-          <Grid item xs={12} sm={4}>
-            <Button
-              variant="outlined"
-              fullWidth
-              size="large"
-              startIcon={<DocsIcon />}
-              onClick={() => navigate('/docs/player')}
-              sx={{ py: 2 }}
-            >
-              Documentation
-            </Button>
-          </Grid>
-          <Grid item xs={12} sm={4}>
-            <Button
-              variant="outlined"
-              fullWidth
-              size="large"
-              startIcon={<TrainerIcon />}
-              onClick={() => navigate('/about/details')}
-              sx={{ py: 2 }}
-            >
-              How it works
-            </Button>
-          </Grid>
-          <Grid item xs={12} sm={4}>
-            <Button
-              variant="outlined"
-              fullWidth
-              size="large"
-              startIcon={<InfoIcon />}
-              onClick={() => navigate('/about/details')}
-              sx={{ py: 2 }}
-            >
-              Project Background
-            </Button>
-          </Grid>
-        </Grid>
+        <Typography variant="body1" sx={{ lineHeight: 1.8 }}>
+          Rather than learning market concepts through theory alone, participants experience first-hand how
+          electricity is bought and sold, how prices are formed, and how market participants respond to
+          uncertainty and changing system conditions.
+        </Typography>
       </Paper>
 
-      {/* Feedback Section */}
-      <Paper sx={{ p: 4, mb: 4, bgcolor: warnSurface, border: '1px solid', borderColor: 'divider' }}>
-        <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-          Do you have questions or feedback?
+      {/* How it works */}
+      <Paper sx={{ p: 4, mb: 4, bgcolor: successSurface, borderRadius: 2 }}>
+        <Typography variant="h5" gutterBottom sx={{ fontWeight: 600, mb: 2 }}>
+          How the EMSG works
         </Typography>
         <Typography variant="body2" paragraph>
-          We'd love to hear from you! Please share your thoughts, questions, or suggestions.
+          During the simulation, participants:
         </Typography>
-        <Button
-          variant="contained"
-          startIcon={<EmailIcon />}
-          href="mailto:info@example.com"
-          sx={{ mt: 1 }}
-        >
-          Contact Us
-        </Button>
+        {bulletItems([
+          'Submit bids and offers into the Day-Ahead Market',
+          'Adjust their positions in the Intraday Market',
+          'Respond to changing market conditions and unforeseen events',
+          'Manage generation outages, weather impacts and forecast deviations',
+          'Balance commercial objectives with operational constraints',
+          'Minimise imbalance costs while maximising financial performance',
+        ])}
+        <Typography variant="body2" sx={{ mt: 2 }}>
+          Each decision influences market outcomes, allowing participants to observe how individual actions
+          collectively shape electricity prices, system balancing requirements and market efficiency.
+        </Typography>
       </Paper>
 
-      {/* Acknowledgements */}
-      <Paper sx={{ p: 4, borderTop: 3, borderColor: 'primary.main' }}>
-        <Typography variant="body1" paragraph sx={{ lineHeight: 1.8 }}>
-          The <strong>Electricity Market Simulation Game (EMSG)</strong> is an interactive tool that enables 
-          participants to act as electricity market players, forecast generation and demand, trade in Day-Ahead 
-          and Intraday markets, and respond to unexpected events. It builds practical understanding of price 
-          formation, market coupling, and the dynamics of modern power markets.
+      {/* Learning Objectives */}
+      <Paper sx={{ p: 4, mb: 4 }}>
+        <Typography variant="h5" gutterBottom sx={{ fontWeight: 600, mb: 2 }}>
+          Learning Objectives
+        </Typography>
+        <Typography variant="body2" paragraph>
+          The EMSG provides a practical introduction to key concepts of electricity markets, including:
+        </Typography>
+        {bulletItems([
+          'Electricity market design and operation',
+          'Price formation and market signals',
+          'Day-Ahead and Intraday trading',
+          'Balancing and settlement mechanisms',
+          'Risk management and trading strategies',
+          'System flexibility and security of supply',
+          'Market participant behaviour and incentives',
+        ])}
+        <Typography variant="body2" sx={{ mt: 2 }}>
+          The simulation is particularly valuable for professionals working in electricity regulation,
+          system operation, market operation, policy-making, utility management, academia and the broader
+          energy sector.
+        </Typography>
+      </Paper>
+
+      {/* South Africa context */}
+      <Paper sx={{ p: 4, mb: 4 }}>
+        <Typography variant="h5" gutterBottom sx={{ fontWeight: 600, mb: 2 }}>
+          Supporting South Africa's Energy Transition
         </Typography>
         <Typography variant="body1" paragraph sx={{ lineHeight: 1.8 }}>
-          Developed in 2025 by{' '}
+          South Africa is undergoing a significant transformation of its electricity sector, including the
+          establishment of a competitive electricity market. The EMSG was developed to support capacity
+          development and stakeholder preparedness for this transition by providing an accessible and
+          engaging environment in which participants can explore market mechanisms and understand their
+          practical implications.
+        </Typography>
+        <Typography variant="body1" sx={{ lineHeight: 1.8 }}>
+          By combining experiential learning with realistic market scenarios, the simulation helps bridge
+          the gap between market theory and real-world application.
+        </Typography>
+      </Paper>
+
+      {/* Development & Partners */}
+      <Paper sx={{ p: 4, borderTop: 3, borderColor: 'primary.main' }}>
+        <Typography variant="h5" gutterBottom sx={{ fontWeight: 600, mb: 2 }}>
+          Development and Partners
+        </Typography>
+        <Typography variant="body1" paragraph sx={{ lineHeight: 1.8 }}>
+          The EMSG was developed in 2025 by{' '}
           <a href="https://fastbreak.one" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
             Fastbreak.One
           </a>{' '}
           under the{' '}
-          <a href="https://www.giz.de/en/worldwide/86454.html" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
-            South African-German Energy Programme (SAGEN)
+          <a href="https://www.sagen.org.za" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
+            South African-German Energy Programme (SAGEN) | Capacities for the Energy Transition
           </a>{' '}
-          of{' '}
-          <a href="https://www.giz.de" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
-            GIZ
-          </a>
-          , funded by{' '}
-          <a href="https://www.bmz.de" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
-            BMZ
-          </a>
-          , in collaboration with{' '}
+          and in close collaboration with the{' '}
           <a href="https://www.ntcsa.co.za" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
-            NTCSA
+            National Transmission Company South Africa (NTCSA)
           </a>{' '}
           and the{' '}
           <a href="https://www.gsb.uct.ac.za/power-futures-lab" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
             Power Futures Lab (PFL)
           </a>{' '}
-          at UCT Graduate School of Business.
+          at the University of Cape Town Graduate School of Business.
+        </Typography>
+        <Typography variant="body1" paragraph sx={{ lineHeight: 1.8 }}>
+          SAGEN is implemented by{' '}
+          <a href="https://www.giz.de" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
+            Deutsche Gesellschaft für Internationale Zusammenarbeit (GIZ) GmbH
+          </a>{' '}
+          on behalf of the{' '}
+          <a href="https://www.bmz.de" target="_blank" rel="noopener noreferrer" style={{ color: accentLinkColor }}>
+            Federal Ministry for Economic Development and Cooperation (BMZ)
+          </a>.
+        </Typography>
+        <Typography variant="body1" sx={{ lineHeight: 1.8 }}>
+          The EMSG forms part of broader efforts to strengthen technical, regulatory and institutional
+          capacities required for South Africa's evolving electricity market landscape.
         </Typography>
 
-        <Divider sx={{ my: 3 }} />
+        <Divider sx={{ my: 4 }} />
 
-        {/* Logos */}
-        <Typography variant="h6" gutterBottom sx={{ fontWeight: 600, mb: 2 }}>
-          Partners
-        </Typography>
-        <Grid container spacing={3} alignItems="center" justifyContent="center">
-          <Grid item>
-            <Box sx={{ p: 2, textAlign: 'center' }}>
-              <Typography variant="caption" sx={{ fontWeight: 600 }}>GIZ</Typography>
-            </Box>
+        {/* Partner logos */}
+        <Grid container spacing={4} alignItems="center" justifyContent="center">
+          <Grid item xs={12} sm={4} sx={{ textAlign: 'center' }}>
+            <Typography variant="overline" display="block" color="text.secondary" gutterBottom>Funded by</Typography>
+            <Box component="img" src="/logos/bmz.png" alt="BMZ" sx={{ maxHeight: 60, maxWidth: '100%', objectFit: 'contain' }} />
           </Grid>
-          <Grid item>
-            <Box sx={{ p: 2, textAlign: 'center' }}>
-              <Typography variant="caption" sx={{ fontWeight: 600 }}>BMZ</Typography>
-            </Box>
+          <Grid item xs={12} sm={4} sx={{ textAlign: 'center' }}>
+            <Typography variant="overline" display="block" color="text.secondary" gutterBottom>Implemented by</Typography>
+            <Box component="img" src="/logos/sa-german-cooperation.png" alt="South African-German Cooperation / GIZ" sx={{ maxHeight: 60, maxWidth: '100%', objectFit: 'contain' }} />
           </Grid>
-          <Grid item>
-            <Box sx={{ p: 2, textAlign: 'center' }}>
-              <Typography variant="caption" sx={{ fontWeight: 600 }}>SAGEN</Typography>
-            </Box>
-          </Grid>
-          <Grid item>
-            <Box sx={{ p: 2, textAlign: 'center' }}>
-              <Typography variant="caption" sx={{ fontWeight: 600 }}>NTCSA</Typography>
-            </Box>
-          </Grid>
-          <Grid item>
-            <Box sx={{ p: 2, textAlign: 'center' }}>
-              <Typography variant="caption" sx={{ fontWeight: 600 }}>PFL</Typography>
-            </Box>
-          </Grid>
-          <Grid item>
-            <Box sx={{ p: 2, textAlign: 'center' }}>
-              <Typography variant="caption" sx={{ fontWeight: 600 }}>Fastbreak.One</Typography>
-            </Box>
+          <Grid item xs={12} sm={4} sx={{ textAlign: 'center' }}>
+            <Typography variant="overline" display="block" color="text.secondary" gutterBottom>Programme</Typography>
+            <Box component="img" src="/logos/sagen.png" alt="SAGEN" sx={{ maxHeight: 70, maxWidth: '100%', objectFit: 'contain' }} />
           </Grid>
         </Grid>
       </Paper>

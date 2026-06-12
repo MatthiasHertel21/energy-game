@@ -5,6 +5,20 @@ import math
 import random
 import hashlib
 import heapq
+import os as _os
+
+# Debug logging gate. All print(...) calls in this module are diagnostic only and
+# carry [TAG] prefixes. With ~100 players they run inside the (single eventlet
+# worker, CPU-bound) round computation and synchronous stdout writes measurably
+# extend the time the worker is blocked. They are silenced by default and can be
+# re-enabled at runtime via EMSG_DEBUG_LOG=1 without touching any calculation.
+_DEBUG_LOG = _os.getenv("EMSG_DEBUG_LOG", "").strip().lower() in ("1", "true", "yes", "on")
+_builtin_print = print
+
+
+def print(*args, **kwargs):  # noqa: A001 - intentional module-scoped debug gate
+    if _DEBUG_LOG:
+        _builtin_print(*args, **kwargs)
 
 # Import for DA baseline loading
 try:
@@ -689,6 +703,11 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
     marginal_supply_price = 0.0  # Track the last supply price that was dispatched
     marginal_demand_price = 0.0  # Track the last demand price that was dispatched
     last_flexible_price = 0.0  # Track last flexible unit price for SMP
+    ended_on_price_gap = False  # True if trading stopped because the cheapest
+                                # remaining supply is priced above the highest
+                                # remaining demand (no further trade possible).
+    gap_demand_price = 0.0      # Highest remaining (unserved) demand WTP at the
+                                # moment trading stopped on a price gap.
     
     while i < len(s) and j < len(d):
         p_s, v_s = s[i]
@@ -772,23 +791,46 @@ def clear_market(supply: List[Tuple[float, float]], demand: List[Tuple[float, fl
                     marginal_demand_price = p_d
                     if is_flexible:
                         last_flexible_price = p_s
+                    # Only this demand block is exhausted; the tied supply bids still
+                    # have leftover volume (total_tie_volume > v_d). Do NOT advance i
+                    # past them — keep i so the remaining cheap supply matches the next
+                    # demand block. Advancing here would falsely mark supply exhausted
+                    # and snap the price to the demand upper bound (price cap).
                     v_d = 0.0
                     j += 1
-                    i = k
         else:
-            # no overlap at this step; advance the cheaper side
-            i += 1
+            # No price overlap: the cheapest remaining supply is more expensive
+            # than the highest remaining demand. Because supply is sorted
+            # ascending and demand descending, no further trade is ever possible,
+            # so trading is over. Record the unserved demand WTP so the price
+            # selection below can tell oversupply (residual demand below the
+            # marginal supply price) from cheap-supply scarcity (residual demand
+            # still willing to pay at/above the marginal supply price).
+            ended_on_price_gap = True
+            gap_demand_price = p_d
+            break
 
     # Price selection from the Walrasian interval:
     # - if demand remains after all overlapping supply was used, choose the upper bound
     #   so bids strictly above SMP are always fully served
     # - otherwise choose the lower bound (classic marginal supply pricing)
-    supply_exhausted = i >= len(s)
-    demand_exhausted = j >= len(d)
+    # Determine which side is "long" at the margin to pick the equilibrium-interval edge.
     lower_bound = last_flexible_price if last_flexible_price > 0 else marginal_supply_price
     upper_bound = marginal_demand_price if marginal_demand_price > 0 else lower_bound
 
-    if prefer_demand_upper_bound and supply_exhausted and not demand_exhausted and upper_bound > 0:
+    if ended_on_price_gap:
+        # Trading stopped because no price overlap remained. If the highest
+        # unserved demand is willing to pay at least the marginal dispatched
+        # supply price, cheap supply was the scarce side (scarcity → demand WTP);
+        # otherwise the marginal generator still effectively undercut all
+        # remaining demand, so this is oversupply (→ marginal supply price).
+        demand_is_long = gap_demand_price >= marginal_supply_price - 1e-9
+    else:
+        # Loop ran to the end of a curve: demand is long only if supply ran out
+        # of volume while demand still wanted more.
+        demand_is_long = (i >= len(s)) and (j < len(d))
+
+    if prefer_demand_upper_bound and demand_is_long and upper_bound > 0:
         smp = upper_bound
     else:
         smp = lower_bound
@@ -1482,13 +1524,37 @@ def _compute_idm_synthetic_forecast_change(
     return change
 
 
+def _trim_curve_to_volume(
+    curve: List[Tuple[float, float]],
+    keep_volume_mwh: float,
+    descending: bool,
+) -> List[Tuple[float, float]]:
+    """Keep up to `keep_volume_mwh` of `curve`, preferring the high-price end when
+    `descending` (demand / WTP order) or the low-price end otherwise (supply / cost order).
+    Used to trim the marginal (least-committed) part of a curve when netting against a
+    carry-over block."""
+    keep = max(0.0, float(keep_volume_mwh or 0.0))
+    ordered = sorted(list(curve or []), key=lambda item: item[0], reverse=descending)
+    kept: List[Tuple[float, float]] = []
+    for price, quantity in ordered:
+        q = max(0.0, float(quantity or 0.0))
+        if q <= 1e-9 or keep <= 1e-9:
+            break
+        take = min(q, keep)
+        keep -= take
+        kept.append((float(price), round(take, 3)))
+    return sorted(kept, key=lambda item: item[0], reverse=descending)
+
+
 def _build_idm_synthetic_delta_curves(
     base_supply: List[Tuple[float, float]],
     base_demand: List[Tuple[float, float]],
     market_cfg: dict,
     production_change_pct: float,
     consumption_change_pct: float,
-) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]], dict]:
+    carryover_demand_curve: Optional[List[Tuple[float, float]]] = None,
+    carryover_supply_curve: Optional[List[Tuple[float, float]]] = None,
+) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]], List[Tuple[float, float]], List[Tuple[float, float]], dict]:
     supply_price_factor = max(0.0, 1.0 - (_safe_market_percentage(market_cfg.get("idm_price_discount_producer_pct", 10.0), 10.0) / 100.0))
     demand_price_factor = max(0.0, 1.0 + (_safe_market_percentage(market_cfg.get("idm_price_markup_consumer_pct", 10.0), 10.0) / 100.0))
 
@@ -1497,16 +1563,58 @@ def _build_idm_synthetic_delta_curves(
 
     synthetic_supply: List[Tuple[float, float]] = []
     synthetic_demand: List[Tuple[float, float]] = []
+    # Carry-over of unserved (never-cleared) synthetic DEMAND from the DAM phase (undersupply
+    # leftover). Carry-over of undispatched (never-cleared) synthetic SUPPLY from the DAM
+    # phase (oversupply leftover). Any IDM forecast change that withdraws demand/supply must
+    # first reconcile against the matching carry-over block rather than fabricate an
+    # opposite-side trade — see the symmetric netting below.
+    adjusted_carryover: List[Tuple[float, float]] = sorted(
+        list(carryover_demand_curve or []), key=lambda item: item[0], reverse=True
+    )
+    adjusted_supply_carryover: List[Tuple[float, float]] = sorted(
+        list(carryover_supply_curve or []), key=lambda item: item[0]
+    )
 
     if production_ratio > 1e-9:
+        # More production: real new supply that can serve the carried-over unserved demand
+        # via clearing (a genuine trade, so it is NOT netted away here).
         synthetic_supply.extend(_build_scaled_curve(base_supply, production_ratio, supply_price_factor, descending=False))
     elif production_ratio < -1e-9:
-        synthetic_demand.extend(_build_scaled_curve(base_supply, abs(production_ratio), demand_price_factor, descending=True))
+        # Less production: a withdrawal of supply. If that supply was never dispatched (it
+        # sits in the SUPPLY carry-over / oversupply block), withdrawing it must SHRINK the
+        # carry-over — not create a phantom buy-back trade against the remaining undispatched
+        # block. Only the part of the reduction exceeding the carry-over is a real buy-back
+        # of actually-dispatched DAM supply. (Symmetric mirror of the consumption-decrease
+        # netting below.)
+        buyback = _build_scaled_curve(base_supply, abs(production_ratio), demand_price_factor, descending=True)
+        carryover_sup_vol = _curve_total_volume(adjusted_supply_carryover)
+        buyback_vol = _curve_total_volume(buyback)
+        if carryover_sup_vol > 1e-9 and buyback_vol > 1e-9:
+            net_vol = min(carryover_sup_vol, buyback_vol)
+            # Drop the marginal (highest-cost) undispatched sellers from the carry-over first.
+            adjusted_supply_carryover = _trim_curve_to_volume(adjusted_supply_carryover, carryover_sup_vol - net_vol, descending=False)
+            # Keep only the residual buy-back that exceeds the carry-over.
+            buyback = _trim_curve_to_volume(buyback, buyback_vol - net_vol, descending=True)
+        synthetic_demand.extend(buyback)
 
     if consumption_ratio > 1e-9:
         synthetic_demand.extend(_build_scaled_curve(base_demand, consumption_ratio, demand_price_factor, descending=True))
     elif consumption_ratio < -1e-9:
-        synthetic_supply.extend(_build_scaled_curve(base_demand, abs(consumption_ratio), supply_price_factor, descending=False))
+        # Less consumption: a reduction of demand. If that demand was never served (it sits
+        # in the carry-over), withdrawing it must SHRINK the carry-over — not create a
+        # phantom sell-back trade against the remaining unserved block. Only the part of the
+        # reduction exceeding the carry-over is a real sell-back of actually-dispatched DAM
+        # demand.
+        sellback = _build_scaled_curve(base_demand, abs(consumption_ratio), supply_price_factor, descending=False)
+        carryover_vol = _curve_total_volume(adjusted_carryover)
+        sellback_vol = _curve_total_volume(sellback)
+        if carryover_vol > 1e-9 and sellback_vol > 1e-9:
+            net_vol = min(carryover_vol, sellback_vol)
+            # Drop the marginal (lowest-WTP) unserved buyers from the carry-over first.
+            adjusted_carryover = _trim_curve_to_volume(adjusted_carryover, carryover_vol - net_vol, descending=True)
+            # Keep only the residual sell-back that exceeds the carry-over.
+            sellback = _trim_curve_to_volume(sellback, sellback_vol - net_vol, descending=False)
+        synthetic_supply.extend(sellback)
 
     synthetic_supply = sorted(synthetic_supply, key=lambda item: item[0])
     synthetic_demand = sorted(synthetic_demand, key=lambda item: item[0], reverse=True)
@@ -1516,13 +1624,15 @@ def _build_idm_synthetic_delta_curves(
     production_delta_mwh = baseline_supply_mwh * production_ratio
     consumption_delta_mwh = baseline_demand_mwh * consumption_ratio
 
-    return synthetic_supply, synthetic_demand, {
+    return synthetic_supply, synthetic_demand, adjusted_carryover, adjusted_supply_carryover, {
         "baseline_supply_mwh": round(baseline_supply_mwh, 3),
         "baseline_demand_mwh": round(baseline_demand_mwh, 3),
         "production_delta_mwh": round(production_delta_mwh, 3),
         "consumption_delta_mwh": round(consumption_delta_mwh, 3),
         "delta_supply_mwh": round(_curve_total_volume(synthetic_supply), 3),
         "delta_demand_mwh": round(_curve_total_volume(synthetic_demand), 3),
+        "carryover_demand_mwh": round(_curve_total_volume(adjusted_carryover), 3),
+        "carryover_supply_mwh": round(_curve_total_volume(adjusted_supply_carryover), 3),
     }
 
 
@@ -1546,6 +1656,30 @@ def _remaining_demand_curve_after_served(
             leftover.append((float(price), round(leftover_quantity, 3)))
 
     return leftover
+
+
+def _remaining_supply_curve_after_served(
+    supply_curve: List[Tuple[float, float]],
+    dispatched_volume_mwh: float,
+) -> List[Tuple[float, float]]:
+    """Return the undispatched tail of an ascending supply curve after dispatching volume at
+    its cost (merit) order. The mirror of `_remaining_demand_curve_after_served` — used to
+    derive the oversupply carry-over (synthetic supply that cleared no volume in the DAM)."""
+    remaining_to_dispatch = max(0.0, float(dispatched_volume_mwh or 0.0))
+    leftover: List[Tuple[float, float]] = []
+
+    for price, quantity in sorted(list(supply_curve or []), key=lambda item: item[0]):
+        quantity_value = max(0.0, float(quantity or 0.0))
+        if quantity_value <= 1e-9:
+            continue
+
+        dispatched_here = min(quantity_value, remaining_to_dispatch)
+        remaining_to_dispatch = max(0.0, remaining_to_dispatch - dispatched_here)
+        leftover_quantity = quantity_value - dispatched_here
+        if leftover_quantity > 1e-9:
+            leftover.append((float(price), round(leftover_quantity, 3)))
+
+    return sorted(leftover, key=lambda item: item[0])
 
 
 def _serialize_curve_steps(curve: List[Tuple[float, float]]) -> List[dict]:
@@ -1585,6 +1719,14 @@ def _merge_demand_curves(curves: List[List[Tuple[float, float]]]) -> List[Tuple[
     for curve in curves or []:
         merged.extend(curve or [])
     return sorted(merged, key=lambda item: item[0], reverse=True)
+
+
+def _merge_supply_curves(curves: List[List[Tuple[float, float]]]) -> List[Tuple[float, float]]:
+    """Mirror of `_merge_demand_curves` for supply: concatenate and sort ascending (cost/merit order)."""
+    merged: List[Tuple[float, float]] = []
+    for curve in curves or []:
+        merged.extend(curve or [])
+    return sorted(merged, key=lambda item: item[0])
 
 
 def _compute_round_idm_synthetic_forecast_change_summary(
@@ -1639,7 +1781,7 @@ def _compute_round_idm_synthetic_forecast_change_summary(
             hour_of_day=hour_of_day,
             month_of_year=month_of_year,
         )
-        synthetic_supply, synthetic_demand, delta_meta = _build_idm_synthetic_delta_curves(
+        synthetic_supply, synthetic_demand, _carryover_unused, _supply_carryover_unused, delta_meta = _build_idm_synthetic_delta_curves(
             base_supply,
             base_demand,
             market_cfg,
@@ -2530,7 +2672,7 @@ def get_device_event_modifiers(device: dict, device_type: str, events: list[dict
     return multiplier, additive
 
 
-def select_events_for_round(events: list[dict], round_num: int) -> list[dict]:
+def select_events_for_round(events: list[dict], round_num: int, execution_phase: str = "single") -> list[dict]:
     """
     Filter the configured events to those active for the given round.
     Rules:
@@ -2539,6 +2681,13 @@ def select_events_for_round(events: list[dict], round_num: int) -> list[dict]:
       - trigger_type == 'prob': deterministic activation per round using a hash of
         (round_num, event key/name). Active if hash_float < trigger_value (0..1)
       - otherwise: include (backward compatibility)
+
+    When execution_phase is 'dam' or 'idm' (two-phase rounds), events that carry a
+    market_phase field are further filtered so only the events intended for the
+    current phase are returned.  Events without a market_phase field are phase-
+    agnostic and are included in both phases (backward-compatible).
+    This mirrors the per-phase filtering that already exists for task-type events
+    on the frontend (Player.jsx taskEvents filter).
     """
     active: list[dict] = []
     for e in events or []:
@@ -2568,6 +2717,20 @@ def select_events_for_round(events: list[dict], round_num: int) -> list[dict]:
         else:
             # unknown/legacy → include
             active.append(e)
+
+    # Phase filter: only applies to two-phase execution (dam / idm).
+    # An event without a market_phase field is treated as phase-agnostic and
+    # passes through unchanged (single-phase backward compatibility is preserved).
+    phase = str(execution_phase or "single").strip().lower()
+    if phase in ("dam", "idm"):
+        result = []
+        for e in active:
+            evt_phase = str(e.get("market_phase") or "").strip().lower()
+            if evt_phase and evt_phase != phase:
+                continue  # authored for the other phase → skip
+            result.append(e)
+        return result
+
     return active
 
 
@@ -2899,18 +3062,38 @@ def _compute_interzonal_round_outputs(hourly_results: List[dict], per_player: Di
                     "losses_mwh": 0.0,
                     "congestion_rent_zar": 0.0,
                     "losses_value_zar": 0.0,
+                    "congestion_earnings_zar": 0.0,
                     "binding": False,
                     "max_utilization_pct": 0.0,
                 })
                 aggregate["flow_mwh"] += float(link_entry.get("flow_mwh", 0.0) or 0.0)
                 aggregate["flow_received_mwh"] += float(link_entry.get("flow_received_mwh", 0.0) or 0.0)
                 aggregate["losses_mwh"] += float(link_entry.get("losses_mwh", 0.0) or 0.0)
-                aggregate["congestion_rent_zar"] += float(link_entry.get("congestion_rent_zar", 0.0) or 0.0)
-                aggregate["losses_value_zar"] += float(link_entry.get("losses_value_zar", 0.0) or 0.0)
+                _hr_cr = float(link_entry.get("congestion_rent_zar", 0.0) or 0.0)
+                _hr_lv = float(link_entry.get("losses_value_zar", 0.0) or 0.0)
+                aggregate["congestion_rent_zar"] += _hr_cr
+                aggregate["losses_value_zar"] += _hr_lv
+                # Congestion earnings = (SMP_to - SMP_from) × flow_sent
+                # = congestion_rent + losses_value  (proof: cr = p_to*recv - p_from*sent
+                #   = (p_to-p_from)*sent - p_to*losses; earnings = cr + p_to*losses)
+                aggregate["congestion_earnings_zar"] += _hr_cr + _hr_lv
                 aggregate["binding"] = aggregate["binding"] or bool(link_entry.get("binding", False))
                 aggregate["max_utilization_pct"] = max(aggregate["max_utilization_pct"], float(link_entry.get("utilization_pct", 0.0) or 0.0))
                 if 1 <= from_zone <= zones:
                     zone_agg[from_zone - 1]["losses_mwh"] += float(link_entry.get("losses_mwh", 0.0) or 0.0)
+
+        # Compute average zone SMP per zone from hourly zone_prices (clearing hours only).
+        _zone_price_sum: Dict[int, float] = {idx: 0.0 for idx in range(zones)}
+        _zone_price_count: Dict[int, int] = {idx: 0 for idx in range(zones)}
+        for _hr in (hourly_results or []):
+            if not _hr.get("is_clearing_hour", True):
+                continue
+            _zp_list = list(_hr.get("zone_prices") or [])
+            for _zi in range(zones):
+                _zp = float(_zp_list[_zi] if _zi < len(_zp_list) else 0.0)
+                if _zp > 0.0:
+                    _zone_price_sum[_zi] += _zp
+                    _zone_price_count[_zi] += 1
 
         zone_results = []
         for zone_idx in range(zones):
@@ -2924,6 +3107,7 @@ def _compute_interzonal_round_outputs(hourly_results: List[dict], per_player: Di
                 status = "grid_supported_supply"
             else:
                 status = "local_supply_sufficient"
+            _cnt = _zone_price_count[zone_idx]
             zone_results.append({
                 "zone_id": zone_idx + 1,
                 "status": status,
@@ -2937,10 +3121,17 @@ def _compute_interzonal_round_outputs(hourly_results: List[dict], per_player: Di
                 "extra_cost_per_mwh_zar": round((aggregate["extra_cost_total_zar"] / demand) if demand > 1e-9 else 0.0, 2),
                 "coverage_local_pct": round(coverage_local_pct, 1),
                 "coverage_total_pct": round(coverage_total_pct, 1),
+                "avg_zone_price_zar_per_mwh": round(_zone_price_sum[zone_idx] / _cnt, 2) if _cnt > 0 else None,
             })
 
         link_results = []
         for (_from_zone, _to_zone), link_entry in sorted(link_agg.items()):
+            fz = link_entry["from_zone"] - 1  # 0-indexed for zone price lookups
+            tz = link_entry["to_zone"] - 1
+            fz_cnt = _zone_price_count.get(fz, 0)
+            tz_cnt = _zone_price_count.get(tz, 0)
+            zone_from_smp = round(_zone_price_sum[fz] / fz_cnt, 2) if fz_cnt > 0 else None
+            zone_to_smp = round(_zone_price_sum[tz] / tz_cnt, 2) if tz_cnt > 0 else None
             link_results.append({
                 "from_zone": link_entry["from_zone"],
                 "to_zone": link_entry["to_zone"],
@@ -2952,6 +3143,10 @@ def _compute_interzonal_round_outputs(hourly_results: List[dict], per_player: Di
                 "binding": bool(link_entry["binding"]),
                 "congestion_rent_zar": round(link_entry["congestion_rent_zar"], 2),
                 "losses_value_zar": round(link_entry["losses_value_zar"], 2),
+                # Congestion earnings = (SMP_to - SMP_from) × flow_sent
+                "congestion_earnings_zar": round(link_entry["congestion_earnings_zar"], 2),
+                "zone_from_smp_zar_per_mwh": zone_from_smp,
+                "zone_to_smp_zar_per_mwh": zone_to_smp,
             })
 
         zone_result_map = {entry["zone_id"]: entry for entry in zone_results}
@@ -3658,6 +3853,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     da_result_data = None
     da_hourly_results = []
     synthetic_demand_carryover_by_hour = {}
+    synthetic_supply_carryover_by_hour = {}
     
     # Day 1 Baseline: Zero or Preset modes require baseline before Round 1
     if round_num == 1 and baseline_mode in ["zero", "preset"]:
@@ -3718,6 +3914,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         da_baseline_bids = dict(intra_round_baseline.get('bids') or {})
         da_baseline_dispatch = dict(intra_round_baseline.get('dispatch') or {})
         synthetic_demand_carryover_by_hour = dict(intra_round_baseline.get('synthetic_demand_carryover_by_hour') or {})
+        synthetic_supply_carryover_by_hour = dict(intra_round_baseline.get('synthetic_supply_carryover_by_hour') or {})
         da_result_data = intra_round_baseline.get('result_data') or None
         _injected_smp = intra_round_baseline.get('smp')
         da_smp = float(_injected_smp) if _injected_smp is not None else None
@@ -3734,6 +3931,18 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 if curve or any(zone_curve for zone_curve in curve_by_zone):
                     scenario_hour_idx = int(hour_row.get('scenario_hour_idx', hour_row.get('hour_idx', 0)) or 0)
                     synthetic_demand_carryover_by_hour[scenario_hour_idx] = {
+                        'curve': curve,
+                        'curve_by_zone': curve_by_zone,
+                    }
+        if not synthetic_supply_carryover_by_hour and isinstance(da_hourly_results, list):
+            for hour_row in da_hourly_results:
+                if not isinstance(hour_row, dict):
+                    continue
+                curve = hour_row.get('unserved_synthetic_supply_curve') or []
+                curve_by_zone = hour_row.get('unserved_synthetic_supply_curve_by_zone') or []
+                if curve or any(zone_curve for zone_curve in curve_by_zone):
+                    scenario_hour_idx = int(hour_row.get('scenario_hour_idx', hour_row.get('hour_idx', 0)) or 0)
+                    synthetic_supply_carryover_by_hour[scenario_hour_idx] = {
                         'curve': curve,
                         'curve_by_zone': curve_by_zone,
                     }
@@ -4276,6 +4485,25 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             return float(da_smp or 0.0)
         return 0.0
 
+    def _effective_balancing_prices(pid, ref_hour_idx, ref_hour_offset, hour_clearing_price):
+        """Return (up_price, down_price) for imbalance settlement of a player-hour.
+
+        In smp_multiplier mode the balancing price is a percentage of the hour's
+        clearing price. In a two-phase IDM settlement the position being balanced
+        was committed at the DA price, so when the IDM hour did not clear
+        (clearing price <= 0) the multiplier must reference the DA delivery price
+        instead of the (zero) IDM price. Otherwise the imbalance penalty silently
+        collapses to zero even though the physical short/long position is real.
+        """
+        if balancing_price_mode != 'smp_multiplier':
+            return balancing_up_price, balancing_down_price
+        ref_price = float(hour_clearing_price or 0.0)
+        if ref_price <= 0.0 and emit_idm_settlement:
+            ref_price = float(_get_da_delivery_price_for_player(pid, ref_hour_idx, ref_hour_offset) or 0.0)
+        _up = max(0.0, ref_price * balancing_up_smp_pct / 100.0)
+        _down = max(0.0, ref_price * balancing_down_smp_pct / 100.0)
+        return _up, _down
+
     def _find_device_hour_row(rows, target_hour_idx, target_hour_offset):
         if not isinstance(rows, list):
             return None
@@ -4632,12 +4860,14 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
     enable_bidding = _config_uses_explicit_bids(config, normalized_forecasts)
     print(f"[HOURLY_DEBUG] Engine started: enable_bidding={enable_bidding}")
     
-    # Apply only events active for this round
-    # Two-phase rounds: events act ONLY in the IDM phase; the DAM phase is event-free.
-    if is_dam_phase:
-        round_events = []
-    else:
-        round_events = select_events_for_round(config.get("events", []), round_num)
+    # Apply only events active for this round, filtered to the current execution
+    # phase so that events carrying market_phase='dam' only fire during the DAM
+    # phase and events carrying market_phase='idm' only fire during the IDM phase.
+    # Events without a market_phase field remain phase-agnostic (backward-compat).
+    # Single-phase rounds ('single') receive all round-active events as before.
+    round_events = select_events_for_round(
+        config.get("events", []), round_num, execution_phase=execution_phase
+    )
 
     def _is_load_device(device_cfg: dict) -> bool:
         device_type = (device_cfg.get('type') or '').lower()
@@ -4897,6 +5127,40 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         )
         
         # Apply DAM baseline or IDM synthetic forecast delta
+        # Fetch the carried-over (unserved) synthetic demand AND the carried-over
+        # (undispatched) synthetic supply from the DAM phase BEFORE building the IDM delta
+        # curves, so an IDM consumption reduction nets against the unserved-demand carry-over
+        # and an IDM production reduction nets against the undispatched-supply carry-over
+        # (a withdrawal of a never-cleared position must shrink the matching carry-over, not
+        # create a phantom opposite-side trade).
+        carried_synthetic_demand_curve = []
+        carried_synthetic_demand_curve_by_zone = []
+        carryover_payload = synthetic_demand_carryover_by_hour.get(hour_idx)
+        if carryover_payload is None:
+            carryover_payload = synthetic_demand_carryover_by_hour.get(str(hour_idx))
+        if isinstance(carryover_payload, dict):
+            carried_synthetic_demand_curve = _deserialize_curve_steps(carryover_payload.get('curve') or [])
+            carried_synthetic_demand_curve_by_zone = [
+                _deserialize_curve_steps(zone_curve)
+                for zone_curve in (carryover_payload.get('curve_by_zone') or [])
+            ]
+        carried_synthetic_demand_aggregate = carried_synthetic_demand_curve or _merge_demand_curves(carried_synthetic_demand_curve_by_zone)
+        carryover_total_before = _curve_total_volume(carried_synthetic_demand_aggregate)
+
+        carried_synthetic_supply_curve = []
+        carried_synthetic_supply_curve_by_zone = []
+        supply_carryover_payload = synthetic_supply_carryover_by_hour.get(hour_idx)
+        if supply_carryover_payload is None:
+            supply_carryover_payload = synthetic_supply_carryover_by_hour.get(str(hour_idx))
+        if isinstance(supply_carryover_payload, dict):
+            carried_synthetic_supply_curve = sorted(_deserialize_curve_steps(supply_carryover_payload.get('curve') or []), key=lambda item: item[0])
+            carried_synthetic_supply_curve_by_zone = [
+                sorted(_deserialize_curve_steps(zone_curve), key=lambda item: item[0])
+                for zone_curve in (supply_carryover_payload.get('curve_by_zone') or [])
+            ]
+        carried_synthetic_supply_aggregate = carried_synthetic_supply_curve or _merge_supply_curves(carried_synthetic_supply_curve_by_zone)
+        supply_carryover_total_before = _curve_total_volume(carried_synthetic_supply_aggregate)
+
         if is_dam_clearing:
             synthetic_supply = list(base_supply)
             synthetic_demand = list(base_demand)
@@ -4909,27 +5173,39 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 "delta_demand_mwh": 0.0,
             }
         else:
-            synthetic_supply, synthetic_demand, synthetic_change_hour = _build_idm_synthetic_delta_curves(
+            synthetic_supply, synthetic_demand, carried_synthetic_demand_aggregate, carried_synthetic_supply_aggregate, synthetic_change_hour = _build_idm_synthetic_delta_curves(
                 base_supply,
                 base_demand,
                 market_cfg,
                 idm_synthetic_forecast_change.get("production_change_pct", 0.0),
                 idm_synthetic_forecast_change.get("consumption_change_pct", 0.0),
+                carryover_demand_curve=carried_synthetic_demand_aggregate,
+                carryover_supply_curve=carried_synthetic_supply_aggregate,
             )
 
-        carried_synthetic_demand_curve = []
-        carried_synthetic_demand_curve_by_zone = []
-        carryover_payload = synthetic_demand_carryover_by_hour.get(hour_idx)
-        if carryover_payload is None:
-            carryover_payload = synthetic_demand_carryover_by_hour.get(str(hour_idx))
-        if isinstance(carryover_payload, dict):
-            carried_synthetic_demand_curve = _deserialize_curve_steps(carryover_payload.get('curve') or [])
-            carried_synthetic_demand_curve_by_zone = [
-                _deserialize_curve_steps(zone_curve)
-                for zone_curve in (carryover_payload.get('curve_by_zone') or [])
-            ]
+        # If the netting above shrank a carry-over (IDM consumption reduction absorbed by
+        # never-served demand, or IDM production reduction absorbed by undispatched supply),
+        # scale the matching per-zone carry-over split by the same factor so zonal clearing
+        # stays consistent with the netted aggregate.
+        carryover_total_after = _curve_total_volume(carried_synthetic_demand_aggregate)
+        if carried_synthetic_demand_curve_by_zone and carryover_total_before > 1e-9:
+            net_factor = max(0.0, min(1.0, carryover_total_after / carryover_total_before))
+            if net_factor < 1.0 - 1e-9:
+                carried_synthetic_demand_curve_by_zone = [
+                    [(float(p), round(float(q) * net_factor, 3)) for p, q in zone_curve]
+                    for zone_curve in carried_synthetic_demand_curve_by_zone
+                ]
 
-        carried_synthetic_demand_aggregate = carried_synthetic_demand_curve or _merge_demand_curves(carried_synthetic_demand_curve_by_zone)
+        supply_carryover_total_after = _curve_total_volume(carried_synthetic_supply_aggregate)
+        if carried_synthetic_supply_curve_by_zone and supply_carryover_total_before > 1e-9:
+            supply_net_factor = max(0.0, min(1.0, supply_carryover_total_after / supply_carryover_total_before))
+            if supply_net_factor < 1.0 - 1e-9:
+                carried_synthetic_supply_curve_by_zone = [
+                    [(float(p), round(float(q) * supply_net_factor, 3)) for p, q in zone_curve]
+                    for zone_curve in carried_synthetic_supply_curve_by_zone
+                ]
+
+        carried_synthetic_demand_aggregate = carried_synthetic_demand_aggregate or _merge_demand_curves(carried_synthetic_demand_curve_by_zone)
         synthetic_demand_for_clearing = list(synthetic_demand)
         if carried_synthetic_demand_aggregate:
             synthetic_demand_for_clearing = _merge_demand_curves([
@@ -4937,11 +5213,34 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 carried_synthetic_demand_aggregate,
             ])
 
+        carried_synthetic_supply_aggregate = carried_synthetic_supply_aggregate or _merge_supply_curves(carried_synthetic_supply_curve_by_zone)
+        synthetic_supply_for_clearing = list(synthetic_supply)
+        if carried_synthetic_supply_aggregate:
+            synthetic_supply_for_clearing = _merge_supply_curves([
+                synthetic_supply_for_clearing,
+                carried_synthetic_supply_aggregate,
+            ])
+
         hour_structure["synthetic_baseline_supply_mwh"] = synthetic_change_hour["baseline_supply_mwh"]
         hour_structure["synthetic_baseline_demand_mwh"] = synthetic_change_hour["baseline_demand_mwh"]
         hour_structure["synthetic_idm_delta_supply_mwh"] = synthetic_change_hour["delta_supply_mwh"]
         hour_structure["synthetic_idm_delta_demand_mwh"] = synthetic_change_hour["delta_demand_mwh"]
         hour_structure["synthetic_demand_carryover_mwh"] = round(_curve_total_volume(carried_synthetic_demand_aggregate), 3)
+        # Persist the NETTED carry-over demand curve actually folded into IDM clearing so
+        # the historical chart can reproduce the cleared demand without re-netting against a
+        # live-recomputed forecast change (which may diverge from this settlement).
+        hour_structure["synthetic_demand_carryover_curve"] = [
+            [round(float(p), 4), round(float(q), 4)]
+            for p, q in carried_synthetic_demand_aggregate
+        ] if carried_synthetic_demand_aggregate else []
+        hour_structure["synthetic_supply_carryover_mwh"] = round(_curve_total_volume(carried_synthetic_supply_aggregate), 3)
+        # Persist the NETTED carry-over SUPPLY curve actually folded into IDM clearing (mirror
+        # of the demand carry-over above) so the historical chart can reproduce the cleared
+        # supply without re-netting against a live-recomputed forecast change.
+        hour_structure["synthetic_supply_carryover_curve"] = [
+            [round(float(p), 4), round(float(q), 4)]
+            for p, q in carried_synthetic_supply_aggregate
+        ] if carried_synthetic_supply_aggregate else []
 
         battery_market_limits = _build_battery_market_limits(config, battery_soc_state)
         
@@ -4968,7 +5267,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         supply, supply_bids = build_supply_from_bids(
             normalized_forecasts,
             hour_idx,
-            synthetic_supply,
+            synthetic_supply_for_clearing,
             config,
             round_events,
             battery_market_limits=battery_market_limits,
@@ -4998,9 +5297,9 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 fallback_tag = "DAM_FALLBACK"
 
             if allow_supply_fallback:
-                supply = synthetic_supply
+                supply = synthetic_supply_for_clearing
                 supply_fallback_used = True
-                print(f"[{fallback_tag}] Round {round_num}, hour_idx={hour_idx}: Empty player supply curve, using synthetic supply fallback ({len(synthetic_supply)} steps)")
+                print(f"[{fallback_tag}] Round {round_num}, hour_idx={hour_idx}: Empty player supply curve, using synthetic supply fallback ({len(synthetic_supply_for_clearing)} steps)")
         
         # Market clearing for this hour
         # Build supply metadata for inflexible units filter
@@ -5043,6 +5342,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
         residual_unserved_by_zone_for_hour = [0.0] * configured_zones
         hourly_link_results = []
         zone_demand_curves = []
+        zone_supply_curves = []
         if zonal_pricing_v1_enabled and configured_zones > 1:
             zone_supply_curves = _split_curve_by_zone(synthetic_supply, generator_zone_shares)
             zone_demand_curves = _split_curve_by_zone(synthetic_demand, demand_zone_shares)
@@ -5055,6 +5355,15 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 for zone_idx in range(min(configured_zones, len(split_carryover))):
                     zone_demand_curves[zone_idx].extend(split_carryover[zone_idx])
                     zone_demand_curves[zone_idx] = sorted(zone_demand_curves[zone_idx], key=lambda item: item[0], reverse=True)
+            if carried_synthetic_supply_curve_by_zone:
+                for zone_idx in range(min(configured_zones, len(carried_synthetic_supply_curve_by_zone))):
+                    zone_supply_curves[zone_idx].extend(carried_synthetic_supply_curve_by_zone[zone_idx])
+                    zone_supply_curves[zone_idx] = sorted(zone_supply_curves[zone_idx], key=lambda item: item[0])
+            elif carried_synthetic_supply_aggregate:
+                split_supply_carryover = _split_curve_by_zone(carried_synthetic_supply_aggregate, generator_zone_shares)
+                for zone_idx in range(min(configured_zones, len(split_supply_carryover))):
+                    zone_supply_curves[zone_idx].extend(split_supply_carryover[zone_idx])
+                    zone_supply_curves[zone_idx] = sorted(zone_supply_curves[zone_idx], key=lambda item: item[0])
             for bid in supply_bids:
                 zone_idx = max(0, min(configured_zones - 1, int(bid.get("zone_id", 1)) - 1))
                 zone_supply_curves[zone_idx].append((float(bid.get("price", 0.0) or 0.0), float(bid.get("quantity", 0.0) or 0.0)))
@@ -5121,6 +5430,35 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
             hour_structure["unserved_synthetic_demand_curve"] = []
             hour_structure["unserved_synthetic_demand_curve_by_zone"] = []
             hour_structure["unserved_synthetic_demand_mwh"] = 0.0
+
+        # Symmetric oversupply carry-over: when the DAM-phase supply is synthetic (no player
+        # supply bids) and demand cleared less than the offered supply, the undispatched
+        # synthetic supply is carried into the IDM phase (it still wants to sell). This is the
+        # mirror of the unserved-demand carry-over above.
+        if is_dam_phase and not supply_bids:
+            if zone_supply_curves:
+                supply_remaining_by_zone = []
+                for zone_idx in range(configured_zones):
+                    dispatched_zone_volume = float(zone_supply_volume_for_hour[zone_idx] if zone_idx < len(zone_supply_volume_for_hour) else 0.0)
+                    supply_remaining_by_zone.append(_remaining_supply_curve_after_served(
+                        zone_supply_curves[zone_idx] if zone_idx < len(zone_supply_curves) else [],
+                        dispatched_zone_volume,
+                    ))
+                supply_remaining_aggregate = _merge_supply_curves(supply_remaining_by_zone)
+                hour_structure["unserved_synthetic_supply_curve_by_zone"] = [
+                    _serialize_curve_steps(zone_curve)
+                    for zone_curve in supply_remaining_by_zone
+                ]
+            else:
+                supply_remaining_aggregate = _remaining_supply_curve_after_served(synthetic_supply_for_clearing, vol)
+                hour_structure["unserved_synthetic_supply_curve_by_zone"] = []
+
+            hour_structure["unserved_synthetic_supply_curve"] = _serialize_curve_steps(supply_remaining_aggregate)
+            hour_structure["unserved_synthetic_supply_mwh"] = round(_curve_total_volume(supply_remaining_aggregate), 3)
+        else:
+            hour_structure["unserved_synthetic_supply_curve"] = []
+            hour_structure["unserved_synthetic_supply_curve_by_zone"] = []
+            hour_structure["unserved_synthetic_supply_mwh"] = 0.0
         
         # FORENSIC: Track reconciliation data for this hour
         supply_offered_total = sum(q for _, q in supply) if supply else 0.0
@@ -5757,11 +6095,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                             total_dispatched = da_dispatched_for_device + id_dispatched_for_device
                             device_imbalance_mwh = device_actual - total_dispatched
 
-                            if balancing_price_mode == 'smp_multiplier':
-                                _eff_up = max(0.0, float(price or 0.0) * balancing_up_smp_pct / 100.0)
-                                _eff_down = max(0.0, float(price or 0.0) * balancing_down_smp_pct / 100.0)
-                            else:
-                                _eff_up, _eff_down = balancing_up_price, balancing_down_price
+                            _eff_up, _eff_down = _effective_balancing_prices(pid, hour_idx, hour_offset, price)
                             if device_imbalance_mwh > 0:
                                 device_imbalance_cost = device_imbalance_mwh * _eff_up
                             elif device_imbalance_mwh < 0:
@@ -5929,11 +6263,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         total_dispatched = da_dispatched_for_device + id_dispatched_for_device
                         device_imbalance_mwh = device_actual_with_noise - total_dispatched
 
-                        if balancing_price_mode == 'smp_multiplier':
-                            _eff_up = max(0.0, float(price or 0.0) * balancing_up_smp_pct / 100.0)
-                            _eff_down = max(0.0, float(price or 0.0) * balancing_down_smp_pct / 100.0)
-                        else:
-                            _eff_up, _eff_down = balancing_up_price, balancing_down_price
+                        _eff_up, _eff_down = _effective_balancing_prices(pid, hour_idx, hour_offset, price)
                         if device_imbalance_mwh > 0:  # Over-delivery
                             device_imbalance_cost = device_imbalance_mwh * _eff_up
                         elif device_imbalance_mwh < 0:  # Under-delivery
@@ -6179,10 +6509,14 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         # Fallback: estimate variable cost and CO2 from player-type device portfolio
                         # (used when devices are shared and have no explicit owner_id / player_id).
                         try:
-                            from .models import SessionPlayerType
-                            spt = SessionPlayerType.query.filter_by(session_id=session_id, user_id=pid).first()
-                            if spt and spt.type_id:
-                                pt_cfg = next((pt for pt in player_types_cfg if pt.get("id") == spt.type_id), None)
+                            # Use the pre-loaded player_type_by_player map (batched once at the
+                            # top of run_round) instead of issuing a per-player DB query inside
+                            # this hot loop. A DB query here would (a) be a massive N+1 over
+                            # players x hours and (b) keep a transaction open during the long
+                            # computation, risking idle_in_transaction_session_timeout.
+                            _pid_type_id = player_type_by_player.get(int(pid))
+                            if _pid_type_id:
+                                pt_cfg = next((pt for pt in player_types_cfg if pt.get("id") == _pid_type_id), None)
                                 if pt_cfg:
                                     _portfolio = [
                                         d for d in devices_cfg
@@ -6225,13 +6559,12 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         has_must_run = True
                         break
             
-            # Only calculate imbalance if volume > 0 OR player has must-run units
-            if vol > 0 or has_must_run:
-                if balancing_price_mode == 'smp_multiplier':
-                    _eff_up = max(0.0, float(price or 0.0) * balancing_up_smp_pct / 100.0)
-                    _eff_down = max(0.0, float(price or 0.0) * balancing_down_smp_pct / 100.0)
-                else:
-                    _eff_up, _eff_down = balancing_up_price, balancing_down_price
+            # Only calculate imbalance if volume > 0 OR player has must-run units.
+            # In a two-phase IDM settlement the DA-committed position must be balanced
+            # against the physical actual even when the IDM hour itself did not clear
+            # (vol == 0); otherwise an overbid DA position would escape its balancing cost.
+            if vol > 0 or has_must_run or emit_idm_settlement:
+                _eff_up, _eff_down = _effective_balancing_prices(pid, hour_idx, hour_offset, price)
                 imbalance_cost = settle_balancing(dispatched, actual, up_price=_eff_up, down_price=_eff_down)
             # Else: No market clearing, no dispatch plan → no imbalance penalty
             
@@ -6549,12 +6882,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                 # If actual > dispatched (over-delivery/consumption): up_price from config
                 # If actual < dispatched (under-delivery/consumption): down_price from config
                 imbalance_h = actual_h - dispatched_h
-                if balancing_price_mode == 'smp_multiplier':
-                    _hr_smp = float(hour_result.get('smp', 0.0) or 0.0)
-                    _eff_up = max(0.0, _hr_smp * balancing_up_smp_pct / 100.0)
-                    _eff_down = max(0.0, _hr_smp * balancing_down_smp_pct / 100.0)
-                else:
-                    _eff_up, _eff_down = balancing_up_price, balancing_down_price
+                _eff_up, _eff_down = _effective_balancing_prices(pid, hour_idx, h_idx, hour_result.get('smp', 0.0))
                 if imbalance_h > 0:  # Over-delivery/consumption
                     hour_detail["imbalance_mwh"] += imbalance_h
                     hour_detail["imbalance_cost_zar"] += imbalance_h * _eff_up
@@ -6783,7 +7111,19 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                         effective_capacity = max(base_capacity, float(actual_h or 0.0))
                         availability_source = "demand_envelope"
                     else:
-                        base_capacity = float(device_cfg.get('capacity_mw') or device_cfg.get('max_power_mw') or 0.0)
+                        # Use the shared-market-scaled nameplate so the displayed
+                        # effective capacity reflects what the player can physically
+                        # deliver. Without the scale the round-results panel shows the
+                        # full nameplate (e.g. 2500 MW) while settlement only delivers
+                        # the scaled amount (e.g. 1250 MW), making legitimate overbids
+                        # look like they are "within capacity".
+                        base_capacity = _get_scaled_device_capacity_mw(
+                            device_cfg,
+                            player_id=pid,
+                            player_type_by_player=player_type_by_player,
+                            shared_market_capacity_scales=shared_market_capacity_scales,
+                            fallback=float(device_cfg.get('capacity_mw') or device_cfg.get('max_power_mw') or 0.0),
+                        )
 
                         market_cfg = config.get("market", {}) or {}
                         gen_mix = market_cfg.get("generator_mix", {}) or {}
@@ -6931,12 +7271,7 @@ def run_round(session_id: int, round_num: int, players: List[int], forecasts: Di
                     hour_entry["imbalance_mwh"] = round(actual_h - dispatched_h, 3)
                     # Mirror settle_balancing price logic
                     imbalance_h = float(actual_h) - float(dispatched_h)
-                    if balancing_price_mode == 'smp_multiplier':
-                        _fb_smp = float(hour_result.get('smp', 0.0) or 0.0)
-                        _eff_up = max(0.0, _fb_smp * balancing_up_smp_pct / 100.0)
-                        _eff_down = max(0.0, _fb_smp * balancing_down_smp_pct / 100.0)
-                    else:
-                        _eff_up, _eff_down = balancing_up_price, balancing_down_price
+                    _eff_up, _eff_down = _effective_balancing_prices(pid, current_hour_idx, current_hour_offset, hour_result.get('smp', 0.0))
                     if imbalance_h > 0:
                         hour_entry["imbalance_cost_zar"] = round(imbalance_h * _eff_up, 2)
                     elif imbalance_h < 0:

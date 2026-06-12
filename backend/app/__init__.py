@@ -76,6 +76,13 @@ def create_app() -> Flask:
     # Blueprints
     app.register_blueprint(health_bp)
 
+    # Release DB connection before response is sent over the network
+    # (Flask-SQLAlchemy's teardown fires after sending — too late for high concurrency)
+    @app.after_request
+    def release_db_session(response):
+        db.session.remove()
+        return response
+
     # Static uploads route (/uploads/*)
     import os
     from flask import send_from_directory
@@ -165,5 +172,32 @@ def create_app() -> Flask:
         from . import socket_handlers  # noqa: F401
     except Exception:
         pass
+
+    # Startup recovery: restart scheduler greenlets for any sessions that were
+    # active when the backend last restarted (e.g. after docker-compose up --build).
+    # Runs once in a background greenlet ~3s after gunicorn boots.
+    def _recover_schedulers(_app):
+        import time as _time
+        _time.sleep(3)
+        try:
+            with _app.app_context():
+                from .models import Session, SessionStatus
+                from .scheduler import run_rounds, _running
+                active_statuses = [
+                    SessionStatus.round_active,
+                    SessionStatus.calculating,
+                    SessionStatus.round_closing,
+                    SessionStatus.paused,
+                ]
+                stuck = Session.query.filter(Session.status.in_(active_statuses)).all()
+                _app.logger.info("[startup] scheduler recovery: %d stuck sessions found", len(stuck))
+                for s in stuck:
+                    if s.id not in _running:
+                        socketio.start_background_task(run_rounds, s.id, _app)
+                        _time.sleep(0.05)  # small stagger to avoid DB storm
+        except Exception:
+            pass
+
+    socketio.start_background_task(_recover_schedulers, app)
 
     return app

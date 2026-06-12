@@ -6,7 +6,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from .extensions import db
 from .models import Campaign, Scenario, Role, ReferenceRun
 from .models import CampaignScenario, Session, SessionStatus, PlayerProgress, Forecast, Result
-from .models import SessionAllowedType, SessionPlayerType
+from .models import SessionAllowedType, SessionPlayerType, PhaseResult
 from .utils import role_required
 from .device_types import DEVICE_SPECS, DeviceType, validate_device
 from .config import Config
@@ -546,6 +546,7 @@ def _delete_session_dependents(session_ids: list[int]) -> None:
     ).delete(synchronize_session=False)
     Forecast.query.filter(Forecast.session_id.in_(session_ids)).delete(synchronize_session=False)
     Result.query.filter(Result.session_id.in_(session_ids)).delete(synchronize_session=False)
+    PhaseResult.query.filter(PhaseResult.session_id.in_(session_ids)).delete(synchronize_session=False)
 
 
 @ns.route("/campaigns")

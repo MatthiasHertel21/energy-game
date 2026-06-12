@@ -1,11 +1,12 @@
 from flask_restx import Namespace, Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from .extensions import db
 from .models import Session, Scenario, CohortMember, Cohort, SessionStatus, User, Result, SessionPlayerType
 from .kpi_schema import canonicalize_kpis
 import os
+import json
 try:
     import redis as _redis
     _redis_client = _redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
@@ -42,7 +43,45 @@ class MySessions(Resource):
             .order_by(Session.id.desc())
         )
         out = []
-        for s, sc, ch in q.all():
+        rows = q.all()
+        session_ids = [s.id for s, _, _ in rows]
+        scenario_ids = {sc.id for _, sc, _ in rows}
+
+        # --- Batch all per-session lookups once (RULE 1: no N+1 in the loop) ---
+        # Player type per session for this user.
+        spt_by_session = {}
+        if session_ids:
+            for spt in SessionPlayerType.query.filter(
+                SessionPlayerType.session_id.in_(session_ids),
+                SessionPlayerType.user_id == uid,
+            ).all():
+                spt_by_session[spt.session_id] = spt
+        # Campaign mapping for scenarios that lack a direct campaign_id.
+        campaign_by_scenario = {}
+        if scenario_ids:
+            for cs in CampaignScenario.query.filter(
+                CampaignScenario.scenario_id.in_(scenario_ids)
+            ).all():
+                campaign_by_scenario.setdefault(cs.scenario_id, cs.campaign_id)
+        # Challenge points: select ONLY `data` (never the large bid_dispatch blob),
+        # batched across all sessions, grouped by session in Python.
+        points_by_session = {}
+        if session_ids:
+            for r in (
+                db.session.query(Result.session_id, Result.data)
+                .filter(Result.player_id == uid, Result.session_id.in_(session_ids))
+                .all()
+            ):
+                if r.data and "challenge_result" in r.data:
+                    cr = r.data["challenge_result"]
+                    if isinstance(cr, dict) and "challenges" in cr:
+                        acc = points_by_session.get(r.session_id, 0)
+                        for ch_result in cr["challenges"]:
+                            if ch_result.get("achieved"):
+                                acc += ch_result.get("points", 0)
+                        points_by_session[r.session_id] = acc
+
+        for s, sc, ch in rows:
             config = sc.config or {}
             general = config.get("general", {})
             market = config.get("market", {})
@@ -58,13 +97,11 @@ class MySessions(Resource):
             # Get campaign_id from CampaignScenario mapping (scenarios may not have campaign_id directly)
             campaign_id = sc.campaign_id
             if not campaign_id:
-                cs_mapping = CampaignScenario.query.filter_by(scenario_id=sc.id).first()
-                if cs_mapping:
-                    campaign_id = cs_mapping.campaign_id
+                campaign_id = campaign_by_scenario.get(sc.id)
             
             # Get player type for this user in this session
             player_type_name = None
-            spt = SessionPlayerType.query.filter_by(session_id=s.id, user_id=uid).first()
+            spt = spt_by_session.get(s.id)
             if spt and spt.type_id:
                 player_types = config.get("player_types", [])
                 for pt in player_types:
@@ -72,16 +109,8 @@ class MySessions(Resource):
                         player_type_name = pt.get("name")
                         break
             
-            # Calculate challenge points for this user
-            total_points = 0
-            user_results = Result.query.filter_by(session_id=s.id, player_id=uid).all()
-            for result in user_results:
-                if result.data and "challenge_result" in result.data:
-                    cr = result.data["challenge_result"]
-                    if isinstance(cr, dict) and "challenges" in cr:
-                        for ch_result in cr["challenges"]:
-                            if ch_result.get("achieved"):
-                                total_points += ch_result.get("points", 0)
+            # Challenge points for this user (pre-aggregated above)
+            total_points = points_by_session.get(s.id, 0)
             
             out.append({
                 "id": s.id,
@@ -147,60 +176,135 @@ class MyProfile(Resource):
         active_sessions = [s for s in all_sessions if s.status in [SessionStatus.running, SessionStatus.round_active, SessionStatus.paused]]
         completed_sessions = [s for s in all_sessions if s.status in [SessionStatus.ended, SessionStatus.scenario_complete]]
         
-        # Get player results for KPI aggregation
-        results = Result.query.filter_by(player_id=uid).all()
+        # Get player KPI totals via a server-side aggregation.
+        # IMPORTANT: each result `data` row is ~200 KB. Loading the full blobs to
+        # sum four scalar KPIs transferred >1 MB and parsed it in Python on every
+        # poll (~1s/request, pinning the single eventlet worker). SUM the scalars
+        # in Postgres instead so only per-session totals cross the wire.
+        # profit/revenue/imbalance/curtailment are stored under the canonical kpis
+        # keys, matching canonicalize_kpis (which does no remapping for them).
+        stats_rows = db.session.execute(
+            text(
+                """
+                SELECT session_id,
+                       COUNT(*) AS rounds,
+                       SUM(COALESCE((data #>> '{kpis,profit_zar}')::float8, 0)) AS profit,
+                       SUM(COALESCE((data #>> '{kpis,revenue_zar}')::float8, 0)) AS revenue,
+                       SUM(COALESCE((data #>> '{kpis,imbalance_cost_zar}')::float8, 0)) AS imbalance,
+                       SUM(COALESCE((data #>> '{kpis,curtailment_cost_zar}')::float8, 0)) AS curtailment
+                FROM results
+                WHERE player_id = :uid
+                GROUP BY session_id
+                """
+            ),
+            {"uid": uid},
+        ).fetchall()
+
+        profit_by_session = {row.session_id: float(row.profit or 0) for row in stats_rows}
+        total_profit = sum(profit_by_session.values())
+        total_revenue = sum(float(row.revenue or 0) for row in stats_rows)
+        total_imbalance = sum(float(row.imbalance or 0) for row in stats_rows)
+        total_curtailment = sum(float(row.curtailment or 0) for row in stats_rows)
+        total_rounds = sum(int(row.rounds or 0) for row in stats_rows)
+        result_session_ids = list(profit_by_session.keys())
         
-        total_profit = 0
-        total_revenue = 0
-        total_imbalance = 0
-        total_curtailment = 0
-        total_rounds = len(results)
-        
-        for r in results:
-            if r.data and "kpis" in r.data:
-                kpis = canonicalize_kpis(r.data["kpis"])
-                total_profit += kpis.get("profit_zar", 0)
-                total_revenue += kpis.get("revenue_zar", 0)
-                total_imbalance += kpis.get("imbalance_cost_zar", 0)
-                total_curtailment += kpis.get("curtailment_cost_zar", 0)
-        
-        # Calculate best rank (minimum rank value = best)
+        # Calculate best rank (minimum rank value = best).
+        # RULE 1 + memory: computing this in Python required loading EVERY player's
+        # full result JSON for each of the user's sessions (~N players x R rounds x
+        # ~8 KB) and running canonicalize_kpis on each. For a 100+ player session
+        # that is ~9 MB transferred and parsed per /api/me/profile poll, which
+        # pinned the single eventlet worker (multi-second responses, OOM under
+        # load). Extract profit_zar server-side in Postgres and rank with a window
+        # function so only the final scalar rank crosses the wire.
+        #
+        # RULE 1 + RULE 5: the ranking aggregation scans EVERY player's result in
+        # each of this user's sessions (~N players x R rounds). Recomputing it on
+        # every /api/me/profile poll pinned the single eventlet worker for ~8.8s.
+        # Instead cache the full per-session ranking ({player_id: rank}) in Redis
+        # (shared across all players in that session, TTL 90s) so the heavy query
+        # runs at most once per session per 90s rather than once per poll. The
+        # per-row regex was also dropped (profit_zar is always numeric) which cut
+        # the cold query from ~8.8s to ~2.8s for 6 sessions.
         best_rank = None
-        if results:
-            # Get all session IDs where user has results
-            session_ids = list(set(r.session_id for r in results))
-            for sid in session_ids:
-                # Get all results for this session with aggregated profits
-                session_results = Result.query.filter_by(session_id=sid).all()
-                # Calculate total profit per player for ranking
-                player_profits = {}
-                for res in session_results:
-                    if res.data and "kpis" in res.data:
-                        kpis = canonicalize_kpis(res.data["kpis"])
-                        player_profits[res.player_id] = player_profits.get(res.player_id, 0) + kpis.get("profit_zar", 0)
-                
-                # Sort by profit
-                sorted_players = sorted(player_profits.items(), key=lambda x: x[1], reverse=True)
-                # Find user's rank (1-indexed)
-                for idx, (pid, _) in enumerate(sorted_players, start=1):
-                    if pid == uid:
-                        if best_rank is None or idx < best_rank:
-                            best_rank = idx
-                        break
+        if result_session_ids:
+            session_ids = list(result_session_ids)
+            ranks_by_session = {}  # session_id -> {str(player_id): rank}
+            missing = []
+            for s_id in session_ids:
+                cached = None
+                if _redis_client is not None:
+                    try:
+                        raw = _redis_client.get(f"profile_rank:{s_id}")
+                        if raw:
+                            cached = json.loads(raw)
+                    except Exception:
+                        cached = None
+                if cached is not None:
+                    ranks_by_session[s_id] = cached
+                else:
+                    missing.append(s_id)
+
+            if missing:
+                rank_rows = db.session.execute(
+                    text(
+                        """
+                        WITH per_player AS (
+                            SELECT session_id, player_id,
+                                   SUM(COALESCE((data #>> '{kpis,profit_zar}')::float8, 0)) AS profit
+                            FROM results
+                            WHERE session_id = ANY(:sids)
+                            GROUP BY session_id, player_id
+                        )
+                        SELECT session_id, player_id,
+                               RANK() OVER (PARTITION BY session_id ORDER BY profit DESC) AS rnk
+                        FROM per_player
+                        """
+                    ),
+                    {"sids": missing},
+                ).fetchall()
+                computed = {}
+                for row in rank_rows:
+                    computed.setdefault(row.session_id, {})[str(row.player_id)] = int(row.rnk)
+                for s_id in missing:
+                    s_ranks = computed.get(s_id, {})
+                    ranks_by_session[s_id] = s_ranks
+                    if _redis_client is not None:
+                        try:
+                            _redis_client.setex(f"profile_rank:{s_id}", 90, json.dumps(s_ranks))
+                        except Exception:
+                            pass
+
+            uid_str = str(uid)
+            user_ranks = [d[uid_str] for d in ranks_by_session.values() if uid_str in d]
+            best_rank = min(user_ranks) if user_ranks else None
         
-        # Get recent sessions with details
+        # Get recent sessions with details.
+        # RULE 1: batch the scenario, cohort and per-session profit lookups once
+        # instead of querying inside the loop.
+        recent_slice = sorted(all_sessions, key=lambda x: x.id, reverse=True)[:10]
+        recent_ids = [s.id for s in recent_slice]
+        scenario_ids = {s.scenario_id for s in recent_slice}
+        cohort_ids = {s.cohort_id for s in recent_slice}
+        scenarios_by_id = {
+            sc.id: sc for sc in Scenario.query.filter(Scenario.id.in_(scenario_ids)).all()
+        } if scenario_ids else {}
+        cohorts_by_id = {
+            c.id: c for c in Cohort.query.filter(Cohort.id.in_(cohort_ids)).all()
+        } if cohort_ids else {}
+        # Per-recent-session profit reuses the aggregation above (no extra
+        # query and no 200 KB blob load).
+        profit_by_recent_session = {
+            s_id: profit_by_session[s_id]
+            for s_id in recent_ids
+            if s_id in profit_by_session
+        }
+        
         recent_sessions = []
-        for s in sorted(all_sessions, key=lambda x: x.id, reverse=True)[:10]:
-            scenario = Scenario.query.get(s.scenario_id)
-            cohort = Cohort.query.get(s.cohort_id)
-            
-            # Get user's results for this session and sum up profit
-            session_results = Result.query.filter_by(session_id=s.id, player_id=uid).all()
-            session_profit = 0
-            for result in session_results:
-                if result.data and "kpis" in result.data:
-                    kpis = canonicalize_kpis(result.data["kpis"])
-                    session_profit += kpis.get("profit_zar", 0)
+        for s in recent_slice:
+            scenario = scenarios_by_id.get(s.scenario_id)
+            cohort = cohorts_by_id.get(s.cohort_id)
+            has_results = s.id in profit_by_recent_session
+            session_profit = profit_by_recent_session.get(s.id, 0)
             
             recent_sessions.append({
                 "id": s.id,
@@ -210,7 +314,7 @@ class MyProfile(Resource):
                 "mode": s.mode,
                 "started_at": s.started_at.isoformat() if s.started_at else None,
                 "current_round": s.current_round,
-                "profit": session_profit if session_results else None,
+                "profit": session_profit if has_results else None,
                 "rank": None  # Will be calculated if needed
             })
         

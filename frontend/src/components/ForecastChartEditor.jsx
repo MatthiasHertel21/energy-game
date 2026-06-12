@@ -180,7 +180,7 @@ export default function ForecastChartEditor({
       })()
       const monthlyFactor = monthIdx != null && monthlyFactors ? Number(monthlyFactors[monthIdx] || 1) : 1
       const hourlyFactor = hourlyFactors ? Number(hourlyFactors[hourOfDay] || 1) : 1
-      const expected = (capFactor / 100) * configuredMaxPower * monthlyFactor * hourlyFactor
+      const expected = (capFactor / 100) * maxPower * monthlyFactor * hourlyFactor
       const maxEqualsExpected = Math.abs(expected - maxPower) <= Math.max(0.5, maxPower * 0.01)
       
       if (maxPower > 0) refLines.push({ value: maxPower, label: 'Available now', color: '#d32f2f', dash: '3,0', tooltip: `Current available output in this round: ${maxPower.toFixed(1)} MW` })

@@ -49,6 +49,7 @@ const DocsAdmin = React.lazy(()=> import('./pages/DocsAdmin'))
 const DocsEngine = React.lazy(()=> import('./pages/DocsEngine'))
 const About = React.lazy(()=> import('./pages/About'))
 const AboutDetails = React.lazy(()=> import('./pages/AboutDetails'))
+const Imprint = React.lazy(()=> import('./pages/Imprint'))
 const DidYouKnow = React.lazy(()=> import('./pages/DidYouKnow'))
 const CourseMaterials = React.lazy(()=> import('./pages/CourseMaterials'))
 const AdminEditStaticPage = React.lazy(()=> import('./pages/AdminEditStaticPage'))
@@ -323,6 +324,7 @@ export default function App({ themeMode, onToggleTheme }) {
           {/* Public routes */}
           <Route path="/about" element={<About />} />
           <Route path="/about/details" element={<AboutDetails />} />
+          <Route path="/imprint" element={<Imprint />} />
           {/* Public docs routes for handbook viewing */}
           <Route path="/docs/player" element={<DocsPlayer />} />
           <Route path="/docs/trainer" element={<DocsTrainer />} />
@@ -419,12 +421,8 @@ export default function App({ themeMode, onToggleTheme }) {
                 <Typography
                   variant="body2"
                   component="a"
-                  href="#imprint"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    alert('Imprint\n\nResponsible for content:\n\nElectricity Market Simulation\nDevelopment Team\n\nContact: info@example.com\n\nThis is a sample imprint. Please update with actual legal information.');
-                  }}
-                  sx={{ color: 'text.secondary', textDecoration: 'none', cursor: 'pointer', '&:hover': { textDecoration: 'underline' } }}
+                  href="/imprint"
+                  sx={{ color: 'text.secondary', textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }}
                 >
                   Imprint
                 </Typography>
@@ -447,7 +445,7 @@ function ForceNavigateWatcher({ onNavigate }){
         return
       }
       try{
-        const { data } = await api.get('/api/me/navigate')
+        const { data } = await api.get('/api/me/navigate', { _silent: true })
         if(!stopped && data?.url){
           const url = String(data.url)
           // Avoid repeated redirects: only navigate once per URL
@@ -464,7 +462,7 @@ function ForceNavigateWatcher({ onNavigate }){
       }catch(_){ /* ignore */ }
     }
     tick()
-    const t = setInterval(tick, 5000)
+    const t = setInterval(tick, 15000)
     return ()=> { stopped = true; clearInterval(t) }
   },[onNavigate])
   return null

@@ -11,10 +11,13 @@ import {
   buildActiveEventsSection,
   buildCompositionSection,
   buildGroupedRankingSections,
+  buildLinkSection,
   buildParticipantsCard,
+  buildPhaseMixSections,
   buildPriceCard,
   buildVolumeCard,
   buildZoneSection,
+  buildZoneMixMatrixSection,
   normalizeMarketSummary,
   summarizeMarketFromRanking,
 } from '../utils/marketOverview'
@@ -281,12 +284,12 @@ export default function Trainer(){
     const load = async ()=>{
       try{
         const qs = cohortId ? `?cohort_id=${encodeURIComponent(cohortId)}` : ''
-        const { data } = await api.get(`/api/trainer/presence${qs}`)
+        const { data } = await api.get(`/api/trainer/presence${qs}`, { _silent: true })
         setPresence(data || { users: [] })
       }catch(_){ setPresence({ users: [] }) }
     }
     load()
-    const t = setInterval(load, 5000)
+    const t = setInterval(load, 10000)
     return ()=> clearInterval(t)
   },[cohortId])
 
@@ -299,7 +302,7 @@ export default function Trainer(){
       }
       setMembersLoading(true)
       try {
-        const { data } = await api.get(`/api/trainer/cohort/${cohortId}/members`)
+        const { data } = await api.get(`/api/trainer/cohort/${cohortId}/members`, { _silent: true })
         setCohortMembers(data.members || [])
       } catch (err) {
         console.error('Failed to load cohort members:', err)
@@ -309,8 +312,8 @@ export default function Trainer(){
       }
     }
     loadMembers()
-    // Refresh every 10 seconds
-    const interval = setInterval(loadMembers, 10000)
+    // Refresh every 30 seconds
+    const interval = setInterval(loadMembers, 30000)
     return () => clearInterval(interval)
   }, [cohortId])
 
@@ -319,7 +322,7 @@ export default function Trainer(){
     if(!sessionId) return
     const t = setInterval(()=>{
       loadStatus()
-    }, 5000)
+    }, 10000)
     return ()=> clearInterval(t)
   },[sessionId])
 
@@ -403,7 +406,7 @@ export default function Trainer(){
   const broadcast = async ()=>{ await api.post(`/api/sessions/${sessionId}/broadcast`, { message }); setMessage('') }
   const loadStatus = async ()=>{
     if(!sessionId) return
-    const { data } = await api.get(`/api/sessions/${sessionId}/status`)
+    const { data } = await api.get(`/api/sessions/${sessionId}/status`, { _silent: true })
     setStatus(data)
     // also load briefing for type/device charts
     try{
@@ -582,6 +585,9 @@ export default function Trainer(){
       : 0
     const compositionSection = buildCompositionSection(marketSummary, formatInt)
     const zoneSection = buildZoneSection(marketSummary, formatCurrency, formatInt)
+    const linkSection = buildLinkSection(marketSummary, formatCurrency, formatInt)
+    const zoneMixMatrix = buildZoneMixMatrixSection(marketSummary, formatInt)
+    const phaseMixSections = buildPhaseMixSections(marketSummary, formatInt)
     const summarySection = {
       title: 'Round-wide market summary',
       rows: [
@@ -629,7 +635,8 @@ export default function Trainer(){
         { key: 'imbalance', title: 'Imbalance / ATC', value: formatCurrency(totalImbalance), caption: `Real players · ATC ${formatCurrency(totalAtc)}` },
       ].filter(Boolean),
       overviewSections: [summarySection, activeEventsSection].filter(Boolean),
-      marketMixSections: [compositionSection, zoneSection].filter(Boolean),
+      marketMixSections: [compositionSection, zoneMixMatrix, ...phaseMixSections].filter(Boolean),
+      gridSections: [zoneSection, linkSection].filter(Boolean),
       rankingEntries,
       formatInt,
       rawResultsData: data,
@@ -667,6 +674,7 @@ export default function Trainer(){
               cards: [],
               overviewSections: [{ title: 'Error', items: [{ text: `Failed to load data for round ${selectedMarketOverviewRoundNumber}.` }] }],
               marketMixSections: [],
+              gridSections: [],
               rankingEntries: [],
               formatInt: (value) => `${value}`,
             },
@@ -822,6 +830,16 @@ export default function Trainer(){
         : selectedMarketOverview?.marketMixSections?.length > 0
         ? selectedMarketOverview.marketMixSections
         : [{ title: 'Market mix', items: [{ text: marketOverviewLoading ? 'Loading market composition…' : 'No market composition data available for the selected round.' }] }],
+    },
+    {
+      id: 'grid',
+      label: 'Grid',
+      disabled: !selectedMarketOverview?.gridSections?.length,
+      sections: isAllMarketOverviewRoundsSelected
+        ? allRoundsUnavailableSections
+        : selectedMarketOverview?.gridSections?.length > 0
+        ? selectedMarketOverview.gridSections
+        : [{ title: 'Grid', items: [{ text: marketOverviewLoading ? 'Loading grid data…' : 'No zonal grid data available for the selected round.' }] }],
     },
     {
       id: 'ranking',

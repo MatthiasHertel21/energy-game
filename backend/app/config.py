@@ -13,6 +13,16 @@ class Config:
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(seconds=int(os.getenv("JWT_REFRESH_TOKEN_EXPIRES", "2592000")))  # 30 days default
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", "sqlite:///emsg.db")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "pool_size": 30,
+        "max_overflow": 70,
+        "pool_recycle": 300,
+        "pool_pre_ping": True,
+        "pool_timeout": 10,    # Schnell scheitern statt 30s warten
+        "connect_args": {
+            "options": "-c idle_in_transaction_session_timeout=15000"  # 15s: schneller bereinigen
+        },
+    }
     PROPAGATE_EXCEPTIONS = True
 
     # Flask-RESTX

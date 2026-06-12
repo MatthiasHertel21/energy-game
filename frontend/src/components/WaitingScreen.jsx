@@ -43,7 +43,7 @@ export default function WaitingScreen({ sessionId, round, mode = 'shared_market'
 
     const fetchStatus = async () => {
       try {
-        const { data } = await api.get(`/api/sessions/${sessionId}/submit-status`);
+        const { data } = await api.get(`/api/sessions/${sessionId}/submit-status`, { _silent: true });
         setStatus(data);
         setLoading(false);
       } catch (error) {
@@ -53,7 +53,7 @@ export default function WaitingScreen({ sessionId, round, mode = 'shared_market'
     };
 
     fetchStatus();
-    const interval = setInterval(fetchStatus, 3000); // Poll every 3 seconds
+    const interval = setInterval(fetchStatus, 15000); // Poll every 15 seconds
 
     return () => clearInterval(interval);
   }, [sessionId, isSolo]);
