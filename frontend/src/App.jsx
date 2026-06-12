@@ -50,6 +50,7 @@ const DocsEngine = React.lazy(()=> import('./pages/DocsEngine'))
 const About = React.lazy(()=> import('./pages/About'))
 const AboutDetails = React.lazy(()=> import('./pages/AboutDetails'))
 const Imprint = React.lazy(()=> import('./pages/Imprint'))
+const Dev = React.lazy(()=> import('./pages/Dev'))
 const DidYouKnow = React.lazy(()=> import('./pages/DidYouKnow'))
 const CourseMaterials = React.lazy(()=> import('./pages/CourseMaterials'))
 const AdminEditStaticPage = React.lazy(()=> import('./pages/AdminEditStaticPage'))
@@ -325,6 +326,7 @@ export default function App({ themeMode, onToggleTheme }) {
           <Route path="/about" element={<About />} />
           <Route path="/about/details" element={<AboutDetails />} />
           <Route path="/imprint" element={<Imprint />} />
+          <Route path="/dev" element={<Dev />} />
           {/* Public docs routes for handbook viewing */}
           <Route path="/docs/player" element={<DocsPlayer />} />
           <Route path="/docs/trainer" element={<DocsTrainer />} />
@@ -411,12 +413,10 @@ export default function App({ themeMode, onToggleTheme }) {
                 <Typography
                   variant="body2"
                   component="a"
-                  href="https://www.notion.so/fastbreakone/Energy-Game-Dev-Board-2b185b48a241809fb0e1d4bce96e8574"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href="/dev"
                   sx={{ color: 'text.secondary', textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }}
                 >
-                  DevBoard
+                  Developer Info
                 </Typography>
                 <Typography
                   variant="body2"
