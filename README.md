@@ -1,8 +1,9 @@
 # Energy Market Simulation Game (EMSG)
 
-Last updated: 2026-05-27
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Build](https://github.com/MatthiasHertel21/energy-game/actions/workflows/e2e-tests.yml/badge.svg)](https://github.com/MatthiasHertel21/energy-game/actions)
 
-EMSG is a web-based electricity market simulation platform for training and teaching. Players trade in configurable electricity markets, trainers run shared sessions, designers build scenarios in the KSE editor, and admins manage users, operational data, and public static content.
+EMSG is an open-source, web-based electricity market simulation platform for training and teaching. Players bid in configurable day-ahead and intraday markets, trainers run shared multi-player sessions, scenario designers build market configurations in the KSE editor, and admins manage users and operational data.
 
 ## Current Product Areas
 
@@ -225,13 +226,16 @@ See these docs for operational details:
 - `docs/RUNBOOK.md` - operations, health checks, and first response
 - `docs/HANDOVER_CHECKLIST.md` - transition checklist
 - `docs/HANDOVER_READINESS.md` - remaining handover gaps
-- `DEPLOYMENT_README.md`, `STAGING_CHECKLIST.md`, and `STAGING_READINESS.md` - historical staging rollout bundle with status notes
 
 Backups and migration helpers include:
 - `backend/scripts/backup.sh`
 - `backend/scripts/migrate.sh`
 
-## Notes
+## Contributing
 
-This README is intentionally product-facing and current-codebase-focused. Historical sprint plans, older performance notes, and retrospective material remain in `docs/SPRINT_*`, `docs/PERFORMANCE_*`, and related analysis documents.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
 

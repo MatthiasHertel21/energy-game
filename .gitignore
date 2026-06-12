@@ -10,6 +10,7 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .venv/
+.venv-locust/
 venv/
 coverage/
 
@@ -30,3 +31,15 @@ uploads/
 
 # Docker
 *.log
+
+# Debug artefacts and DB dumps (not for version control)
+debug/
+*.sql
+*.tgz
+
+# Source asset inputs (Word docs, EPS files, etc.)
+input/
+
+# Temporary analysis scripts at root (ad-hoc, belong in scripts/debug/)
+check_*.py
+analyze_*.py
