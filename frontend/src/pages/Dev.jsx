@@ -197,6 +197,12 @@ docker-compose up -d --build`}
             After startup: frontend on <code>:18080</code>, API docs at <code>/api/docs</code>,
             health check at <code>/api/health</code>.
           </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            <strong>First admin account:</strong> The first user to register at <code>/register</code> is
+            automatically promoted to the <em>admin</em> role — no database seed or environment variable
+            required. Subsequent users register as <em>player</em> by default and must be promoted by an
+            admin via the Admin panel or via invite (<code>POST /api/admin/invite</code>).
+          </Typography>
         </Section>
 
         <Divider sx={{ my: 3 }} />
