@@ -11,13 +11,50 @@ from flask_jwt_extended import (
 )
 
 from .extensions import db, bcrypt, jwt
-from .models import User, Invite, Role, PasswordResetToken
+from .models import Campaign, Cohort, CohortCampaign, CohortMember, User, Invite, Role, PasswordResetToken
 from .utils import log_activity
 from .config import Config
 from . import mailer
 
 
 ns = Namespace("auth", description="Authentication & Invite")
+
+
+def _try_bootstrap_demo_cohort(admin_user: User) -> None:
+    """Create a Demo cohort for the bootstrap admin and assign all published
+    campaigns to it.  Called only when user_count == 0 (first-ever registration).
+    Silently no-ops if no campaigns exist yet – never raises."""
+    try:
+        campaigns = Campaign.query.filter_by(published=True).order_by(Campaign.id).all()
+        if not campaigns:
+            return
+        cohort = Cohort.query.filter_by(
+            name="Demo", trainer_id=admin_user.id
+        ).first()
+        if cohort is None:
+            cohort = Cohort(name="Demo", trainer_id=admin_user.id)
+            db.session.add(cohort)
+            db.session.flush()
+        # Admin is both trainer and member of the demo cohort
+        if not CohortMember.query.filter_by(
+            cohort_id=cohort.id, user_id=admin_user.id
+        ).first():
+            db.session.add(CohortMember(cohort_id=cohort.id, user_id=admin_user.id))
+        for campaign in campaigns:
+            if not CohortCampaign.query.filter_by(
+                cohort_id=cohort.id, campaign_id=campaign.id
+            ).first():
+                db.session.add(
+                    CohortCampaign(
+                        cohort_id=cohort.id,
+                        campaign_id=campaign.id,
+                        visible=True,
+                        active=True,
+                    )
+                )
+    except Exception:
+        # Never let cohort bootstrap failure break registration
+        pass
 
 login_model = ns.model(
     "LoginRequest",
@@ -131,9 +168,14 @@ class Register(Resource):
         
         # Add user to cohort if invite had cohort_id
         if cohort_id:
-            from .models import CohortMember
             member = CohortMember(cohort_id=cohort_id, user_id=user.id)
             db.session.add(member)
+
+        # Bootstrap: if this is the first user (admin), assign existing demo
+        # campaigns to a Demo cohort so the admin has something to work with
+        # immediately. No-op if no campaigns exist yet.
+        if user_count == 0:
+            _try_bootstrap_demo_cohort(user)
         
         db.session.commit()
 
